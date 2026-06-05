@@ -182,6 +182,47 @@ impl PtySession {
         let _ = self.writer.flush();
     }
 
+    /// Does the child have xterm mouse reporting enabled? If so, the wheel/click
+    /// should be forwarded to it (it scrolls its own full-screen view, e.g.
+    /// codex) instead of moving MindPlayer's vt100 scrollback — which is empty
+    /// for an alternate-screen app anyway.
+    pub fn mouse_wanted(&self) -> bool {
+        self.parser
+            .lock()
+            .map(|p| p.screen().mouse_protocol_mode() != vt100::MouseProtocolMode::None)
+            .unwrap_or(false)
+    }
+
+    /// Forward a mouse event to the child, encoded per its negotiated protocol.
+    /// `cb` = base button code (0/1/2 = left/middle/right, 64/65 = wheel up/down,
+    /// 3 = none), `release` = button-up, `motion` = drag/move. `col`/`row` are
+    /// 1-based and pane-relative. Honors the child's reporting mode (so we don't
+    /// flood a press-only app with motion) and returns true if a sequence was
+    /// written.
+    pub fn forward_mouse(
+        &mut self,
+        cb: u16,
+        release: bool,
+        motion: bool,
+        col: u16,
+        row: u16,
+    ) -> bool {
+        let (mode, encoding) = match self.parser.lock() {
+            Ok(p) => (
+                p.screen().mouse_protocol_mode(),
+                p.screen().mouse_protocol_encoding(),
+            ),
+            Err(_) => return false,
+        };
+        if !mouse_allowed(mode, release, motion, cb) {
+            return false;
+        }
+        let bytes = mouse_sequence(encoding, cb, release, motion, col, row);
+        let _ = self.writer.write_all(&bytes);
+        let _ = self.writer.flush();
+        true
+    }
+
     pub fn resize(&mut self, rows: u16, cols: u16) {
         let rows = rows.max(1);
         let cols = cols.max(1);
@@ -252,6 +293,47 @@ impl Drop for PtySession {
     }
 }
 
+/// Whether a mouse event should be forwarded under the child's reporting mode.
+/// `cb == 3` with `motion` means a plain move (no button held).
+fn mouse_allowed(mode: vt100::MouseProtocolMode, release: bool, motion: bool, cb: u16) -> bool {
+    use vt100::MouseProtocolMode as M;
+    let plain_motion = motion && cb == 3;
+    match mode {
+        M::None => false,
+        M::Press => !release && !motion,
+        M::PressRelease => !motion,
+        M::ButtonMotion => !plain_motion,
+        M::AnyMotion => true,
+    }
+}
+
+/// Encode a mouse event as the wire bytes for the child's negotiated encoding.
+/// `cb` is the base button code; `col`/`row` are 1-based, pane-relative.
+fn mouse_sequence(
+    encoding: vt100::MouseProtocolEncoding,
+    cb: u16,
+    release: bool,
+    motion: bool,
+    col: u16,
+    row: u16,
+) -> Vec<u8> {
+    match encoding {
+        // SGR (1006): `ESC [ < Cb ; Cx ; Cy (M|m)`, M=press, m=release.
+        vt100::MouseProtocolEncoding::Sgr => {
+            let final_cb = cb + if motion { 32 } else { 0 };
+            let end = if release { 'm' } else { 'M' };
+            format!("\x1b[<{final_cb};{col};{row}{end}").into_bytes()
+        }
+        // X10 / UTF-8 default: `ESC [ M Cb Cx Cy`, each value offset by 32;
+        // release is reported as button 3 (no separate terminator).
+        _ => {
+            let base = if release { 3 } else { cb } + if motion { 32 } else { 0 };
+            let enc = |v: u16| -> u8 { v.saturating_add(32).min(255) as u8 };
+            vec![0x1b, b'[', b'M', enc(base), enc(col), enc(row)]
+        }
+    }
+}
+
 /// POSIX single-quote a token so it is safe inside `sh -c`.
 fn shell_quote(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + 2);
@@ -315,5 +397,58 @@ mod tests {
         assert!(p.ends_with("new_codex.stderr.log"), "got {p}");
         let p2 = stderr_log_path("11111111-2222-7333");
         assert!(p2.ends_with("11111111-2222-7333.stderr.log"), "got {p2}");
+    }
+
+    #[test]
+    fn mouse_sequence_sgr_wheel_and_drag() {
+        use vt100::MouseProtocolEncoding::Sgr;
+        // wheel up at col 5, row 3 → press, no motion.
+        assert_eq!(
+            mouse_sequence(Sgr, 64, false, false, 5, 3),
+            b"\x1b[<64;5;3M"
+        );
+        // wheel down.
+        assert_eq!(
+            mouse_sequence(Sgr, 65, false, false, 1, 1),
+            b"\x1b[<65;1;1M"
+        );
+        // left release → lowercase m.
+        assert_eq!(mouse_sequence(Sgr, 0, true, false, 2, 4), b"\x1b[<0;2;4m");
+        // left drag → motion bit (+32) set.
+        assert_eq!(mouse_sequence(Sgr, 0, false, true, 2, 4), b"\x1b[<32;2;4M");
+    }
+
+    #[test]
+    fn mouse_sequence_x10_offsets_by_32() {
+        use vt100::MouseProtocolEncoding::Default;
+        // wheel up at col 1, row 1: ESC [ M, (64+32), (1+32), (1+32).
+        assert_eq!(
+            mouse_sequence(Default, 64, false, false, 1, 1),
+            vec![0x1b, b'[', b'M', 96, 33, 33]
+        );
+        // release reported as button 3 (3+32 = 35).
+        assert_eq!(
+            mouse_sequence(Default, 0, true, false, 1, 1),
+            vec![0x1b, b'[', b'M', 35, 33, 33]
+        );
+    }
+
+    #[test]
+    fn mouse_allowed_respects_mode() {
+        use vt100::MouseProtocolMode::*;
+        // None forwards nothing.
+        assert!(!mouse_allowed(None, false, false, 64));
+        // Press: wheel/press yes, release/motion no.
+        assert!(mouse_allowed(Press, false, false, 64));
+        assert!(!mouse_allowed(Press, true, false, 0));
+        assert!(!mouse_allowed(Press, false, true, 0));
+        // PressRelease: release yes, motion no.
+        assert!(mouse_allowed(PressRelease, true, false, 0));
+        assert!(!mouse_allowed(PressRelease, false, true, 0));
+        // ButtonMotion: drag (button held) yes, plain move (cb==3) no.
+        assert!(mouse_allowed(ButtonMotion, false, true, 0));
+        assert!(!mouse_allowed(ButtonMotion, false, true, 3));
+        // AnyMotion: everything, incl. plain move.
+        assert!(mouse_allowed(AnyMotion, false, true, 3));
     }
 }

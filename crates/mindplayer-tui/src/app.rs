@@ -112,6 +112,11 @@ pub struct App {
     /// Last known inner size of the right pane (rows, cols).
     pub pty_rows: u16,
     pub pty_cols: u16,
+    /// Last known top-left origin of the live pane's inner area, for translating
+    /// absolute mouse coordinates into pane-relative ones when forwarding to the
+    /// child.
+    pub pty_x: u16,
+    pub pty_y: u16,
 
     scan_rx: Option<Receiver<Vec<Session>>>,
     /// In-flight background mtime refresh (id -> last_active), kept off the main
@@ -172,6 +177,8 @@ impl App {
             new_baselines: HashMap::new(),
             pty_rows: 24,
             pty_cols: 80,
+            pty_x: 0,
+            pty_y: 0,
             scan_rx: None,
             refresh_rx: None,
             bg_rescan_rx: None,
@@ -835,6 +842,44 @@ impl App {
     /// true if the view moved.
     pub fn scroll_active(&self, delta: isize) -> bool {
         self.active_pty().is_some_and(|p| p.scroll_by(delta))
+    }
+
+    /// Whether the displayed child has xterm mouse reporting on — if so, mouse
+    /// events are forwarded to it instead of scrolling MindPlayer's scrollback.
+    pub fn active_wants_mouse(&self) -> bool {
+        self.active_pty().is_some_and(|p| p.mouse_wanted())
+    }
+
+    /// Translate an absolute terminal cell (from a mouse event) into 1-based
+    /// coordinates relative to the live pane's inner area, clamped to it.
+    pub fn pane_relative(&self, col: u16, row: u16) -> (u16, u16) {
+        let c = col
+            .saturating_sub(self.pty_x)
+            .min(self.pty_cols.saturating_sub(1))
+            + 1;
+        let r = row
+            .saturating_sub(self.pty_y)
+            .min(self.pty_rows.saturating_sub(1))
+            + 1;
+        (c, r)
+    }
+
+    /// Forward a (pane-relative) mouse event to the displayed child. Returns
+    /// true if a sequence was sent (caller redraws).
+    pub fn forward_mouse_to_pty(
+        &mut self,
+        cb: u16,
+        release: bool,
+        motion: bool,
+        col: u16,
+        row: u16,
+    ) -> bool {
+        if let Some(id) = self.active.clone() {
+            if let Some(pty) = self.ptys.get_mut(&id) {
+                return pty.forward_mouse(cb, release, motion, col, row);
+            }
+        }
+        false
     }
 
     /// Close the selected session: stop its PTY (if any) and archive it. A

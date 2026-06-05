@@ -489,6 +489,8 @@ fn live_pane(f: &mut Frame, app: &mut App, area: Rect) {
     // Record pane size so the PTY can be spawned/resized to match.
     app.pty_rows = inner.height.max(1);
     app.pty_cols = inner.width.max(1);
+    app.pty_x = inner.x;
+    app.pty_y = inner.y;
 
     let rendered = if let Some(pty) = app.active_pty() {
         if let Ok(parser) = pty.parser().lock() {

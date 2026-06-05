@@ -10,8 +10,8 @@ use anyhow::Result;
 use app::{App, Focus, Screen};
 use crossterm::event::{
     self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
-    Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, KeyboardEnhancementFlags, MouseEvent,
-    MouseEventKind, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+    Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, KeyboardEnhancementFlags, MouseButton,
+    MouseEvent, MouseEventKind, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
 };
 use crossterm::execute;
 use crossterm::terminal::{
@@ -269,25 +269,62 @@ fn handle_mouse(app: &mut App, me: MouseEvent) -> bool {
         return false;
     }
     const STEP: isize = 3;
-    match me.kind {
-        MouseEventKind::ScrollUp => {
-            if app.focus == Focus::Terminal {
-                app.scroll_active(STEP)
-            } else {
+
+    // In the list, the wheel moves the selection.
+    if app.focus == Focus::List {
+        return match me.kind {
+            MouseEventKind::ScrollUp => {
                 app.move_selection(-1);
                 true
             }
-        }
-        MouseEventKind::ScrollDown => {
-            if app.focus == Focus::Terminal {
-                app.scroll_active(-STEP)
-            } else {
+            MouseEventKind::ScrollDown => {
                 app.move_selection(1);
                 true
             }
+            _ => false,
+        };
+    }
+
+    // Live session focused. If the child requested mouse reporting (full-screen
+    // TUIs like codex), forward the event so IT scrolls — its scrollback lives
+    // inside the app, not MindPlayer's vt100 buffer (which is empty on the alt
+    // screen). Otherwise (e.g. claude on the normal screen) scroll MindPlayer's
+    // own scrollback so history that ran off the top stays readable.
+    if app.active_wants_mouse() {
+        if let Some((cb, release, motion)) = encode_mouse_kind(me.kind) {
+            let (col, row) = app.pane_relative(me.column, me.row);
+            return app.forward_mouse_to_pty(cb, release, motion, col, row);
         }
+        return false;
+    }
+    match me.kind {
+        MouseEventKind::ScrollUp => app.scroll_active(STEP),
+        MouseEventKind::ScrollDown => app.scroll_active(-STEP),
         _ => false,
     }
+}
+
+/// xterm button code for a mouse button (left/middle/right = 0/1/2).
+fn mouse_button_code(b: MouseButton) -> u16 {
+    match b {
+        MouseButton::Left => 0,
+        MouseButton::Middle => 1,
+        MouseButton::Right => 2,
+    }
+}
+
+/// Map a crossterm mouse kind to `(button_code, release, motion)` for
+/// forwarding, or `None` for events we don't forward (horizontal wheel).
+fn encode_mouse_kind(kind: MouseEventKind) -> Option<(u16, bool, bool)> {
+    Some(match kind {
+        MouseEventKind::ScrollUp => (64, false, false),
+        MouseEventKind::ScrollDown => (65, false, false),
+        MouseEventKind::Down(b) => (mouse_button_code(b), false, false),
+        MouseEventKind::Up(b) => (mouse_button_code(b), true, false),
+        MouseEventKind::Drag(b) => (mouse_button_code(b), false, true),
+        MouseEventKind::Moved => (3, false, true),
+        _ => return None,
+    })
 }
 
 fn handle_key(app: &mut App, key: KeyEvent) {

@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>MindPlayer</title>
+    <link rel="stylesheet" href="./vendor/xterm.css" />
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <header class="titlebar">
+      <span class="brand">◆ MindPlayer</span>
+      <span class="subtitle">Codex / Claude session manager</span>
+    </header>
+
+    <!-- Screen 1: scope -->
+    <section id="screen-scope" class="screen centered">
+      <div class="card">
+        <h2>Where should MindPlayer collect sessions?</h2>
+        <button class="scope-btn selected" data-scope="working_dir">
+          <strong>working dir</strong><span id="cwd-label" class="muted"></span>
+        </button>
+        <button class="scope-btn" data-scope="global">
+          <strong>global</strong><span class="muted">all sessions everywhere</span>
+        </button>
+        <button id="scan-btn" class="primary">Scan</button>
+      </div>
+    </section>
+
+    <!-- Screen 2: scanning / summary -->
+    <section id="screen-scan" class="screen centered hidden">
+      <div class="card">
+        <h2 id="scan-title">Collecting…</h2>
+        <div id="scan-spinner" class="spinner"></div>
+        <div id="scan-stats" class="hidden">
+          <div class="stat-row">
+            <span class="tag codex">codex</span><span id="stat-codex">0</span>
+            <span class="tag claude">claude</span><span id="stat-claude">0</span>
+            <span class="tag kiro">kiro</span><span id="stat-kiro">0</span>
+          </div>
+          <div class="bar"><div id="ratio-bar" class="bar-fill"></div></div>
+          <div class="totals">
+            total tokens <strong id="stat-total">0</strong>
+            <span class="muted" id="stat-breakdown"></span>
+          </div>
+          <button id="open-btn" class="primary">Open MindPlayer</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- Screen 3: main -->
+    <section id="screen-main" class="screen main hidden">
+      <aside class="list-pane">
+        <div class="list-head">
+          <span id="list-title">Sessions</span>
+          <label class="chk"><input type="checkbox" id="show-archived" /> archived</label>
+          <label class="chk"><input type="checkbox" id="show-subagents" /> sub-agents</label>
+        </div>
+        <ul id="session-list"></ul>
+        <div class="list-actions">
+          <button id="new-btn">＋ New</button>
+          <button id="rescan-btn">⟳ Rescan</button>
+        </div>
+      </aside>
+      <main class="term-pane">
+        <div class="term-head">
+          <span id="term-title">Live</span>
+          <button id="close-btn" class="danger hidden">✕ Close session</button>
+        </div>
+        <div id="terminal"></div>
+        <div id="term-hint" class="term-hint">
+          Select a session and press <kbd>Enter</kbd> (or click ▶) to resume it here.
+        </div>
+      </main>
+    </section>
+
+    <footer id="statusbar" class="statusbar"></footer>
+
+    <!-- New-session picker -->
+    <div id="new-modal" class="modal hidden">
+      <div class="modal-card">
+        <h3 id="new-title">New session</h3>
+        <div id="new-step-agent">
+          <button class="new-opt" data-agent="codex">codex</button>
+          <button class="new-opt" data-agent="claude">claude</button>
+          <button class="new-opt" data-agent="kiro">kiro</button>
+        </div>
+        <div id="new-step-label" class="hidden">
+          <label class="muted" for="new-label-input">Label / subject (optional)</label>
+          <input id="new-label-input" type="text" placeholder="e.g. deploy check" autocomplete="off" />
+          <button id="new-start" class="primary">Start</button>
+        </div>
+        <button id="new-cancel" class="muted-btn">Cancel</button>
+      </div>
+    </div>
+
+    <script src="./vendor/xterm.js"></script>
+    <script src="./vendor/addon-fit.js"></script>
+    <script src="./main.js"></script>
+  </body>
+</html>

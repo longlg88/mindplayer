@@ -1,0 +1,27 @@
+[package]
+name = "mindplayer-app"
+version = "0.1.0"
+edition = "2021"
+description = "MindPlayer macOS app (Tauri) — codex/claude/kiro session manager."
+license = "MIT"
+
+# Own workspace so Tauri deps don't leak into the core/TUI build.
+[workspace]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+mindplayer-core = { path = "../../crates/mindplayer-core" }
+portable-pty = "0.8"
+base64 = "0.22"
+anyhow = "1"
+libc = "0.2"
+chrono = "0.4"
+
+[profile.release]
+lto = true
+strip = true

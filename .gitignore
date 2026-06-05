@@ -1,0 +1,14 @@
+# Rust
+target/
+**/target/
+
+# Node / Tauri frontend
+app/node_modules/
+app/src-tauri/gen/
+
+# MindPlayer runtime (not part of the repo)
+.mindplayer/
+
+# OMC / agent runtime state (never publish)
+.omc/
+**/.omc/

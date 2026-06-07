@@ -62,62 +62,72 @@ Two front‑ends, one Rust core:
 
 ## 📦 Install
 
+> **TL;DR** — most people only need the **TUI**. One line:
+> ```bash
+> curl -fsSL https://raw.githubusercontent.com/longlg88/mindplayer/main/install.sh | bash
+> ```
+> The macOS app is optional, and `npm` is only for *that* (run inside `app/`) —
+> **never in the repo root** (the root is a Rust workspace, it has no `package.json`).
+
 **Prerequisites**
 
-- **Rust** (stable) — the only build requirement. Install from
-  [rustup.rs](https://rustup.rs): `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`
-- *(optional, to actually drive sessions)* the agent CLIs you use, on your
-  `PATH`: [`codex`](https://github.com/openai/codex),
-  [`claude`](https://docs.anthropic.com/claude-code), and/or
-  [`kiro-cli`](https://kiro.dev/docs/cli/). MindPlayer browses history for any
-  you have, and only needs a given CLI to *resume/start* that agent's sessions.
+| For | You need |
+|-----|----------|
+| The TUI (everyone) | **Rust** (stable) — `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \| sh` |
+| Driving sessions | the agent CLIs you use, on `PATH`: [`codex`](https://github.com/openai/codex), [`claude`](https://docs.anthropic.com/claude-code), [`kiro-cli`](https://kiro.dev/docs/cli/) — browsing works without them; a CLI is only needed to *resume/start* that agent |
+| The macOS app *(optional)* | **Node/npm** + Xcode Command Line Tools |
 
-**One‑line install (TUI)**
+**Install the TUI** — pick one:
 
 ```bash
-git clone https://github.com/longlg88/mindplayer.git && cd mindplayer && ./install.sh
+# A) one-liner: fetches source, builds, installs to ~/.local/bin
+curl -fsSL https://raw.githubusercontent.com/longlg88/mindplayer/main/install.sh | bash
+
+# B) from a clone
+git clone https://github.com/longlg88/mindplayer.git && cd mindplayer
+./install.sh           # or:  make install
 ```
 
-`install.sh` builds the optimized binary and copies `mindplayer` to
-`~/.local/bin`. If that dir isn't on your `PATH`, the script prints the exact
-line to add to your shell rc.
+The installer builds the optimized binary and puts `mindplayer` on your `PATH`
+(if the target dir isn't on `PATH`, it prints the exact line to add).
 
 ```bash
-./install.sh                    # → ~/.local/bin/mindplayer
-PREFIX=/usr/local ./install.sh  # → /usr/local/bin (may need sudo)
-./install.sh --bin-dir ~/bin    # → a directory you choose
-./install.sh --uninstall        # remove it again
+PREFIX=/usr/local ./install.sh   # → /usr/local/bin (may need sudo)
+./install.sh --bin-dir ~/bin     # a directory you choose
+./install.sh --uninstall         # remove it
 ```
 
-**Update** — pull and re‑run the installer:
+**Update**: `git pull && ./install.sh` (or just re-run the one-liner).
+
+**Use it.** Run it in the project whose sessions you want — the first screen
+asks **working dir** (this project) or **global** (everything):
 
 ```bash
-git pull && ./install.sh
+cd ~/code/my-project && mindplayer    # manage THIS project's sessions
+mindplayer ~/code/my-project          # …or point it anywhere, no cd
 ```
 
-**Using it.** The first screen asks for **working dir** (one project) or
-**global** (every session). The working dir is whichever directory you point
-MindPlayer at:
+Press <kbd>n</kbd> for a new Codex / Claude / Kiro session. `mindplayer --help`
+lists the rest.
+
+**Optional — the macOS app.** Only if you want the windowed app instead of the TUI:
 
 ```bash
-cd ~/code/my-project && mindplayer   # manage THIS project's sessions
-mindplayer ~/code/my-project         # …or pass the dir from anywhere
-mindplayer                           # current directory
+./install.sh --app        # easiest — builds the .app for you (needs Node/npm)
+# or manually — npm lives in app/, NOT the repo root:
+cd app && npm install && npm run build
 ```
 
-Press <kbd>n</kbd> to start a new Codex / Claude / Kiro session (it launches in
-that directory). `mindplayer --help` lists everything.
-
-**Run from source (developing MindPlayer itself)**
+**Develop MindPlayer itself** (from a clone): `make` shows all targets.
 
 ```bash
-cargo run -p mindplayer-tui -- ~/code/my-project   # pass your project dir
-cargo build --release && ./target/release/mindplayer ~/code/my-project
+cargo run -p mindplayer-tui -- ~/code/my-project   # run against your project
+make test                                          # cargo test --all
 ```
 
-> ⚠️ `cargo run` without a directory uses the **MindPlayer repo** as the working
-> dir (you'd be browsing MindPlayer's own sessions, not your project's). Either
-> pass the dir as shown above, or install and run `mindplayer` from your project.
+> ⚠️ Running `cargo run` (without a dir) or `npm` **at the repo root** is the
+> common mistake: the root is a Rust workspace (no `package.json`). Build the
+> TUI with `./install.sh` / `cargo`, and run `npm` only inside `app/`.
 
 ### ⌨️ Keys
 
@@ -127,6 +137,7 @@ cargo build --release && ./target/release/mindplayer ~/code/my-project
 | <kbd>Enter</kbd> | open the selected session full‑screen (resume, or switch if already running) |
 | <kbd>Ctrl‑x</kbd> | back to the list (the session keeps running) |
 | <kbd>n</kbd> | new session — pick codex/claude/kiro, then an optional label |
+| <kbd>d</kbd> | change the working directory (blank = global) and rescan in place |
 | <kbd>e</kbd> | label the selected session (tag an existing one, or edit/clear its label) |
 | <kbd>x</kbd> | close (archive) & stop the selected session |
 | <kbd>a</kbd> | toggle archived view · <kbd>g</kbd> toggle sub‑agents · <kbd>r</kbd> rescan |
@@ -139,7 +150,10 @@ top stays readable). Because the wheel needs mouse capture, use
 **<kbd>Shift</kbd>+drag** to select &amp; copy text (your terminal's native
 selection — works in Ghostty, iTerm2, Terminal.app, and most others).
 
-## 🍎 macOS app
+## 🍎 macOS app (optional)
+
+Prefer a windowed app over the TUI? Build it with **`./install.sh --app`**, or
+work on it directly — all npm commands run **inside `app/`** (never the repo root):
 
 ```bash
 cd app

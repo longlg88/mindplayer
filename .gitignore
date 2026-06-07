@@ -6,6 +6,11 @@ target/
 app/node_modules/
 app/src-tauri/gen/
 
+# npm must only run inside app/ — a root lockfile is an accidental `npm install`
+# at the repo root (there is no root package.json). Never commit it.
+/package-lock.json
+/node_modules/
+
 # MindPlayer runtime (not part of the repo)
 .mindplayer/
 

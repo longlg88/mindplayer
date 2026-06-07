@@ -73,31 +73,26 @@ Two front‑ends, one Rust core:
 
 | For | You need |
 |-----|----------|
-| The TUI (everyone) | **Rust** (stable) — `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \| sh` |
+| The TUI (everyone) | nothing — the installer downloads a prebuilt binary (`curl`/`wget`). Only `--build` needs **Rust**. |
 | Driving sessions | the agent CLIs you use, on `PATH`: [`codex`](https://github.com/openai/codex), [`claude`](https://docs.anthropic.com/claude-code), [`kiro-cli`](https://kiro.dev/docs/cli/) — browsing works without them; a CLI is only needed to *resume/start* that agent |
-| The macOS app *(optional)* | **Node/npm** + Xcode Command Line Tools |
 
-**Install the TUI** — pick one:
+**Install the TUI** — the one-liner downloads the latest **release binary** (no build):
 
 ```bash
-# A) one-liner: fetches source, builds, installs to ~/.local/bin
 curl -fsSL https://raw.githubusercontent.com/longlg88/mindplayer/main/install.sh | bash
-
-# B) from a clone
-git clone https://github.com/longlg88/mindplayer.git && cd mindplayer
-./install.sh           # or:  make install
 ```
 
-The installer builds the optimized binary and puts `mindplayer` on your `PATH`
-(if the target dir isn't on `PATH`, it prints the exact line to add).
+Prebuilt binaries: macOS (arm64) and Linux (x86_64). On any other platform the
+installer falls back to a source build automatically.
 
 ```bash
+./install.sh --build             # build from source instead of downloading
 PREFIX=/usr/local ./install.sh   # → /usr/local/bin (may need sudo)
 ./install.sh --bin-dir ~/bin     # a directory you choose
 ./install.sh --uninstall         # remove it
 ```
 
-**Update**: `git pull && ./install.sh` (or just re-run the one-liner).
+**Update**: just re-run the one-liner — it always fetches the latest release.
 
 **Use it.** Run it in the project whose sessions you want — the first screen
 asks **working dir** (this project) or **global** (everything):
@@ -110,12 +105,13 @@ mindplayer ~/code/my-project          # …or point it anywhere, no cd
 Press <kbd>n</kbd> for a new Codex / Claude / Kiro session. `mindplayer --help`
 lists the rest.
 
-**Optional — the macOS app.** Only if you want the windowed app instead of the TUI:
+**Optional — the macOS app.** Downloads the prebuilt `.app` from the latest
+release and installs it into `/Applications` (re-run to update):
 
 ```bash
-./install.sh --app        # easiest — builds the .app for you (needs Node/npm)
-# or manually — npm lives in app/, NOT the repo root:
-cd app && npm install && npm run build
+curl -fsSL https://raw.githubusercontent.com/longlg88/mindplayer/main/install.sh | bash -s -- --app
+# or from a clone:  ./install.sh --app
+# no-sudo install location:  APP_DIR=~/Applications ./install.sh --app
 ```
 
 **Develop MindPlayer itself** (from a clone): `make` shows all targets.

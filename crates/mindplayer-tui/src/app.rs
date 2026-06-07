@@ -57,8 +57,19 @@ fn status_rank(s: SessionStatus) -> u8 {
     }
 }
 
-/// A session counts as "working" if it produced output within this window.
-const WORKING_WINDOW: Duration = Duration::from_millis(1200);
+/// How long a session keeps reading as "working" after its last output.
+/// Promotion to Working is instant (any new output stamps the time to now);
+/// demotion to Idle waits out this hold. The gap between the two is the
+/// hysteresis that stops sessions with bursty output from flipping
+/// Working↔Idle and bouncing up and down the urgency-sorted list.
+const WORKING_HOLD: Duration = Duration::from_secs(6);
+
+/// Whether a session counts as working, given when it last produced output.
+/// Demotion is delayed by `hold` (see [`WORKING_HOLD`]); promotion is instant
+/// because `last_output` is stamped to "now" the moment any output arrives.
+fn working_within_hold(last_output: Option<Instant>, now: Instant, hold: Duration) -> bool {
+    last_output.is_some_and(|t| now.saturating_duration_since(t) < hold)
+}
 
 pub struct App {
     pub screen: Screen,
@@ -665,7 +676,7 @@ impl App {
     /// this to keep redrawing so a badge can decay from working → idle even
     /// with no new events.
     pub fn any_recent_activity(&self) -> bool {
-        self.out_at.values().any(|t| t.elapsed() < WORKING_WINDOW)
+        self.out_at.values().any(|t| t.elapsed() < WORKING_HOLD)
     }
 
     /// Status of session `id` for the list badge.
@@ -673,12 +684,11 @@ impl App {
         if self.ended.contains(id) {
             SessionStatus::Ended
         } else if let Some(pty) = self.ptys.get(id) {
-            let recent_output = self
-                .out_at
-                .get(id)
-                .is_some_and(|t| t.elapsed() < WORKING_WINDOW);
+            let recent_output =
+                working_within_hold(self.out_at.get(id).copied(), Instant::now(), WORKING_HOLD);
             if recent_output {
-                // Actively producing output right now.
+                // Produced output within the hold window — treat as working even
+                // through brief silences (hysteresis) so it doesn't bounce.
                 SessionStatus::Working
             } else if pty.looks_blocked() {
                 // Quiet + a confirm/approval prompt on screen → waiting for you.
@@ -1431,6 +1441,27 @@ mod tests {
         assert!(status_rank(Working) < status_rank(Idle));
         assert!(status_rank(Idle) < status_rank(Inactive));
         assert!(status_rank(Inactive) < status_rank(Ended));
+    }
+
+    #[test]
+    fn working_hold_keeps_status_through_brief_silence() {
+        let now = Instant::now();
+        // Just produced output → working.
+        assert!(working_within_hold(Some(now), now, WORKING_HOLD));
+        // Quiet for less than the hold → still working (hysteresis, no bounce).
+        assert!(working_within_hold(
+            Some(now - Duration::from_secs(3)),
+            now,
+            WORKING_HOLD
+        ));
+        // Quiet past the hold → no longer working.
+        assert!(!working_within_hold(
+            Some(now - WORKING_HOLD - Duration::from_secs(1)),
+            now,
+            WORKING_HOLD
+        ));
+        // Never produced output → not working.
+        assert!(!working_within_hold(None, now, WORKING_HOLD));
     }
 
     #[test]

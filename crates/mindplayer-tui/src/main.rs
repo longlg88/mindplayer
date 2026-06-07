@@ -392,6 +392,20 @@ fn handle_main_key(app: &mut App, key: KeyEvent) {
         return;
     }
 
+    // Working-dir modal: type a path, Enter to re-point the scope, Esc cancels.
+    if app.dir_input.is_some() {
+        match key.code {
+            KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                app.dir_input_push(c)
+            }
+            KeyCode::Backspace => app.dir_input_backspace(),
+            KeyCode::Enter => app.confirm_dir_input(),
+            KeyCode::Esc => app.cancel_dir_input(),
+            _ => {}
+        }
+        return;
+    }
+
     match app.focus {
         Focus::Terminal => {
             // Ctrl-x detaches back to the list; everything else goes to the PTY.
@@ -420,6 +434,7 @@ fn handle_main_key(app: &mut App, key: KeyEvent) {
                 KeyCode::Down | KeyCode::Char('j') => app.move_selection(1),
                 KeyCode::Enter | KeyCode::Char('l') | KeyCode::Right => app.request_resume(),
                 KeyCode::Char('n') => app.new_picker = Some(0),
+                KeyCode::Char('d') => app.begin_dir_input(),
                 KeyCode::Char('e') => app.begin_label_edit(),
                 KeyCode::Char('x') => app.close_selected(),
                 KeyCode::Char('a') => app.toggle_archived_view(),

@@ -113,6 +113,9 @@ pub struct App {
     /// (this is its id) rather than creating a new session. Shares `new_label`
     /// as the text buffer.
     pub label_target: Option<String>,
+    /// When `Some`, the working-dir input modal is open and holds the path text
+    /// typed so far. Confirming re-points the scope at that directory.
+    pub dir_input: Option<String>,
     /// Monotonic counter so each new session gets a unique synthetic id.
     new_counter: u64,
     /// Sessions started inside MindPlayer that have no disk file yet (codex /
@@ -190,6 +193,7 @@ impl App {
             new_label: None,
             new_agent: None,
             label_target: None,
+            dir_input: None,
             new_counter: 0,
             extra_sessions: Vec::new(),
             new_baselines: HashMap::new(),
@@ -306,6 +310,63 @@ impl App {
             }
             self.status = format!("labeled: {label}");
         }
+    }
+
+    // --- working-dir input ------------------------------------------------
+
+    /// Open the working-dir modal, pre-filled with the current directory so it
+    /// can be edited or replaced.
+    pub fn begin_dir_input(&mut self) {
+        self.dir_input = Some(self.cwd.display().to_string());
+    }
+
+    pub fn dir_input_push(&mut self, c: char) {
+        if let Some(buf) = self.dir_input.as_mut() {
+            buf.push(c);
+        }
+    }
+
+    pub fn dir_input_backspace(&mut self) {
+        if let Some(buf) = self.dir_input.as_mut() {
+            buf.pop();
+        }
+    }
+
+    pub fn cancel_dir_input(&mut self) {
+        self.dir_input = None;
+    }
+
+    /// Confirm the working-dir modal: validate the path, re-point the scope at
+    /// it, and kick a fresh scan in place. Invalid paths keep the modal open
+    /// with an error in the status line. A blank entry switches to global scope.
+    pub fn confirm_dir_input(&mut self) {
+        let raw = self.dir_input.clone().unwrap_or_default();
+        let trimmed = raw.trim();
+
+        if trimmed.is_empty() {
+            self.scope = Scope::Global;
+            self.dir_input = None;
+            self.state.last_scope = Some(self.scope.label());
+            let _ = self.state.save();
+            self.status = "scope → global".to_string();
+            self.start_bg_rescan();
+            return;
+        }
+
+        let path = expand_tilde(trimmed);
+        let resolved = path.canonicalize().unwrap_or(path);
+        if !resolved.is_dir() {
+            self.status = format!("not a directory: {}", resolved.display());
+            return; // keep the modal open so the user can fix it
+        }
+
+        self.cwd = resolved.clone();
+        self.scope = Scope::WorkingDir(resolved.clone());
+        self.dir_input = None;
+        self.state.last_scope = Some(self.scope.label());
+        let _ = self.state.save();
+        self.status = format!("working dir → {}", resolved.display());
+        self.start_bg_rescan();
     }
 
     // --- scope + scanning -------------------------------------------------
@@ -612,15 +673,20 @@ impl App {
         if self.ended.contains(id) {
             SessionStatus::Ended
         } else if let Some(pty) = self.ptys.get(id) {
-            let working = self
+            let recent_output = self
                 .out_at
                 .get(id)
                 .is_some_and(|t| t.elapsed() < WORKING_WINDOW);
-            if working {
+            if recent_output {
+                // Actively producing output right now.
                 SessionStatus::Working
             } else if pty.looks_blocked() {
                 // Quiet + a confirm/approval prompt on screen → waiting for you.
                 SessionStatus::Blocked
+            } else if pty.looks_busy() {
+                // Quiet but the agent is mid-turn (interrupt hint / spinner /
+                // "still running") — e.g. waiting on a subprocess. Still working.
+                SessionStatus::Working
             } else {
                 SessionStatus::Idle
             }
@@ -1046,6 +1112,21 @@ fn short(id: &str) -> String {
     id.chars().take(8).collect()
 }
 
+/// Expand a leading `~` / `~/` to the user's home directory. Other paths are
+/// returned unchanged (relative paths resolve against the process cwd later).
+fn expand_tilde(input: &str) -> PathBuf {
+    if input == "~" {
+        if let Some(home) = std::env::var_os("HOME") {
+            return PathBuf::from(home);
+        }
+    } else if let Some(rest) = input.strip_prefix("~/") {
+        if let Some(home) = std::env::var_os("HOME") {
+            return PathBuf::from(home).join(rest);
+        }
+    }
+    PathBuf::from(input)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1350,5 +1431,61 @@ mod tests {
         assert!(status_rank(Working) < status_rank(Idle));
         assert!(status_rank(Idle) < status_rank(Inactive));
         assert!(status_rank(Inactive) < status_rank(Ended));
+    }
+
+    #[test]
+    fn dir_input_repoints_scope_to_valid_dir() {
+        let _env = STATE_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = std::env::temp_dir().join(format!("mp-dirstate-{}.json", std::process::id()));
+        std::env::set_var("MINDPLAYER_STATE", &tmp);
+
+        // A real directory that exists on every machine.
+        let target = std::env::temp_dir();
+        let mut app = App::new();
+        app.begin_dir_input();
+        assert!(app.dir_input.is_some());
+        // Replace the prefilled buffer with the target path.
+        app.dir_input = Some(target.display().to_string());
+        app.confirm_dir_input();
+
+        assert!(app.dir_input.is_none(), "modal closes on success");
+        match &app.scope {
+            Scope::WorkingDir(p) => {
+                assert_eq!(p, &target.canonicalize().unwrap_or(target.clone()));
+            }
+            other => panic!("expected WorkingDir scope, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn dir_input_rejects_nonexistent_dir() {
+        let _env = STATE_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = std::env::temp_dir().join(format!("mp-dirstate2-{}.json", std::process::id()));
+        std::env::set_var("MINDPLAYER_STATE", &tmp);
+
+        let mut app = App::new();
+        let original = app.scope.clone();
+        app.begin_dir_input();
+        app.dir_input = Some("/no/such/path/mindplayer-xyz".to_string());
+        app.confirm_dir_input();
+
+        // Invalid path: scope unchanged and modal stays open for correction.
+        assert!(app.dir_input.is_some(), "modal stays open on bad path");
+        assert_eq!(format!("{:?}", app.scope), format!("{original:?}"));
+    }
+
+    #[test]
+    fn dir_input_blank_switches_to_global() {
+        let _env = STATE_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = std::env::temp_dir().join(format!("mp-dirstate3-{}.json", std::process::id()));
+        std::env::set_var("MINDPLAYER_STATE", &tmp);
+
+        let mut app = App::new();
+        app.begin_dir_input();
+        app.dir_input = Some("   ".to_string());
+        app.confirm_dir_input();
+
+        assert!(app.dir_input.is_none());
+        assert!(matches!(app.scope, Scope::Global));
     }
 }

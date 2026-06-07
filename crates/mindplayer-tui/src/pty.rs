@@ -41,6 +41,10 @@ pub struct PtySession {
     /// render/sort hot path reads this atomic instead of locking + allocating
     /// the whole screen on every frame.
     blocked: Arc<AtomicBool>,
+    /// Memoized "the agent is busy working" flag (its TUI shows an interrupt
+    /// hint / spinner), so a session waiting on a long subprocess with no new
+    /// output is still classified Working rather than Idle.
+    busy: Arc<AtomicBool>,
     pub rows: u16,
     pub cols: u16,
 }
@@ -95,12 +99,14 @@ impl PtySession {
         let dirty = Arc::new(AtomicBool::new(true)); // draw the first frame
         let seq = Arc::new(AtomicU64::new(0));
         let blocked = Arc::new(AtomicBool::new(false));
+        let busy = Arc::new(AtomicBool::new(false));
 
         {
             let parser = parser.clone();
             let dirty = dirty.clone();
             let seq = seq.clone();
             let blocked = blocked.clone();
+            let busy = busy.clone();
             thread::spawn(move || {
                 let mut buf = [0u8; 8192];
                 loop {
@@ -109,12 +115,11 @@ impl PtySession {
                         Ok(n) => {
                             if let Ok(mut p) = parser.lock() {
                                 p.process(&buf[..n]);
-                                // Recompute the blocked heuristic while the lock
-                                // is held, so the UI never has to.
-                                blocked.store(
-                                    text_looks_blocked(&p.screen().contents()),
-                                    Ordering::Relaxed,
-                                );
+                                // Recompute the screen heuristics while we hold
+                                // the lock, so the UI hot path never has to.
+                                let screen = p.screen().contents();
+                                blocked.store(text_looks_blocked(&screen), Ordering::Relaxed);
+                                busy.store(text_looks_busy(&screen), Ordering::Relaxed);
                             }
                             dirty.store(true, Ordering::Relaxed);
                             seq.fetch_add(1, Ordering::Relaxed);
@@ -138,6 +143,7 @@ impl PtySession {
             pgid,
             group_signalled: false,
             blocked,
+            busy,
             rows,
             cols,
         })
@@ -159,6 +165,13 @@ impl PtySession {
     /// (herdr-style rollup). Best-effort + tunable — see [`text_looks_blocked`].
     pub fn looks_blocked(&self) -> bool {
         self.blocked.load(Ordering::Relaxed)
+    }
+
+    /// Memoized: the agent's TUI shows it's actively working (an interrupt hint
+    /// / spinner), so a session waiting on a long subprocess with no new output
+    /// is still "working" rather than "idle". See [`text_looks_busy`].
+    pub fn looks_busy(&self) -> bool {
+        self.busy.load(Ordering::Relaxed)
     }
 
     pub fn parser(&self) -> &Arc<Mutex<vt100::Parser>> {
@@ -432,6 +445,33 @@ fn text_looks_blocked(screen: &str) -> bool {
         .any(|l| l.ends_with('?') && BLOCKED_ASKS.iter().any(|m| l.contains(m)))
 }
 
+/// Markers (lowercased) shown by codex/claude *while a turn is running* — most
+/// reliably the interrupt hint, which disappears once the agent is idle at the
+/// prompt. Used so a session waiting on a subprocess (no new output) still reads
+/// as Working. Heuristic — tunable.
+const BUSY_MARKERS: &[&str] = &[
+    "esc to interrupt",
+    "to interrupt",
+    "ctrl-c to",
+    "cogitat", // claude's "Cogitating…"
+    "thinking…",
+    "working…",
+    "compacting",
+    "still running",
+];
+
+/// True if the visible terminal text shows the agent is actively working.
+fn text_looks_busy(screen: &str) -> bool {
+    let tail = screen
+        .lines()
+        .rev()
+        .take(6)
+        .map(|l| l.trim().to_lowercase())
+        .collect::<Vec<_>>()
+        .join("\n");
+    BUSY_MARKERS.iter().any(|m| tail.contains(m))
+}
+
 /// POSIX single-quote a token so it is safe inside `sh -c`.
 fn shell_quote(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + 2);
@@ -545,6 +585,20 @@ mod tests {
         // Narration containing approval words but no actual prompt: not blocked.
         assert!(!text_looks_blocked("I'll proceed to write the file now."));
         assert!(!text_looks_blocked("normalizing\n2. normalize the data"));
+    }
+
+    #[test]
+    fn busy_detection_matches_working_indicators() {
+        // A turn running a subprocess (no fresh output) still reads as busy.
+        assert!(text_looks_busy(
+            "✻ Cogitated for 7m 28s · 1 shell still running\n  esc to interrupt"
+        ));
+        assert!(text_looks_busy("Thinking…"));
+        assert!(text_looks_busy("running build\n… (esc to interrupt)"));
+        // Idle prompt / finished output is not busy.
+        assert!(!text_looks_busy("› \ntype your message"));
+        assert!(!text_looks_busy("wrote foo.rs\nall done"));
+        assert!(!text_looks_busy(""));
     }
 
     #[test]

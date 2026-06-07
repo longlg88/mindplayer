@@ -18,8 +18,17 @@
       <div class="card">
         <h2>Where should MindPlayer collect sessions?</h2>
         <button class="scope-btn selected" data-scope="working_dir">
-          <strong>working dir</strong><span id="cwd-label" class="muted"></span>
+          <strong>working dir</strong><span class="muted">scan one project folder</span>
         </button>
+        <input
+          id="cwd-input"
+          class="cwd-input"
+          type="text"
+          spellcheck="false"
+          autocomplete="off"
+          placeholder="/path/to/project  (~ allowed)"
+        />
+        <div id="cwd-error" class="cwd-error hidden"></div>
         <button class="scope-btn" data-scope="global">
           <strong>global</strong><span class="muted">all sessions everywhere</span>
         </button>
@@ -59,6 +68,7 @@
         <ul id="session-list"></ul>
         <div class="list-actions">
           <button id="new-btn">＋ New</button>
+          <button id="dir-btn" title="Change working directory">📁 Dir</button>
           <button id="rescan-btn">⟳ Rescan</button>
         </div>
       </aside>
@@ -91,6 +101,18 @@
           <button id="new-start" class="primary">Start</button>
         </div>
         <button id="new-cancel" class="muted-btn">Cancel</button>
+      </div>
+    </div>
+
+    <!-- Change working dir -->
+    <div id="dir-modal" class="modal hidden">
+      <div class="modal-card">
+        <h3>Working directory</h3>
+        <label class="muted" for="dir-input">Directory (blank = global, ~ allowed)</label>
+        <input id="dir-input" type="text" spellcheck="false" autocomplete="off" placeholder="/path/to/project" />
+        <div id="dir-error" class="cwd-error hidden"></div>
+        <button id="dir-set" class="primary">Set &amp; rescan</button>
+        <button id="dir-cancel" class="muted-btn">Cancel</button>
       </div>
     </div>
 

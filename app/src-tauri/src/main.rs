@@ -67,6 +67,34 @@ fn default_cwd() -> String {
         .into_owned()
 }
 
+/// Expand `~`, canonicalize, and validate a user-entered working dir, returning
+/// the resolved absolute path. Errors (with a message) if it isn't a directory,
+/// so the UI can keep the picker open and show why.
+#[tauri::command]
+fn resolve_cwd(cwd: String) -> Result<String, String> {
+    let trimmed = cwd.trim();
+    if trimmed.is_empty() {
+        return Err("path is empty".to_string());
+    }
+    let expanded = if trimmed == "~" {
+        std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(trimmed))
+    } else if let Some(rest) = trimmed.strip_prefix("~/") {
+        std::env::var_os("HOME")
+            .map(|h| PathBuf::from(h).join(rest))
+            .unwrap_or_else(|| PathBuf::from(trimmed))
+    } else {
+        PathBuf::from(trimmed)
+    };
+    let resolved = expanded.canonicalize().unwrap_or(expanded);
+    if resolved.is_dir() {
+        Ok(resolved.to_string_lossy().into_owned())
+    } else {
+        Err(format!("not a directory: {}", resolved.display()))
+    }
+}
+
 /// Scan sessions in `scope` and return the list plus aggregate totals.
 /// The list reflects the full in-scope set (the UI applies its archived /
 /// sub-agent view filters); aggregate is always over everything collected.
@@ -203,6 +231,7 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             default_cwd,
+            resolve_cwd,
             scan_sessions,
             set_archived,
             pty_start,

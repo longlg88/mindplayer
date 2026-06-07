@@ -113,11 +113,17 @@ body { display: flex; flex-direction: column; height: 100vh; }
    background sessions keep running and their scrollback is retained. */
 .term-instance { position: absolute; inset: 6px 8px; }
 .term-instance.hidden { display: none; }
-#new-label-input {
+#new-label-input, #dir-input, .cwd-input {
   width: 100%; margin: 8px 0; padding: 10px 12px; border-radius: 8px;
   background: var(--panel-2); color: var(--text); border: 1px solid var(--border);
+  font-family: inherit; font-size: 13px; box-sizing: border-box;
 }
-#new-label-input:focus { outline: none; border-color: var(--accent); }
+#new-label-input:focus, #dir-input:focus, .cwd-input:focus {
+  outline: none; border-color: var(--accent);
+}
+.cwd-input:disabled { opacity: .5; }
+.cwd-error { color: #ff8a8a; font-size: 12px; }
+.cwd-error.hidden { display: none; }
 .term-hint { padding: 16px; color: var(--muted); text-align: center; }
 kbd {
   background: var(--panel-2); border: 1px solid var(--border);

@@ -244,7 +244,7 @@ fn main_view(f: &mut Frame, app: &mut App) {
 
     let keys = match app.focus {
         Focus::List => {
-            "↑↓ move  enter open  n new  e label  x close  a archived  g sub  r rescan  q quit"
+            "↑↓ move  enter open  n new  d dir  e label  x close  a archived  g sub  r rescan  q quit"
         }
         Focus::Terminal => "ctrl-x back to list   wheel scrolls history   shift+drag to copy",
     };
@@ -275,7 +275,34 @@ fn main_view(f: &mut Frame, app: &mut App) {
         } else {
             label_input_popup(f, app.new_agent, label);
         }
+    } else if let Some(path) = &app.dir_input {
+        dir_input_popup(f, path);
     }
+}
+
+fn dir_input_popup(f: &mut Frame, path: &str) {
+    let area = centered(f.area(), 64, 7);
+    f.render_widget(Clear, area);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(ACCENT))
+        .title(" Set working dir ");
+    let lines = vec![
+        Line::from(Span::styled(
+            "Directory (blank = global, ~ allowed):",
+            Style::default().fg(DIM),
+        )),
+        Line::from(vec![
+            Span::raw(path.to_string()),
+            Span::styled("▏", Style::default().fg(ACCENT)),
+        ]),
+        Line::from(""),
+        Line::from(Span::styled(
+            "enter scan   esc cancel",
+            Style::default().fg(DIM),
+        )),
+    ];
+    f.render_widget(Paragraph::new(lines).block(block), area);
 }
 
 fn label_edit_popup(f: &mut Frame, label: &str) {

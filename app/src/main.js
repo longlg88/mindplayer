@@ -37,14 +37,20 @@ function show(screen) {
 
 async function init() {
   state.cwd = await invoke("default_cwd");
-  $("cwd-label").textContent = state.cwd;
+  $("cwd-input").value = state.cwd;
 
   document.querySelectorAll(".scope-btn").forEach((btn) => {
     btn.addEventListener("click", () => {
       document.querySelectorAll(".scope-btn").forEach((b) => b.classList.remove("selected"));
       btn.classList.add("selected");
       state.scope = btn.dataset.scope;
+      // The path field only matters for working-dir scope.
+      $("cwd-input").disabled = state.scope !== "working_dir";
     });
+  });
+  // Enter in the path field starts the scan.
+  $("cwd-input").addEventListener("keydown", (e) => {
+    if (e.key === "Enter") runScan();
   });
   $("scan-btn").addEventListener("click", runScan);
   $("open-btn").addEventListener("click", () => {
@@ -75,6 +81,15 @@ async function init() {
     if (e.key === "Escape") closeNewModal();
   });
 
+  // Change-working-dir modal (main view).
+  $("dir-btn").addEventListener("click", openDirModal);
+  $("dir-cancel").addEventListener("click", closeDirModal);
+  $("dir-set").addEventListener("click", applyDir);
+  $("dir-input").addEventListener("keydown", (e) => {
+    if (e.key === "Enter") applyDir();
+    if (e.key === "Escape") closeDirModal();
+  });
+
   $("close-btn").addEventListener("click", closeSelected);
   window.addEventListener("resize", () => fitActive());
 
@@ -84,6 +99,22 @@ async function init() {
 // --- scan -----------------------------------------------------------------
 
 async function runScan() {
+  // For working-dir scope, resolve & validate the typed path first; stay on the
+  // scope screen with an error if it isn't a real directory.
+  if (state.scope === "working_dir") {
+    const typed = $("cwd-input").value;
+    try {
+      state.cwd = await invoke("resolve_cwd", { cwd: typed });
+      $("cwd-input").value = state.cwd;
+      $("cwd-error").classList.add("hidden");
+    } catch (err) {
+      const el = $("cwd-error");
+      el.textContent = String(err);
+      el.classList.remove("hidden");
+      return;
+    }
+  }
+
   show("screen-scan");
   $("scan-title").textContent = "Collecting…";
   $("scan-spinner").classList.remove("hidden");
@@ -305,6 +336,53 @@ function openNewModal() {
 
 function closeNewModal() {
   $("new-modal").classList.add("hidden");
+}
+
+// --- change working dir (main view) ---------------------------------------
+
+function openDirModal() {
+  $("dir-input").value = state.scope === "global" ? "" : state.cwd;
+  $("dir-error").classList.add("hidden");
+  $("dir-modal").classList.remove("hidden");
+  $("dir-input").focus();
+}
+
+function closeDirModal() {
+  $("dir-modal").classList.add("hidden");
+}
+
+// Validate the typed path, switch the scope to it (blank = global), and rescan.
+async function applyDir() {
+  const typed = $("dir-input").value.trim();
+  if (typed === "") {
+    state.scope = "global";
+    state.cwd = "";
+  } else {
+    try {
+      state.cwd = await invoke("resolve_cwd", { cwd: typed });
+    } catch (err) {
+      const el = $("dir-error");
+      el.textContent = String(err);
+      el.classList.remove("hidden");
+      return; // keep the modal open so the path can be fixed
+    }
+    state.scope = "working_dir";
+    $("cwd-input").value = state.cwd;
+  }
+  closeDirModal();
+  syncScopeButtons();
+  state.selected = 0;
+  // Rescan in place; scanSilent keeps us on the main view.
+  await scanSilent();
+  renderStatus();
+}
+
+// Keep the scope-screen buttons/field in sync after a programmatic scope change.
+function syncScopeButtons() {
+  document.querySelectorAll(".scope-btn").forEach((b) => {
+    b.classList.toggle("selected", b.dataset.scope === state.scope);
+  });
+  $("cwd-input").disabled = state.scope !== "working_dir";
 }
 
 function pickAgent(agent) {

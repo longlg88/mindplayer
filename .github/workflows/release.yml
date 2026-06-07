@@ -1,0 +1,126 @@
+name: Release
+
+# On every push to main: run the full functional gate, and ONLY if it is green
+# compute the next version (from RELEASE.md rules + commit messages), tag it, and
+# publish a GitHub Release with prebuilt binaries. No release-worthy commits
+# (only docs/chore/ci/test/style) → no release.
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  gate:
+    name: gate (fmt · clippy · test)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all --check
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo test --all
+        env:
+          MINDPLAYER_STATE: ${{ runner.temp }}/mindplayer-ci-state.json
+
+  version:
+    name: compute version
+    needs: gate
+    runs-on: ubuntu-latest
+    outputs:
+      bump: ${{ steps.calc.outputs.bump }}
+      version: ${{ steps.calc.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: calc
+        name: bump from RELEASE.md + commits
+        run: |
+          set -euo pipefail
+          LAST_TAG="$(git describe --tags --abbrev=0 2>/dev/null || true)"
+          if [ -z "$LAST_TAG" ]; then
+            CURRENT="$(grep -m1 '^version = ' Cargo.toml | sed 's/.*"\(.*\)".*/\1/')"
+            echo "no prior tag; baseline $CURRENT, scanning full history"
+            git log --format=%B%x00 | python3 .github/next-version.py RELEASE.md "$CURRENT"
+          else
+            CURRENT="${LAST_TAG#v}"
+            echo "last tag $LAST_TAG; scanning $LAST_TAG..HEAD"
+            git log "$LAST_TAG..HEAD" --format=%B%x00 | python3 .github/next-version.py RELEASE.md "$CURRENT"
+          fi
+
+  release:
+    name: tag + GitHub release
+    needs: version
+    if: needs.version.outputs.bump != 'none'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: create tag and release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          V="v${{ needs.version.outputs.version }}"
+          if git rev-parse "$V" >/dev/null 2>&1; then
+            echo "tag $V already exists — skipping"; exit 0
+          fi
+          git tag "$V"
+          git push origin "$V"
+          gh release create "$V" --title "$V" --generate-notes
+
+  build:
+    name: build ${{ matrix.os }}
+    needs: [version, release]
+    if: needs.version.outputs.bump != 'none'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: v${{ needs.version.outputs.version }}
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: stamp version + build TUI
+        run: |
+          set -euo pipefail
+          V="${{ needs.version.outputs.version }}"
+          # Stamp the workspace version for this build only (first `version = `).
+          python3 - "$V" Cargo.toml <<'PY'
+          import re, sys
+          v, path = sys.argv[1], sys.argv[2]
+          out, done = [], False
+          for line in open(path):
+              if not done and re.match(r'^version = "', line):
+                  line = f'version = "{v}"\n'; done = True
+              out.append(line)
+          open(path, "w").writelines(out)
+          PY
+          cargo build --release -p mindplayer-tui
+      - name: package
+        id: pkg
+        run: |
+          set -euo pipefail
+          V="${{ needs.version.outputs.version }}"
+          OS="$(echo '${{ runner.os }}' | tr '[:upper:]' '[:lower:]')"
+          ARCH="$(uname -m)"
+          NAME="mindplayer-${V}-${OS}-${ARCH}.tar.gz"
+          tar -C target/release -czf "$NAME" mindplayer
+          echo "name=$NAME" >> "$GITHUB_OUTPUT"
+      - name: upload to release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "v${{ needs.version.outputs.version }}" "${{ steps.pkg.outputs.name }}" --clobber

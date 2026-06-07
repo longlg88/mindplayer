@@ -1,0 +1,50 @@
+name: CI
+
+# Functional gate for branches & PRs. `main` is gated by release.yml instead
+# (so we don't run the same checks twice on a push to main).
+on:
+  pull_request:
+  push:
+    branches-ignore: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  commit-lint:
+    name: commit messages (Conventional Commits)
+    # Only meaningful on PRs, where there's a base..head range to check.
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: lint commit subjects
+        run: |
+          set -euo pipefail
+          BASE="origin/${{ github.base_ref }}"
+          git fetch --quiet origin "${{ github.base_ref }}"
+          git log "$BASE..HEAD" --format=%s%x00 | python3 .github/check-commits.py RELEASE.md
+
+  test:
+    name: fmt · clippy · test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: rustfmt
+        run: cargo fmt --all --check
+      - name: clippy (deny warnings)
+        run: cargo clippy --all-targets -- -D warnings
+      - name: tests
+        # Hermetic: no codex/claude/kiro CLIs are invoked — tests run against
+        # fixtures and an isolated state file. MINDPLAYER_STATE keeps any stray
+        # state write off the runner's HOME.
+        run: cargo test --all
+        env:
+          MINDPLAYER_STATE: ${{ runner.temp }}/mindplayer-ci-state.json

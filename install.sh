@@ -9,12 +9,14 @@
 #   ./install.sh                 # build + install the `mindplayer` TUI to ~/.local/bin
 #
 # Options:
-#   --app            also build the macOS app (.app/.dmg) — needs Node/npm
+#   --app            also build the macOS app and install/replace it in
+#                    /Applications (always the latest) — needs Node/npm
 #   --bin-dir DIR    install the binary into DIR (default: ~/.local/bin)
 #   --uninstall      remove the installed binary
 #   -h, --help       show this help
 #
 # Env: PREFIX=/usr/local sets the bin dir to $PREFIX/bin.
+#      APP_DIR=~/Applications installs the .app there (no sudo) instead of /Applications.
 #
 set -euo pipefail
 
@@ -31,7 +33,7 @@ while [ $# -gt 0 ]; do
     --app) BUILD_APP=1; shift ;;
     --bin-dir) BIN_DIR="${2:?--bin-dir needs a path}"; shift 2 ;;
     --uninstall) UNINSTALL=1; shift ;;
-    -h|--help) sed -n '2,18p' "$0" 2>/dev/null | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,19p' "$0" 2>/dev/null | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown option: $1" >&2; exit 2 ;;
   esac
 done
@@ -60,13 +62,19 @@ else
   need git || { echo "error: git not found (needed to fetch source). Install git and retry." >&2; exit 1; }
   SRC_DIR="${MINDPLAYER_SRC:-$HOME/.cache/mindplayer/src}"
   if [ -d "$SRC_DIR/.git" ]; then
-    echo "▶ updating source in $SRC_DIR"
-    git -C "$SRC_DIR" pull --ff-only --quiet || true
+    # Force the cache to exactly match the latest main. A plain `pull --ff-only`
+    # silently no-ops on a shallow clone whose history diverged, which would
+    # rebuild stale code — so fetch + hard reset to guarantee the newest commit.
+    echo "▶ updating source to latest main in $SRC_DIR"
+    git -C "$SRC_DIR" fetch --depth 1 origin main
+    git -C "$SRC_DIR" reset --hard FETCH_HEAD
+    git -C "$SRC_DIR" clean -fdq
   else
     echo "▶ fetching MindPlayer → $SRC_DIR"
     mkdir -p "$(dirname "$SRC_DIR")"
     git clone --depth 1 "$REPO_URL" "$SRC_DIR"
   fi
+  echo "  source now at: $(git -C "$SRC_DIR" log --oneline -1)"
 fi
 
 # --- prerequisites --------------------------------------------------------
@@ -101,7 +109,29 @@ if [ "$BUILD_APP" -eq 1 ]; then
   fi
   echo "▶ building the macOS app (Tauri) …"
   ( cd "$SRC_DIR/app" && npm install && npm run build )
-  echo "✓ app bundle under: $SRC_DIR/app/src-tauri/target/release/bundle/"
+
+  # Install (replace) the freshly-built .app into the Applications dir so the
+  # user always launches the latest. Default: /Applications, override with
+  # APP_DIR=~/Applications for a no-sudo, per-user install.
+  APP_DIR="${APP_DIR:-/Applications}"
+  BUILT_APP="$(/usr/bin/find "$SRC_DIR/app/src-tauri/target/release/bundle/macos" -maxdepth 1 -name '*.app' 2>/dev/null | head -1)"
+  if [ -z "$BUILT_APP" ]; then
+    echo "✗ could not find the built .app under target/release/bundle/macos" >&2
+    exit 1
+  fi
+  APP_NAME="$(basename "$BUILT_APP")"
+  APP_DEST="$APP_DIR/$APP_NAME"
+  echo "▶ installing $APP_NAME → $APP_DEST (replacing any existing copy)"
+  if [ -e "$APP_DEST" ]; then rm -rf "$APP_DEST"; fi
+  if mkdir -p "$APP_DIR" 2>/dev/null && cp -R "$BUILT_APP" "$APP_DEST" 2>/dev/null; then
+    echo "✓ installed the macOS app → $APP_DEST"
+  else
+    echo "  (no write access to $APP_DIR — retrying with sudo)"
+    sudo rm -rf "$APP_DEST"
+    sudo cp -R "$BUILT_APP" "$APP_DEST"
+    echo "✓ installed the macOS app → $APP_DEST (via sudo)"
+  fi
+  echo "  launch it with:  open \"$APP_DEST\""
 fi
 
 echo

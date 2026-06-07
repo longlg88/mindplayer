@@ -94,22 +94,13 @@ jobs:
           ref: v${{ needs.version.outputs.version }}
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - name: stamp version + build TUI
-        run: |
-          set -euo pipefail
-          V="${{ needs.version.outputs.version }}"
-          # Stamp the workspace version for this build only (first `version = `).
-          python3 - "$V" Cargo.toml <<'PY'
-          import re, sys
-          v, path = sys.argv[1], sys.argv[2]
-          out, done = [], False
-          for line in open(path):
-              if not done and re.match(r'^version = "', line):
-                  line = f'version = "{v}"\n'; done = True
-              out.append(line)
-          open(path, "w").writelines(out)
-          PY
-          cargo build --release -p mindplayer-tui
+      - name: build TUI
+        # The version is injected via MINDPLAYER_VERSION (read by build.rs) rather
+        # than stamped into Cargo.toml — editing the tree would make build.rs's
+        # `git describe --dirty` append "-dirty" to the released binary's version.
+        env:
+          MINDPLAYER_VERSION: ${{ needs.version.outputs.version }}
+        run: cargo build --release -p mindplayer-tui
       - name: package
         id: pkg
         run: |

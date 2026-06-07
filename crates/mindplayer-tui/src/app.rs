@@ -64,6 +64,15 @@ fn status_rank(s: SessionStatus) -> u8 {
 /// Working↔Idle and bouncing up and down the urgency-sorted list.
 const WORKING_HOLD: Duration = Duration::from_secs(6);
 
+/// How long a screen-text "busy" marker (interrupt hint / spinner / "still
+/// running") is trusted after the last output. The busy/blocked flags are only
+/// recomputed when new PTY bytes arrive, so a finished session that left a
+/// marker on its final frame would otherwise read "working" forever. A genuinely
+/// working agent ticks its elapsed-time spinner every second (well within this
+/// window), so gating busy on recent output keeps live sessions "working" while
+/// letting a long-quiet one fall back to idle/done.
+const BUSY_TRUST: Duration = Duration::from_secs(20);
+
 /// Whether a session counts as working, given when it last produced output.
 /// Demotion is delayed by `hold` (see [`WORKING_HOLD`]); promotion is instant
 /// because `last_output` is stamped to "now" the moment any output arrives.
@@ -711,9 +720,14 @@ impl App {
             } else if pty.looks_blocked() {
                 // Quiet + a confirm/approval prompt on screen → waiting for you.
                 SessionStatus::Blocked
-            } else if pty.looks_busy() {
-                // Quiet but the agent is mid-turn (interrupt hint / spinner /
-                // "still running") — e.g. waiting on a subprocess. Still working.
+            } else if pty.looks_busy()
+                && working_within_hold(self.out_at.get(id).copied(), Instant::now(), BUSY_TRUST)
+            {
+                // A busy marker (interrupt hint / spinner / "still running") is on
+                // screen AND output is recent enough to trust it — the agent is
+                // mid-turn (e.g. waiting on a subprocess). A live agent ticks its
+                // spinner every second, so this stays true while it works but lets
+                // a finished session whose marker is stale fall back to idle.
                 SessionStatus::Working
             } else {
                 SessionStatus::Idle
@@ -1502,6 +1516,30 @@ mod tests {
         ));
         // Never produced output → not working.
         assert!(!working_within_hold(None, now, WORKING_HOLD));
+    }
+
+    #[test]
+    fn busy_marker_is_only_trusted_while_output_is_recent() {
+        // A screen "busy" marker is frozen at the last output, so it must be
+        // gated on output recency: trusted within BUSY_TRUST, ignored after.
+        let now = Instant::now();
+        assert!(
+            BUSY_TRUST > WORKING_HOLD,
+            "busy grace must exceed the work hold"
+        );
+        // Just-finished turn with a marker still on screen → trust it.
+        assert!(working_within_hold(
+            Some(now - Duration::from_secs(5)),
+            now,
+            BUSY_TRUST
+        ));
+        // Finished long ago (e.g. 6 min) with a stale marker → do NOT trust it,
+        // so the session reads idle/done instead of "working" forever.
+        assert!(!working_within_hold(
+            Some(now - Duration::from_secs(360)),
+            now,
+            BUSY_TRUST
+        ));
     }
 
     #[test]

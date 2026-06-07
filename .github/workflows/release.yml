@@ -115,3 +115,36 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh release upload "v${{ needs.version.outputs.version }}" "${{ steps.pkg.outputs.name }}" --clobber
+
+  build-app:
+    name: build macOS app
+    needs: [version, release]
+    if: needs.version.outputs.bump != 'none'
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: v${{ needs.version.outputs.version }}
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: build the Tauri app bundle
+        run: |
+          set -euo pipefail
+          cd app
+          npm install
+          npm run build
+      - name: package + upload the .app
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          V="${{ needs.version.outputs.version }}"
+          ARCH="$(uname -m)"
+          APP="$(find app/src-tauri/target/release/bundle/macos -maxdepth 1 -name '*.app' | head -1)"
+          [ -n "$APP" ] || { echo "no .app produced" >&2; exit 1; }
+          NAME="mindplayer-app-${V}-macos-${ARCH}.tar.gz"
+          tar -C "$(dirname "$APP")" -czf "$NAME" "$(basename "$APP")"
+          gh release upload "v$V" "$NAME" --clobber

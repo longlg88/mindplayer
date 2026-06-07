@@ -429,12 +429,7 @@ const BLOCKED_ASKS: &[&str] = &[
 /// confirm/approval prompt. Conservative: matches structural prompt markers, or
 /// a question line (`…?`) containing an approval verb — not bare words mid-output.
 fn text_looks_blocked(screen: &str) -> bool {
-    let tail: Vec<String> = screen
-        .lines()
-        .rev()
-        .take(6)
-        .map(|l| l.trim().to_lowercase())
-        .collect();
+    let tail = bottom_lines(screen, 10);
     if tail
         .iter()
         .any(|l| BLOCKED_STRUCTURAL.iter().any(|m| l.contains(m)))
@@ -460,16 +455,27 @@ const BUSY_MARKERS: &[&str] = &[
     "still running",
 ];
 
+/// The last `n` non-blank lines of a terminal frame, trimmed and lowercased.
+/// vt100 pads the frame to the full terminal height with blank rows, and the
+/// agent's input box / hint lines sit *below* its status line — so a naive
+/// "last N rows" window slides past the status text (e.g. claude's
+/// "· 1 shell still running") and misses it. Dropping blank rows first keeps
+/// the window anchored on real content.
+fn bottom_lines(screen: &str, n: usize) -> Vec<String> {
+    let mut lines: Vec<String> = screen
+        .lines()
+        .map(|l| l.trim().to_lowercase())
+        .filter(|l| !l.is_empty())
+        .collect();
+    let start = lines.len().saturating_sub(n);
+    lines.split_off(start)
+}
+
 /// True if the visible terminal text shows the agent is actively working.
 fn text_looks_busy(screen: &str) -> bool {
-    let tail = screen
-        .lines()
-        .rev()
-        .take(6)
-        .map(|l| l.trim().to_lowercase())
-        .collect::<Vec<_>>()
-        .join("\n");
-    BUSY_MARKERS.iter().any(|m| tail.contains(m))
+    bottom_lines(screen, 12)
+        .iter()
+        .any(|l| BUSY_MARKERS.iter().any(|m| l.contains(m)))
 }
 
 /// POSIX single-quote a token so it is safe inside `sh -c`.
@@ -599,6 +605,37 @@ mod tests {
         assert!(!text_looks_busy("› \ntype your message"));
         assert!(!text_looks_busy("wrote foo.rs\nall done"));
         assert!(!text_looks_busy(""));
+    }
+
+    #[test]
+    fn busy_detection_survives_input_box_and_blank_padding() {
+        // Regression: a real claude frame puts the status line ABOVE the input
+        // box, the hint, and vt100's blank bottom padding. A naive "last 6 rows"
+        // window slides past "still running" and the session wrongly reads idle.
+        let frame = "\
+✻ Churned for 9m 15s · 1 shell still running
+
+╭──────────────────────────────────────────────╮
+│ >                                              │
+╰──────────────────────────────────────────────╯
+  ? for shortcuts
+
+
+";
+        assert!(
+            text_looks_busy(frame),
+            "busy status line must be detected even below the input box + padding"
+        );
+        // The other verb the user saw, same layout.
+        let frame2 = "\
+✻ Brewed for 2m 10s · 1 shell still running
+
+╭──────────────────────────────────────────────╮
+│ >                                              │
+╰──────────────────────────────────────────────╯
+  ? for shortcuts
+";
+        assert!(text_looks_busy(frame2));
     }
 
     #[test]

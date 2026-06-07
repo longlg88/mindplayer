@@ -98,6 +98,9 @@ pub struct App {
     /// Set by the list renderer each frame: true when the animated hero block
     /// (mascot) is actually on screen, so the loop only animates when useful.
     pub hero_visible: bool,
+    /// Set by the list renderer each frame: the number of session rows visible
+    /// in the list pane, used as the PageUp/PageDown step.
+    pub list_rows: u16,
 
     pub focus: Focus,
     /// All concurrently-running (or recently-ended) sessions, keyed by id, so
@@ -193,6 +196,7 @@ impl App {
             show_archived: false,
             show_subagents: false,
             hero_visible: false,
+            list_rows: 0,
             focus: Focus::List,
             ptys: HashMap::new(),
             active: None,
@@ -534,6 +538,20 @@ impl App {
         }
         let len = self.visible.len() as isize;
         let next = (self.selected as isize + delta).rem_euclid(len);
+        self.selected = next as usize;
+    }
+
+    /// Move the selection by one page (PageUp/PageDown). Unlike single-step
+    /// movement this clamps at the ends instead of wrapping, which is what
+    /// paging through a long list should feel like. The page size tracks the
+    /// list's visible height (`list_rows`), keeping one row of overlap.
+    pub fn move_page(&mut self, dir: isize) {
+        if self.visible.is_empty() {
+            return;
+        }
+        let page = (self.list_rows.saturating_sub(1)).max(1) as isize;
+        let last = self.visible.len() as isize - 1;
+        let next = (self.selected as isize + dir * page).clamp(0, last);
         self.selected = next as usize;
     }
 
@@ -1272,6 +1290,28 @@ mod tests {
         assert_eq!(app.selected, 1, "wrap to last");
         app.move_selection(1);
         assert_eq!(app.selected, 0, "wrap to first");
+    }
+
+    #[test]
+    fn move_page_steps_and_clamps() {
+        let mut app = app_with(
+            (0..20)
+                .map(|i| session(&format!("s{i}"), Agent::Codex, false))
+                .collect(),
+        );
+        app.list_rows = 10; // page = 9 (one row of overlap)
+        assert_eq!(app.selected, 0);
+        app.move_page(1);
+        assert_eq!(app.selected, 9, "down one page");
+        app.move_page(1);
+        assert_eq!(app.selected, 18, "down another page");
+        app.move_page(1);
+        assert_eq!(app.selected, 19, "clamp at last (no wrap)");
+        app.move_page(-1);
+        assert_eq!(app.selected, 10, "up one page from last");
+        app.move_page(-1);
+        app.move_page(-1);
+        assert_eq!(app.selected, 0, "clamp at first (no wrap)");
     }
 
     #[test]

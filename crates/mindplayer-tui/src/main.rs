@@ -432,6 +432,8 @@ fn handle_main_key(app: &mut App, key: KeyEvent) {
             match normalize_shortcut(key.code) {
                 KeyCode::Up | KeyCode::Char('k') => app.move_selection(-1),
                 KeyCode::Down | KeyCode::Char('j') => app.move_selection(1),
+                KeyCode::PageUp => app.move_page(-1),
+                KeyCode::PageDown => app.move_page(1),
                 KeyCode::Enter | KeyCode::Char('l') | KeyCode::Right => app.request_resume(),
                 KeyCode::Char('n') => app.new_picker = Some(0),
                 KeyCode::Char('d') => app.begin_dir_input(),

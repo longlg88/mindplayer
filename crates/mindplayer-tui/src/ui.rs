@@ -423,6 +423,10 @@ fn session_list(f: &mut Frame, app: &mut App, area: Rect, now: DateTime<Utc>) {
         })
         .collect();
 
+    // Record the visible row count (inside the borders) so PageUp/PageDown can
+    // step by a screenful.
+    app.list_rows = area.height.saturating_sub(2);
+
     let mut state = ListState::default();
     if !app.visible.is_empty() {
         state.select(Some(app.selected));

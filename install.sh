@@ -66,7 +66,7 @@ else
     # silently no-ops on a shallow clone whose history diverged, which would
     # rebuild stale code — so fetch + hard reset to guarantee the newest commit.
     echo "▶ updating source to latest main in $SRC_DIR"
-    git -C "$SRC_DIR" fetch --depth 1 origin main
+    git -C "$SRC_DIR" fetch --depth 1 --tags --force origin main
     git -C "$SRC_DIR" reset --hard FETCH_HEAD
     git -C "$SRC_DIR" clean -fdq
   else

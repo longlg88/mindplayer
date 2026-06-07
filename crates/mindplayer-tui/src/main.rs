@@ -75,7 +75,7 @@ fn explicit_dir_from_args() -> Option<PathBuf> {
                 std::process::exit(0);
             }
             "-V" | "--version" => {
-                println!("mindplayer {}", env!("CARGO_PKG_VERSION"));
+                println!("mindplayer {}", env!("MINDPLAYER_VERSION"));
                 std::process::exit(0);
             }
             s if !s.starts_with('-') => {

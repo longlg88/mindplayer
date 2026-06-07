@@ -29,6 +29,18 @@ pub struct PtySession {
     /// later `terminate()` would `killpg()` a PID/PGID we no longer own — i.e.
     /// signal an unrelated process group. Once exited, terminate() is a no-op.
     exited: bool,
+    /// Process-group id (== leader pid; the child ran `setsid`) captured at
+    /// spawn, so the helper children (MCP / language servers) can still be
+    /// signalled even after the leader has been reaped.
+    pgid: Option<i32>,
+    /// True once the group has been sent SIGTERM, so we never signal it twice
+    /// (and never re-signal a possibly-recycled pgid late).
+    group_signalled: bool,
+    /// Memoized "looks like a waiting prompt" flag, recomputed by the reader
+    /// thread on each output batch (it already holds the parser lock). The
+    /// render/sort hot path reads this atomic instead of locking + allocating
+    /// the whole screen on every frame.
+    blocked: Arc<AtomicBool>,
     pub rows: u16,
     pub cols: u16,
 }
@@ -74,17 +86,21 @@ impl PtySession {
         // Slave handle no longer needed in the parent; closing it lets the
         // child own the terminal cleanly.
         drop(pair.slave);
+        // Capture the process-group id now, while the leader is definitely alive.
+        let pgid = child.process_id().map(|p| p as i32);
 
         let mut reader = pair.master.try_clone_reader()?;
         let writer = pair.master.take_writer()?;
         let parser = Arc::new(Mutex::new(vt100::Parser::new(rows, cols, 5_000)));
         let dirty = Arc::new(AtomicBool::new(true)); // draw the first frame
         let seq = Arc::new(AtomicU64::new(0));
+        let blocked = Arc::new(AtomicBool::new(false));
 
         {
             let parser = parser.clone();
             let dirty = dirty.clone();
             let seq = seq.clone();
+            let blocked = blocked.clone();
             thread::spawn(move || {
                 let mut buf = [0u8; 8192];
                 loop {
@@ -93,6 +109,12 @@ impl PtySession {
                         Ok(n) => {
                             if let Ok(mut p) = parser.lock() {
                                 p.process(&buf[..n]);
+                                // Recompute the blocked heuristic while the lock
+                                // is held, so the UI never has to.
+                                blocked.store(
+                                    text_looks_blocked(&p.screen().contents()),
+                                    Ordering::Relaxed,
+                                );
                             }
                             dirty.store(true, Ordering::Relaxed);
                             seq.fetch_add(1, Ordering::Relaxed);
@@ -113,6 +135,9 @@ impl PtySession {
             writer,
             child,
             exited: false,
+            pgid,
+            group_signalled: false,
+            blocked,
             rows,
             cols,
         })
@@ -127,6 +152,13 @@ impl PtySession {
     /// remembered value to detect a session that is actively producing output.
     pub fn output_seq(&self) -> u64 {
         self.seq.load(Ordering::Relaxed)
+    }
+
+    /// Heuristic: does the visible screen look like the child is waiting for the
+    /// user at a confirm/approval prompt? Used to surface a "blocked" status
+    /// (herdr-style rollup). Best-effort + tunable — see [`text_looks_blocked`].
+    pub fn looks_blocked(&self) -> bool {
+        self.blocked.load(Ordering::Relaxed)
     }
 
     pub fn parser(&self) -> &Arc<Mutex<vt100::Parser>> {
@@ -264,25 +296,37 @@ impl PtySession {
         self.terminate();
     }
 
-    /// Signal the whole process group, then SIGKILL the leader and reap it.
-    /// The child ran `setsid` (portable-pty pre_exec), so its pgid == its pid;
-    /// signalling the group also stops codex/claude helper subprocesses
-    /// (MCP / language servers) instead of orphaning them.
-    fn terminate(&mut self) {
-        // If the child was already observed dead (and reaped by try_wait), its
-        // PID may have been recycled by the OS — signalling it now could hit an
-        // unrelated process group. Skip all signalling in that case.
-        if self.exited {
+    /// SIGTERM the child's process group exactly once. The child ran `setsid`
+    /// (portable-pty pre_exec) so its pgid == its leader pid; signalling the
+    /// group stops helper subprocesses (MCP / language servers) instead of
+    /// orphaning them. We use the pgid captured at spawn (not `child.process_id`
+    /// after a reap), and `group_signalled` ensures we never re-signal a
+    /// pgid that may have been recycled once the whole group is gone. Safe to
+    /// call right when the leader exits — survivors keep the pgid alive.
+    pub fn signal_group(&mut self) {
+        if self.group_signalled {
             return;
         }
-        if let Some(pid) = self.child.process_id() {
+        self.group_signalled = true;
+        if let Some(pgid) = self.pgid {
             unsafe {
-                libc::killpg(pid as i32, libc::SIGTERM);
+                libc::killpg(pgid, libc::SIGTERM);
             }
         }
-        let _ = self.child.kill();
-        let _ = self.child.wait(); // reap so we never leave a zombie
-        self.exited = true;
+    }
+
+    /// Terminate the child (used on close / app exit).
+    fn terminate(&mut self) {
+        // Always clean up the group once, even if the leader was already reaped
+        // (otherwise its MCP/LSP children would be orphaned).
+        self.signal_group();
+        // Only touch the leader if we haven't already reaped it — std guards a
+        // reaped child, but skipping avoids any chance of hitting a recycled PID.
+        if !self.exited {
+            let _ = self.child.kill();
+            let _ = self.child.wait(); // reap so we never leave a zombie
+            self.exited = true;
+        }
     }
 }
 
@@ -324,14 +368,68 @@ fn mouse_sequence(
             let end = if release { 'm' } else { 'M' };
             format!("\x1b[<{final_cb};{col};{row}{end}").into_bytes()
         }
-        // X10 / UTF-8 default: `ESC [ M Cb Cx Cy`, each value offset by 32;
-        // release is reported as button 3 (no separate terminator).
+        // X10 / UTF-8 default: `ESC [ M Cb Cx Cy`, each value offset by 32.
         _ => {
-            let base = if release { 3 } else { cb } + if motion { 32 } else { 0 };
+            let base = if cb >= 64 {
+                cb // wheel codes already carry their own bit — no offsets
+            } else if release {
+                3 // X10 reports any button release as button 3
+            } else {
+                cb + if motion { 32 } else { 0 } // press / drag
+            };
             let enc = |v: u16| -> u8 { v.saturating_add(32).min(255) as u8 };
             vec![0x1b, b'[', b'M', enc(base), enc(col), enc(row)]
         }
     }
+}
+
+/// Structural markers (lowercased) that strongly indicate a waiting prompt —
+/// matched anywhere on the last few lines.
+const BLOCKED_STRUCTURAL: &[&str] = &[
+    "(y/n)",
+    "[y/n]",
+    "(y/n",
+    "(yes/no)",
+    "[yes/no]",
+    "y/n)",
+    "y/n]",
+    "❯ 1.",
+    "1. yes",
+    "press enter to continue",
+];
+
+/// Confirm/approval asks — only count when the line is an actual question
+/// (ends with `?`), to avoid flagging the same words in narration.
+const BLOCKED_ASKS: &[&str] = &[
+    "do you want",
+    "do you wish",
+    "would you like",
+    "proceed",
+    "continue",
+    "confirm",
+    "overwrite",
+    "apply change",
+    "allow",
+];
+
+/// True if the visible terminal text looks like the child is waiting at a
+/// confirm/approval prompt. Conservative: matches structural prompt markers, or
+/// a question line (`…?`) containing an approval verb — not bare words mid-output.
+fn text_looks_blocked(screen: &str) -> bool {
+    let tail: Vec<String> = screen
+        .lines()
+        .rev()
+        .take(6)
+        .map(|l| l.trim().to_lowercase())
+        .collect();
+    if tail
+        .iter()
+        .any(|l| BLOCKED_STRUCTURAL.iter().any(|m| l.contains(m)))
+    {
+        return true;
+    }
+    tail.iter()
+        .any(|l| l.ends_with('?') && BLOCKED_ASKS.iter().any(|m| l.contains(m)))
 }
 
 /// POSIX single-quote a token so it is safe inside `sh -c`.
@@ -431,6 +529,22 @@ mod tests {
             mouse_sequence(Default, 0, true, false, 1, 1),
             vec![0x1b, b'[', b'M', 35, 33, 33]
         );
+    }
+
+    #[test]
+    fn blocked_detection_matches_prompts() {
+        assert!(text_looks_blocked(
+            "running…\nDo you want to proceed? (y/n)"
+        ));
+        assert!(text_looks_blocked("Apply changes?\n  1. Yes\n  2. No"));
+        assert!(text_looks_blocked("Continue?"));
+        // Working / non-prompt screens must NOT be flagged.
+        assert!(!text_looks_blocked("Thinking…  esc to interrupt"));
+        assert!(!text_looks_blocked("wrote foo.rs\nall done"));
+        assert!(!text_looks_blocked(""));
+        // Narration containing approval words but no actual prompt: not blocked.
+        assert!(!text_looks_blocked("I'll proceed to write the file now."));
+        assert!(!text_looks_blocked("normalizing\n2. normalize the data"));
     }
 
     #[test]

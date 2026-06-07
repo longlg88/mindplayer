@@ -33,14 +33,28 @@ pub enum Focus {
 /// How a session in the list is doing right now, for the status badge.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SessionStatus {
+    /// Live PTY paused at a confirm/approval prompt — needs the user. Most urgent.
+    Blocked,
     /// Live PTY producing output right now.
     Working,
-    /// Live PTY, but quiet (waiting for input / idle).
+    /// Live PTY, but quiet (running, nothing happening).
     Idle,
     /// Child has exited; final frame kept.
     Ended,
     /// Not running inside MindPlayer (a history entry).
     Inactive,
+}
+
+/// Sort rank for the herdr-style rollup: most urgent (blocked/working) first,
+/// finished/historical last. Recency breaks ties within a rank.
+fn status_rank(s: SessionStatus) -> u8 {
+    match s {
+        SessionStatus::Blocked => 0,
+        SessionStatus::Working => 1,
+        SessionStatus::Idle => 2,
+        SessionStatus::Inactive => 3,
+        SessionStatus::Ended => 4,
+    }
 }
 
 /// A session counts as "working" if it produced output within this window.
@@ -70,6 +84,9 @@ pub struct App {
     pub show_archived: bool,
     /// Show spawned helper/sub-agent sessions (hidden by default).
     pub show_subagents: bool,
+    /// Set by the list renderer each frame: true when the animated hero block
+    /// (mascot) is actually on screen, so the loop only animates when useful.
+    pub hero_visible: bool,
 
     pub focus: Focus,
     /// All concurrently-running (or recently-ended) sessions, keyed by id, so
@@ -161,6 +178,7 @@ impl App {
             selected: 0,
             show_archived: false,
             show_subagents: false,
+            hero_visible: false,
             focus: Focus::List,
             ptys: HashMap::new(),
             active: None,
@@ -194,7 +212,12 @@ impl App {
     pub fn mascot_visible(&self) -> bool {
         match self.screen {
             Screen::ScopeSelect | Screen::Scanning | Screen::ScanSummary => true,
-            Screen::Main => self.focus == Focus::List || self.active_pty().is_none(),
+            // Only animate when something is actually moving: the list's hero
+            // block (when shown), or the idle mascot in an empty live pane.
+            Screen::Main => match self.focus {
+                Focus::List => self.hero_visible,
+                Focus::Terminal => self.active_pty().is_none(),
+            },
         }
     }
 
@@ -416,6 +439,12 @@ impl App {
             .filter(|(_, s)| show_subagents || !s.is_subagent)
             .map(|(i, _)| i)
             .collect();
+        // herdr-style rollup: float the most urgent states to the top
+        // (blocked → working → idle → history → done). Stable sort keeps the
+        // recency order (from all_sessions) within each rank.
+        let mut vis = std::mem::take(&mut self.visible);
+        vis.sort_by_cached_key(|&i| status_rank(self.session_status(&self.all_sessions[i].id)));
+        self.visible = vis;
         if self.selected >= self.visible.len() {
             self.selected = self.visible.len().saturating_sub(1);
         }
@@ -582,13 +611,16 @@ impl App {
     pub fn session_status(&self, id: &str) -> SessionStatus {
         if self.ended.contains(id) {
             SessionStatus::Ended
-        } else if self.ptys.contains_key(id) {
+        } else if let Some(pty) = self.ptys.get(id) {
             let working = self
                 .out_at
                 .get(id)
                 .is_some_and(|t| t.elapsed() < WORKING_WINDOW);
             if working {
                 SessionStatus::Working
+            } else if pty.looks_blocked() {
+                // Quiet + a confirm/approval prompt on screen → waiting for you.
+                SessionStatus::Blocked
             } else {
                 SessionStatus::Idle
             }
@@ -685,6 +717,18 @@ impl App {
         self.extra_sessions.push(synthetic.clone());
         self.all_sessions.push(synthetic);
         self.rebuild_visible();
+        // The synthetic row is Inactive, so the urgency sort sinks it down the
+        // list. Keep the cursor on it by id so returning to the list and
+        // pressing `x` can't archive+kill a different session.
+        if let Some(id) = self.active.clone() {
+            if let Some(pos) = self
+                .visible
+                .iter()
+                .position(|&i| self.all_sessions[i].id == id)
+            {
+                self.selected = pos;
+            }
+        }
 
         if label.is_empty() {
             self.status = format!("new {} session", agent.as_str());
@@ -817,6 +861,10 @@ impl App {
         let mut newly_dead = Vec::new();
         for (id, pty) in self.ptys.iter_mut() {
             if !self.ended.contains(id) && !pty.is_alive() {
+                // The leader just exited; clean up its group (MCP / language
+                // servers) now, while the pgid is still alive, instead of
+                // orphaning them.
+                pty.signal_group();
                 newly_dead.push(id.clone());
             }
         }
@@ -1292,5 +1340,15 @@ mod tests {
 
         let _ = std::fs::remove_file(&tmp);
         std::env::remove_var("MINDPLAYER_STATE");
+    }
+
+    #[test]
+    fn status_rank_orders_by_urgency() {
+        // herdr-style rollup: most urgent (blocked) first, finished (done) last.
+        use SessionStatus::*;
+        assert!(status_rank(Blocked) < status_rank(Working));
+        assert!(status_rank(Working) < status_rank(Idle));
+        assert!(status_rank(Idle) < status_rank(Inactive));
+        assert!(status_rank(Inactive) < status_rank(Ended));
     }
 }

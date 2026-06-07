@@ -230,10 +230,15 @@ fn main_view(f: &mut Frame, app: &mut App) {
         .split(f.area());
     title_bar(outer[0], f);
 
+    // Read the clock once per frame and thread it down, so the sort key and the
+    // displayed relative times can't disagree (and we don't call Utc::now()
+    // multiple times for a single render).
+    let now = Utc::now();
+
     // Full-screen switch: the list OR the live session fills the body — no split.
     // Background sessions keep running regardless of which view is shown.
     match app.focus {
-        Focus::List => session_list(f, app, outer[1]),
+        Focus::List => session_list(f, app, outer[1], now),
         Focus::Terminal => live_pane(f, app, outer[1]),
     }
 
@@ -324,7 +329,7 @@ fn label_input_popup(f: &mut Frame, agent: Option<Agent>, label: &str) {
     f.render_widget(Paragraph::new(lines).block(block), area);
 }
 
-fn session_list(f: &mut Frame, app: &App, area: Rect) {
+fn session_list(f: &mut Frame, app: &mut App, area: Rect, now: DateTime<Utc>) {
     let focused = app.focus == Focus::List;
     let tab = if app.show_archived {
         "archived"
@@ -337,7 +342,6 @@ fn session_list(f: &mut Frame, app: &App, area: Rect) {
         .title(format!(" Sessions · {tab}{subs} ({}) ", app.visible.len()))
         .border_style(Style::default().fg(if focused { ACCENT } else { DIM }));
 
-    let now = Utc::now();
     // Fill the pane: title gets whatever width is left after border, status
     // badge, tag, time, and token columns (~34 cols of fixed chrome).
     let max_title = (area.width as usize).saturating_sub(34).max(12);
@@ -352,6 +356,7 @@ fn session_list(f: &mut Frame, app: &App, area: Rect) {
             // Clear, fixed-width status badge so it's easy to scan a column of
             // running / working / done sessions.
             let (badge, badge_color, badge_bold) = match app.session_status(&s.id) {
+                SessionStatus::Blocked => ("● blocked", Color::Rgb(245, 180, 90), true),
                 SessionStatus::Working => ("● working", Color::Green, true),
                 SessionStatus::Idle => ("● idle   ", ACCENT, false),
                 SessionStatus::Ended => ("○ done   ", Color::Rgb(150, 120, 120), false),
@@ -417,7 +422,10 @@ fn session_list(f: &mut Frame, app: &App, area: Rect) {
     let region_h = bottom.saturating_sub(region_top);
     const GAP: u16 = 1;
     let block_h = mascot::HEIGHT + GAP + 2; // mascot + gap + tagline + legend
-    if region_h >= block_h + 2 {
+                                            // Record whether the animated hero is actually on screen, so the event loop
+                                            // only forces ~12fps redraws of the list when there's something to animate.
+    app.hero_visible = region_h >= block_h + 2;
+    if app.hero_visible {
         let inner_x = area.x + 1;
         let inner_w = area.width.saturating_sub(2);
         let top = region_top + (region_h - block_h) / 2;
@@ -446,7 +454,8 @@ fn session_list(f: &mut Frame, app: &App, area: Rect) {
             },
         );
         let legend = Paragraph::new(Line::from(vec![
-            Span::styled("● working", Style::default().fg(Color::Green)),
+            Span::styled("● blocked", Style::default().fg(Color::Rgb(245, 180, 90))),
+            Span::styled("   ● working", Style::default().fg(Color::Green)),
             Span::styled("   ● idle", Style::default().fg(ACCENT)),
             Span::styled("   ○ done", Style::default().fg(Color::Rgb(150, 120, 120))),
         ]))
@@ -479,8 +488,12 @@ fn live_pane(f: &mut Frame, app: &mut App, area: Rect) {
         (None, Some(s)) => format!(" Live · {} (enter to resume) ", short(&s.id)),
         (None, None) => " Live ".to_string(),
     };
+    // Top/bottom borders only: a left/right `│` sits in real screen cells next
+    // to the content, so a terminal Shift+drag selection grabs it on every line.
+    // Dropping the side borders lets the PTY content reach the edges, so copying
+    // yields just the content (top title + bottom rule still frame the pane).
     let block = Block::default()
-        .borders(Borders::ALL)
+        .borders(Borders::TOP | Borders::BOTTOM)
         .title(title)
         .border_style(Style::default().fg(if focused { ACCENT } else { DIM }));
     let inner = block.inner(area);

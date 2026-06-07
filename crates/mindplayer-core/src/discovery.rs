@@ -31,6 +31,10 @@ const MAX_TAIL_BYTES: u64 = 16 * 1024 * 1024;
 const INITIAL_TAIL_BYTES: u64 = 256 * 1024;
 /// How many leading lines to scan for metadata / the first user prompt.
 const HEAD_LINES: usize = 300;
+/// Upper bound on bytes read from a Claude transcript. Claude is parsed in full
+/// (for token totals), but we cap the read so a crafted/corrupt file — e.g. one
+/// enormous line with no newline — can't exhaust memory.
+const MAX_CLAUDE_BYTES: u64 = 64 * 1024 * 1024;
 
 /// Which sessions to include based on working directory.
 #[derive(Debug, Clone)]
@@ -117,7 +121,11 @@ pub fn scan(scope: &Scope, cfg: &ScanConfig) -> Vec<Session> {
     sessions.extend(claude);
     let kiro = parallel_filter_map(&kiro_paths, |path| parse_kiro_file(path, scope));
     sessions.extend(kiro);
-    sort_by_recency(&mut sessions);
+    // Normalize the recency key to file mtime here (off the UI thread) — the
+    // SAME source the periodic refresh uses. Parsers derive last_active from the
+    // in-file transcript timestamp, which can disagree with mtime for a live
+    // session; mixing the two made rows flap. refresh_activity also sorts.
+    refresh_activity(&mut sessions);
     sessions
 }
 
@@ -531,7 +539,7 @@ fn codex_uuid_from_filename(path: &Path) -> Option<String> {
 // --- Claude ---------------------------------------------------------------
 
 fn parse_claude_file(path: &Path, cwd_override: Option<&Path>) -> Option<Session> {
-    let reader = BufReader::new(File::open(path).ok()?);
+    let reader = BufReader::new(File::open(path).ok()?.take(MAX_CLAUDE_BYTES));
     let mut id: Option<String> = None;
     let mut cwd: Option<PathBuf> = None;
     let mut started_at: Option<DateTime<Utc>> = None;
@@ -601,11 +609,14 @@ fn parse_claude_file(path: &Path, cwd_override: Option<&Path>) -> Option<Session
             .and_then(|s| s.to_str())
             .map(str::to_string)
     })?;
-    // Authoritative cwd when the directory already fixed the scope; otherwise
-    // the per-message cwd, falling back to a lossy dir-name decode.
-    let cwd = cwd_override
-        .map(Path::to_path_buf)
-        .or(cwd)
+    // Prefer the session's OWN recorded cwd. `encode_cwd` maps both '/' and '.'
+    // to '-', so the Claude project directory name can collide across different
+    // real cwds; trusting the dir-name-derived scope here could relabel a
+    // session and make `resume` launch in the wrong directory. The scope dir
+    // and the lossy dir-name decode are fallbacks only when the transcript has
+    // no cwd of its own.
+    let cwd = cwd
+        .or_else(|| cwd_override.map(Path::to_path_buf))
         .unwrap_or_else(|| decode_claude_cwd(path.parent()));
     let title = title
         .or(title_fallback)

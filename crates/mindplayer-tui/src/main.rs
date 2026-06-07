@@ -120,8 +120,8 @@ fn setup() -> Result<Terminal<CrosstermBackend<Stdout>>> {
         stdout,
         PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
     );
-    // Capture the mouse so the wheel scrolls MindPlayer's own scrollback
-    // instead of being forwarded to codex/claude.
+    // Capture the mouse so MindPlayer receives wheel/click events: it forwards
+    // them to mouse-aware children and otherwise scrolls its own scrollback.
     let _ = execute!(stdout, EnableMouseCapture);
     // Advertise bracketed paste so the terminal delivers pastes as one
     // Event::Paste (no per-key replay) AND stops showing its own "this paste

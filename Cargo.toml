@@ -1,6 +1,9 @@
 [workspace]
 resolver = "2"
 members = ["crates/mindplayer-core", "crates/mindplayer-tui"]
+# Vendored+patched vt100 — kept out of the member set so its upstream third-party
+# code isn't held to our `clippy -D warnings` gate (it's consumed as a path dep).
+exclude = ["crates/vt100-mp"]
 
 [workspace.package]
 edition = "2021"

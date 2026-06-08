@@ -1,0 +1,19 @@
+# Vendored fork of vt100 0.15.2 (MIT, Jesse Luehrs) with one local patch:
+# scroll_up() also feeds the scrollback when the scroll region is anchored at the
+# top of the screen (scroll_top == 0). Upstream discards lines scrolled out of ANY
+# scroll region, which loses the history of TUIs like codex/claude that render their
+# transcript inside a top-anchored region (input box pinned at the bottom). See
+# src/grid.rs scroll_up — search "MINDPLAYER PATCH". Keeps the crate name `vt100`
+# so dependents need no code changes.
+[package]
+name = "vt100"
+version = "0.15.2"
+edition = "2021"
+description = "Vendored+patched vt100 (scrollback for top-anchored scroll regions)"
+license = "MIT"
+
+[dependencies]
+itoa = "1.0.5"
+log = "0.4.17"
+unicode-width = "0.1.10"
+vte = "0.11.0"

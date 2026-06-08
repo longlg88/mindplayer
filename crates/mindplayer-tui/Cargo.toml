@@ -14,7 +14,9 @@ mindplayer-core = { path = "../mindplayer-core" }
 ratatui = "0.29"
 crossterm = "0.28"
 portable-pty = "0.8"
-vt100 = "0.15"
+# Vendored+patched vt100 (keeps scrollback for top-anchored scroll regions, so
+# codex/claude transcript history is scrollable). See crates/vt100-mp.
+vt100 = { path = "../vt100-mp" }
 libc = "0.2"
 anyhow.workspace = true
 chrono.workspace = true

@@ -107,6 +107,9 @@ pub struct App {
     /// Set by the list renderer each frame: true when the animated hero block
     /// (mascot) is actually on screen, so the loop only animates when useful.
     pub hero_visible: bool,
+    /// Optional user-supplied mascot (pixelated image) shown instead of the
+    /// built-in sprite. Loaded once at startup from `--mascot` or a drop-in file.
+    pub mascot: Option<crate::mascot::Sprite>,
     /// Set by the list renderer each frame: the number of session rows visible
     /// in the list pane, used as the PageUp/PageDown step.
     pub list_rows: u16,
@@ -205,6 +208,7 @@ impl App {
             show_archived: false,
             show_subagents: false,
             hero_visible: false,
+            mascot: None,
             list_rows: 0,
             focus: Focus::List,
             ptys: HashMap::new(),

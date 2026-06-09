@@ -48,7 +48,7 @@ fn footer(area: Rect, f: &mut Frame, keys: &str) {
 }
 
 /// Draw the animated mascot, horizontally centered and top-anchored in `area`.
-fn draw_mascot(f: &mut Frame, area: Rect, tick: usize) {
+fn draw_mascot(f: &mut Frame, area: Rect, tick: usize, custom: Option<&mascot::Sprite>) {
     if area.width < mascot::WIDTH || area.height < mascot::HEIGHT {
         return;
     }
@@ -58,7 +58,11 @@ fn draw_mascot(f: &mut Frame, area: Rect, tick: usize) {
         width: mascot::WIDTH,
         height: mascot::HEIGHT,
     };
-    f.render_widget(Paragraph::new(mascot::lines(tick)), r);
+    let lines = match custom {
+        Some(sprite) => sprite.lines(tick),
+        None => mascot::lines(tick),
+    };
+    f.render_widget(Paragraph::new(lines), r);
 }
 
 fn scope_select(f: &mut Frame, app: &App) {
@@ -71,7 +75,7 @@ fn scope_select(f: &mut Frame, app: &App) {
         ])
         .split(f.area());
     title_bar(chunks[0], f);
-    draw_mascot(f, chunks[1], app.spinner);
+    draw_mascot(f, chunks[1], app.spinner, app.mascot.as_ref());
 
     let options = [
         format!("working dir   {}", app.cwd.display()),
@@ -113,7 +117,7 @@ fn scanning(f: &mut Frame, app: &App) {
         .split(f.area());
     title_bar(chunks[0], f);
 
-    draw_mascot(f, chunks[1], app.spinner);
+    draw_mascot(f, chunks[1], app.spinner, app.mascot.as_ref());
     let spin = SPINNER[app.spinner % SPINNER.len()];
     let area = centered(chunks[1], 60, 5);
     let block = Block::default()
@@ -469,6 +473,7 @@ fn session_list(f: &mut Frame, app: &mut App, area: Rect, now: DateTime<Utc>) {
                 height: mascot::HEIGHT,
             },
             app.spinner,
+            app.mascot.as_ref(),
         );
         let tagline = Paragraph::new(Line::from(Span::styled(
             "Run many Codex · Claude · Kiro sessions like tabs",
@@ -557,7 +562,7 @@ fn live_pane(f: &mut Frame, app: &mut App, area: Rect) {
     };
 
     if !rendered {
-        draw_mascot(f, inner, app.spinner);
+        draw_mascot(f, inner, app.spinner, app.mascot.as_ref());
         let hint = Paragraph::new(vec![
             Line::from(Span::styled(
                 "Select a session and press enter to resume it here.",

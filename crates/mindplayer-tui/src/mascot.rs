@@ -5,29 +5,50 @@ use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use std::path::Path;
 
-/// A user-supplied mascot, pixelated into the same 16×16 footprint as the
-/// built-in sprite so it drops into the existing layout unchanged. A static
-/// image gets the gentle bob; an animated GIF plays its own frames.
+/// Pixel resolution a user image is pixelated to. Bigger than the built-in
+/// 16×16 sprite so photos/detailed art stay recognizable. Must be even (each
+/// terminal row is two stacked pixels via half-blocks).
+const CUSTOM_N: u32 = 32;
+
+/// A user-supplied mascot, pixelated into an `n`×`n` grid and rendered with the
+/// same half-block pipeline. A static image gets the gentle bob; an animated
+/// GIF plays its own frames. A near-uniform background is auto-dropped so the
+/// subject sits on the terminal background instead of in a colored box.
 pub struct Sprite {
-    /// Each frame is [`WIDTH`]×16 pixels; `None` = transparent.
+    /// Each frame is `n` rows × `n` cols of pixels; `None` = transparent.
     frames: Vec<Vec<Vec<Option<Color>>>>,
     animated: bool,
+    n: u16,
 }
 
 impl Sprite {
-    /// Load + pixelate an image (png/jpg/gif/webp/bmp) into a 16×16 sprite.
-    /// Returns `None` if the file can't be read/decoded.
+    /// Load + pixelate an image (png/jpg/gif/webp/bmp). `None` if it can't be
+    /// read/decoded.
     pub fn load(path: &Path) -> Option<Self> {
         let frames_rgba = decode_frames(path)?;
         if frames_rgba.is_empty() {
             return None;
         }
         let animated = frames_rgba.len() > 1;
-        let frames = frames_rgba.iter().map(pixelate).collect();
-        Some(Self { frames, animated })
+        let frames = frames_rgba.iter().map(|f| pixelate(f, CUSTOM_N)).collect();
+        Some(Self {
+            frames,
+            animated,
+            n: CUSTOM_N as u16,
+        })
     }
 
-    /// Render as half-block lines for this tick — same shape as [`lines`].
+    /// Rendered width in terminal cells (one cell per pixel column).
+    pub fn cell_width(&self) -> u16 {
+        self.n
+    }
+
+    /// Rendered height in cells: two pixels per row, plus one for the bob.
+    pub fn cell_height(&self) -> u16 {
+        self.n / 2 + 1
+    }
+
+    /// Render as half-block lines for this tick.
     pub fn lines(&self, tick: usize) -> Vec<Line<'static>> {
         let idx = if self.animated {
             // ~240ms per frame at the ~80ms app tick; loop.
@@ -39,11 +60,9 @@ impl Sprite {
         let sprite = halfblock_lines(grid);
         // Static images bob; an animated GIF carries its own motion.
         let bob_up = !self.animated && (tick / 7).is_multiple_of(2);
-        with_bob(sprite, bob_up)
+        with_bob(sprite, bob_up, self.n)
     }
 }
-
-const N: u32 = WIDTH as u32; // pixelate target (square, matches the built-in)
 
 /// Decode an image to one or more RGBA frames (multiple only for animated GIF).
 fn decode_frames(path: &Path) -> Option<Vec<image::RgbaImage>> {
@@ -66,21 +85,29 @@ fn decode_frames(path: &Path) -> Option<Vec<image::RgbaImage>> {
     Some(vec![img])
 }
 
-/// Aspect-fit an RGBA frame into an N×N grid of `Option<Color>` (transparent
-/// padding around it; near-transparent pixels stay `None`).
-fn pixelate(img: &image::RgbaImage) -> Vec<Vec<Option<Color>>> {
+/// Aspect-fit an RGBA frame into an `n`×`n` grid of `Option<Color>` (transparent
+/// padding around it). Already-transparent pixels stay `None`, and a near-uniform
+/// background (sampled from the corners) is dropped so the subject pops on the
+/// terminal background instead of sitting in a colored box.
+fn pixelate(img: &image::RgbaImage, n: u32) -> Vec<Vec<Option<Color>>> {
     use image::imageops::FilterType;
     let resized = image::DynamicImage::ImageRgba8(img.clone())
-        .resize(N, N, FilterType::Triangle)
+        // Nearest keeps hard pixel edges (a crisp "pixel-art" look) instead of
+        // the soft blend an averaging filter produces at this small size.
+        .resize(n, n, FilterType::Nearest)
         .to_rgba8();
     let (w, h) = resized.dimensions();
-    let ox = (N - w.min(N)) / 2;
-    let oy = (N - h.min(N)) / 2;
-    let mut grid = vec![vec![None; N as usize]; N as usize];
-    for y in 0..h.min(N) {
-        for x in 0..w.min(N) {
+    let (w, h) = (w.min(n), h.min(n));
+    let ox = (n - w) / 2;
+    let oy = (n - h) / 2;
+    let bg = detect_background(&resized, w, h);
+    let mut grid = vec![vec![None; n as usize]; n as usize];
+    for y in 0..h {
+        for x in 0..w {
             let px = resized.get_pixel(x, y).0;
-            if px[3] >= 96 {
+            let opaque = px[3] >= 96;
+            let is_bg = bg.is_some_and(|b| color_dist(px, b) < 52);
+            if opaque && !is_bg {
                 grid[(y + oy) as usize][(x + ox) as usize] = Some(Color::Rgb(px[0], px[1], px[2]));
             }
         }
@@ -88,12 +115,39 @@ fn pixelate(img: &image::RgbaImage) -> Vec<Vec<Option<Color>>> {
     grid
 }
 
-/// Collapse a 16-row pixel grid into 8 half-block lines (top=fg, bottom=bg).
+/// Squared-ish RGB distance between two pixels (alpha ignored).
+fn color_dist(a: [u8; 4], b: [u8; 4]) -> u32 {
+    let d = |x: u8, y: u8| (x as i32 - y as i32).unsigned_abs();
+    d(a[0], b[0]) + d(a[1], b[1]) + d(a[2], b[2])
+}
+
+/// If the four corners agree on a color, return it as the background to drop;
+/// otherwise `None` (don't strip anything — there's no clear flat background).
+fn detect_background(img: &image::RgbaImage, w: u32, h: u32) -> Option<[u8; 4]> {
+    if w < 4 || h < 4 {
+        return None;
+    }
+    let corners = [
+        img.get_pixel(0, 0).0,
+        img.get_pixel(w - 1, 0).0,
+        img.get_pixel(0, h - 1).0,
+        img.get_pixel(w - 1, h - 1).0,
+    ];
+    // Opaque + mutually similar → it's a flat background.
+    if corners.iter().any(|c| c[3] < 96) {
+        return None;
+    }
+    let agree = corners.iter().all(|c| color_dist(*c, corners[0]) < 40);
+    agree.then_some(corners[0])
+}
+
+/// Collapse an N-row pixel grid into N/2 half-block lines (top=fg, bottom=bg).
 fn halfblock_lines(grid: &[Vec<Option<Color>>]) -> Vec<Line<'static>> {
-    (0..16)
+    let w = grid.first().map_or(0, |r| r.len());
+    (0..grid.len())
         .step_by(2)
         .map(|y| {
-            let spans: Vec<Span<'static>> = (0..WIDTH as usize)
+            let spans: Vec<Span<'static>> = (0..w)
                 .map(|x| {
                     let top = grid.get(y).and_then(|r| r.get(x).copied()).flatten();
                     let bot = grid.get(y + 1).and_then(|r| r.get(x).copied()).flatten();
@@ -110,10 +164,10 @@ fn halfblock_lines(grid: &[Vec<Option<Color>>]) -> Vec<Line<'static>> {
         .collect()
 }
 
-/// Wrap 8 sprite lines into the [`HEIGHT`]-row block, bobbing up or down.
-fn with_bob(sprite: Vec<Line<'static>>, bob_up: bool) -> Vec<Line<'static>> {
-    let blank = Line::from(" ".repeat(WIDTH as usize));
-    let mut out = Vec::with_capacity(HEIGHT as usize);
+/// Wrap sprite lines into a block one row taller, bobbing up or down.
+fn with_bob(sprite: Vec<Line<'static>>, bob_up: bool, width: u16) -> Vec<Line<'static>> {
+    let blank = Line::from(" ".repeat(width as usize));
+    let mut out = Vec::with_capacity(sprite.len() + 1);
     if bob_up {
         out.push(blank);
         out.extend(sprite);

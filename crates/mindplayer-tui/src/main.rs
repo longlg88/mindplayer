@@ -111,10 +111,13 @@ fn load_mascot(explicit: Option<PathBuf>) -> Option<mascot::Sprite> {
 
 fn default_mascot_path() -> Option<PathBuf> {
     let dir = PathBuf::from(std::env::var_os("HOME")?).join(".mindplayer");
+    // Pick the most-recently-modified mascot.* so the file the user dropped last
+    // wins — otherwise an old mascot.jpg would shadow a freshly-added mascot.gif.
     ["png", "jpg", "jpeg", "gif", "webp", "bmp"]
         .iter()
         .map(|ext| dir.join(format!("mascot.{ext}")))
-        .find(|p| p.is_file())
+        .filter(|p| p.is_file())
+        .max_by_key(|p| std::fs::metadata(p).and_then(|m| m.modified()).ok())
 }
 
 /// Best-effort: undo every terminal mode `setup()` turned on. Writes directly to

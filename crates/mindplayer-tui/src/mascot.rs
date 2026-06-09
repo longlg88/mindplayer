@@ -178,32 +178,34 @@ fn with_bob(sprite: Vec<Line<'static>>, bob_up: bool, width: u16) -> Vec<Line<'s
     out
 }
 
-const OUT: Color = Color::Rgb(26, 31, 44);
-const BODY: Color = Color::Rgb(126, 162, 247);
-const LT: Color = Color::Rgb(173, 194, 251);
-const DK: Color = Color::Rgb(92, 116, 200);
-const WHITE: Color = Color::Rgb(245, 246, 249);
-const PLAY: Color = Color::Rgb(255, 255, 255);
-const CHEEK: Color = Color::Rgb(245, 150, 170);
+const OUT: Color = Color::Rgb(74, 44, 72); // dark plum outline
+const PINK: Color = Color::Rgb(255, 176, 205); // body
+const HI: Color = Color::Rgb(255, 209, 224); // glossy highlight
+const CHEEK: Color = Color::Rgb(255, 120, 150); // blush
+const MOUTH: Color = Color::Rgb(170, 52, 86); // little smile
+const EYE: Color = Color::Rgb(40, 38, 86); // navy eyes
+const WHITE: Color = Color::Rgb(255, 255, 255); // eye shine
+const FOOT: Color = Color::Rgb(224, 58, 80); // red feet
 
-/// 16×16 sprite. Chars: o=outline B=body L=highlight D=belly W=eye-white
-/// k=pupil P=play-badge c=cheek s=smile, space=transparent.
+/// 16×16 Kirby-style sprite. Chars: o=outline P=body h=highlight c=cheek
+/// m=mouth e=eye w=eye-shine f=foot, space=transparent. Simple flat colors so
+/// it stays crisp and high-contrast at terminal resolution.
 const ART: [&str; 16] = [
-    "      oLLo      ",
-    "      oLLo      ",
-    "    oooooooo    ",
-    "   oBBBBBBBBo   ",
-    "  oBLLBBBBBBBo  ",
-    "  oBWWBBBBWWBo  ",
-    "  oBWkBBBBWkBo  ",
-    "  oBBBBBBBBBBo  ",
-    "  ocBBBssBBBco  ",
-    "  oBDDDPDDDDo   ",
-    "  oBDDDPPDDDo   ",
-    "  oBDDDPDDDDo   ",
-    "   oDDDDDDDo    ",
-    "  oBBo  oBBo    ",
-    "  oo      oo    ",
+    "     oooooo     ",
+    "   ooPPPPPPoo   ",
+    "  oPPhhPPPPPPo  ",
+    " oPPhhPPPPPPPPo ",
+    " oPPeePPPPeePPo ",
+    " oPPeePPPPeePPo ",
+    " oPPewPPPPwePPo ",
+    " oPcPPPmmPPPcPo ",
+    " oPPPPPPPPPPPPo ",
+    " oPPPPPPPPPPPPo ",
+    "  oPPPPPPPPPPo  ",
+    "   oPPPPPPPPo   ",
+    "  ffff   ffff   ",
+    "   ff     ff    ",
+    "                ",
     "                ",
 ];
 
@@ -214,13 +216,14 @@ pub const HEIGHT: u16 = 9;
 
 fn color(c: char) -> Option<Color> {
     match c {
-        'o' | 'k' | 's' => Some(OUT),
-        'B' => Some(BODY),
-        'L' => Some(LT),
-        'D' => Some(DK),
-        'W' => Some(WHITE),
-        'P' => Some(PLAY),
+        'o' => Some(OUT),
+        'P' => Some(PINK),
+        'h' => Some(HI),
         'c' => Some(CHEEK),
+        'm' => Some(MOUTH),
+        'e' => Some(EYE),
+        'w' => Some(WHITE),
+        'f' => Some(FOOT),
         _ => None,
     }
 }
@@ -233,10 +236,11 @@ pub fn lines(tick: usize) -> Vec<Line<'static>> {
 
     let mut grid: Vec<Vec<char>> = ART.iter().map(|r| r.chars().collect()).collect();
     if blink {
-        // Close the eyes: flatten the white/pupil blocks into a dark line.
+        // Close the eyes: fill them pink with a dark line through the middle.
         for &x in &[4usize, 5, 10, 11] {
-            grid[5][x] = 'B';
-            grid[6][x] = 'o';
+            grid[4][x] = 'P';
+            grid[5][x] = 'o';
+            grid[6][x] = 'P';
         }
     }
 

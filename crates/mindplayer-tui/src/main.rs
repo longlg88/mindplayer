@@ -37,9 +37,6 @@ ARGS:
                mindplayer ~/code/my-project
 
 OPTIONS:
-    --mascot PATH    Use an image (png/jpg/gif/webp/bmp) as the mascot — it's
-                     pixelated to 16×16 and animated. Or just drop a file at
-                     ~/.mindplayer/mascot.png (or .jpg/.gif/...) to use it always.
     -h, --help       Print this help
     -V, --version    Print version
 
@@ -48,7 +45,7 @@ On the first screen choose 'working dir' (this DIR) or 'global' (all sessions)."
 fn main() -> Result<()> {
     // Resolve the target directory from args BEFORE touching the terminal, so
     // --help/--version print normally.
-    let (explicit_dir, mascot_path) = parse_args();
+    let explicit_dir = explicit_dir_from_args();
 
     // Restore the terminal even on a panic — otherwise a crash inside the event
     // loop leaves the real terminal in raw + mouse-reporting + alt-screen mode,
@@ -61,20 +58,17 @@ fn main() -> Result<()> {
         Some(dir) => App::new_in(dir),
         None => App::new(), // current directory
     };
-    app.mascot = load_mascot(mascot_path);
     let res = run(&mut terminal, &mut app);
     teardown(&mut terminal)?;
     res
 }
 
-/// Parse CLI args in one pass → (positional DIR, `--mascot` PATH). `mindplayer
-/// <dir>` targets that project from anywhere; `--mascot <path>` overrides the
-/// mascot. Handles `--help`/`--version` by printing and exiting.
-fn parse_args() -> (Option<PathBuf>, Option<PathBuf>) {
-    let mut dir = None;
-    let mut mascot = None;
-    let mut args = std::env::args().skip(1);
-    while let Some(arg) = args.next() {
+/// The directory passed as the first positional CLI arg, if any (so
+/// `mindplayer <dir>` targets that project from anywhere). `None` means no
+/// directory was given and the current directory should be used.
+/// Handles `--help`/`--version` by printing and exiting.
+fn explicit_dir_from_args() -> Option<PathBuf> {
+    for arg in std::env::args().skip(1) {
         match arg.as_str() {
             "-h" | "--help" => {
                 println!("{HELP}");
@@ -84,40 +78,16 @@ fn parse_args() -> (Option<PathBuf>, Option<PathBuf>) {
                 println!("mindplayer {}", env!("MINDPLAYER_VERSION"));
                 std::process::exit(0);
             }
-            "--mascot" => {
-                // Consume the value so it isn't mistaken for the positional DIR.
-                if let Some(p) = args.next() {
-                    mascot = Some(PathBuf::from(p));
-                }
-            }
-            s if !s.starts_with('-') && dir.is_none() => {
+            s if !s.starts_with('-') => {
                 // Resolve to an absolute path so the scope matches the cwd the
                 // CLIs record in their session files; fall back to the raw path.
                 let p = PathBuf::from(s);
-                dir = Some(std::fs::canonicalize(&p).unwrap_or(p));
+                return Some(std::fs::canonicalize(&p).unwrap_or(p));
             }
-            _ => {} // ignore unknown flags / extra positionals
+            _ => {} // ignore unknown flags
         }
     }
-    (dir, mascot)
-}
-
-/// Load the mascot image: the explicit `--mascot` path if given, else a drop-in
-/// at `~/.mindplayer/mascot.{png,jpg,jpeg,gif,webp,bmp}`. `None` → built-in.
-fn load_mascot(explicit: Option<PathBuf>) -> Option<mascot::Sprite> {
-    let path = explicit.or_else(default_mascot_path)?;
-    mascot::Sprite::load(&path)
-}
-
-fn default_mascot_path() -> Option<PathBuf> {
-    let dir = PathBuf::from(std::env::var_os("HOME")?).join(".mindplayer");
-    // Pick the most-recently-modified mascot.* so the file the user dropped last
-    // wins — otherwise an old mascot.jpg would shadow a freshly-added mascot.gif.
-    ["png", "jpg", "jpeg", "gif", "webp", "bmp"]
-        .iter()
-        .map(|ext| dir.join(format!("mascot.{ext}")))
-        .filter(|p| p.is_file())
-        .max_by_key(|p| std::fs::metadata(p).and_then(|m| m.modified()).ok())
+    None
 }
 
 /// Best-effort: undo every terminal mode `setup()` turned on. Writes directly to

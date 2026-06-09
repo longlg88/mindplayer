@@ -48,26 +48,17 @@ fn footer(area: Rect, f: &mut Frame, keys: &str) {
 }
 
 /// Draw the animated mascot, horizontally centered and top-anchored in `area`.
-fn draw_mascot(f: &mut Frame, area: Rect, tick: usize, custom: Option<&mascot::Sprite>) {
-    // A custom sprite may be larger than the built-in 16×16.
-    let (w, h) = match custom {
-        Some(s) => (s.cell_width(), s.cell_height()),
-        None => (mascot::WIDTH, mascot::HEIGHT),
-    };
-    if area.width < w || area.height < h {
+fn draw_mascot(f: &mut Frame, area: Rect, tick: usize) {
+    if area.width < mascot::WIDTH || area.height < mascot::HEIGHT {
         return;
     }
     let r = Rect {
-        x: area.x + (area.width - w) / 2,
+        x: area.x + (area.width - mascot::WIDTH) / 2,
         y: area.y,
-        width: w,
-        height: h,
+        width: mascot::WIDTH,
+        height: mascot::HEIGHT,
     };
-    let lines = match custom {
-        Some(sprite) => sprite.lines(tick),
-        None => mascot::lines(tick),
-    };
-    f.render_widget(Paragraph::new(lines), r);
+    f.render_widget(Paragraph::new(mascot::lines(tick)), r);
 }
 
 fn scope_select(f: &mut Frame, app: &App) {
@@ -80,7 +71,7 @@ fn scope_select(f: &mut Frame, app: &App) {
         ])
         .split(f.area());
     title_bar(chunks[0], f);
-    draw_mascot(f, chunks[1], app.spinner, app.mascot.as_ref());
+    draw_mascot(f, chunks[1], app.spinner);
 
     let options = [
         format!("working dir   {}", app.cwd.display()),
@@ -122,7 +113,7 @@ fn scanning(f: &mut Frame, app: &App) {
         .split(f.area());
     title_bar(chunks[0], f);
 
-    draw_mascot(f, chunks[1], app.spinner, app.mascot.as_ref());
+    draw_mascot(f, chunks[1], app.spinner);
     let spin = SPINNER[app.spinner % SPINNER.len()];
     let area = centered(chunks[1], 60, 5);
     let block = Block::default()
@@ -461,14 +452,9 @@ fn session_list(f: &mut Frame, app: &mut App, area: Rect, now: DateTime<Utc>) {
     let region_top = content_top + app.visible.len() as u16;
     let region_h = bottom.saturating_sub(region_top);
     const GAP: u16 = 1;
-    // The custom mascot can be taller than the built-in one; size the block to it.
-    let mascot_h = app
-        .mascot
-        .as_ref()
-        .map_or(mascot::HEIGHT, |s| s.cell_height());
-    let block_h = mascot_h + GAP + 2; // mascot + gap + tagline + legend
-                                      // Record whether the animated hero is actually on screen, so the event loop
-                                      // only forces ~12fps redraws of the list when there's something to animate.
+    let block_h = mascot::HEIGHT + GAP + 2; // mascot + gap + tagline + legend
+                                            // Record whether the animated hero is actually on screen, so the event loop
+                                            // only forces ~12fps redraws of the list when there's something to animate.
     app.hero_visible = region_h >= block_h + 2;
     if app.hero_visible {
         let inner_x = area.x + 1;
@@ -480,10 +466,9 @@ fn session_list(f: &mut Frame, app: &mut App, area: Rect, now: DateTime<Utc>) {
                 x: inner_x,
                 y: top,
                 width: inner_w,
-                height: mascot_h,
+                height: mascot::HEIGHT,
             },
             app.spinner,
-            app.mascot.as_ref(),
         );
         let tagline = Paragraph::new(Line::from(Span::styled(
             "Run many Codex · Claude · Kiro sessions like tabs",
@@ -494,7 +479,7 @@ fn session_list(f: &mut Frame, app: &mut App, area: Rect, now: DateTime<Utc>) {
             tagline,
             Rect {
                 x: inner_x,
-                y: top + mascot_h + GAP,
+                y: top + mascot::HEIGHT + GAP,
                 width: inner_w,
                 height: 1,
             },
@@ -510,7 +495,7 @@ fn session_list(f: &mut Frame, app: &mut App, area: Rect, now: DateTime<Utc>) {
             legend,
             Rect {
                 x: inner_x,
-                y: top + mascot_h + GAP + 1,
+                y: top + mascot::HEIGHT + GAP + 1,
                 width: inner_w,
                 height: 1,
             },
@@ -572,11 +557,7 @@ fn live_pane(f: &mut Frame, app: &mut App, area: Rect) {
     };
 
     if !rendered {
-        let mascot_h = app
-            .mascot
-            .as_ref()
-            .map_or(mascot::HEIGHT, |s| s.cell_height());
-        draw_mascot(f, inner, app.spinner, app.mascot.as_ref());
+        draw_mascot(f, inner, app.spinner);
         let hint = Paragraph::new(vec![
             Line::from(Span::styled(
                 "Select a session and press enter to resume it here.",
@@ -591,9 +572,9 @@ fn live_pane(f: &mut Frame, app: &mut App, area: Rect) {
         .wrap(Wrap { trim: true });
         let hint_area = Rect {
             x: inner.x,
-            y: inner.y + mascot_h.min(inner.height),
+            y: inner.y + mascot::HEIGHT.min(inner.height),
             width: inner.width,
-            height: inner.height.saturating_sub(mascot_h),
+            height: inner.height.saturating_sub(mascot::HEIGHT),
         };
         f.render_widget(hint, hint_area);
     }

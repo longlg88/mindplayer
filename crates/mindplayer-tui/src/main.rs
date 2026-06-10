@@ -1,6 +1,7 @@
 //! MindPlayer TUI entry point: terminal setup, the event loop, and key routing.
 
 mod app;
+mod experimental_handoff;
 mod mascot;
 mod pty;
 mod terminal_view;
@@ -169,6 +170,9 @@ fn run(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut App) -> Resu
             }
             // Track which sessions are actively producing output (status badge).
             if app.poll_activity() {
+                needs_draw = true;
+            }
+            if app.flush_initial_inputs() {
                 needs_draw = true;
             }
             // Live re-ordering from the background mtime refresh.
@@ -351,6 +355,21 @@ fn handle_key(app: &mut App, key: KeyEvent) {
 }
 
 fn handle_main_key(app: &mut App, key: KeyEvent) {
+    // EXPERIMENTAL: cross-agent handoff picker, hidden unless the env flag is set.
+    if let Some(choice) = app.handoff_picker {
+        match key.code {
+            KeyCode::Up | KeyCode::Char('k') => app.handoff_picker = Some(choice.saturating_sub(1)),
+            KeyCode::Down | KeyCode::Char('j') => app.handoff_picker = Some((choice + 1).min(2)),
+            KeyCode::Enter => {
+                let target = experimental_handoff::target_for_choice(choice);
+                app.confirm_handoff(target);
+            }
+            KeyCode::Esc => app.cancel_handoff(),
+            _ => {}
+        }
+        return;
+    }
+
     // Step 1 (modal): pick codex/claude.
     if let Some(choice) = app.new_picker {
         match key.code {
@@ -406,6 +425,31 @@ fn handle_main_key(app: &mut App, key: KeyEvent) {
         return;
     }
 
+    if app.search_query.is_some() {
+        match key.code {
+            KeyCode::Backspace => app.search_backspace(),
+            KeyCode::Enter => app.request_resume(),
+            KeyCode::Esc => app.cancel_search(),
+            KeyCode::Up => app.move_selection(-1),
+            KeyCode::Down => app.move_selection(1),
+            KeyCode::PageUp => app.move_page(-1),
+            KeyCode::PageDown => app.move_page(1),
+            KeyCode::Char('h') => app.begin_handoff(),
+            KeyCode::Char('n') => app.new_picker = Some(0),
+            KeyCode::Char('e') => app.begin_label_edit(),
+            KeyCode::Char('x') => app.close_selected(),
+            KeyCode::Char('a') => app.toggle_archived_view(),
+            KeyCode::Char('g') => app.toggle_subagents(),
+            KeyCode::Char('r') => app.rescan(),
+            KeyCode::Char('q') => app.quit(),
+            KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                app.search_push(c)
+            }
+            _ => {}
+        }
+        return;
+    }
+
     match app.focus {
         Focus::Terminal => {
             // Ctrl-x detaches back to the list; everything else goes to the PTY.
@@ -436,8 +480,10 @@ fn handle_main_key(app: &mut App, key: KeyEvent) {
                 KeyCode::PageDown => app.move_page(1),
                 KeyCode::Enter | KeyCode::Char('l') | KeyCode::Right => app.request_resume(),
                 KeyCode::Char('n') => app.new_picker = Some(0),
+                KeyCode::Char('/') => app.begin_search(),
                 KeyCode::Char('d') => app.begin_dir_input(),
                 KeyCode::Char('e') => app.begin_label_edit(),
+                KeyCode::Char('h') => app.begin_handoff(),
                 KeyCode::Char('x') => app.close_selected(),
                 KeyCode::Char('a') => app.toggle_archived_view(),
                 KeyCode::Char('g') => app.toggle_subagents(),

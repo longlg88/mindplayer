@@ -2,6 +2,7 @@
 //! into `App` so the PTY can be spawned/resized at the correct dimensions.
 
 use crate::app::{App, Focus, Screen, SessionStatus};
+use crate::experimental_handoff;
 use crate::mascot;
 use crate::terminal_view::TerminalView;
 use chrono::{DateTime, Utc};
@@ -244,7 +245,11 @@ fn main_view(f: &mut Frame, app: &mut App) {
 
     let keys = match app.focus {
         Focus::List => {
-            "↑↓ move  enter open  n new  d dir  e label  x close  a archived  g sub  r rescan  q quit"
+            if experimental_handoff::enabled() {
+                "↑↓ move  enter open  / search  n new  h handoff  d dir  e label  x close  a archived  g sub  r rescan  q quit"
+            } else {
+                "↑↓ move  enter open  / search  n new  d dir  e label  x close  a archived  g sub  r rescan  q quit"
+            }
         }
         Focus::Terminal => "ctrl-x back to list   wheel scrolls history   shift+drag to copy",
     };
@@ -267,7 +272,9 @@ fn main_view(f: &mut Frame, app: &mut App) {
         footer_line[1],
     );
 
-    if let Some(choice) = app.new_picker {
+    if let Some(choice) = app.handoff_picker {
+        handoff_popup(f, choice, app.selected_session().map(|s| s.agent));
+    } else if let Some(choice) = app.new_picker {
         new_session_popup(f, choice);
     } else if let Some(label) = &app.new_label {
         if app.label_target.is_some() {
@@ -364,9 +371,17 @@ fn session_list(f: &mut Frame, app: &mut App, area: Rect, now: DateTime<Utc>) {
         "active"
     };
     let subs = if app.show_subagents { " +sub" } else { "" };
+    let search = app
+        .search_query
+        .as_deref()
+        .map(|query| format!(" · /{query}"))
+        .unwrap_or_default();
     let block = Block::default()
         .borders(Borders::ALL)
-        .title(format!(" Sessions · {tab}{subs} ({}) ", app.visible.len()))
+        .title(format!(
+            " Sessions · {tab}{subs}{search} ({}) ",
+            app.visible.len()
+        ))
         .border_style(Style::default().fg(if focused { ACCENT } else { DIM }));
 
     // Fill the pane: title gets whatever width is left after border, status
@@ -507,7 +522,7 @@ fn live_pane(f: &mut Frame, app: &mut App, area: Rect) {
     let focused = app.focus == Focus::Terminal;
     let active_id = app.active.clone();
     let ended = app.active_ended();
-    let live_count = app.ptys.len();
+    let live_count = app.live_pty_count();
     let count_suffix = if live_count > 1 {
         format!(" [{live_count} live]")
     } else {
@@ -602,6 +617,49 @@ fn new_session_popup(f: &mut Frame, choice: usize) {
             Line::from(Span::styled(format!("{marker}{name}"), style))
         })
         .collect();
+    f.render_widget(
+        Paragraph::new(lines)
+            .block(block)
+            .alignment(Alignment::Left),
+        area,
+    );
+}
+
+fn handoff_popup(f: &mut Frame, choice: usize, source: Option<Agent>) {
+    let area = centered(f.area(), 48, 8);
+    f.render_widget(Clear, area);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(ACCENT))
+        .title(" Experimental handoff ");
+    let opts = [Agent::Codex, Agent::Claude, Agent::Kiro];
+    let mut lines: Vec<Line> = opts
+        .iter()
+        .enumerate()
+        .map(|(i, agent)| {
+            let selected = i == choice;
+            let same = source == Some(*agent);
+            let marker = if selected { "▶ " } else { "  " };
+            let suffix = if same { " (source)" } else { "" };
+            let mut style = if same {
+                Style::default().fg(DIM)
+            } else {
+                Style::default()
+            };
+            if selected {
+                style = style.fg(ACCENT).add_modifier(Modifier::BOLD);
+            }
+            Line::from(Span::styled(
+                format!("{marker}{}{suffix}", agent.as_str()),
+                style,
+            ))
+        })
+        .collect();
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "enter start with handoff prompt   esc cancel",
+        Style::default().fg(DIM),
+    )));
     f.render_widget(
         Paragraph::new(lines)
             .block(block)

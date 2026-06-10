@@ -45,6 +45,10 @@ pub struct PtySession {
     /// hint / spinner), so a session waiting on a long subprocess with no new
     /// output is still classified Working rather than Idle.
     busy: Arc<AtomicBool>,
+    /// Memoized "input prompt is back" flag. This must override recent output:
+    /// a completed turn prints one last batch and returns to a prompt, but that
+    /// final output should not keep the row marked Working.
+    idle: Arc<AtomicBool>,
     pub rows: u16,
     pub cols: u16,
 }
@@ -100,6 +104,7 @@ impl PtySession {
         let seq = Arc::new(AtomicU64::new(0));
         let blocked = Arc::new(AtomicBool::new(false));
         let busy = Arc::new(AtomicBool::new(false));
+        let idle = Arc::new(AtomicBool::new(false));
 
         {
             let parser = parser.clone();
@@ -107,6 +112,7 @@ impl PtySession {
             let seq = seq.clone();
             let blocked = blocked.clone();
             let busy = busy.clone();
+            let idle = idle.clone();
             thread::spawn(move || {
                 let mut buf = [0u8; 8192];
                 loop {
@@ -120,6 +126,7 @@ impl PtySession {
                                 let screen = p.screen().contents();
                                 blocked.store(text_looks_blocked(&screen), Ordering::Relaxed);
                                 busy.store(text_looks_busy(&screen), Ordering::Relaxed);
+                                idle.store(text_looks_idle(&screen), Ordering::Relaxed);
                             }
                             dirty.store(true, Ordering::Relaxed);
                             seq.fetch_add(1, Ordering::Relaxed);
@@ -144,6 +151,7 @@ impl PtySession {
             group_signalled: false,
             blocked,
             busy,
+            idle,
             rows,
             cols,
         })
@@ -172,6 +180,12 @@ impl PtySession {
     /// is still "working" rather than "idle". See [`text_looks_busy`].
     pub fn looks_busy(&self) -> bool {
         self.busy.load(Ordering::Relaxed)
+    }
+
+    /// Memoized: the agent prompt/input box is visible again, so the turn is
+    /// ready for more input even if the last output was very recent.
+    pub fn looks_idle(&self) -> bool {
+        self.idle.load(Ordering::Relaxed)
     }
 
     pub fn parser(&self) -> &Arc<Mutex<vt100::Parser>> {
@@ -225,6 +239,26 @@ impl PtySession {
             let _ = self.writer.write_all(text.as_bytes());
         }
         let _ = self.writer.flush();
+    }
+
+    /// Paste a prepared initial prompt literally, then submit it with Enter.
+    /// This keeps multi-line handoff text as one prompt in CLIs that enable
+    /// bracketed paste, instead of treating every newline as a submit key.
+    pub fn paste_and_submit(&mut self, bytes: &[u8]) {
+        let (body, submit) = bytes
+            .strip_suffix(b"\r")
+            .map(|body| (body, Some(b"\r".as_slice())))
+            .or_else(|| {
+                bytes
+                    .strip_suffix(b"\n")
+                    .map(|body| (body, Some(b"\n".as_slice())))
+            })
+            .unwrap_or((bytes, None));
+        let text = String::from_utf8_lossy(body);
+        self.paste(&text);
+        if let Some(submit) = submit {
+            self.send(submit);
+        }
     }
 
     /// Does the child have xterm mouse reporting enabled? If so, the wheel/click
@@ -478,6 +512,20 @@ fn text_looks_busy(screen: &str) -> bool {
         .any(|l| BUSY_MARKERS.iter().any(|m| l.contains(m)))
 }
 
+/// True if the visible terminal text looks like the normal input prompt is
+/// ready. This is intentionally narrower than "not busy": it only recognizes
+/// prompt/input-box affordances that mean a completed turn is accepting input.
+fn text_looks_idle(screen: &str) -> bool {
+    bottom_lines(screen, 14).iter().any(|l| {
+        l == "›"
+            || l.starts_with("› ")
+            || l.contains("type your message")
+            || l.contains("? for shortcuts")
+            || l.contains("│ >")
+            || l.contains("┃ >")
+    })
+}
+
 /// POSIX single-quote a token so it is safe inside `sh -c`.
 fn shell_quote(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + 2);
@@ -636,6 +684,26 @@ mod tests {
   ? for shortcuts
 ";
         assert!(text_looks_busy(frame2));
+    }
+
+    #[test]
+    fn idle_prompt_detection_overrides_stale_busy_text() {
+        let frame = "\
+✻ Churned for 9m 15s · 1 shell still running
+
+╭──────────────────────────────────────────────╮
+│ >                                            │
+╰──────────────────────────────────────────────╯
+  ? for shortcuts
+";
+        assert!(text_looks_busy(frame));
+        assert!(
+            text_looks_idle(frame),
+            "visible prompt/input box means the turn is idle despite stale busy text"
+        );
+
+        assert!(text_looks_idle("› \ntype your message"));
+        assert!(!text_looks_idle("running build\n… (esc to interrupt)"));
     }
 
     #[test]

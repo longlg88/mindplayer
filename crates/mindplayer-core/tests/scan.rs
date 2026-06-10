@@ -1,6 +1,9 @@
 //! End-to-end discovery over a mock session tree, plus state wiring.
 
-use mindplayer_core::{scan, Aggregate, ScanConfig, Scope, State};
+use mindplayer_core::{
+    refresh_activity_and_usage, scan, Agent, Aggregate, ScanConfig, Scope, Session, State,
+    TokenUsage,
+};
 use std::fs;
 use std::path::Path;
 use tempfile::tempdir;
@@ -225,6 +228,65 @@ fn codex_tail_finds_token_after_huge_line() {
         s.tokens.total, 10,
         "token_count after huge line must be read"
     );
+}
+
+#[test]
+fn refresh_activity_updates_usage_for_existing_rows() {
+    let dir = tempdir().unwrap();
+    let codex = dir.path().join("codex.jsonl");
+    write(
+        &codex,
+        &[
+            r#"{"type":"session_meta","payload":{"id":"codex-1","timestamp":"2026-01-02T10:00:00Z","cwd":"/work"}}"#,
+            r#"{"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":7,"cached_input_tokens":2,"output_tokens":3,"total_tokens":10}}}}"#,
+        ],
+    );
+    let claude = dir.path().join("claude.jsonl");
+    write(
+        &claude,
+        &[
+            r#"{"type":"last-prompt","sessionId":"claude-1"}"#,
+            r#"{"type":"assistant","timestamp":"2026-01-03T02:05:00Z","sessionId":"claude-1","cwd":"/work","message":{"role":"assistant","usage":{"input_tokens":2,"output_tokens":5,"cache_creation_input_tokens":11,"cache_read_input_tokens":13}}}"#,
+        ],
+    );
+
+    let mut sessions = vec![
+        Session {
+            id: "codex-1".into(),
+            agent: Agent::Codex,
+            cwd: "/work".into(),
+            file: codex,
+            started_at: None,
+            last_active: None,
+            tokens: TokenUsage::default(),
+            title: "codex".into(),
+            archived: false,
+            is_subagent: false,
+            context_pct: None,
+        },
+        Session {
+            id: "claude-1".into(),
+            agent: Agent::Claude,
+            cwd: "/work".into(),
+            file: claude,
+            started_at: None,
+            last_active: None,
+            tokens: TokenUsage::default(),
+            title: "claude".into(),
+            archived: false,
+            is_subagent: false,
+            context_pct: None,
+        },
+    ];
+
+    refresh_activity_and_usage(&mut sessions);
+
+    let codex = sessions.iter().find(|s| s.id == "codex-1").unwrap();
+    assert_eq!(codex.tokens.total, 10);
+    assert_eq!(codex.tokens.cached, 2);
+    let claude = sessions.iter().find(|s| s.id == "claude-1").unwrap();
+    assert_eq!(claude.tokens.total, 31);
+    assert_eq!(claude.tokens.cached, 24);
 }
 
 #[test]

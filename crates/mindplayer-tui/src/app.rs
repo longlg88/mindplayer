@@ -1,11 +1,11 @@
 //! Application state machine: scope select -> scanning -> main, plus the
 //! embedded PTY lifecycle and archive actions.
 
-use crate::pty::PtySession;
+use crate::{experimental_handoff, pty::PtySession};
 use chrono::{DateTime, Utc};
 use mindplayer_core::{
-    resume, scan, sort_by_recency, tokens::human_tokens, Agent, Aggregate, ScanConfig, Scope,
-    Session, State,
+    refresh_activity_and_usage, resume, scan, sort_by_recency, tokens::human_tokens, Agent,
+    Aggregate, ScanConfig, Scope, Session, State, TokenUsage,
 };
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -13,8 +13,13 @@ use std::sync::mpsc::{self, Receiver};
 use std::thread;
 use std::time::{Duration, Instant};
 
-/// Background refresh result: per-session (id, last-active-from-mtime).
-type ActivityUpdate = Vec<(String, DateTime<Utc>)>;
+/// Background refresh result for one already-discovered session.
+struct ActivityUpdate {
+    id: String,
+    last_active: Option<DateTime<Utc>>,
+    tokens: TokenUsage,
+    context_pct: Option<f64>,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Screen {
@@ -72,12 +77,42 @@ const WORKING_HOLD: Duration = Duration::from_secs(6);
 /// window), so gating busy on recent output keeps live sessions "working" while
 /// letting a long-quiet one fall back to idle/done.
 const BUSY_TRUST: Duration = Duration::from_secs(20);
-
 /// Whether a session counts as working, given when it last produced output.
 /// Demotion is delayed by `hold` (see [`WORKING_HOLD`]); promotion is instant
 /// because `last_output` is stamped to "now" the moment any output arrives.
 fn working_within_hold(last_output: Option<Instant>, now: Instant, hold: Duration) -> bool {
     last_output.is_some_and(|t| now.saturating_duration_since(t) < hold)
+}
+
+fn should_send_initial_input(looks_idle: bool, _output_seq: u64, _queued_for: Duration) -> bool {
+    looks_idle
+}
+
+fn should_stamp_activity(turn_submitted: bool, looks_busy: bool) -> bool {
+    turn_submitted || looks_busy
+}
+
+fn input_submits_turn(bytes: &[u8]) -> bool {
+    bytes.iter().any(|b| matches!(b, b'\r' | b'\n'))
+}
+
+fn matches_search(s: &Session, query: &str) -> bool {
+    let query = query.trim().to_lowercase();
+    query.is_empty()
+        || s.title.to_lowercase().contains(&query)
+        || s.id.to_lowercase().contains(&query)
+        || s.agent.as_str().contains(&query)
+}
+
+fn handoff_label(label: &str) -> Option<String> {
+    let label = label.trim();
+    if label.is_empty() {
+        None
+    } else if label.starts_with("(handoff)") {
+        Some(label.to_string())
+    } else {
+        Some(format!("(handoff){label}"))
+    }
 }
 
 pub struct App {
@@ -123,10 +158,18 @@ pub struct App {
     /// to show a "working" badge for sessions actively producing output.
     out_seq: HashMap<String, u64>,
     out_at: HashMap<String, Instant>,
+    /// Sessions where the user (or a handoff bootstrap) has submitted a turn.
+    /// Initial TUI paint after opening a session is output too, but it should
+    /// not make the row look like active work.
+    turn_submitted: HashSet<String>,
+    /// Initial prompt payloads waiting for a newly-spawned agent's input prompt.
+    pending_initial_inputs: HashMap<String, DeferredInitialInput>,
     /// Set when a resume is requested; consumed once the right-pane size is known.
     pub pending: Option<PendingSpawn>,
     /// codex/claude picker for a new session; None when hidden.
     pub new_picker: Option<usize>,
+    /// EXPERIMENTAL: target-agent picker for a cross-agent handoff.
+    pub handoff_picker: Option<usize>,
     /// When `Some`, the label-input step of new-session creation is active and
     /// holds the text typed so far.
     pub new_label: Option<String>,
@@ -139,6 +182,8 @@ pub struct App {
     /// When `Some`, the working-dir input modal is open and holds the path text
     /// typed so far. Confirming re-points the scope at that directory.
     pub dir_input: Option<String>,
+    /// When `Some`, the session list is filtered as the user types after `/`.
+    pub search_query: Option<String>,
     /// Monotonic counter so each new session gets a unique synthetic id.
     new_counter: u64,
     /// Sessions started inside MindPlayer that have no disk file yet (codex /
@@ -162,9 +207,9 @@ pub struct App {
     pub pty_y: u16,
 
     scan_rx: Option<Receiver<Vec<Session>>>,
-    /// In-flight background mtime refresh (id -> last_active), kept off the main
-    /// thread so the periodic re-sort never stalls input/rendering.
-    refresh_rx: Option<Receiver<ActivityUpdate>>,
+    /// In-flight background usage refresh, kept off the main thread so periodic
+    /// token updates and re-sort never stall input/rendering.
+    refresh_rx: Option<Receiver<Vec<ActivityUpdate>>>,
     /// In-flight background full re-scan (to pick up newly created sessions).
     bg_rescan_rx: Option<Receiver<Vec<Session>>>,
     /// When to kick the next background re-scan (after creating a session).
@@ -178,6 +223,12 @@ pub struct App {
 pub struct PendingSpawn {
     pub command: mindplayer_core::Command,
     pub session_id: String,
+    pub initial_input: Option<Vec<u8>>,
+}
+
+struct DeferredInitialInput {
+    bytes: Vec<u8>,
+    queued_at: Instant,
 }
 
 impl App {
@@ -212,12 +263,16 @@ impl App {
             ended: HashSet::new(),
             out_seq: HashMap::new(),
             out_at: HashMap::new(),
+            turn_submitted: HashSet::new(),
+            pending_initial_inputs: HashMap::new(),
             pending: None,
             new_picker: None,
+            handoff_picker: None,
             new_label: None,
             new_agent: None,
             label_target: None,
             dir_input: None,
+            search_query: None,
             new_counter: 0,
             extra_sessions: Vec::new(),
             new_baselines: HashMap::new(),
@@ -290,9 +345,158 @@ impl App {
 
     pub fn cancel_new_session(&mut self) {
         self.new_picker = None;
+        self.handoff_picker = None;
         self.new_label = None;
         self.new_agent = None;
         self.label_target = None;
+    }
+
+    // --- experimental cross-agent handoff ----------------------------------
+
+    pub fn begin_handoff(&mut self) {
+        if !experimental_handoff::enabled() {
+            self.status = format!(
+                "experimental handoff is disabled (set {}=1)",
+                experimental_handoff::ENV_FLAG
+            );
+            return;
+        }
+        if self.selected_session().is_none() {
+            return;
+        }
+        self.handoff_picker = Some(0);
+    }
+
+    pub fn cancel_handoff(&mut self) {
+        self.handoff_picker = None;
+    }
+
+    pub fn confirm_handoff(&mut self, target: Agent) {
+        let Some(source) = self.selected_session().cloned() else {
+            self.handoff_picker = None;
+            return;
+        };
+        self.handoff_picker = None;
+        if !experimental_handoff::enabled() {
+            self.status = format!(
+                "experimental handoff is disabled (set {}=1)",
+                experimental_handoff::ENV_FLAG
+            );
+            return;
+        }
+        if source.agent == target {
+            self.status = format!("handoff target is already {}", target.as_str());
+            return;
+        }
+
+        let prepared = match experimental_handoff::prepare_initial_input(&source, target) {
+            Ok(prepared) => prepared,
+            Err(e) => {
+                self.status = format!("handoff failed: {e}");
+                return;
+            }
+        };
+        let command = experimental_handoff::command_for(&source, target);
+        self.new_counter += 1;
+        let session_id = format!(
+            "handoff:{}:{}:{}",
+            source.agent.as_str(),
+            target.as_str(),
+            self.new_counter
+        );
+        let baseline: HashSet<String> = self
+            .all_sessions
+            .iter()
+            .filter(|s| !s.id.starts_with("new:") && !s.id.starts_with("handoff:"))
+            .map(|s| s.id.clone())
+            .collect();
+        self.new_baselines.insert(session_id.clone(), baseline);
+        let handoff_label = self.state.label_for(&source.id).and_then(handoff_label);
+        self.pending = Some(PendingSpawn {
+            command,
+            session_id: session_id.clone(),
+            initial_input: Some(prepared.input),
+        });
+        self.active = Some(session_id.clone());
+        self.focus = Focus::Terminal;
+
+        let now = Utc::now();
+        let synthetic = Session {
+            id: session_id,
+            agent: target,
+            cwd: source.cwd.clone(),
+            file: PathBuf::new(),
+            started_at: Some(now),
+            last_active: Some(now),
+            tokens: Default::default(),
+            title: handoff_label
+                .as_ref()
+                .map(|label| format!("🏷 {label}"))
+                .unwrap_or_else(|| experimental_handoff::title_for(&source, target)),
+            archived: false,
+            is_subagent: false,
+            context_pct: None,
+        };
+        self.extra_sessions.push(synthetic.clone());
+        self.all_sessions.push(synthetic);
+        self.rebuild_visible();
+        if let Some(id) = self.active.clone() {
+            if let Some(pos) = self
+                .visible
+                .iter()
+                .position(|&i| self.all_sessions[i].id == id)
+            {
+                self.selected = pos;
+            }
+        }
+        let trunc = if prepared.inline_truncated {
+            "artifact only"
+        } else {
+            "full inline"
+        };
+        if let Some(label) = &handoff_label {
+            self.state.add_pending_label(
+                target.as_str(),
+                source.cwd.clone(),
+                now - chrono::Duration::seconds(5),
+                label,
+            );
+            let _ = self.state.save();
+        }
+        self.status = format!(
+            "experimental handoff {} -> {} ({} chars, {trunc}, {})",
+            source.agent.as_str(),
+            target.as_str(),
+            prepared.transcript_chars,
+            prepared.artifact.display()
+        );
+        self.rescan_due = Some(Instant::now() + Duration::from_secs(3));
+    }
+
+    // --- session search ----------------------------------------------------
+
+    pub fn begin_search(&mut self) {
+        self.search_query = Some(String::new());
+        self.rebuild_visible();
+    }
+
+    pub fn search_push(&mut self, c: char) {
+        if let Some(query) = self.search_query.as_mut() {
+            query.push(c);
+            self.rebuild_visible();
+        }
+    }
+
+    pub fn search_backspace(&mut self) {
+        if let Some(query) = self.search_query.as_mut() {
+            query.pop();
+            self.rebuild_visible();
+        }
+    }
+
+    pub fn cancel_search(&mut self) {
+        self.search_query = None;
+        self.rebuild_visible();
     }
 
     /// Open the label-input modal for the currently-selected session so an
@@ -522,6 +726,11 @@ impl App {
             .enumerate()
             .filter(|(_, s)| show_archived == s.archived)
             .filter(|(_, s)| show_subagents || !s.is_subagent)
+            .filter(|(_, s)| {
+                self.search_query
+                    .as_deref()
+                    .is_none_or(|query| matches_search(s, query))
+            })
             .map(|(i, _)| i)
             .collect();
         // herdr-style rollup: float the most urgent states to the top
@@ -593,27 +802,24 @@ impl App {
         self.start_scan();
     }
 
-    /// Kick off a background mtime refresh (no-op if one is already running).
-    /// The `stat` of every session file happens off the main thread so input
-    /// and rendering never stall; results are applied in [`Self::poll_refresh`].
+    /// Kick off a background usage refresh (no-op if one is already running).
+    /// File stats and token parsing happen off the main thread so input and
+    /// rendering never stall; results are applied in [`Self::poll_refresh`].
     pub fn start_refresh(&mut self) {
         if self.refresh_rx.is_some() || self.all_sessions.is_empty() {
             return;
         }
-        let items: Vec<(String, PathBuf)> = self
-            .all_sessions
-            .iter()
-            .map(|s| (s.id.clone(), s.file.clone()))
-            .collect();
+        let mut sessions = self.all_sessions.clone();
         let (tx, rx) = mpsc::channel();
         thread::spawn(move || {
-            let out: Vec<(String, DateTime<Utc>)> = items
+            refresh_activity_and_usage(&mut sessions);
+            let out: Vec<ActivityUpdate> = sessions
                 .into_iter()
-                .filter_map(|(id, path)| {
-                    std::fs::metadata(&path)
-                        .and_then(|m| m.modified())
-                        .ok()
-                        .map(|t| (id, DateTime::<Utc>::from(t)))
+                .map(|s| ActivityUpdate {
+                    id: s.id,
+                    last_active: s.last_active,
+                    tokens: s.tokens,
+                    context_pct: s.context_pct,
                 })
                 .collect();
             let _ = tx.send(out);
@@ -621,9 +827,9 @@ impl App {
         self.refresh_rx = Some(rx);
     }
 
-    /// Apply a finished background refresh: update activity times, re-sort
-    /// newest-first, and keep the cursor on the same session by id. Returns
-    /// true if the list changed (needs redraw).
+    /// Apply a finished background refresh: update activity/usage, re-sort
+    /// newest-first, and keep the cursor on the same session by id. Returns true
+    /// if the list changed (needs redraw).
     pub fn poll_refresh(&mut self) -> bool {
         let Some(rx) = &self.refresh_rx else {
             return false;
@@ -633,10 +839,13 @@ impl App {
         };
         self.refresh_rx = None;
 
-        let times: HashMap<String, DateTime<Utc>> = updates.into_iter().collect();
+        let updates: HashMap<String, ActivityUpdate> =
+            updates.into_iter().map(|u| (u.id.clone(), u)).collect();
         for s in self.all_sessions.iter_mut() {
-            if let Some(t) = times.get(&s.id) {
-                s.last_active = Some(*t);
+            if let Some(update) = updates.get(&s.id) {
+                s.last_active = update.last_active;
+                s.tokens = update.tokens;
+                s.context_pct = update.context_pct;
             }
         }
         let selected_id = self.selected_session().map(|s| s.id.clone());
@@ -672,7 +881,14 @@ impl App {
     pub fn has_live_pty(&self) -> bool {
         self.active
             .as_ref()
-            .is_some_and(|id| self.ptys.contains_key(id))
+            .is_some_and(|id| self.ptys.contains_key(id) && !self.ended.contains(id))
+    }
+
+    pub fn live_pty_count(&self) -> usize {
+        self.ptys
+            .keys()
+            .filter(|id| !self.ended.contains(*id))
+            .count()
     }
 
     /// Whether session `id` is running (has a PTY that hasn't ended).
@@ -687,15 +903,24 @@ impl App {
         let mut changed = false;
         let now = Instant::now();
         for (id, pty) in self.ptys.iter() {
+            if self.ended.contains(id) {
+                continue;
+            }
             let seq = pty.output_seq();
             if self.out_seq.get(id) != Some(&seq) {
                 self.out_seq.insert(id.clone(), seq);
-                self.out_at.insert(id.clone(), now);
+                if should_stamp_activity(self.turn_submitted.contains(id), pty.looks_busy()) {
+                    self.out_at.insert(id.clone(), now);
+                }
                 changed = true;
             }
         }
-        self.out_seq.retain(|id, _| self.ptys.contains_key(id));
-        self.out_at.retain(|id, _| self.ptys.contains_key(id));
+        self.out_seq
+            .retain(|id, _| self.ptys.contains_key(id) && !self.ended.contains(id));
+        self.out_at
+            .retain(|id, _| self.ptys.contains_key(id) && !self.ended.contains(id));
+        self.turn_submitted
+            .retain(|id| self.ptys.contains_key(id) && !self.ended.contains(id));
         changed
     }
 
@@ -703,7 +928,9 @@ impl App {
     /// this to keep redrawing so a badge can decay from working → idle even
     /// with no new events.
     pub fn any_recent_activity(&self) -> bool {
-        self.out_at.values().any(|t| t.elapsed() < WORKING_HOLD)
+        self.out_at
+            .iter()
+            .any(|(id, t)| !self.ended.contains(id) && t.elapsed() < WORKING_HOLD)
     }
 
     /// Status of session `id` for the list badge.
@@ -713,13 +940,17 @@ impl App {
         } else if let Some(pty) = self.ptys.get(id) {
             let recent_output =
                 working_within_hold(self.out_at.get(id).copied(), Instant::now(), WORKING_HOLD);
-            if recent_output {
+            if pty.looks_blocked() {
+                // Quiet + a confirm/approval prompt on screen → waiting for you.
+                SessionStatus::Blocked
+            } else if pty.looks_idle() {
+                // Prompt/input box is back. This overrides fresh output because
+                // a completed turn prints one final batch before becoming idle.
+                SessionStatus::Idle
+            } else if recent_output {
                 // Produced output within the hold window — treat as working even
                 // through brief silences (hysteresis) so it doesn't bounce.
                 SessionStatus::Working
-            } else if pty.looks_blocked() {
-                // Quiet + a confirm/approval prompt on screen → waiting for you.
-                SessionStatus::Blocked
             } else if pty.looks_busy()
                 && working_within_hold(self.out_at.get(id).copied(), Instant::now(), BUSY_TRUST)
             {
@@ -762,6 +993,7 @@ impl App {
         self.pending = Some(PendingSpawn {
             command: resume(&session),
             session_id: session.id.clone(),
+            initial_input: None,
         });
         self.active = Some(session.id.clone());
         self.status = format!("resuming {} {}", session.agent.as_str(), short(&session.id));
@@ -793,6 +1025,7 @@ impl App {
         self.pending = Some(PendingSpawn {
             command,
             session_id: session_id.clone(),
+            initial_input: None,
         });
         self.new_picker = None;
         self.new_label = None;
@@ -902,6 +1135,12 @@ impl App {
                     if let Some(pty) = self.ptys.remove(&extra.id) {
                         self.ptys.insert(real_id.clone(), pty);
                     }
+                    if let Some(input) = self.pending_initial_inputs.remove(&extra.id) {
+                        self.pending_initial_inputs.insert(real_id.clone(), input);
+                    }
+                    if self.turn_submitted.remove(&extra.id) {
+                        self.turn_submitted.insert(real_id.clone());
+                    }
                     if self.ended.remove(&extra.id) {
                         self.ended.insert(real_id.clone());
                     }
@@ -933,8 +1172,21 @@ impl App {
             old.kill();
         }
         self.ended.remove(&id);
+        self.pending_initial_inputs.remove(&id);
+        self.out_seq.remove(&id);
+        self.out_at.remove(&id);
+        self.turn_submitted.remove(&id);
         match PtySession::spawn(&pending.command, &id, self.pty_rows, self.pty_cols) {
             Ok(pty) => {
+                if let Some(input) = pending.initial_input {
+                    self.pending_initial_inputs.insert(
+                        id.clone(),
+                        DeferredInitialInput {
+                            bytes: input,
+                            queued_at: Instant::now(),
+                        },
+                    );
+                }
                 self.ptys.insert(id.clone(), pty);
                 self.active = Some(id);
             }
@@ -944,6 +1196,57 @@ impl App {
                 self.active = None;
             }
         }
+    }
+
+    /// Submit queued first-turn prompts only after the child has rendered an
+    /// input prompt. Sending immediately after spawn can race the agent TUI
+    /// startup and lose the handoff prompt before it reaches the transcript.
+    pub fn flush_initial_inputs(&mut self) -> bool {
+        if self.pending_initial_inputs.is_empty() {
+            return false;
+        }
+        let now = Instant::now();
+        let ready: Vec<String> = self
+            .pending_initial_inputs
+            .iter()
+            .filter_map(|(id, input)| {
+                let pty = self.ptys.get(id)?;
+                if self.ended.contains(id) {
+                    return None;
+                }
+                should_send_initial_input(
+                    pty.looks_idle(),
+                    pty.output_seq(),
+                    now.saturating_duration_since(input.queued_at),
+                )
+                .then(|| id.clone())
+            })
+            .collect();
+        let mut sent = false;
+        for id in ready {
+            let Some(input) = self.pending_initial_inputs.remove(&id) else {
+                continue;
+            };
+            if let Some(pty) = self.ptys.get_mut(&id) {
+                pty.paste_and_submit(&input.bytes);
+                self.turn_submitted.insert(id.clone());
+                self.status = format!("submitted handoff context to {}", short(&id));
+                sent = true;
+            }
+        }
+        sent
+    }
+
+    fn active_initial_input_pending(&mut self) -> bool {
+        let Some(id) = self.active.as_ref() else {
+            return false;
+        };
+        if !self.pending_initial_inputs.contains_key(id) {
+            return false;
+        }
+        self.status =
+            "waiting for target prompt to submit handoff context; input is held".to_string();
+        true
     }
 
     /// Keep the displayed PTY sized to the right pane (background PTYs are
@@ -1063,6 +1366,8 @@ impl App {
             pty.kill();
         }
         self.ended.remove(&session.id);
+        self.pending_initial_inputs.remove(&session.id);
+        self.turn_submitted.remove(&session.id);
         if self.active.as_deref() == Some(session.id.as_str()) {
             self.active = None;
             self.focus = Focus::List;
@@ -1096,9 +1401,15 @@ impl App {
 
     /// Forward encoded keystrokes to the displayed PTY.
     pub fn send_to_pty(&mut self, bytes: &[u8]) {
+        if self.active_initial_input_pending() {
+            return;
+        }
         if let Some(id) = self.active.clone() {
             if let Some(pty) = self.ptys.get_mut(&id) {
                 pty.send(bytes);
+                if input_submits_turn(bytes) {
+                    self.turn_submitted.insert(id);
+                }
             }
         }
     }
@@ -1110,9 +1421,15 @@ impl App {
         if self.focus != Focus::Terminal {
             return false;
         }
+        if self.active_initial_input_pending() {
+            return true;
+        }
         if let Some(id) = self.active.clone() {
             if let Some(pty) = self.ptys.get_mut(&id) {
                 pty.paste(text);
+                if input_submits_turn(text.as_bytes()) {
+                    self.turn_submitted.insert(id);
+                }
                 return true;
             }
         }
@@ -1203,6 +1520,39 @@ mod tests {
         app
     }
 
+    fn session_in(id: &str, agent: Agent, cwd: &str, title: &str) -> Session {
+        Session {
+            id: id.into(),
+            agent,
+            cwd: PathBuf::from(cwd),
+            file: PathBuf::new(),
+            started_at: Some(chrono::Utc::now()),
+            last_active: Some(chrono::Utc::now()),
+            tokens: TokenUsage::default(),
+            title: title.into(),
+            archived: false,
+            is_subagent: false,
+            context_pct: None,
+        }
+    }
+
+    fn write_handoff_fixture(name: &str) -> (PathBuf, PathBuf) {
+        let dir = std::env::temp_dir().join(format!(
+            "mindplayer-app-handoff-{name}-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let transcript = dir.join("claude.jsonl");
+        std::fs::write(
+            &transcript,
+            r#"{"type":"user","message":{"role":"user","content":"continue deploy investigation"}}
+{"type":"assistant","message":{"role":"assistant","content":"I found the failing health check in deploy.yaml."}}"#,
+        )
+        .unwrap();
+        (dir, transcript)
+    }
+
     #[test]
     fn new_session_persists_then_reconciles() {
         let _env = STATE_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -1248,6 +1598,31 @@ mod tests {
     }
 
     #[test]
+    fn refresh_applies_token_updates_to_existing_row() {
+        let mut app = app_with(vec![session("s1", Agent::Codex, false)]);
+        assert_eq!(app.session_at(0).unwrap().tokens.total, 0);
+
+        let (tx, rx) = mpsc::channel();
+        tx.send(vec![ActivityUpdate {
+            id: "s1".into(),
+            last_active: Some(chrono::Utc::now()),
+            tokens: TokenUsage {
+                input: 7,
+                cached: 2,
+                output: 3,
+                total: 10,
+            },
+            context_pct: None,
+        }])
+        .unwrap();
+        app.refresh_rx = Some(rx);
+
+        assert!(app.poll_refresh());
+        assert_eq!(app.session_at(0).unwrap().tokens.total, 10);
+        assert_eq!(app.visible_aggregate.codex.total, 10);
+    }
+
+    #[test]
     fn new_session_stays_until_reconciled() {
         let _env = STATE_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let tmp = std::env::temp_dir().join(format!("mp-newstate2-{}.json", std::process::id()));
@@ -1279,6 +1654,36 @@ mod tests {
         ]);
         assert_eq!(app.visible.len(), 1);
         assert_eq!(app.session_at(0).unwrap().id, "a");
+    }
+
+    #[test]
+    fn search_filters_visible_sessions_by_label_or_title() {
+        let mut labeled = session("a", Agent::Codex, false);
+        labeled.title = "🏷 msk cohome".into();
+        let mut titled = session("b", Agent::Claude, false);
+        titled.title = "deploy rollback notes".into();
+        let mut app = app_with(vec![labeled, titled]);
+
+        app.begin_search();
+        for c in "msk".chars() {
+            app.search_push(c);
+        }
+
+        assert_eq!(app.visible.len(), 1);
+        assert_eq!(app.session_at(0).unwrap().id, "a");
+
+        for _ in 0.."msk".len() {
+            app.search_backspace();
+        }
+        for c in "rollback".chars() {
+            app.search_push(c);
+        }
+
+        assert_eq!(app.visible.len(), 1);
+        assert_eq!(app.session_at(0).unwrap().id, "b");
+
+        app.cancel_search();
+        assert_eq!(app.visible.len(), 2);
     }
 
     #[test]
@@ -1488,6 +1893,75 @@ mod tests {
     }
 
     #[test]
+    fn handoff_is_hidden_without_env_flag() {
+        let _env = STATE_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _handoff_env = experimental_handoff::TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        std::env::remove_var(experimental_handoff::ENV_FLAG);
+        let mut app = app_with(vec![session_in(
+            "claude-1",
+            Agent::Claude,
+            "/work",
+            "finish deployment",
+        )]);
+
+        app.begin_handoff();
+
+        assert!(app.handoff_picker.is_none());
+        assert!(app.status.contains(experimental_handoff::ENV_FLAG));
+    }
+
+    #[test]
+    fn handoff_queues_target_agent_with_initial_prompt() {
+        let _env = STATE_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _handoff_env = experimental_handoff::TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp =
+            std::env::temp_dir().join(format!("mp-handoff-label-{}.json", std::process::id()));
+        std::env::set_var("MINDPLAYER_STATE", &tmp);
+        std::env::set_var(experimental_handoff::ENV_FLAG, "1");
+        let (dir, transcript) = write_handoff_fixture("queue");
+        std::env::set_var(experimental_handoff::HANDOFF_DIR_ENV, dir.join("handoffs"));
+        let mut source = session_in(
+            "claude-1",
+            Agent::Claude,
+            "/work/project",
+            "finish deployment",
+        );
+        source.file = transcript;
+        let mut app = app_with(vec![source]);
+        app.state.set_label("claude-1", "msk cohome");
+
+        app.begin_handoff();
+        assert_eq!(app.handoff_picker, Some(0));
+        app.confirm_handoff(Agent::Codex);
+
+        let pending = app.pending.as_ref().expect("handoff queues PTY spawn");
+        assert!(pending.session_id.starts_with("handoff:claude:codex:"));
+        assert_eq!(pending.command.program, "codex");
+        assert_eq!(pending.command.cwd, PathBuf::from("/work/project"));
+        let input = String::from_utf8(pending.initial_input.clone().unwrap()).unwrap();
+        assert!(input.contains("from claude to codex"));
+        assert!(input.contains("session id: claude-1"));
+        assert!(input.contains("read the handoff artifact"));
+        assert!(input.contains("continue deploy investigation"));
+        assert!(input.contains("failing health check"));
+        assert!(input.ends_with('\r'));
+        assert!(app.all_sessions.iter().any(
+            |s| s.id.starts_with("handoff:claude:codex:") && s.title == "🏷 (handoff)msk cohome"
+        ));
+        assert!(app.state.pending_labels.iter().any(|p| p.agent == "codex"
+            && p.cwd == std::path::Path::new("/work/project")
+            && p.label == "(handoff)msk cohome"));
+
+        std::env::remove_var(experimental_handoff::ENV_FLAG);
+        std::env::remove_var(experimental_handoff::HANDOFF_DIR_ENV);
+        std::env::remove_var("MINDPLAYER_STATE");
+    }
+
+    #[test]
     fn status_rank_orders_by_urgency() {
         // herdr-style rollup: most urgent (blocked) first, finished (done) last.
         use SessionStatus::*;
@@ -1519,6 +1993,53 @@ mod tests {
     }
 
     #[test]
+    fn initial_terminal_paint_does_not_count_as_working_activity() {
+        assert!(!should_stamp_activity(false, false));
+        assert!(should_stamp_activity(true, false));
+        assert!(should_stamp_activity(false, true));
+    }
+
+    #[test]
+    fn handoff_label_prefixes_once() {
+        assert_eq!(
+            handoff_label("msk cohome").as_deref(),
+            Some("(handoff)msk cohome")
+        );
+        assert_eq!(
+            handoff_label("(handoff)msk cohome").as_deref(),
+            Some("(handoff)msk cohome")
+        );
+        assert_eq!(handoff_label("   "), None);
+    }
+
+    #[test]
+    fn only_submit_keys_mark_user_turn_submitted() {
+        assert!(!input_submits_turn(b"a"));
+        assert!(!input_submits_turn(b"\x1b[A"));
+        assert!(input_submits_turn(b"\r"));
+        assert!(input_submits_turn(b"hello\n"));
+    }
+
+    #[test]
+    fn initial_input_waits_for_prompt() {
+        assert!(should_send_initial_input(
+            true,
+            0,
+            Duration::from_millis(10)
+        ));
+        assert!(!should_send_initial_input(
+            false,
+            0,
+            Duration::from_secs(30)
+        ));
+        assert!(!should_send_initial_input(
+            false,
+            1,
+            Duration::from_secs(30)
+        ));
+    }
+
+    #[test]
     fn busy_marker_is_only_trusted_while_output_is_recent() {
         // A screen "busy" marker is frozen at the last output, so it must be
         // gated on output recency: trusted within BUSY_TRUST, ignored after.
@@ -1540,6 +2061,18 @@ mod tests {
             now,
             BUSY_TRUST
         ));
+    }
+
+    #[test]
+    fn ended_sessions_do_not_keep_recent_activity_alive() {
+        let mut app = App::new();
+        app.ended.insert("done".into());
+        app.out_at.insert("done".into(), Instant::now());
+
+        assert!(
+            !app.any_recent_activity(),
+            "ended PTYs keep their final frame, but must not keep working redraws alive"
+        );
     }
 
     #[test]

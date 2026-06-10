@@ -151,6 +151,49 @@ pub fn refresh_activity(sessions: &mut [Session]) {
     sort_by_recency(sessions);
 }
 
+/// Refresh mtime-based activity and token/context usage for already-discovered
+/// sessions. This is meant for the live TUI: initial scans can catch a newly
+/// spawned session before its first token record is written, so mtime-only
+/// refreshes would otherwise leave that row stuck at `0` until a manual rescan.
+pub fn refresh_activity_and_usage(sessions: &mut [Session]) {
+    for s in sessions.iter_mut() {
+        let old_active = s.last_active;
+        let Ok(modified) = std::fs::metadata(&s.file).and_then(|m| m.modified()) else {
+            continue;
+        };
+        let active = DateTime::<Utc>::from(modified);
+        s.last_active = Some(active);
+
+        let changed = old_active.is_none_or(|prev| active > prev);
+        let missing_usage = s.tokens.total == 0 && s.agent != Agent::Kiro;
+        let missing_context = s.agent == Agent::Kiro && s.context_pct.is_none();
+        if !changed && !missing_usage && !missing_context {
+            continue;
+        }
+
+        match s.agent {
+            Agent::Codex => {
+                let (tokens, _) = codex_tail_scan(&s.file);
+                if tokens.total > 0 || s.tokens.total == 0 {
+                    s.tokens = tokens;
+                }
+            }
+            Agent::Claude => {
+                let tokens = claude_usage_scan(&s.file);
+                if tokens.total > 0 || s.tokens.total == 0 {
+                    s.tokens = tokens;
+                }
+            }
+            Agent::Kiro => {
+                if let Some(context_pct) = kiro_context_pct(&s.file) {
+                    s.context_pct = Some(context_pct);
+                }
+            }
+        }
+    }
+    sort_by_recency(sessions);
+}
+
 /// Parse `items` into results across a thread pool sized to the machine.
 /// Scoped threads borrow `f` and the slices directly — no allocation per item
 /// beyond the work itself, and panics in one chunk don't abort the others.
@@ -675,6 +718,44 @@ fn add_claude_usage(tokens: &mut TokenUsage, usage: &Value) {
         .saturating_add(output)
         .saturating_add(cache_creation)
         .saturating_add(cache_read);
+}
+
+fn claude_usage_scan(path: &Path) -> TokenUsage {
+    let Ok(file) = File::open(path) else {
+        return TokenUsage::default();
+    };
+    let reader = BufReader::new(file.take(MAX_CLAUDE_BYTES));
+    let mut tokens = TokenUsage::default();
+    for line in reader.lines().map_while(Result::ok) {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let Ok(v) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        if v.get("type").and_then(Value::as_str) != Some("assistant") {
+            continue;
+        }
+        if let Some(usage) = v.get("message").and_then(|m| m.get("usage")) {
+            add_claude_usage(&mut tokens, usage);
+        }
+    }
+    tokens
+}
+
+fn kiro_context_pct(path: &Path) -> Option<f64> {
+    let mut buf = String::new();
+    File::open(path)
+        .ok()?
+        .take(256 * 1024)
+        .read_to_string(&mut buf)
+        .ok()?;
+    let v: Value = serde_json::from_str(&buf).ok()?;
+    v.get("session_state")
+        .and_then(|s| s.get("rts_model_state"))
+        .and_then(|r| r.get("context_usage_percentage"))
+        .and_then(Value::as_f64)
 }
 
 /// Claude's directory-name encoding of a cwd: `/` and `.` become `-`

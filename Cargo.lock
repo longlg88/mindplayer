@@ -492,6 +492,7 @@ dependencies = [
  "mindplayer-core",
  "portable-pty",
  "ratatui",
+ "serde_json",
  "vt100",
 ]
 

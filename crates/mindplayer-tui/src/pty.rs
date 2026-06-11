@@ -443,6 +443,11 @@ const BLOCKED_STRUCTURAL: &[&str] = &[
     "❯ 1.",
     "1. yes",
     "press enter to continue",
+    "monthly spend limit",
+    "spend limit",
+    "usage limit",
+    "rate limit",
+    "ask your admin to raise it",
 ];
 
 /// Confirm/approval asks — only count when the line is an actual question
@@ -632,6 +637,9 @@ mod tests {
         ));
         assert!(text_looks_blocked("Apply changes?\n  1. Yes\n  2. No"));
         assert!(text_looks_blocked("Continue?"));
+        assert!(text_looks_blocked(
+            "You've hit your org's monthly spend limit · ask your admin to raise it at claude.ai/admin-settings/usage\n›"
+        ));
         // Working / non-prompt screens must NOT be flagged.
         assert!(!text_looks_blocked("Thinking…  esc to interrupt"));
         assert!(!text_looks_blocked("wrote foo.rs\nall done"));

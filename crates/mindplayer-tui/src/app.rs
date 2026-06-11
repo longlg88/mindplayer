@@ -759,15 +759,13 @@ impl App {
         self.selected = next as usize;
     }
 
-    /// Move the selection by one page (PageUp/PageDown). Unlike single-step
-    /// movement this clamps at the ends instead of wrapping, which is what
-    /// paging through a long list should feel like. The page size tracks the
-    /// list's visible height (`list_rows`), keeping one row of overlap.
+    /// Move the selection by a small page step (PageUp/PageDown). Unlike
+    /// single-step movement this clamps at the ends instead of wrapping.
     pub fn move_page(&mut self, dir: isize) {
         if self.visible.is_empty() {
             return;
         }
-        let page = (self.list_rows.saturating_sub(1)).max(1) as isize;
+        let page = 4;
         let last = self.visible.len() as isize - 1;
         let next = (self.selected as isize + dir * page).clamp(0, last);
         self.selected = next as usize;
@@ -1718,16 +1716,21 @@ mod tests {
                 .map(|i| session(&format!("s{i}"), Agent::Codex, false))
                 .collect(),
         );
-        app.list_rows = 10; // page = 9 (one row of overlap)
+        app.list_rows = 10; // PageUp/PageDown use a fixed 4-row step.
         assert_eq!(app.selected, 0);
         app.move_page(1);
-        assert_eq!(app.selected, 9, "down one page");
+        assert_eq!(app.selected, 4, "down one page step");
         app.move_page(1);
-        assert_eq!(app.selected, 18, "down another page");
-        app.move_page(1);
+        assert_eq!(app.selected, 8, "down another page step");
+        for _ in 0..4 {
+            app.move_page(1);
+        }
         assert_eq!(app.selected, 19, "clamp at last (no wrap)");
         app.move_page(-1);
-        assert_eq!(app.selected, 10, "up one page from last");
+        assert_eq!(app.selected, 15, "up one page step from last");
+        app.move_page(-1);
+        assert_eq!(app.selected, 11, "up another page step");
+        app.move_page(-1);
         app.move_page(-1);
         app.move_page(-1);
         assert_eq!(app.selected, 0, "clamp at first (no wrap)");

@@ -1,4 +1,4 @@
-//! Test-only cross-agent handoff helpers.
+//! Experimental cross-agent handoff helpers.
 //!
 //! This module is intentionally isolated behind `MINDPLAYER_EXPERIMENTAL_HANDOFF`
 //! so the experiment can be removed without touching the normal session flows.
@@ -19,9 +19,6 @@ const MAX_SOURCE_BYTES: u64 = 16 * 1024 * 1024;
 pub(crate) static TEST_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 pub fn enabled() -> bool {
-    if !cfg!(debug_assertions) {
-        return false;
-    }
     std::env::var(ENV_FLAG)
         .map(|v| matches!(v.to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
         .unwrap_or(false)
@@ -410,6 +407,24 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn enabled_tracks_env_flag() {
+        let _env = TEST_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        std::env::remove_var(ENV_FLAG);
+        assert!(!enabled());
+
+        std::env::set_var(ENV_FLAG, "1");
+        assert!(enabled());
+
+        std::env::set_var(ENV_FLAG, "true");
+        assert!(enabled());
+
+        std::env::set_var(ENV_FLAG, "0");
+        assert!(!enabled());
+
+        std::env::remove_var(ENV_FLAG);
     }
 
     #[test]

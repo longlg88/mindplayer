@@ -45,9 +45,9 @@ pub struct PtySession {
     /// hint / spinner), so a session waiting on a long subprocess with no new
     /// output is still classified Working rather than Idle.
     busy: Arc<AtomicBool>,
-    /// Memoized "input prompt is back" flag. This must override recent output:
-    /// a completed turn prints one last batch and returns to a prompt, but that
-    /// final output should not keep the row marked Working.
+    /// Memoized "input prompt is back" flag. This overrides recent non-busy
+    /// output: a completed turn prints one last batch and returns to a prompt,
+    /// but that final output should not keep the row marked Working.
     idle: Arc<AtomicBool>,
     pub rows: u16,
     pub cols: u16,

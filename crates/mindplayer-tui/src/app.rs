@@ -84,6 +84,33 @@ fn working_within_hold(last_output: Option<Instant>, now: Instant, hold: Duratio
     last_output.is_some_and(|t| now.saturating_duration_since(t) < hold)
 }
 
+fn classify_live_session_status(
+    blocked: bool,
+    idle: bool,
+    busy: bool,
+    last_output: Option<Instant>,
+    now: Instant,
+) -> SessionStatus {
+    if blocked {
+        // Quiet + a confirm/approval prompt on screen → waiting for you.
+        SessionStatus::Blocked
+    } else if busy && working_within_hold(last_output, now, BUSY_TRUST) {
+        // A trusted busy marker (interrupt hint / spinner / "still running")
+        // means the turn is active even if the input box is still visible.
+        SessionStatus::Working
+    } else if idle {
+        // Prompt/input box is back. This overrides final fresh output because a
+        // completed turn prints one last batch before becoming idle.
+        SessionStatus::Idle
+    } else if working_within_hold(last_output, now, WORKING_HOLD) {
+        // Produced output within the hold window — treat as working even
+        // through brief silences (hysteresis) so it doesn't bounce.
+        SessionStatus::Working
+    } else {
+        SessionStatus::Idle
+    }
+}
+
 fn should_send_initial_input(looks_idle: bool, _output_seq: u64, _queued_for: Duration) -> bool {
     looks_idle
 }
@@ -936,31 +963,13 @@ impl App {
         if self.ended.contains(id) {
             SessionStatus::Ended
         } else if let Some(pty) = self.ptys.get(id) {
-            let recent_output =
-                working_within_hold(self.out_at.get(id).copied(), Instant::now(), WORKING_HOLD);
-            if pty.looks_blocked() {
-                // Quiet + a confirm/approval prompt on screen → waiting for you.
-                SessionStatus::Blocked
-            } else if pty.looks_idle() {
-                // Prompt/input box is back. This overrides fresh output because
-                // a completed turn prints one final batch before becoming idle.
-                SessionStatus::Idle
-            } else if recent_output {
-                // Produced output within the hold window — treat as working even
-                // through brief silences (hysteresis) so it doesn't bounce.
-                SessionStatus::Working
-            } else if pty.looks_busy()
-                && working_within_hold(self.out_at.get(id).copied(), Instant::now(), BUSY_TRUST)
-            {
-                // A busy marker (interrupt hint / spinner / "still running") is on
-                // screen AND output is recent enough to trust it — the agent is
-                // mid-turn (e.g. waiting on a subprocess). A live agent ticks its
-                // spinner every second, so this stays true while it works but lets
-                // a finished session whose marker is stale fall back to idle.
-                SessionStatus::Working
-            } else {
-                SessionStatus::Idle
-            }
+            classify_live_session_status(
+                pty.looks_blocked(),
+                pty.looks_idle(),
+                pty.looks_busy(),
+                self.out_at.get(id).copied(),
+                Instant::now(),
+            )
         } else {
             SessionStatus::Inactive
         }
@@ -1993,6 +2002,56 @@ mod tests {
         ));
         // Never produced output → not working.
         assert!(!working_within_hold(None, now, WORKING_HOLD));
+    }
+
+    #[test]
+    fn trusted_busy_marker_overrides_visible_idle_prompt() {
+        let now = Instant::now();
+
+        assert_eq!(
+            classify_live_session_status(
+                false,
+                true,
+                true,
+                Some(now - Duration::from_secs(1)),
+                now
+            ),
+            SessionStatus::Working
+        );
+        assert_eq!(
+            classify_live_session_status(
+                false,
+                true,
+                true,
+                Some(now - BUSY_TRUST - Duration::from_secs(1)),
+                now
+            ),
+            SessionStatus::Idle
+        );
+    }
+
+    #[test]
+    fn idle_prompt_overrides_recent_non_busy_output() {
+        let now = Instant::now();
+
+        assert_eq!(
+            classify_live_session_status(false, true, false, Some(now), now),
+            SessionStatus::Idle
+        );
+        assert_eq!(
+            classify_live_session_status(false, false, false, Some(now), now),
+            SessionStatus::Working
+        );
+    }
+
+    #[test]
+    fn blocked_prompt_has_status_priority() {
+        let now = Instant::now();
+
+        assert_eq!(
+            classify_live_session_status(true, true, true, Some(now), now),
+            SessionStatus::Blocked
+        );
     }
 
     #[test]

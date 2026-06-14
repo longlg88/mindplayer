@@ -391,6 +391,9 @@ Work independently in this child lane, then report concise findings, blockers, a
 }
 
 pub fn dispatch_request_prompt(instruction: &str, cycle: u64, roster: &str) -> Vec<u8> {
+    let example_lane = first_roster_lane(roster)
+        .map(|lane| lane.to_string())
+        .unwrap_or_else(|| "<listed lane number>".to_string());
     format!(
         "\
 MindPlayer orchestration dispatch planning cycle #{cycle}.
@@ -404,30 +407,29 @@ User dispatch topic:
 Available child lanes:
 {roster}
 
-Review the child lane context above, then decide which lanes should receive work.
-Use as few lanes as needed. Leave lanes idle when they would duplicate work,
-increase conflict risk, or waste context.
+Use the user dispatch topic and the available child lane roster to decide which
+lanes should receive work. Use as few lanes as needed. Leave lanes idle when
+they would duplicate work, increase conflict risk, or waste context.
 
 Return a short explanation, then include exactly one dispatch block in this
 format:
 
 MINDPLAYER_DISPATCH
-lane #1:
-<instruction for lane 1, or idle>
-lane #3:
-<instruction for lane 3, or idle>
+lane #{example_lane}:
+<instruction for lane #{example_lane}, or idle>
 END_MINDPLAYER_DISPATCH
 
 Rules:
 - Only include lanes that should receive a new instruction, plus any lane you
   explicitly want to mark idle.
-- Put each lane instruction under its own `lane #N:` heading.
+- Put each lane instruction under its own `lane #<listed lane number>:` heading.
 - Use `idle`, `skip`, or `noop` for lanes that should not receive work.
 - Do not invent lane numbers not listed in the roster.
 - Do not implement in this main lane. Coordinate and dispatch only.
 ",
         instruction = fallback_instruction(instruction),
-        roster = roster
+        roster = roster,
+        example_lane = example_lane
     )
     .with_submit()
 }
@@ -525,6 +527,13 @@ fn parse_lane_heading(line: &str) -> Option<usize> {
         return None;
     }
     digits.parse().ok()
+}
+
+fn first_roster_lane(roster: &str) -> Option<usize> {
+    roster.lines().find_map(|line| {
+        let trimmed = line.trim_start();
+        parse_lane_heading(trimmed.strip_prefix("- ").unwrap_or(trimmed))
+    })
 }
 
 fn push_dispatch_item(items: &mut Vec<DispatchItem>, lane: Option<usize>, body: &str) {
@@ -748,6 +757,10 @@ mod tests {
         assert!(prompt.contains("fix focused bug"));
         assert!(prompt.contains("MINDPLAYER_DISPATCH"));
         assert!(prompt.contains("END_MINDPLAYER_DISPATCH"));
+        assert!(prompt.contains("lane #2:"));
+        assert!(!prompt.contains("lane #N:"));
+        assert!(!prompt.contains("lane #1:"));
+        assert!(!prompt.contains("lane #3:"));
         assert!(prompt.ends_with('\r'));
     }
 

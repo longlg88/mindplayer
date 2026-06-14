@@ -22,6 +22,27 @@ pub struct PendingLabel {
     pub label: String,
 }
 
+/// A handoff child session that has not yet been assigned its real CLI session
+/// id. It is resolved with the same scan-time matching used by pending labels.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PendingHandoff {
+    pub parent_id: String,
+    pub agent: String,
+    pub cwd: PathBuf,
+    pub after: DateTime<Utc>,
+    pub artifact: PathBuf,
+}
+
+/// MindPlayer's logical thread link. The original agent session files stay
+/// untouched; this sidecar only records that `child_id` should be presented as
+/// a lane under `parent_id`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HandoffLink {
+    pub parent_id: String,
+    pub artifact: PathBuf,
+    pub created_at: DateTime<Utc>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct State {
     #[serde(default = "default_version")]
@@ -34,6 +55,12 @@ pub struct State {
     /// Labels not yet matched to a session id.
     #[serde(default)]
     pub pending_labels: Vec<PendingLabel>,
+    /// Handoff links waiting for the target CLI to write its real session file.
+    #[serde(default)]
+    pub pending_handoffs: Vec<PendingHandoff>,
+    /// child session id -> parent/root session id.
+    #[serde(default)]
+    pub handoff_links: BTreeMap<String, HandoffLink>,
     #[serde(default)]
     pub last_scope: Option<String>,
 }
@@ -49,6 +76,8 @@ impl Default for State {
             archived: BTreeSet::new(),
             labels: BTreeMap::new(),
             pending_labels: Vec::new(),
+            pending_handoffs: Vec::new(),
+            handoff_links: BTreeMap::new(),
             last_scope: None,
         }
     }
@@ -143,14 +172,74 @@ impl State {
         }
     }
 
+    pub fn add_pending_handoff(
+        &mut self,
+        parent_id: &str,
+        agent: &str,
+        cwd: PathBuf,
+        after: DateTime<Utc>,
+        artifact: PathBuf,
+    ) {
+        self.pending_handoffs.push(PendingHandoff {
+            parent_id: parent_id.to_string(),
+            agent: agent.to_string(),
+            cwd,
+            after,
+            artifact,
+        });
+    }
+
+    pub fn set_handoff_link(
+        &mut self,
+        child_id: &str,
+        parent_id: &str,
+        artifact: PathBuf,
+        created_at: DateTime<Utc>,
+    ) {
+        self.handoff_links.insert(
+            child_id.to_string(),
+            HandoffLink {
+                parent_id: parent_id.to_string(),
+                artifact,
+                created_at,
+            },
+        );
+    }
+
+    pub fn handoff_parent(&self, child_id: &str) -> Option<&str> {
+        self.handoff_links
+            .get(child_id)
+            .map(|link| link.parent_id.as_str())
+    }
+
+    pub fn thread_root<'a>(&'a self, session_id: &'a str) -> &'a str {
+        let mut current = session_id;
+        for _ in 0..16 {
+            let Some(parent) = self.handoff_parent(current) else {
+                break;
+            };
+            current = parent;
+        }
+        current
+    }
+
     /// Try to match queued labels to freshly scanned sessions; expire entries
     /// older than an hour. Returns true if anything changed (label assigned or
     /// expired) so the caller can persist + re-apply.
     pub fn resolve_pending(&mut self, sessions: &[Session]) -> bool {
-        if self.pending_labels.is_empty() {
-            return false;
-        }
         let now = Utc::now();
+        let mut changed = false;
+
+        if !self.pending_labels.is_empty() {
+            changed |= self.resolve_pending_labels(sessions, now);
+        }
+        if !self.pending_handoffs.is_empty() {
+            changed |= self.resolve_pending_handoffs(sessions, now);
+        }
+        changed
+    }
+
+    fn resolve_pending_labels(&mut self, sessions: &[Session], now: DateTime<Utc>) -> bool {
         let mut changed = false;
         let mut still = Vec::new();
         for p in std::mem::take(&mut self.pending_labels) {
@@ -177,6 +266,40 @@ impl State {
             }
         }
         self.pending_labels = still;
+        changed
+    }
+
+    fn resolve_pending_handoffs(&mut self, sessions: &[Session], now: DateTime<Utc>) -> bool {
+        let mut changed = false;
+        let mut still = Vec::new();
+        for p in std::mem::take(&mut self.pending_handoffs) {
+            if p.parent_id.starts_with("orch:") {
+                changed = true;
+                continue;
+            }
+            if now.signed_duration_since(p.after) > chrono::Duration::hours(1) {
+                changed = true;
+                continue;
+            }
+            let matched = sessions
+                .iter()
+                .filter(|s| {
+                    s.agent.as_str() == p.agent
+                        && s.cwd == p.cwd
+                        && s.started_at.is_some_and(|t| t >= p.after)
+                        && !self.handoff_links.contains_key(&s.id)
+                })
+                .max_by_key(|s| s.started_at)
+                .map(|s| s.id.clone());
+            match matched {
+                Some(id) => {
+                    self.set_handoff_link(&id, &p.parent_id, p.artifact, p.after);
+                    changed = true;
+                }
+                None => still.push(p),
+            }
+        }
+        self.pending_handoffs = still;
         changed
     }
 
@@ -276,5 +399,56 @@ mod tests {
         assert!(s.is_archived("id1"));
         s.set_archived("id1", false);
         assert!(!s.is_archived("id1"));
+    }
+
+    #[test]
+    fn pending_handoff_resolves_to_thread_link() {
+        use crate::session::{Agent, Session, TokenUsage};
+        use std::path::PathBuf;
+
+        let now = Utc::now();
+        let mut state = State::default();
+        state.add_pending_handoff(
+            "claude-root",
+            "codex",
+            PathBuf::from("/work"),
+            now - chrono::Duration::seconds(5),
+            PathBuf::from("/tmp/handoff.md"),
+        );
+        let sessions = vec![Session {
+            id: "codex-child".into(),
+            agent: Agent::Codex,
+            cwd: PathBuf::from("/work"),
+            file: PathBuf::new(),
+            started_at: Some(now),
+            last_active: Some(now),
+            tokens: TokenUsage::default(),
+            title: "child".into(),
+            archived: false,
+            is_subagent: false,
+            context_pct: None,
+        }];
+
+        assert!(state.resolve_pending(&sessions));
+        assert!(state.pending_handoffs.is_empty());
+        assert_eq!(state.handoff_parent("codex-child"), Some("claude-root"));
+        assert_eq!(state.thread_root("codex-child"), "claude-root");
+    }
+
+    #[test]
+    fn pending_orchestration_handoffs_are_discarded() {
+        let now = Utc::now();
+        let mut state = State::default();
+        state.add_pending_handoff(
+            "orch:main:1",
+            "codex",
+            std::path::PathBuf::from("/work"),
+            now,
+            std::path::PathBuf::from("mindplayer-orchestration"),
+        );
+
+        assert!(state.resolve_pending(&[]));
+        assert!(state.pending_handoffs.is_empty());
+        assert!(state.handoff_links.is_empty());
     }
 }

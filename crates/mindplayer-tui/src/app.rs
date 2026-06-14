@@ -559,17 +559,9 @@ impl App {
             self.status = "dispatch failed: no child lanes".to_string();
             return;
         }
-        let peers = self.thread_peer_sessions(&root_id);
         let roster = self.child_lane_roster(&root_id);
         let cycle = self.next_orchestration_cycle(&root_id);
-        let Ok(sync) = handoff::prepare_thread_sync_input(&main, &peers) else {
-            self.status = "dispatch failed: no readable child lane context".to_string();
-            return;
-        };
-        let input = append_submitted_prompt(
-            sync.input,
-            orchestration::dispatch_request_prompt(&draft.instruction, cycle, &roster),
-        );
+        let input = orchestration::dispatch_request_prompt(&draft.instruction, cycle, &roster);
         if self.enqueue_or_submit_to_session(&main, input) {
             self.thread_sync_at.insert(main.id.clone(), Utc::now());
             self.status = format!(
@@ -946,14 +938,13 @@ impl App {
                 continue;
             };
             let peers = self.thread_peer_sessions(&child.id);
-            let Ok(sync) = handoff::prepare_thread_sync_input(&child, &peers) else {
+            let command = orchestration::peer_review_prompt(cycle);
+            let Ok(sync) = handoff::prepare_thread_command_input(&child, &peers, command) else {
                 skipped += 1;
                 skipped_ids.push(short(&child.id));
                 continue;
             };
-            let input =
-                append_submitted_prompt(sync.input, orchestration::peer_review_prompt(cycle));
-            if self.enqueue_or_submit_to_session(&child, input) {
+            if self.enqueue_or_submit_to_session(&child, sync.input) {
                 self.thread_sync_at.insert(child.id.clone(), Utc::now());
                 if self.ptys.contains_key(&child.id) {
                     if self.pending_initial_inputs.contains_key(&child.id) {
@@ -1026,12 +1017,12 @@ impl App {
             return;
         }
         let cycle = self.current_orchestration_cycle(root_id);
-        let Ok(sync) = handoff::prepare_thread_sync_input(&main, &peers) else {
+        let command = orchestration::synthesis_prompt(cycle);
+        let Ok(sync) = handoff::prepare_thread_command_input(&main, &peers, command) else {
             self.status = "synthesis failed: no readable child lane context".to_string();
             return;
         };
-        let input = append_submitted_prompt(sync.input, orchestration::synthesis_prompt(cycle));
-        if self.enqueue_or_submit_to_session(&main, input) {
+        if self.enqueue_or_submit_to_session(&main, sync.input) {
             self.thread_sync_at.insert(main.id.clone(), Utc::now());
             self.status = format!(
                 "synthesis cycle #{cycle} sent to main ({} chars, {})",
@@ -2853,15 +2844,6 @@ fn trim_submit(bytes: &mut Vec<u8>) {
     }
 }
 
-fn append_submitted_prompt(mut first: Vec<u8>, mut second: Vec<u8>) -> Vec<u8> {
-    trim_submit(&mut first);
-    trim_submit(&mut second);
-    first.extend_from_slice(b"\n\n---\n\n");
-    first.extend(second);
-    first.push(b'\r');
-    first
-}
-
 /// Expand a leading `~` / `~/` to the user's home directory. Other paths are
 /// returned unchanged (relative paths resolve against the process cwd later).
 fn expand_tilde(input: &str) -> PathBuf {
@@ -3687,7 +3669,8 @@ mod tests {
         );
         let first = String::from_utf8(app.pending.as_ref().unwrap().initial_input.clone().unwrap())
             .unwrap();
-        assert!(first.contains("MindPlayer thread sync"));
+        assert!(first.contains("MindPlayer orchestration peer context"));
+        assert!(!first.contains("Before answering the user's next request"));
         assert!(first.contains("peer-review cycle #2"));
         assert!(first.contains("Do not implement"));
         assert!(app.status.contains("peer review cycle #2 sent"));
@@ -3815,7 +3798,8 @@ mod tests {
         assert_eq!(app.pending.as_ref().unwrap().session_id, "real-child");
         let input = String::from_utf8(app.pending.as_ref().unwrap().initial_input.clone().unwrap())
             .unwrap();
-        assert!(input.contains("MindPlayer thread sync"));
+        assert!(input.contains("MindPlayer orchestration peer context"));
+        assert!(!input.contains("Before answering the user's next request"));
         assert!(input.contains("peer-review cycle #2"));
         assert!(app.status.contains("peer review cycle #2 sent"));
 
@@ -3958,7 +3942,8 @@ mod tests {
         let pending = app.pending.as_ref().unwrap();
         assert_eq!(pending.session_id, "main");
         let input = String::from_utf8(pending.initial_input.clone().unwrap()).unwrap();
-        assert!(input.contains("MindPlayer thread sync"));
+        assert!(input.contains("MindPlayer orchestration peer context"));
+        assert!(!input.contains("Before answering the user's next request"));
         assert!(input.contains("synthesis cycle #1"));
         assert!(input.contains("latest child lane transcripts"));
         assert!(input.contains("files changed"));
@@ -4051,10 +4036,15 @@ mod tests {
         let pending = app.pending.as_ref().unwrap();
         assert_eq!(pending.session_id, main.id);
         let input = String::from_utf8(pending.initial_input.clone().unwrap()).unwrap();
+        assert!(input.starts_with("MindPlayer orchestration dispatch planning cycle #2"));
+        assert!(!input.contains("MindPlayer orchestration peer context"));
+        assert!(!input.contains("MindPlayer thread sync"));
+        assert!(!input.contains("Before answering the user's next request"));
         assert!(input.contains("dispatch planning cycle #2"));
         assert!(input.contains("route only the verification work"));
         assert!(input.contains("MINDPLAYER_DISPATCH"));
         assert!(input.contains("lane #1"));
+        assert!(!input.contains("Full peer context artifact"));
         assert!(app.status.contains("press M after main answers"));
 
         std::env::remove_var(handoff::HANDOFF_DIR_ENV);

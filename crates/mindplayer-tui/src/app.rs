@@ -2121,7 +2121,7 @@ impl App {
         if is_orchestration_main_session(session) {
             return Some(session.id.clone());
         }
-        if orchestration_child_index(session).is_some() {
+        if self.child_lane_index(session).is_some() {
             if let Some(parent_id) = self.state.handoff_parent(&session.id) {
                 if self
                     .all_sessions
@@ -2146,7 +2146,7 @@ impl App {
             .all_sessions
             .iter()
             .filter(|s| !s.archived)
-            .filter(|s| orchestration_child_index(s).is_some())
+            .filter(|s| self.child_lane_index(s).is_some())
             .filter(|s| self.state.handoff_parent(&s.id) == Some(root_id))
             .map(|s| s.id.clone())
             .collect::<Vec<_>>();
@@ -2162,7 +2162,7 @@ impl App {
             .into_iter()
             .filter_map(|id| {
                 let session = self.all_sessions.iter().find(|s| s.id == id)?;
-                let lane = orchestration_child_index(session)?;
+                let lane = self.child_lane_index(session)?;
                 Some(format!(
                     "- lane #{lane}: {} {} [{}] {}",
                     session.agent.as_str(),
@@ -2190,14 +2190,22 @@ impl App {
         self.thread_child_ids(root_id)
             .into_iter()
             .filter_map(|id| self.all_sessions.iter().find(|s| s.id == id).cloned())
-            .find(|s| orchestration_child_index(s) == Some(lane))
+            .find(|s| self.child_lane_index(s) == Some(lane))
+    }
+
+    fn child_lane_index(&self, session: &Session) -> Option<usize> {
+        orchestration_child_index(session).or_else(|| {
+            self.state
+                .label_for(&session.id)
+                .and_then(orchestration_child_index_from_text)
+        })
     }
 
     fn orchestration_fallback_root(&self, selected: &Session) -> Option<String> {
         if is_orchestration_main_session(selected) {
             return Some(selected.id.clone());
         }
-        orchestration_child_index(selected)?;
+        self.child_lane_index(selected)?;
         self.all_sessions
             .iter()
             .filter(|s| {
@@ -2224,7 +2232,7 @@ impl App {
                 s.id != root.id
                     && s.agent == root.agent
                     && s.cwd == root.cwd
-                    && orchestration_child_index(s).is_some()
+                    && self.child_lane_index(s).is_some()
             })
             .map(|s| s.id.clone())
             .collect()
@@ -2802,14 +2810,18 @@ fn is_orchestration_child_session(session: &Session) -> bool {
 }
 
 fn orchestration_child_index(session: &Session) -> Option<usize> {
-    let title = session.title.as_str();
-    if let Some((_, rest)) = title.split_once("MindPlayer orchestration child lane #") {
+    orchestration_child_index_from_text(&session.title)
+        .or_else(|| orchestration_child_index_from_file(session))
+}
+
+fn orchestration_child_index_from_text(text: &str) -> Option<usize> {
+    if let Some((_, rest)) = text.split_once("MindPlayer orchestration child lane #") {
         return parse_leading_usize(rest);
     }
-    if let Some((_, rest)) = title.split_once(" child ") {
+    if let Some((_, rest)) = text.split_once(" child ") {
         return parse_leading_usize(rest);
     }
-    orchestration_child_index_from_file(session)
+    None
 }
 
 fn orchestration_child_index_from_file(session: &Session) -> Option<usize> {
@@ -3725,18 +3737,13 @@ mod tests {
     }
 
     #[test]
-    fn dispatch_roster_recovers_child_lane_from_transcript_marker_when_title_changes() {
-        let (_dir, child_transcript) = write_codex_fixture(
-            "changed-title-orch-child",
-            "MindPlayer orchestration child lane #1. Provider: Codex",
-        );
-        let mut child = session_in(
+    fn dispatch_roster_recovers_child_lane_from_saved_label_when_title_changes() {
+        let child = session_in(
             "child-1",
             Agent::Codex,
             "/work/project",
             "You are implementing dedicated portal tasks",
         );
-        child.file = child_transcript;
         let mut app = app_with(vec![
             session_in("main", Agent::Codex, "/work/project", "(orch codex)mode"),
             child,
@@ -3750,6 +3757,7 @@ mod tests {
         let now = chrono::Utc::now();
         app.state
             .set_handoff_link("child-1", "main", PathBuf::from("orch"), now);
+        app.state.set_label("child-1", "(orch codex child 1)mode");
         app.state
             .set_handoff_link("reviewer-old", "main", PathBuf::from("old-review"), now);
 
@@ -4107,7 +4115,7 @@ END_MINDPLAYER_DISPATCH";
             "child-2",
             Agent::Codex,
             "/work/project",
-            "(orch codex child 2)mode",
+            "Implementing backend wiring",
         );
         let mut app = app_with(vec![original, main, child1, child2]);
         app.state.set_handoff_link(
@@ -4120,6 +4128,7 @@ END_MINDPLAYER_DISPATCH";
             .set_handoff_link("child-1", "main", PathBuf::from("orch"), chrono::Utc::now());
         app.state
             .set_handoff_link("child-2", "main", PathBuf::from("orch"), chrono::Utc::now());
+        app.state.set_label("child-2", "(orch codex child 2)mode");
         app.rebuild_visible();
         app.select_session_id("main");
 

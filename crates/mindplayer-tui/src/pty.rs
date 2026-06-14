@@ -443,11 +443,6 @@ const BLOCKED_STRUCTURAL: &[&str] = &[
     "❯ 1.",
     "1. yes",
     "press enter to continue",
-    "monthly spend limit",
-    "spend limit",
-    "usage limit",
-    "rate limit",
-    "ask your admin to raise it",
 ];
 
 /// Confirm/approval asks — only count when the line is an actual question
@@ -471,12 +466,22 @@ fn text_looks_blocked(screen: &str) -> bool {
     let tail = bottom_lines(screen, 10);
     if tail
         .iter()
-        .any(|l| BLOCKED_STRUCTURAL.iter().any(|m| l.contains(m)))
+        .any(|l| BLOCKED_STRUCTURAL.iter().any(|m| l.contains(m)) || line_looks_limit_blocked(l))
     {
         return true;
     }
     tail.iter()
         .any(|l| l.ends_with('?') && BLOCKED_ASKS.iter().any(|m| l.contains(m)))
+}
+
+fn line_looks_limit_blocked(line: &str) -> bool {
+    let quota_limit = line.contains("rate limit")
+        || line.contains("usage limit")
+        || line.contains("spend limit")
+        || line.contains("monthly spend limit")
+        || line.contains("ask your admin to raise it")
+        || line.contains("claude.ai/admin-settings/usage");
+    (line.contains("you've hit") || line.contains("you have hit")) && quota_limit
 }
 
 /// Markers (lowercased) shown by codex/claude *while a turn is running* — most
@@ -647,6 +652,12 @@ mod tests {
         // Narration containing approval words but no actual prompt: not blocked.
         assert!(!text_looks_blocked("I'll proceed to write the file now."));
         assert!(!text_looks_blocked("normalizing\n2. normalize the data"));
+        assert!(!text_looks_blocked(
+            "Claude rate limit happened earlier; the handoff artifact was truncated.\n›"
+        ));
+        assert!(!text_looks_blocked(
+            "You've hit the retry limit in that loop.\n›"
+        ));
     }
 
     #[test]

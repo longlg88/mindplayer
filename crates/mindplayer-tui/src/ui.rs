@@ -2,8 +2,8 @@
 //! into `App` so the PTY can be spawned/resized at the correct dimensions.
 
 use crate::app::{App, Focus, Screen, SessionStatus};
-use crate::experimental_handoff;
 use crate::mascot;
+use crate::orchestration;
 use crate::terminal_view::TerminalView;
 use chrono::{DateTime, Utc};
 use mindplayer_core::tokens::human_tokens;
@@ -13,10 +13,27 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Gauge, List, ListItem, ListState, Paragraph, Wrap};
 use ratatui::Frame;
+use std::path::Path;
 
 const ACCENT: Color = Color::Rgb(126, 162, 247);
 const DIM: Color = Color::Rgb(140, 146, 158);
 const SPINNER: [&str; 8] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧"];
+
+fn agent_tag(agent: Agent) -> (&'static str, Color) {
+    match agent {
+        Agent::Codex => ("codex ", ACCENT),
+        Agent::Claude => ("claude", Color::Magenta),
+        Agent::Kiro => ("kiro  ", Color::Cyan),
+    }
+}
+
+fn plural_session(count: usize) -> &'static str {
+    if count == 1 {
+        "session"
+    } else {
+        "sessions"
+    }
+}
 
 pub fn render(f: &mut Frame, app: &mut App) {
     match app.screen {
@@ -32,6 +49,10 @@ fn title_bar(area: Rect, f: &mut Frame) {
         Span::styled(
             "◆ MindPlayer",
             Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            format!(" v{}", env!("MINDPLAYER_VERSION")),
+            Style::default().fg(DIM),
         ),
         Span::styled(
             "  Codex / Claude / Kiro session manager",
@@ -245,13 +266,9 @@ fn main_view(f: &mut Frame, app: &mut App) {
 
     let keys = match app.focus {
         Focus::List => {
-            if experimental_handoff::enabled() {
-                "↑↓ move  enter open  / search  n new  h handoff  d dir  e label  x close  a archived  g sub  r rescan  q quit"
-            } else {
-                "↑↓ move  enter open  / search  n new  d dir  e label  x close  a archived  g sub  r rescan  q quit"
-            }
+            "Session: enter open · n new · h handoff   Orch: o start · b all · m route · M paste/apply · p review · s synth   View: / search · ? help"
         }
-        Focus::Terminal => "ctrl-x back to list   wheel scrolls history   shift+drag to copy",
+        Focus::Terminal => "ctrl-x list   wheel history   shift+drag copy",
     };
     let status = if app.status.is_empty() {
         app.summary_line()
@@ -272,7 +289,17 @@ fn main_view(f: &mut Frame, app: &mut App) {
         footer_line[1],
     );
 
-    if let Some(choice) = app.handoff_picker {
+    if app.help_visible {
+        help_popup(f);
+    } else if let Some(draft) = &app.dispatch_apply {
+        dispatch_apply_popup(f, draft);
+    } else if let Some(draft) = &app.dispatch {
+        dispatch_popup(f, draft);
+    } else if let Some(draft) = &app.broadcast {
+        broadcast_popup(f, draft);
+    } else if let Some(draft) = &app.orchestration {
+        orchestration_popup(f, draft);
+    } else if let Some(choice) = app.handoff_picker {
         handoff_popup(f, choice, app.selected_session().map(|s| s.agent));
     } else if let Some(choice) = app.new_picker {
         new_session_popup(f, choice);
@@ -379,22 +406,52 @@ fn session_list(f: &mut Frame, app: &mut App, area: Rect, now: DateTime<Utc>) {
     let block = Block::default()
         .borders(Borders::ALL)
         .title(format!(
-            " Sessions · {tab}{subs}{search} ({}) ",
+            " Sessions · grouped by agent · {tab}{subs}{search} ({}) ",
             app.visible.len()
         ))
         .border_style(Style::default().fg(if focused { ACCENT } else { DIM }));
 
     // Fill the pane: title gets whatever width is left after border, status
-    // badge, tag, time, and token columns (~34 cols of fixed chrome).
-    let max_title = (area.width as usize).saturating_sub(34).max(12);
-    let items: Vec<ListItem> = (0..app.visible.len())
-        .filter_map(|row| app.session_at(row))
-        .map(|s| {
-            let (tag, tag_color) = match s.agent {
-                Agent::Codex => ("codex ", ACCENT),
-                Agent::Claude => ("claude", Color::Magenta),
-                Agent::Kiro => ("kiro  ", Color::Cyan),
-            };
+    // badge, agent, time, identity, and usage columns.
+    let show_id = area.width >= 58;
+    let show_cwd = area.width >= 78;
+    let identity_width = usize::from(show_id) * 11 + usize::from(show_cwd) * 11;
+    let max_title = (area.width as usize)
+        .saturating_sub(36 + identity_width)
+        .max(12);
+    let mut items: Vec<ListItem> = Vec::new();
+    let mut selected_item = None;
+    let mut current_section = None;
+    for row in 0..app.visible.len() {
+        let Some(s) = app.session_at(row) else {
+            continue;
+        };
+        let section_agent = app.session_section_agent(&s.id).unwrap_or(s.agent);
+        if current_section != Some(section_agent) {
+            current_section = Some(section_agent);
+            let (section_tag, section_color) = agent_tag(section_agent);
+            let section_count = app.visible_section_count(section_agent);
+            items.push(ListItem::new(Line::from(vec![
+                Span::styled("  ── ", Style::default().fg(DIM)),
+                Span::styled(
+                    section_tag,
+                    Style::default()
+                        .fg(section_color)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    format!("  {section_count} {}", plural_session(section_count)),
+                    Style::default().fg(DIM),
+                ),
+            ])));
+        }
+        if row == app.selected {
+            selected_item = Some(items.len());
+        }
+        {
+            let depth = app.session_depth(&s.id);
+            let child_count = app.thread_child_count(&s.id);
+            let (tag, tag_color) = agent_tag(s.agent);
             // Clear, fixed-width status badge so it's easy to scan a column of
             // running / working / done sessions.
             let (badge, badge_color, badge_bold) = match app.session_status(&s.id) {
@@ -408,8 +465,24 @@ fn session_list(f: &mut Frame, app: &mut App, area: Rect, now: DateTime<Utc>) {
             if badge_bold {
                 badge_style = badge_style.add_modifier(Modifier::BOLD);
             }
-            ListItem::new(Line::from(vec![
+            let (thread_prefix, title_style) = if depth > 0 {
+                ("  └─ ", Style::default().fg(Color::Rgb(190, 196, 210)))
+            } else if child_count > 0 {
+                ("▾ ", Style::default().add_modifier(Modifier::BOLD))
+            } else {
+                ("  ", Style::default())
+            };
+            let title_suffix = if depth == 0 && child_count > 0 {
+                format!("  [{child_count} lanes]")
+            } else {
+                String::new()
+            };
+            let mut spans = vec![
                 Span::styled(format!("{badge} "), badge_style),
+                Span::styled(
+                    "▌",
+                    Style::default().fg(tag_color).add_modifier(Modifier::BOLD),
+                ),
                 Span::styled(
                     format!("{tag} "),
                     Style::default().fg(tag_color).add_modifier(Modifier::BOLD),
@@ -420,32 +493,50 @@ fn session_list(f: &mut Frame, app: &mut App, area: Rect, now: DateTime<Utc>) {
                     format!("{:>4} ", relative_time(s.last_active, now)),
                     Style::default().fg(DIM),
                 ),
-                Span::raw(truncate(&s.title, max_title)),
+                Span::styled(thread_prefix, Style::default().fg(DIM)),
                 Span::styled(
-                    // Kiro records no token totals; show its context-window
-                    // occupancy (e.g. "15%") instead, or "—" if unknown.
-                    if s.agent == Agent::Kiro {
-                        match s.context_pct {
-                            Some(p) => format!("  {p:.0}%"),
-                            None => "  —".to_string(),
-                        }
-                    } else {
-                        format!("  {}", human_tokens(s.tokens.total))
-                    },
-                    Style::default().fg(DIM),
+                    truncate(&format!("{}{title_suffix}", s.title), max_title),
+                    title_style,
                 ),
-            ]))
-        })
-        .collect();
+            ];
+            if show_id {
+                spans.push(Span::styled(
+                    format!("  {}", short(&s.id)),
+                    Style::default().fg(Color::Rgb(104, 185, 132)),
+                ));
+            }
+            if show_cwd {
+                spans.push(Span::styled(
+                    format!(" {}", truncate(&cwd_leaf(&s.cwd), 10)),
+                    Style::default().fg(DIM),
+                ));
+            }
+            spans.push(Span::styled(
+                // Kiro records no token totals; show its context-window
+                // occupancy (e.g. "15%") instead, or "—" if unknown.
+                if s.agent == Agent::Kiro {
+                    match s.context_pct {
+                        Some(p) => format!("  {p:.0}%"),
+                        None => "  —".to_string(),
+                    }
+                } else {
+                    format!("  {}", human_tokens(s.tokens.total))
+                },
+                Style::default().fg(DIM),
+            ));
+            items.push(ListItem::new(Line::from(spans)));
+        }
+    }
 
     // Record the visible row count (inside the borders) so PageUp/PageDown can
     // step by a screenful.
     app.list_rows = area.height.saturating_sub(2);
 
     let mut state = ListState::default();
-    if !app.visible.is_empty() {
-        state.select(Some(app.selected));
+    if !items.is_empty() {
+        state.select(selected_item);
     }
+    let rendered_rows = items.len();
     let list = List::new(items)
         .block(block)
         .highlight_style(
@@ -464,7 +555,7 @@ fn session_list(f: &mut Frame, app: &mut App, area: Rect, now: DateTime<Utc>) {
     // intentional instead of a stranded sprite over a void.
     let content_top = area.y + 1; // inside the top border
     let bottom = area.y + area.height - 1; // bottom border row
-    let region_top = content_top + app.visible.len() as u16;
+    let region_top = content_top + rendered_rows as u16;
     let region_h = bottom.saturating_sub(region_top);
     const GAP: u16 = 1;
     let block_h = mascot::HEIGHT + GAP + 2; // mascot + gap + tagline + legend
@@ -631,7 +722,7 @@ fn handoff_popup(f: &mut Frame, choice: usize, source: Option<Agent>) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(ACCENT))
-        .title(" Experimental handoff ");
+        .title(" Handoff ");
     let opts = [Agent::Codex, Agent::Claude, Agent::Kiro];
     let mut lines: Vec<Line> = opts
         .iter()
@@ -668,6 +759,253 @@ fn handoff_popup(f: &mut Frame, choice: usize, source: Option<Agent>) {
     );
 }
 
+fn orchestration_popup(f: &mut Frame, draft: &orchestration::Draft) {
+    let area = centered(f.area(), 88, 19);
+    f.render_widget(Clear, area);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(ACCENT))
+        .title(" Orchestration ");
+    let step_style = |step| {
+        if draft.step == step {
+            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(DIM)
+        }
+    };
+    let skill = if draft.skill.is_empty() {
+        ""
+    } else {
+        &draft.skill
+    };
+    let skill_display = if skill.is_empty() {
+        "mode, $ralplan, $analyze ...".to_string()
+    } else {
+        truncate(skill, 60)
+    };
+    let instruction = if draft.instruction.is_empty() {
+        ""
+    } else {
+        &draft.instruction
+    };
+    let provider_choice = |provider, label: &str| {
+        if draft.provider == provider {
+            Span::styled(
+                format!("[{label}] "),
+                Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+            )
+        } else {
+            Span::styled(format!("{label} "), Style::default().fg(DIM))
+        }
+    };
+    let mut lines = vec![
+        Line::from(vec![
+            Span::styled("1 provider ", step_style(orchestration::Step::Provider)),
+            provider_choice(orchestration::Provider::ClaudeCode, "cc"),
+            provider_choice(orchestration::Provider::Codex, "codex"),
+            provider_choice(orchestration::Provider::Kiro, "kiro"),
+        ]),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("2 skill / mode ", step_style(orchestration::Step::Skill)),
+            Span::raw(skill_display),
+        ]),
+        Line::from(""),
+        Line::from(vec![Span::styled(
+            "3 instruction",
+            step_style(orchestration::Step::Instruction),
+        )]),
+    ];
+    lines.extend(textarea_lines(
+        instruction,
+        "Paste or type English/Korean instructions here.",
+        6,
+        78,
+    ));
+    lines.extend([
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("4 child lanes ", step_style(orchestration::Step::Children)),
+            Span::raw(format!("{}", draft.children)),
+        ]),
+        Line::from(""),
+        Line::from(Span::styled(
+            "1/2/3 provider   enter next/start   ctrl-j or shift/alt-enter newline   paste keeps newlines   esc cancel",
+            Style::default().fg(DIM),
+        )),
+    ]);
+    f.render_widget(
+        Paragraph::new(lines)
+            .block(block)
+            .alignment(Alignment::Left)
+            .wrap(Wrap { trim: true }),
+        area,
+    );
+}
+
+fn broadcast_popup(f: &mut Frame, draft: &orchestration::BroadcastDraft) {
+    let area = centered(f.area(), 88, 14);
+    f.render_widget(Clear, area);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(ACCENT))
+        .title(" Broadcast cycle ");
+    let mut lines = vec![Line::from(Span::styled(
+        "Instruction for all child lanes",
+        Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+    ))];
+    lines.extend(textarea_lines_with_cursor(
+        &draft.instruction,
+        Some(draft.cursor),
+        "Paste or type the next cycle instruction.",
+        8,
+        78,
+    ));
+    lines.extend([
+        Line::from(""),
+        Line::from(Span::styled(
+            "enter broadcast   ctrl-j or shift/alt-enter newline   paste keeps newlines   esc cancel",
+            Style::default().fg(DIM),
+        )),
+    ]);
+    f.render_widget(
+        Paragraph::new(lines)
+            .block(block)
+            .alignment(Alignment::Left)
+            .wrap(Wrap { trim: false }),
+        area,
+    );
+}
+
+fn dispatch_popup(f: &mut Frame, draft: &orchestration::BroadcastDraft) {
+    let area = centered(f.area(), 88, 14);
+    f.render_widget(Clear, area);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(ACCENT))
+        .title(" Main dispatch ");
+    let mut lines = vec![Line::from(Span::styled(
+        "Topic for main to route across child lanes",
+        Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+    ))];
+    lines.extend(textarea_lines_with_cursor(
+        &draft.instruction,
+        Some(draft.cursor),
+        "Paste or type the dispatch topic for the main lane.",
+        8,
+        78,
+    ));
+    lines.extend([
+        Line::from(""),
+        Line::from(Span::styled(
+            "enter ask main   ctrl-j or shift/alt-enter newline   M apply after main answers   esc cancel",
+            Style::default().fg(DIM),
+        )),
+    ]);
+    f.render_widget(
+        Paragraph::new(lines)
+            .block(block)
+            .alignment(Alignment::Left)
+            .wrap(Wrap { trim: false }),
+        area,
+    );
+}
+
+fn dispatch_apply_popup(f: &mut Frame, draft: &orchestration::BroadcastDraft) {
+    let area = centered(f.area(), 92, 18);
+    f.render_widget(Clear, area);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(ACCENT))
+        .title(" Apply dispatch ");
+    let mut lines = vec![Line::from(Span::styled(
+        "Paste MINDPLAYER_DISPATCH block",
+        Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+    ))];
+    lines.extend(textarea_lines_with_cursor(
+        &draft.instruction,
+        Some(draft.cursor),
+        "Paste main's MINDPLAYER_DISPATCH block here.",
+        12,
+        82,
+    ));
+    lines.extend([
+        Line::from(""),
+        Line::from(Span::styled(
+            "enter apply   ctrl-j or shift/alt-enter newline   paste keeps newlines   esc cancel",
+            Style::default().fg(DIM),
+        )),
+    ]);
+    f.render_widget(
+        Paragraph::new(lines)
+            .block(block)
+            .alignment(Alignment::Left)
+            .wrap(Wrap { trim: false }),
+        area,
+    );
+}
+
+fn help_popup(f: &mut Frame) {
+    let area = centered(f.area(), 92, 24);
+    f.render_widget(Clear, area);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(ACCENT))
+        .title(" Keyboard shortcuts ");
+    let section = |title: &'static str| {
+        Line::from(Span::styled(
+            title,
+            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+        ))
+    };
+    let item = |key: &'static str, text: &'static str| {
+        Line::from(vec![
+            Span::styled(
+                format!("{key:<14}"),
+                Style::default().fg(Color::Rgb(190, 196, 210)),
+            ),
+            Span::raw(text),
+        ])
+    };
+    let lines = vec![
+        section("Session"),
+        item("enter", "open or resume selected session"),
+        item("n", "start a new session"),
+        item("h", "handoff selected session to another provider"),
+        item("e", "edit selected session label"),
+        item("x", "close/archive selected session"),
+        Line::from(""),
+        section("Orchestration"),
+        item("o", "start an orchestration group"),
+        item("b", "broadcast same instruction to all child lanes"),
+        item("m", "ask main to route work to selected child lanes"),
+        item("M", "paste and apply main dispatch block to child lanes"),
+        item("p", "run child peer-review cycle"),
+        item("s", "send synthesis prompt to main lane"),
+        Line::from(""),
+        section("View"),
+        item("/", "search visible sessions"),
+        item("d", "change working directory scope"),
+        item("a", "toggle archived sessions"),
+        item("g", "toggle subagent sessions"),
+        item("r", "rescan sessions"),
+        Line::from(""),
+        section("Terminal / Modal"),
+        item("ctrl-x", "return from terminal to session list"),
+        item("ctrl-j", "insert newline in text modals"),
+        item("shift/alt-enter", "insert newline in text modals"),
+        item("esc", "cancel modal or close this help"),
+        item("?", "show or close this help"),
+    ];
+    f.render_widget(
+        Paragraph::new(lines)
+            .block(block)
+            .alignment(Alignment::Left)
+            .wrap(Wrap { trim: false }),
+        area,
+    );
+}
+
 // --- helpers --------------------------------------------------------------
 
 fn centered(area: Rect, width: u16, height: u16) -> Rect {
@@ -681,6 +1019,183 @@ fn centered(area: Rect, width: u16, height: u16) -> Rect {
         width: w,
         height: h,
     }
+}
+
+fn textarea_lines(text: &str, placeholder: &str, rows: usize, width: usize) -> Vec<Line<'static>> {
+    textarea_lines_with_cursor(text, None, placeholder, rows, width)
+}
+
+fn textarea_lines_with_cursor(
+    text: &str,
+    cursor: Option<usize>,
+    placeholder: &str,
+    rows: usize,
+    width: usize,
+) -> Vec<Line<'static>> {
+    let mut lines = Vec::new();
+    let content: Vec<String> = if text.is_empty() {
+        if cursor.is_some() {
+            vec!["▏".to_string()]
+        } else {
+            vec![placeholder.to_string()]
+        }
+    } else {
+        wrapped_text_rows(&text_with_cursor(text, cursor), width)
+    };
+    let cursor_row = cursor
+        .and_then(|_| content.iter().position(|row| row.contains('▏')))
+        .unwrap_or(0);
+    let start = viewport_start_for_cursor(content.len(), rows, cursor_row);
+    for row in 0..rows {
+        let body = content.get(start + row).map(String::as_str).unwrap_or("");
+        let style = if text.is_empty() && cursor.is_none() {
+            Style::default().fg(DIM)
+        } else {
+            Style::default()
+        };
+        lines.push(Line::from(vec![
+            Span::styled("  │ ", Style::default().fg(DIM)),
+            Span::styled(body.to_string(), style),
+        ]));
+    }
+    if content.len() > rows {
+        let above = start;
+        let below = content.len().saturating_sub(start + rows);
+        let summary = match (above, below) {
+            (0, below) => format!("  └ +{below} more lines"),
+            (above, 0) => format!("  ┌ +{above} earlier lines"),
+            (above, below) => format!("  ├ +{above} earlier, +{below} more"),
+        };
+        lines.push(Line::from(Span::styled(summary, Style::default().fg(DIM))));
+    }
+    lines
+}
+
+fn viewport_start_for_cursor(total: usize, rows: usize, cursor_row: usize) -> usize {
+    if total <= rows {
+        return 0;
+    }
+    let half = rows / 2;
+    let max_start = total.saturating_sub(rows);
+    cursor_row.saturating_sub(half).min(max_start)
+}
+
+fn text_with_cursor(text: &str, cursor: Option<usize>) -> String {
+    let Some(mut cursor) = cursor else {
+        return text.to_string();
+    };
+    if cursor > text.len() {
+        cursor = text.len();
+    }
+    while cursor > 0 && !text.is_char_boundary(cursor) {
+        cursor -= 1;
+    }
+    let mut out = String::with_capacity(text.len() + "▏".len());
+    out.push_str(&text[..cursor]);
+    out.push('▏');
+    out.push_str(&text[cursor..]);
+    out
+}
+
+fn wrapped_text_rows(text: &str, width: usize) -> Vec<String> {
+    let width = width.max(1);
+    let mut rows = Vec::new();
+    for raw_line in text.split('\n') {
+        let mut current = String::new();
+        let mut current_width = 0usize;
+        for ch in raw_line.chars() {
+            let ch_width = display_width(ch);
+            if current_width > 0 && current_width + ch_width > width {
+                rows.push(current);
+                current = String::new();
+                current_width = 0;
+            }
+            current.push(ch);
+            current_width += ch_width;
+        }
+        rows.push(current);
+    }
+    if rows.is_empty() {
+        rows.push(String::new());
+    }
+    rows
+}
+
+fn display_width(ch: char) -> usize {
+    let code = ch as u32;
+    if ch == '\t' {
+        return 4;
+    }
+    if code < 0x20 || (0x7f..=0x9f).contains(&code) || is_combining_mark(code) {
+        return 0;
+    }
+    if is_wide_char(code) {
+        2
+    } else {
+        1
+    }
+}
+
+fn is_combining_mark(code: u32) -> bool {
+    matches!(
+        code,
+        0x0300..=0x036f
+            | 0x1ab0..=0x1aff
+            | 0x1dc0..=0x1dff
+            | 0x20d0..=0x20ff
+            | 0xfe20..=0xfe2f
+    )
+}
+
+fn is_wide_char(code: u32) -> bool {
+    matches!(
+        code,
+        0x1100..=0x115f
+            | 0x231a..=0x231b
+            | 0x2329..=0x232a
+            | 0x23e9..=0x23ec
+            | 0x23f0
+            | 0x23f3
+            | 0x25fd..=0x25fe
+            | 0x2614..=0x2615
+            | 0x2648..=0x2653
+            | 0x267f
+            | 0x2693
+            | 0x26a1
+            | 0x26aa..=0x26ab
+            | 0x26bd..=0x26be
+            | 0x26c4..=0x26c5
+            | 0x26ce
+            | 0x26d4
+            | 0x26ea
+            | 0x26f2..=0x26f3
+            | 0x26f5
+            | 0x26fa
+            | 0x26fd
+            | 0x2705
+            | 0x270a..=0x270b
+            | 0x2728
+            | 0x274c
+            | 0x274e
+            | 0x2753..=0x2755
+            | 0x2757
+            | 0x2795..=0x2797
+            | 0x27b0
+            | 0x27bf
+            | 0x2b1b..=0x2b1c
+            | 0x2b50
+            | 0x2b55
+            | 0x2e80..=0xa4cf
+            | 0xac00..=0xd7a3
+            | 0xf900..=0xfaff
+            | 0xfe10..=0xfe19
+            | 0xfe30..=0xfe6f
+            | 0xff00..=0xff60
+            | 0xffe0..=0xffe6
+            | 0x1f300..=0x1f64f
+            | 0x1f900..=0x1f9ff
+            | 0x20000..=0x3fffd
+    )
 }
 
 fn truncate(s: &str, max: usize) -> String {
@@ -697,6 +1212,14 @@ fn short(id: &str) -> String {
     id.chars().take(8).collect()
 }
 
+fn cwd_leaf(cwd: &Path) -> String {
+    cwd.file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| cwd.display().to_string())
+}
+
 /// Compact "time since last active": now, 5m, 2h, 3d, 4w, 6mo, 2y.
 fn relative_time(t: Option<DateTime<Utc>>, now: DateTime<Utc>) -> String {
     let Some(t) = t else {
@@ -711,5 +1234,64 @@ fn relative_time(t: Option<DateTime<Utc>>, now: DateTime<Utc>) -> String {
         s if s < 86_400 * 30 => format!("{}w", s / (86_400 * 7)),
         s if s < 86_400 * 365 => format!("{}mo", s / (86_400 * 30)),
         s => format!("{}y", s / (86_400 * 365)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cwd_leaf_uses_last_path_component() {
+        assert_eq!(cwd_leaf(Path::new("/Users/eden/project")), "project");
+        assert_eq!(cwd_leaf(Path::new("/")), "/");
+    }
+
+    #[test]
+    fn textarea_wraps_long_lines_instead_of_truncating() {
+        assert_eq!(
+            wrapped_text_rows("/Users/eden/Work/SendBird", 8),
+            vec!["/Users/e", "den/Work", "/SendBir", "d"]
+        );
+        assert_eq!(
+            wrapped_text_rows("first\nsecond line", 6),
+            vec!["first", "second", " line"]
+        );
+        assert_eq!(wrapped_text_rows("한글abc", 6), vec!["한글ab", "c"]);
+        assert_eq!(wrapped_text_rows("다시 개발해", 8), vec!["다시 개", "발해"]);
+    }
+
+    #[test]
+    fn textarea_width_counts_cjk_as_double_width() {
+        assert_eq!(display_width('a'), 1);
+        assert_eq!(display_width('한'), 2);
+        assert_eq!(display_width('界'), 2);
+    }
+
+    #[test]
+    fn textarea_inserts_visible_cursor_marker() {
+        assert_eq!(text_with_cursor("review", Some(2)), "re▏view");
+        assert_eq!(
+            wrapped_text_rows(&text_with_cursor("한글abc", Some(7)), 6),
+            vec!["한글a▏", "bc"]
+        );
+    }
+
+    #[test]
+    fn textarea_viewport_follows_cursor_row() {
+        assert_eq!(viewport_start_for_cursor(8, 4, 7), 4);
+        let lines =
+            textarea_lines_with_cursor("1\n2\n3\n4\n5", Some("1\n2\n3\n4\n5".len()), "", 3, 20);
+        let rendered = lines
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+        assert!(rendered.iter().any(|line| line.contains("5▏")));
+        assert!(!rendered.iter().any(|line| line.contains("1")));
     }
 }

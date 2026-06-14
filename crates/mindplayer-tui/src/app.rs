@@ -1,13 +1,14 @@
 //! Application state machine: scope select -> scanning -> main, plus the
 //! embedded PTY lifecycle and archive actions.
 
-use crate::{experimental_handoff, pty::PtySession};
+use crate::{handoff, orchestration, pty::PtySession};
 use chrono::{DateTime, Utc};
 use mindplayer_core::{
     refresh_activity_and_usage, resume, scan, sort_by_recency, tokens::human_tokens, Agent,
     Aggregate, ScanConfig, Scope, Session, State, TokenUsage,
 };
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::io::Read;
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver};
 use std::thread;
@@ -62,6 +63,14 @@ fn status_rank(s: SessionStatus) -> u8 {
     }
 }
 
+fn agent_rank(agent: Agent) -> u8 {
+    match agent {
+        Agent::Codex => 0,
+        Agent::Claude => 1,
+        Agent::Kiro => 2,
+    }
+}
+
 /// How long a session keeps reading as "working" after its last output.
 /// Promotion to Working is instant (any new output stamps the time to now);
 /// demotion to Idle waits out this hold. The gap between the two is the
@@ -77,6 +86,9 @@ const WORKING_HOLD: Duration = Duration::from_secs(6);
 /// window), so gating busy on recent output keeps live sessions "working" while
 /// letting a long-quiet one fall back to idle/done.
 const BUSY_TRUST: Duration = Duration::from_secs(20);
+const INITIAL_INPUT_OUTPUT_TIMEOUT: Duration = Duration::from_secs(3);
+const INITIAL_INPUT_ABSOLUTE_TIMEOUT: Duration = Duration::from_secs(10);
+const ORCHESTRATION_MARKER_READ_BYTES: u64 = 1024 * 1024;
 /// Whether a session counts as working, given when it last produced output.
 /// Demotion is delayed by `hold` (see [`WORKING_HOLD`]); promotion is instant
 /// because `last_output` is stamped to "now" the moment any output arrives.
@@ -111,8 +123,10 @@ fn classify_live_session_status(
     }
 }
 
-fn should_send_initial_input(looks_idle: bool, _output_seq: u64, _queued_for: Duration) -> bool {
+fn should_send_initial_input(looks_idle: bool, output_seq: u64, queued_for: Duration) -> bool {
     looks_idle
+        || (output_seq > 0 && queued_for >= INITIAL_INPUT_OUTPUT_TIMEOUT)
+        || queued_for >= INITIAL_INPUT_ABSOLUTE_TIMEOUT
 }
 
 fn should_stamp_activity(turn_submitted: bool, looks_busy: bool) -> bool {
@@ -189,13 +203,19 @@ pub struct App {
     /// Initial TUI paint after opening a session is output too, but it should
     /// not make the row look like active work.
     turn_submitted: HashSet<String>,
+    /// Last time MindPlayer injected peer-lane context into a native session.
+    /// This prevents repeated sync prompts while switching between lanes when
+    /// no peer lane has changed.
+    thread_sync_at: HashMap<String, DateTime<Utc>>,
     /// Initial prompt payloads waiting for a newly-spawned agent's input prompt.
     pending_initial_inputs: HashMap<String, DeferredInitialInput>,
     /// Set when a resume is requested; consumed once the right-pane size is known.
     pub pending: Option<PendingSpawn>,
+    /// Additional PTY spawns queued behind `pending`, used by orchestration.
+    pending_queue: VecDeque<PendingSpawn>,
     /// codex/claude picker for a new session; None when hidden.
     pub new_picker: Option<usize>,
-    /// EXPERIMENTAL: target-agent picker for a cross-agent handoff.
+    /// Target-agent picker for a cross-agent handoff.
     pub handoff_picker: Option<usize>,
     /// When `Some`, the label-input step of new-session creation is active and
     /// holds the text typed so far.
@@ -209,6 +229,19 @@ pub struct App {
     /// When `Some`, the working-dir input modal is open and holds the path text
     /// typed so far. Confirming re-points the scope at that directory.
     pub dir_input: Option<String>,
+    /// Orchestration wizard opened by `o`.
+    pub orchestration: Option<orchestration::Draft>,
+    /// Orchestration broadcast prompt opened by `b`.
+    pub broadcast: Option<orchestration::BroadcastDraft>,
+    /// Main-mediated dispatch prompt opened by `m`.
+    pub dispatch: Option<orchestration::BroadcastDraft>,
+    /// Manual dispatch-block paste prompt opened by `M`.
+    pub dispatch_apply: Option<orchestration::BroadcastDraft>,
+    /// Keyboard shortcut help overlay opened by `?`.
+    pub help_visible: bool,
+    /// Orchestration root waiting for child lanes to become idle before
+    /// synthesis is sent to the main lane.
+    pending_synthesis_root: Option<String>,
     /// When `Some`, the session list is filtered as the user types after `/`.
     pub search_query: Option<String>,
     /// Monotonic counter so each new session gets a unique synthetic id.
@@ -223,6 +256,7 @@ pub struct App {
     /// session that is NOT in this baseline, so it can never re-key the new
     /// session's live PTY onto a pre-existing (or freshly-resumed) session.
     new_baselines: HashMap<String, HashSet<String>>,
+    orchestration_cycles: HashMap<String, u64>,
 
     /// Last known inner size of the right pane (rows, cols).
     pub pty_rows: u16,
@@ -251,6 +285,7 @@ pub struct PendingSpawn {
     pub command: mindplayer_core::Command,
     pub session_id: String,
     pub initial_input: Option<Vec<u8>>,
+    pub focus_after_spawn: bool,
 }
 
 struct DeferredInitialInput {
@@ -291,18 +326,27 @@ impl App {
             out_seq: HashMap::new(),
             out_at: HashMap::new(),
             turn_submitted: HashSet::new(),
+            thread_sync_at: HashMap::new(),
             pending_initial_inputs: HashMap::new(),
             pending: None,
+            pending_queue: VecDeque::new(),
             new_picker: None,
             handoff_picker: None,
             new_label: None,
             new_agent: None,
             label_target: None,
             dir_input: None,
+            orchestration: None,
+            broadcast: None,
+            dispatch: None,
+            dispatch_apply: None,
+            help_visible: false,
+            pending_synthesis_root: None,
             search_query: None,
             new_counter: 0,
             extra_sessions: Vec::new(),
             new_baselines: HashMap::new(),
+            orchestration_cycles: HashMap::new(),
             pty_rows: 24,
             pty_cols: 80,
             pty_x: 0,
@@ -378,20 +422,663 @@ impl App {
         self.label_target = None;
     }
 
-    // --- experimental cross-agent handoff ----------------------------------
+    pub fn toggle_help(&mut self) {
+        self.help_visible = !self.help_visible;
+    }
 
-    pub fn begin_handoff(&mut self) {
-        if !experimental_handoff::enabled() {
-            self.status = format!(
-                "experimental handoff is disabled (set {}=1)",
-                experimental_handoff::ENV_FLAG
-            );
+    pub fn close_help(&mut self) {
+        self.help_visible = false;
+    }
+
+    // --- orchestration ------------------------------------------------------
+
+    pub fn begin_orchestration(&mut self) {
+        self.orchestration = Some(orchestration::Draft::default());
+        self.status = "orchestration: choose provider".to_string();
+    }
+
+    pub fn cancel_orchestration(&mut self) {
+        self.orchestration = None;
+    }
+
+    pub fn orchestration_input_push(&mut self, c: char) {
+        let Some(draft) = self.orchestration.as_mut() else {
+            return;
+        };
+        if draft.step == orchestration::Step::Provider {
+            draft.set_provider_key(c);
+        } else if draft.step == orchestration::Step::Children {
+            if c == '+' || c == '=' {
+                draft.adjust_children(1);
+            } else if c == '-' {
+                draft.adjust_children(-1);
+            } else {
+                draft.set_children_digit(c);
+            }
+        } else if let Some(buf) = draft.active_input_mut() {
+            buf.push(c);
+        }
+    }
+
+    pub fn orchestration_input_text(&mut self, text: &str) {
+        if let Some(draft) = self.orchestration.as_mut() {
+            draft.push_text(text);
+        }
+    }
+
+    pub fn orchestration_input_backspace(&mut self) {
+        if let Some(buf) = self
+            .orchestration
+            .as_mut()
+            .and_then(orchestration::Draft::active_input_mut)
+        {
+            buf.pop();
+        }
+    }
+
+    pub fn orchestration_adjust_children(&mut self, delta: isize) {
+        if let Some(draft) = self.orchestration.as_mut() {
+            if draft.step == orchestration::Step::Provider {
+                draft.adjust_provider(delta);
+            } else {
+                draft.adjust_children(delta);
+            }
+        }
+    }
+
+    pub fn begin_broadcast(&mut self) {
+        let Some(root_id) = self.selected_orchestration_root() else {
+            self.status = "broadcast needs an orchestration main/thread row".to_string();
+            return;
+        };
+        let child_count = self.thread_child_ids(&root_id).len();
+        if child_count == 0 {
+            self.status = "broadcast needs child lanes".to_string();
             return;
         }
+        self.broadcast = Some(orchestration::BroadcastDraft::default());
+        self.status = format!("broadcast: enter instruction for {child_count} child lanes");
+    }
+
+    pub fn cancel_broadcast(&mut self) {
+        self.broadcast = None;
+    }
+
+    pub fn begin_main_dispatch(&mut self) {
+        self.repair_title_based_orchestration_links();
+        let Some(root_id) = self.selected_orchestration_root() else {
+            self.status = "dispatch needs an orchestration main/thread row".to_string();
+            return;
+        };
+        let child_count = self.thread_child_ids(&root_id).len();
+        if child_count == 0 {
+            self.status = "dispatch needs child lanes".to_string();
+            return;
+        }
+        self.dispatch = Some(orchestration::BroadcastDraft::default());
+        self.status = format!("dispatch: enter topic for main to route across {child_count} lanes");
+    }
+
+    pub fn cancel_main_dispatch(&mut self) {
+        self.dispatch = None;
+    }
+
+    pub fn dispatch_input_text(&mut self, text: &str) {
+        if let Some(draft) = self.dispatch.as_mut() {
+            draft.push_text(text);
+        }
+    }
+
+    pub fn dispatch_input_push(&mut self, c: char) {
+        if let Some(draft) = self.dispatch.as_mut() {
+            draft.push_char(c);
+        }
+    }
+
+    pub fn dispatch_input_backspace(&mut self) {
+        if let Some(draft) = self.dispatch.as_mut() {
+            draft.backspace();
+        }
+    }
+
+    pub fn confirm_main_dispatch(&mut self) {
+        let Some(draft) = self.dispatch.take() else {
+            return;
+        };
+        self.repair_title_based_orchestration_links();
+        let Some(root_id) = self.selected_orchestration_root() else {
+            self.status = "dispatch failed: no orchestration root".to_string();
+            return;
+        };
+        let Some(main) = self.all_sessions.iter().find(|s| s.id == root_id).cloned() else {
+            self.status = "dispatch failed: no orchestration main session".to_string();
+            return;
+        };
+        let child_ids = self.thread_child_ids(&root_id);
+        if child_ids.is_empty() {
+            self.status = "dispatch failed: no child lanes".to_string();
+            return;
+        }
+        let peers = self.thread_peer_sessions(&root_id);
+        let roster = self.child_lane_roster(&root_id);
+        let cycle = self.next_orchestration_cycle(&root_id);
+        let Ok(sync) = handoff::prepare_thread_sync_input(&main, &peers) else {
+            self.status = "dispatch failed: no readable child lane context".to_string();
+            return;
+        };
+        let input = append_submitted_prompt(
+            sync.input,
+            orchestration::dispatch_request_prompt(&draft.instruction, cycle, &roster),
+        );
+        if self.enqueue_or_submit_to_session(&main, input) {
+            self.thread_sync_at.insert(main.id.clone(), Utc::now());
+            self.status = format!(
+                "dispatch planning cycle #{cycle} sent to main; press M after main answers to apply"
+            );
+        } else {
+            self.status = "dispatch failed: main lane is not resumable".to_string();
+        }
+    }
+
+    pub fn begin_dispatch_apply_input(&mut self) {
+        self.repair_title_based_orchestration_links();
+        let Some(root_id) = self.selected_orchestration_root() else {
+            self.status = "dispatch apply needs an orchestration main/thread row".to_string();
+            return;
+        };
+        if self.thread_child_ids(&root_id).is_empty() {
+            self.status = "dispatch apply needs child lanes".to_string();
+            return;
+        }
+        self.dispatch_apply = Some(orchestration::BroadcastDraft::default());
+        self.status =
+            "dispatch apply: paste MINDPLAYER_DISPATCH block, then press enter".to_string();
+    }
+
+    pub fn cancel_dispatch_apply(&mut self) {
+        self.dispatch_apply = None;
+    }
+
+    pub fn dispatch_apply_input_text(&mut self, text: &str) {
+        if let Some(draft) = self.dispatch_apply.as_mut() {
+            draft.push_text(text);
+        }
+    }
+
+    pub fn dispatch_apply_input_push(&mut self, c: char) {
+        if let Some(draft) = self.dispatch_apply.as_mut() {
+            draft.push_char(c);
+        }
+    }
+
+    pub fn dispatch_apply_input_backspace(&mut self) {
+        if let Some(draft) = self.dispatch_apply.as_mut() {
+            draft.backspace();
+        }
+    }
+
+    pub fn confirm_dispatch_apply_input(&mut self) {
+        let Some(draft) = self.dispatch_apply.take() else {
+            return;
+        };
+        let plan = orchestration::parse_dispatch_plan(&draft.instruction);
+        if plan.is_empty() {
+            self.status =
+                "dispatch apply failed: pasted block has no lane instructions".to_string();
+            return;
+        }
+        let Some(root_id) = self.best_dispatch_root_for_plan(&plan) else {
+            self.status = "dispatch apply failed: no matching child lanes".to_string();
+            return;
+        };
+        self.apply_dispatch_plan_to_root(&root_id, plan);
+    }
+
+    #[cfg(test)]
+    pub fn apply_main_dispatch(&mut self) {
+        self.repair_title_based_orchestration_links();
+        let Some(root_id) = self.selected_orchestration_root() else {
+            self.status = "dispatch apply needs an orchestration main/thread row".to_string();
+            return;
+        };
+        let Some(main) = self.all_sessions.iter().find(|s| s.id == root_id).cloned() else {
+            self.status = "dispatch apply failed: no orchestration main session".to_string();
+            return;
+        };
+        let Some((dispatch_root_id, plan)) = self.dispatch_plan_for_root(&root_id, &main) else {
+            self.status = "dispatch apply failed: no MINDPLAYER_DISPATCH block".to_string();
+            return;
+        };
+        self.apply_dispatch_plan_to_root(&dispatch_root_id, plan);
+    }
+
+    fn apply_dispatch_plan_to_root(
+        &mut self,
+        root_id: &str,
+        plan: Vec<orchestration::DispatchItem>,
+    ) {
+        let cycle = self.current_orchestration_cycle(root_id);
+        let mut delivered = 0usize;
+        let mut queued = 0usize;
+        let mut spawned = 0usize;
+        let mut skipped = 0usize;
+        let mut skipped_lanes = Vec::new();
+        for item in plan {
+            let Some(child) = self.child_session_by_lane(root_id, item.lane) else {
+                skipped += 1;
+                skipped_lanes.push(format!("#{}", item.lane));
+                continue;
+            };
+            let input = orchestration::dispatch_child_prompt(&item.instruction, cycle, item.lane);
+            if self.enqueue_or_submit_to_session(&child, input) {
+                if self.active.as_deref() == Some(child.id.as_str())
+                    && self.ptys.contains_key(&child.id)
+                {
+                    delivered += 1;
+                } else if self.pending_initial_inputs.contains_key(&child.id) {
+                    queued += 1;
+                } else {
+                    spawned += 1;
+                }
+            } else {
+                skipped += 1;
+                skipped_lanes.push(format!("#{}", item.lane));
+            }
+        }
+        let retry_note = if skipped_lanes.is_empty() {
+            String::new()
+        } else {
+            format!("; skipped lanes {}", skipped_lanes.join(","))
+        };
+        self.status = format!(
+            "dispatch applied cycle #{cycle}: {} lanes targeted ({delivered} sent, {queued} queued, {spawned} resumed, {skipped} skipped)",
+            delivered + queued + spawned
+        );
+        self.status.push_str(&retry_note);
+    }
+
+    fn best_dispatch_root_for_plan(&self, plan: &[orchestration::DispatchItem]) -> Option<String> {
+        let selected = self.selected_session();
+        let selected_root = selected.and_then(|s| self.orchestration_root_for_session(s));
+        if selected_root
+            .as_deref()
+            .is_some_and(|root| self.dispatch_root_matches_plan(root, plan))
+        {
+            return selected_root;
+        }
+        let selected_cwd = selected.map(|s| s.cwd.clone());
+        let selected_agent = selected.map(|s| s.agent);
+        self.all_sessions
+            .iter()
+            .filter(|s| {
+                is_orchestration_main_session(s)
+                    && selected_cwd.as_ref().is_none_or(|cwd| s.cwd == *cwd)
+                    && selected_agent.is_none_or(|agent| s.agent == agent)
+                    && self.dispatch_root_matches_plan(&s.id, plan)
+            })
+            .max_by_key(|s| s.last_active)
+            .map(|s| s.id.clone())
+    }
+
+    fn dispatch_root_matches_plan(
+        &self,
+        root_id: &str,
+        plan: &[orchestration::DispatchItem],
+    ) -> bool {
+        plan.iter()
+            .any(|item| self.child_session_by_lane(root_id, item.lane).is_some())
+    }
+
+    #[cfg(test)]
+    fn dispatch_plan_for_root(
+        &self,
+        root_id: &str,
+        main: &Session,
+    ) -> Option<(String, Vec<orchestration::DispatchItem>)> {
+        let mut root_ids = vec![root_id.to_string()];
+        root_ids.extend(
+            self.all_sessions
+                .iter()
+                .filter(|s| {
+                    s.id != root_id
+                        && s.cwd == main.cwd
+                        && s.agent == main.agent
+                        && is_orchestration_main_session(s)
+                        && !self.thread_child_ids(&s.id).is_empty()
+                })
+                .map(|s| s.id.clone()),
+        );
+        root_ids.sort();
+        root_ids.dedup();
+        root_ids.sort_by_key(|id| {
+            std::cmp::Reverse(
+                self.all_sessions
+                    .iter()
+                    .find(|s| s.id == *id)
+                    .and_then(|s| s.last_active),
+            )
+        });
+        if let Some(pos) = root_ids.iter().position(|id| id == root_id) {
+            let selected = root_ids.remove(pos);
+            root_ids.insert(0, selected);
+        }
+
+        for candidate_id in root_ids {
+            let Some(candidate) = self.all_sessions.iter().find(|s| s.id == candidate_id) else {
+                continue;
+            };
+            if let Some(screen) = self.live_screen_text(&candidate.id) {
+                let plan = orchestration::parse_dispatch_plan(&screen);
+                if !plan.is_empty() {
+                    return Some((candidate.id.clone(), plan));
+                }
+            }
+            if let Ok(transcript) = handoff::extract_session_transcript(candidate) {
+                let plan = orchestration::parse_dispatch_plan(&transcript);
+                if !plan.is_empty() {
+                    return Some((candidate.id.clone(), plan));
+                }
+            }
+        }
+        None
+    }
+
+    #[cfg(test)]
+    fn live_screen_text(&self, id: &str) -> Option<String> {
+        let pty = self.ptys.get(id)?;
+        let parser = pty.parser().lock().ok()?;
+        Some(parser.screen().contents())
+    }
+
+    pub fn broadcast_input_text(&mut self, text: &str) {
+        if let Some(draft) = self.broadcast.as_mut() {
+            draft.push_text(text);
+        }
+    }
+
+    pub fn broadcast_input_push(&mut self, c: char) {
+        if let Some(draft) = self.broadcast.as_mut() {
+            draft.push_char(c);
+        }
+    }
+
+    pub fn broadcast_input_backspace(&mut self) {
+        if let Some(draft) = self.broadcast.as_mut() {
+            draft.backspace();
+        }
+    }
+
+    pub fn modal_text_delete(&mut self) {
+        if let Some(draft) = self.dispatch_apply.as_mut() {
+            draft.delete();
+        } else if let Some(draft) = self.dispatch.as_mut() {
+            draft.delete();
+        } else if let Some(draft) = self.broadcast.as_mut() {
+            draft.delete();
+        }
+    }
+
+    pub fn modal_text_move_left(&mut self) {
+        if let Some(draft) = self.dispatch_apply.as_mut() {
+            draft.move_left();
+        } else if let Some(draft) = self.dispatch.as_mut() {
+            draft.move_left();
+        } else if let Some(draft) = self.broadcast.as_mut() {
+            draft.move_left();
+        }
+    }
+
+    pub fn modal_text_move_right(&mut self) {
+        if let Some(draft) = self.dispatch_apply.as_mut() {
+            draft.move_right();
+        } else if let Some(draft) = self.dispatch.as_mut() {
+            draft.move_right();
+        } else if let Some(draft) = self.broadcast.as_mut() {
+            draft.move_right();
+        }
+    }
+
+    pub fn modal_text_move_up(&mut self) {
+        if let Some(draft) = self.dispatch_apply.as_mut() {
+            draft.move_up();
+        } else if let Some(draft) = self.dispatch.as_mut() {
+            draft.move_up();
+        } else if let Some(draft) = self.broadcast.as_mut() {
+            draft.move_up();
+        }
+    }
+
+    pub fn modal_text_move_down(&mut self) {
+        if let Some(draft) = self.dispatch_apply.as_mut() {
+            draft.move_down();
+        } else if let Some(draft) = self.dispatch.as_mut() {
+            draft.move_down();
+        } else if let Some(draft) = self.broadcast.as_mut() {
+            draft.move_down();
+        }
+    }
+
+    pub fn modal_text_move_home(&mut self) {
+        if let Some(draft) = self.dispatch_apply.as_mut() {
+            draft.move_home();
+        } else if let Some(draft) = self.dispatch.as_mut() {
+            draft.move_home();
+        } else if let Some(draft) = self.broadcast.as_mut() {
+            draft.move_home();
+        }
+    }
+
+    pub fn modal_text_move_end(&mut self) {
+        if let Some(draft) = self.dispatch_apply.as_mut() {
+            draft.move_end();
+        } else if let Some(draft) = self.dispatch.as_mut() {
+            draft.move_end();
+        } else if let Some(draft) = self.broadcast.as_mut() {
+            draft.move_end();
+        }
+    }
+
+    pub fn confirm_broadcast(&mut self) {
+        let Some(draft) = self.broadcast.take() else {
+            return;
+        };
+        let Some(root_id) = self.selected_orchestration_root() else {
+            self.status = "broadcast failed: no orchestration root".to_string();
+            return;
+        };
+        let child_ids = self.thread_child_ids(&root_id);
+        if child_ids.is_empty() {
+            self.status = "broadcast failed: no child lanes".to_string();
+            return;
+        }
+        let cycle = self.next_orchestration_cycle(&root_id);
+        let mut delivered = 0usize;
+        let mut queued = 0usize;
+        let mut spawned = 0usize;
+        let mut skipped = 0usize;
+        for child_id in child_ids {
+            let Some(child) = self.all_sessions.iter().find(|s| s.id == child_id).cloned() else {
+                skipped += 1;
+                continue;
+            };
+            let input = orchestration::broadcast_prompt(&draft.instruction, cycle);
+            if self.enqueue_or_submit_to_session(&child, input) {
+                if self.ptys.contains_key(&child.id) {
+                    if self.pending_initial_inputs.contains_key(&child.id) {
+                        queued += 1;
+                    } else {
+                        delivered += 1;
+                    }
+                } else {
+                    spawned += 1;
+                }
+            } else {
+                skipped += 1;
+            }
+        }
+        self.status = format!(
+            "cycle #{cycle} broadcasted to {} child lanes ({delivered} sent, {queued} queued, {spawned} resumed, {skipped} skipped)",
+            delivered + queued + spawned
+        );
+    }
+
+    pub fn run_peer_review_cycle(&mut self) {
+        self.repair_title_based_orchestration_links();
+        let Some(root_id) = self.selected_orchestration_root() else {
+            self.status = "peer review needs an orchestration main/thread row".to_string();
+            return;
+        };
+        let child_ids = self.thread_child_ids(&root_id);
+        if child_ids.is_empty() {
+            self.status = "peer review needs child lanes".to_string();
+            return;
+        }
+        let cycle = self.next_orchestration_cycle(&root_id);
+        let mut delivered = 0usize;
+        let mut queued = 0usize;
+        let mut spawned = 0usize;
+        let mut skipped = 0usize;
+        let mut skipped_ids = Vec::new();
+        for child_id in child_ids {
+            let Some(child) = self.all_sessions.iter().find(|s| s.id == child_id).cloned() else {
+                skipped += 1;
+                skipped_ids.push(short(&child_id));
+                continue;
+            };
+            let peers = self.thread_peer_sessions(&child.id);
+            let Ok(sync) = handoff::prepare_thread_sync_input(&child, &peers) else {
+                skipped += 1;
+                skipped_ids.push(short(&child.id));
+                continue;
+            };
+            let input =
+                append_submitted_prompt(sync.input, orchestration::peer_review_prompt(cycle));
+            if self.enqueue_or_submit_to_session(&child, input) {
+                self.thread_sync_at.insert(child.id.clone(), Utc::now());
+                if self.ptys.contains_key(&child.id) {
+                    if self.pending_initial_inputs.contains_key(&child.id) {
+                        queued += 1;
+                    } else {
+                        delivered += 1;
+                    }
+                } else {
+                    spawned += 1;
+                }
+            } else {
+                skipped += 1;
+                skipped_ids.push(short(&child.id));
+            }
+        }
+        let retry_note = if skipped_ids.is_empty() {
+            String::new()
+        } else {
+            format!("; skipped {}: press p to retry", skipped_ids.join(","))
+        };
+        self.status = format!(
+            "peer review cycle #{cycle} sent to {} child lanes ({delivered} sent, {queued} queued, {spawned} resumed, {skipped} skipped)",
+            delivered + queued + spawned
+        );
+        self.status.push_str(&retry_note);
+    }
+
+    pub fn run_synthesis_cycle(&mut self) {
+        self.repair_title_based_orchestration_links();
+        let Some(root_id) = self.selected_orchestration_root() else {
+            self.status = "synthesis needs an orchestration main/thread row".to_string();
+            return;
+        };
+        if self.thread_child_ids(&root_id).is_empty() {
+            self.status = "synthesis needs child lanes".to_string();
+            return;
+        }
+        self.pending_synthesis_root = Some(root_id.clone());
+        if self.try_run_pending_synthesis() {
+            return;
+        }
+        let waiting = self.waiting_child_count(&root_id);
+        self.status = format!("synthesis waiting for {waiting} child lanes to become idle");
+    }
+
+    pub fn poll_pending_synthesis(&mut self) -> bool {
+        self.try_run_pending_synthesis()
+    }
+
+    fn try_run_pending_synthesis(&mut self) -> bool {
+        let Some(root_id) = self.pending_synthesis_root.clone() else {
+            return false;
+        };
+        if self.waiting_child_count(&root_id) > 0 {
+            return false;
+        }
+        self.pending_synthesis_root = None;
+        self.send_synthesis_cycle_now(&root_id);
+        true
+    }
+
+    fn send_synthesis_cycle_now(&mut self, root_id: &str) {
+        let Some(main) = self.all_sessions.iter().find(|s| s.id == root_id).cloned() else {
+            self.status = "synthesis failed: no orchestration main session".to_string();
+            return;
+        };
+        let peers = self.thread_peer_sessions(&root_id);
+        if peers.is_empty() {
+            self.status = "synthesis needs child lanes".to_string();
+            return;
+        }
+        let cycle = self.current_orchestration_cycle(&root_id);
+        let Ok(sync) = handoff::prepare_thread_sync_input(&main, &peers) else {
+            self.status = "synthesis failed: no readable child lane context".to_string();
+            return;
+        };
+        let input = append_submitted_prompt(sync.input, orchestration::synthesis_prompt(cycle));
+        if self.enqueue_or_submit_to_session(&main, input) {
+            self.thread_sync_at.insert(main.id.clone(), Utc::now());
+            self.status = format!(
+                "synthesis cycle #{cycle} sent to main ({} chars, {})",
+                sync.transcript_chars,
+                sync.artifact.display()
+            );
+        } else {
+            self.status = "synthesis failed: main lane is not resumable".to_string();
+        }
+    }
+
+    pub fn paste_to_modal(&mut self, text: &str) -> bool {
+        if self.orchestration.is_some() {
+            self.orchestration_input_text(text);
+            true
+        } else if self.dispatch_apply.is_some() {
+            self.dispatch_apply_input_text(text);
+            true
+        } else if self.dispatch.is_some() {
+            self.dispatch_input_text(text);
+            true
+        } else if self.broadcast.is_some() {
+            self.broadcast_input_text(text);
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn confirm_orchestration_step(&mut self) {
+        let Some(draft) = self.orchestration.as_mut() else {
+            return;
+        };
+        if draft.advance() {
+            let draft = self.orchestration.take().unwrap_or_default();
+            self.start_orchestration(draft);
+        }
+    }
+
+    // --- cross-agent handoff -----------------------------------------------
+
+    pub fn begin_handoff(&mut self) {
         if self.selected_session().is_none() {
             return;
         }
         self.handoff_picker = Some(0);
+        self.status = "handoff: choose target agent".to_string();
     }
 
     pub fn cancel_handoff(&mut self) {
@@ -404,26 +1091,21 @@ impl App {
             return;
         };
         self.handoff_picker = None;
-        if !experimental_handoff::enabled() {
-            self.status = format!(
-                "experimental handoff is disabled (set {}=1)",
-                experimental_handoff::ENV_FLAG
-            );
-            return;
-        }
         if source.agent == target {
             self.status = format!("handoff target is already {}", target.as_str());
             return;
         }
 
-        let prepared = match experimental_handoff::prepare_initial_input(&source, target) {
+        let prepared = match handoff::prepare_initial_input(&source, target) {
             Ok(prepared) => prepared,
             Err(e) => {
                 self.status = format!("handoff failed: {e}");
                 return;
             }
         };
-        let command = experimental_handoff::command_for(&source, target);
+        let command = handoff::command_for(&source, target);
+        let parent_id = self.state.thread_root(&source.id).to_string();
+        let now = Utc::now();
         self.new_counter += 1;
         let session_id = format!(
             "handoff:{}:{}:{}",
@@ -439,15 +1121,17 @@ impl App {
             .collect();
         self.new_baselines.insert(session_id.clone(), baseline);
         let handoff_label = self.state.label_for(&source.id).and_then(handoff_label);
+        self.state
+            .set_handoff_link(&session_id, &parent_id, prepared.artifact.clone(), now);
         self.pending = Some(PendingSpawn {
             command,
             session_id: session_id.clone(),
             initial_input: Some(prepared.input),
+            focus_after_spawn: true,
         });
         self.active = Some(session_id.clone());
         self.focus = Focus::Terminal;
 
-        let now = Utc::now();
         let synthetic = Session {
             id: session_id,
             agent: target,
@@ -459,7 +1143,7 @@ impl App {
             title: handoff_label
                 .as_ref()
                 .map(|label| format!("🏷 {label}"))
-                .unwrap_or_else(|| experimental_handoff::title_for(&source, target)),
+                .unwrap_or_else(|| handoff::title_for(&source, target)),
             archived: false,
             is_subagent: false,
             context_pct: None,
@@ -488,10 +1172,17 @@ impl App {
                 now - chrono::Duration::seconds(5),
                 label,
             );
-            let _ = self.state.save();
         }
+        self.state.add_pending_handoff(
+            &parent_id,
+            target.as_str(),
+            source.cwd.clone(),
+            now - chrono::Duration::seconds(5),
+            prepared.artifact.clone(),
+        );
+        let _ = self.state.save();
         self.status = format!(
-            "experimental handoff {} -> {} ({} chars, {trunc}, {})",
+            "handoff {} -> {} ({} chars, {trunc}, {})",
             source.agent.as_str(),
             target.as_str(),
             prepared.transcript_chars,
@@ -689,6 +1380,7 @@ impl App {
         self.aggregate = Aggregate::of(&sessions);
         self.all_sessions = sessions;
         self.merge_extras();
+        self.repair_title_based_orchestration_links();
         self.rebuild_visible();
         if let Some(id) = selected_id {
             if let Some(pos) = self
@@ -719,6 +1411,7 @@ impl App {
                 self.aggregate = Aggregate::of(&sessions);
                 self.all_sessions = sessions;
                 self.merge_extras();
+                self.repair_title_based_orchestration_links();
                 self.rebuild_visible();
                 self.scan_rx = None;
                 self.screen = Screen::ScanSummary;
@@ -747,25 +1440,80 @@ impl App {
     fn rebuild_visible(&mut self) {
         let show_archived = self.show_archived;
         let show_subagents = self.show_subagents;
-        self.visible = self
-            .all_sessions
-            .iter()
-            .enumerate()
-            .filter(|(_, s)| show_archived == s.archived)
-            .filter(|(_, s)| show_subagents || !s.is_subagent)
-            .filter(|(_, s)| {
-                self.search_query
-                    .as_deref()
-                    .is_none_or(|query| matches_search(s, query))
-            })
-            .map(|(i, _)| i)
+        let query = self.search_query.as_deref();
+        let mut groups: Vec<(String, Vec<usize>)> = Vec::new();
+        let mut by_root: HashMap<String, Vec<usize>> = HashMap::new();
+        for (i, s) in self.all_sessions.iter().enumerate() {
+            let root = self.state.thread_root(&s.id).to_string();
+            by_root.entry(root).or_default().push(i);
+        }
+        let mut roots: Vec<String> = by_root.keys().cloned().collect();
+        roots.sort_by_key(|root| {
+            self.all_sessions
+                .iter()
+                .position(|s| s.id == *root)
+                .unwrap_or(usize::MAX)
+        });
+        for root in roots {
+            let Some(indices) = by_root.remove(&root) else {
+                continue;
+            };
+            let has_visible_match = indices.iter().any(|&i| {
+                let s = &self.all_sessions[i];
+                show_archived == s.archived
+                    && (show_subagents || !s.is_subagent)
+                    && query.is_none_or(|query| matches_search(s, query))
+            });
+            if !has_visible_match {
+                continue;
+            }
+            let mut ordered = indices
+                .into_iter()
+                .filter(|&i| {
+                    let s = &self.all_sessions[i];
+                    show_archived == s.archived
+                        && (show_subagents || !s.is_subagent)
+                        && query.is_none_or(|query| {
+                            matches_search(s, query)
+                                || self
+                                    .all_sessions
+                                    .iter()
+                                    .find(|root_session| root_session.id == root)
+                                    .is_some_and(|root_session| matches_search(root_session, query))
+                        })
+                })
+                .collect::<Vec<_>>();
+            ordered.sort_by_key(|&i| {
+                let s = &self.all_sessions[i];
+                (
+                    if s.id == root { 0 } else { 1 },
+                    agent_rank(s.agent),
+                    std::cmp::Reverse(s.last_active),
+                )
+            });
+            groups.push((root, ordered));
+        }
+        groups.sort_by_cached_key(|(root, indices)| {
+            let section_agent = self.thread_root_agent_for_indices(root, indices);
+            let best_status = indices
+                .iter()
+                .map(|&i| status_rank(self.session_status(&self.all_sessions[i].id)))
+                .min()
+                .unwrap_or(u8::MAX);
+            let latest = indices
+                .iter()
+                .filter_map(|&i| self.all_sessions[i].last_active)
+                .max();
+            (
+                agent_rank(section_agent),
+                best_status,
+                std::cmp::Reverse(latest),
+            )
+        });
+        self.visible = groups
+            .into_iter()
+            .flat_map(|(_, indices)| indices)
             .collect();
-        // herdr-style rollup: float the most urgent states to the top
-        // (blocked → working → idle → history → done). Stable sort keeps the
-        // recency order (from all_sessions) within each rank.
-        let mut vis = std::mem::take(&mut self.visible);
-        vis.sort_by_cached_key(|&i| status_rank(self.session_status(&self.all_sessions[i].id)));
-        self.visible = vis;
         if self.selected >= self.visible.len() {
             self.selected = self.visible.len().saturating_sub(1);
         }
@@ -775,6 +1523,43 @@ impl App {
                 .iter()
                 .filter_map(|&i| self.all_sessions.get(i)),
         );
+    }
+
+    fn repair_title_based_orchestration_links(&mut self) {
+        let mut repairs = Vec::new();
+        for child in self.all_sessions.iter() {
+            if self.state.handoff_parent(&child.id).is_some()
+                || !is_orchestration_child_session(child)
+            {
+                continue;
+            }
+            let parent = self
+                .all_sessions
+                .iter()
+                .filter(|candidate| {
+                    candidate.id != child.id
+                        && candidate.agent == child.agent
+                        && candidate.cwd == child.cwd
+                        && is_orchestration_main_session(candidate)
+                })
+                .max_by_key(|candidate| candidate.started_at);
+            if let Some(parent) = parent {
+                repairs.push((child.id.clone(), parent.id.clone()));
+            }
+        }
+        if repairs.is_empty() {
+            return;
+        }
+        let now = Utc::now();
+        for (child_id, parent_id) in repairs {
+            self.state.set_handoff_link(
+                &child_id,
+                &parent_id,
+                PathBuf::from("mindplayer-orchestration-title-fallback"),
+                now,
+            );
+        }
+        let _ = self.state.save();
     }
 
     pub fn move_selection(&mut self, delta: isize) {
@@ -809,6 +1594,120 @@ impl App {
         self.visible
             .get(row)
             .and_then(|&i| self.all_sessions.get(i))
+    }
+
+    pub fn session_depth(&self, id: &str) -> usize {
+        usize::from(self.state.handoff_parent(id).is_some())
+    }
+
+    fn thread_root_agent_for_indices(&self, root: &str, indices: &[usize]) -> Agent {
+        self.all_sessions
+            .iter()
+            .find(|s| s.id == root)
+            .map(|s| s.agent)
+            .or_else(|| {
+                indices
+                    .first()
+                    .and_then(|&i| self.all_sessions.get(i))
+                    .map(|s| s.agent)
+            })
+            .unwrap_or(Agent::Codex)
+    }
+
+    pub fn session_section_agent(&self, id: &str) -> Option<Agent> {
+        let root = self.state.thread_root(id);
+        self.all_sessions
+            .iter()
+            .find(|s| s.id == root)
+            .or_else(|| self.all_sessions.iter().find(|s| s.id == id))
+            .map(|s| s.agent)
+    }
+
+    pub fn visible_section_count(&self, agent: Agent) -> usize {
+        self.visible
+            .iter()
+            .filter(|&&i| {
+                self.all_sessions.get(i).is_some_and(|s| {
+                    self.session_section_agent(&s.id)
+                        .is_some_and(|section| section == agent)
+                })
+            })
+            .count()
+    }
+
+    pub fn thread_child_count(&self, id: &str) -> usize {
+        self.all_sessions
+            .iter()
+            .filter(|s| self.state.handoff_parent(&s.id) == Some(id))
+            .count()
+    }
+
+    fn thread_peer_sessions(&self, id: &str) -> Vec<Session> {
+        if let Some(session) = self.all_sessions.iter().find(|s| s.id == id) {
+            if let Some(root_id) = self.orchestration_root_for_session(session) {
+                let mut peer_ids = self.thread_child_ids(&root_id);
+                if id != root_id {
+                    peer_ids.push(root_id);
+                }
+                peer_ids.sort();
+                peer_ids.dedup();
+                return peer_ids
+                    .into_iter()
+                    .filter(|peer_id| peer_id != id)
+                    .filter_map(|peer_id| {
+                        self.all_sessions.iter().find(|s| s.id == peer_id).cloned()
+                    })
+                    .collect();
+            }
+        }
+        let root = self.state.thread_root(id).to_string();
+        let linked = self
+            .all_sessions
+            .iter()
+            .filter(|s| s.id != id && self.state.thread_root(&s.id) == root)
+            .cloned()
+            .collect::<Vec<_>>();
+        if !linked.is_empty() {
+            return linked;
+        }
+        let Some(session) = self.all_sessions.iter().find(|s| s.id == id) else {
+            return Vec::new();
+        };
+        let Some(root_id) = self.orchestration_fallback_root(session) else {
+            return Vec::new();
+        };
+        let mut peer_ids = self.fallback_child_ids(&root_id);
+        peer_ids.push(root_id);
+        peer_ids.sort();
+        peer_ids.dedup();
+        peer_ids
+            .into_iter()
+            .filter(|peer_id| peer_id != id)
+            .filter_map(|peer_id| self.all_sessions.iter().find(|s| s.id == peer_id).cloned())
+            .collect()
+    }
+
+    fn thread_sync_needed(&self, id: &str, peers: &[Session]) -> bool {
+        if peers.is_empty() {
+            return false;
+        }
+        let Some(peer_last_active) = peers.iter().filter_map(|s| s.last_active).max() else {
+            return !self.thread_sync_at.contains_key(id);
+        };
+        self.thread_sync_at
+            .get(id)
+            .is_none_or(|last_sync| *last_sync < peer_last_active)
+    }
+
+    fn prepare_thread_sync_for(&self, session: &Session) -> Option<handoff::PreparedHandoff> {
+        if self.orchestration_root_for_session(session).is_some() {
+            return None;
+        }
+        let peers = self.thread_peer_sessions(&session.id);
+        if !self.thread_sync_needed(&session.id, &peers) {
+            return None;
+        }
+        handoff::prepare_thread_sync_input(session, &peers).ok()
     }
 
     pub fn toggle_archived_view(&mut self) {
@@ -946,6 +1845,8 @@ impl App {
             .retain(|id, _| self.ptys.contains_key(id) && !self.ended.contains(id));
         self.turn_submitted
             .retain(|id| self.ptys.contains_key(id) && !self.ended.contains(id));
+        self.thread_sync_at
+            .retain(|id, _| self.ptys.contains_key(id) && !self.ended.contains(id));
         changed
     }
 
@@ -984,6 +1885,26 @@ impl App {
         self.focus = Focus::Terminal;
         if self.is_running(&session.id) {
             // Already live in the background — just bring it to the foreground.
+            if let Some(sync) = self.prepare_thread_sync_for(&session) {
+                let injected = self.ptys.get_mut(&session.id).is_some_and(|pty| {
+                    if pty.looks_idle() {
+                        pty.paste_and_submit(&sync.input);
+                        true
+                    } else {
+                        false
+                    }
+                });
+                if injected {
+                    self.thread_sync_at.insert(session.id.clone(), Utc::now());
+                    self.turn_submitted.insert(session.id.clone());
+                    self.status = format!(
+                        "synced peer lanes into {} ({} chars, {})",
+                        short(&session.id),
+                        sync.transcript_chars,
+                        sync.artifact.display()
+                    );
+                }
+            }
             self.active = Some(session.id);
             return;
         }
@@ -997,13 +1918,27 @@ impl App {
             }
             return;
         }
+        let initial_input = self.prepare_thread_sync_for(&session).map(|sync| {
+            self.thread_sync_at.insert(session.id.clone(), Utc::now());
+            self.status = format!(
+                "resuming {} {} with thread sync ({} chars, {})",
+                session.agent.as_str(),
+                short(&session.id),
+                sync.transcript_chars,
+                sync.artifact.display()
+            );
+            sync.input
+        });
         self.pending = Some(PendingSpawn {
             command: resume(&session),
             session_id: session.id.clone(),
-            initial_input: None,
+            initial_input,
+            focus_after_spawn: true,
         });
         self.active = Some(session.id.clone());
-        self.status = format!("resuming {} {}", session.agent.as_str(), short(&session.id));
+        if !self.status.contains("thread sync") {
+            self.status = format!("resuming {} {}", session.agent.as_str(), short(&session.id));
+        }
     }
 
     /// Spawn a new Codex/Claude session in the current scope dir, optionally
@@ -1033,6 +1968,7 @@ impl App {
             command,
             session_id: session_id.clone(),
             initial_input: None,
+            focus_after_spawn: true,
         });
         self.new_picker = None;
         self.new_label = None;
@@ -1097,6 +2033,318 @@ impl App {
         self.rescan_due = Some(Instant::now() + Duration::from_secs(3));
     }
 
+    fn start_orchestration(&mut self, draft: orchestration::Draft) {
+        let dir = match &self.scope {
+            Scope::WorkingDir(p) => p.clone(),
+            Scope::Global => self.cwd.clone(),
+        };
+        let now = Utc::now();
+        let artifact = PathBuf::from("mindplayer-orchestration");
+
+        self.new_counter += 1;
+        let group_id = self.new_counter;
+        let main_agent = orchestration::agent_for_main(&draft);
+        let main_id = format!("orch:main:{group_id}");
+        let baseline = self.real_session_ids();
+        self.new_baselines.insert(main_id.clone(), baseline.clone());
+        let main_label = orchestration::main_label(&draft);
+        self.enqueue_spawn(PendingSpawn {
+            command: orchestration::main_command(&draft, dir.clone()),
+            session_id: main_id.clone(),
+            initial_input: Some(orchestration::main_prompt(&draft, &dir)),
+            focus_after_spawn: true,
+        });
+        self.push_synthetic_session(Session {
+            id: main_id.clone(),
+            agent: main_agent,
+            cwd: dir.clone(),
+            file: PathBuf::new(),
+            started_at: Some(now),
+            last_active: Some(now),
+            tokens: Default::default(),
+            title: format!("🏷 {main_label}"),
+            archived: false,
+            is_subagent: false,
+            context_pct: None,
+        });
+
+        for index in 1..=draft.children {
+            let child_agent = orchestration::agent_for_child(&draft, index);
+            let child_id = format!("orch:child:{group_id}:{index}");
+            self.new_baselines
+                .insert(child_id.clone(), baseline.clone());
+            self.state
+                .set_handoff_link(&child_id, &main_id, artifact.clone(), now);
+            self.enqueue_spawn(PendingSpawn {
+                command: orchestration::child_command(&draft, dir.clone(), index),
+                session_id: child_id.clone(),
+                initial_input: Some(orchestration::child_prompt(&draft, &dir, index)),
+                focus_after_spawn: false,
+            });
+            self.push_synthetic_session(Session {
+                id: child_id,
+                agent: child_agent,
+                cwd: dir.clone(),
+                file: PathBuf::new(),
+                started_at: Some(now + chrono::Duration::milliseconds(index as i64)),
+                last_active: Some(now + chrono::Duration::milliseconds(index as i64)),
+                tokens: Default::default(),
+                title: format!("🏷 {}", orchestration::child_label(&draft, index)),
+                archived: false,
+                is_subagent: false,
+                context_pct: None,
+            });
+        }
+
+        self.active = Some(main_id.clone());
+        self.focus = Focus::Terminal;
+        self.select_session_id(&main_id);
+        self.orchestration_cycles.insert(main_id.clone(), 1);
+        let _ = self.state.save();
+        self.status = format!(
+            "orchestration started: main + {} child lanes",
+            draft.children
+        );
+        self.rescan_due = Some(Instant::now() + Duration::from_secs(3));
+    }
+
+    fn real_session_ids(&self) -> HashSet<String> {
+        self.all_sessions
+            .iter()
+            .filter(|s| {
+                !s.id.starts_with("new:")
+                    && !s.id.starts_with("handoff:")
+                    && !s.id.starts_with("orch:")
+            })
+            .map(|s| s.id.clone())
+            .collect()
+    }
+
+    fn selected_orchestration_root(&self) -> Option<String> {
+        let selected = self.selected_session()?;
+        self.orchestration_root_for_session(selected)
+            .filter(|root| !self.thread_child_ids(root).is_empty())
+    }
+
+    fn orchestration_root_for_session(&self, session: &Session) -> Option<String> {
+        if is_orchestration_main_session(session) {
+            return Some(session.id.clone());
+        }
+        if orchestration_child_index(session).is_some() {
+            if let Some(parent_id) = self.state.handoff_parent(&session.id) {
+                if self
+                    .all_sessions
+                    .iter()
+                    .any(|s| s.id == parent_id && is_orchestration_main_session(s))
+                {
+                    return Some(parent_id.to_string());
+                }
+            }
+            return self.orchestration_fallback_root(session);
+        }
+
+        let root = self.state.thread_root(&session.id).to_string();
+        self.all_sessions
+            .iter()
+            .any(|s| s.id == root && is_orchestration_main_session(s))
+            .then_some(root)
+    }
+
+    fn thread_child_ids(&self, root_id: &str) -> Vec<String> {
+        let mut child_ids = self
+            .all_sessions
+            .iter()
+            .filter(|s| !s.archived)
+            .filter(|s| orchestration_child_index(s).is_some())
+            .filter(|s| self.state.handoff_parent(&s.id) == Some(root_id))
+            .map(|s| s.id.clone())
+            .collect::<Vec<_>>();
+        child_ids.extend(self.fallback_child_ids(root_id));
+        child_ids.sort();
+        child_ids.dedup();
+        child_ids
+    }
+
+    fn child_lane_roster(&self, root_id: &str) -> String {
+        let mut rows = self
+            .thread_child_ids(root_id)
+            .into_iter()
+            .filter_map(|id| {
+                let session = self.all_sessions.iter().find(|s| s.id == id)?;
+                let lane = orchestration_child_index(session)?;
+                Some(format!(
+                    "- lane #{lane}: {} {} [{}] {}",
+                    session.agent.as_str(),
+                    short(&session.id),
+                    match self.session_status(&session.id) {
+                        SessionStatus::Blocked => "blocked",
+                        SessionStatus::Working => "working",
+                        SessionStatus::Idle => "idle",
+                        SessionStatus::Ended => "done",
+                        SessionStatus::Inactive => "inactive",
+                    },
+                    session.title
+                ))
+            })
+            .collect::<Vec<_>>();
+        rows.sort();
+        if rows.is_empty() {
+            "- no numbered child lanes found".to_string()
+        } else {
+            rows.join("\n")
+        }
+    }
+
+    fn child_session_by_lane(&self, root_id: &str, lane: usize) -> Option<Session> {
+        self.thread_child_ids(root_id)
+            .into_iter()
+            .filter_map(|id| self.all_sessions.iter().find(|s| s.id == id).cloned())
+            .find(|s| orchestration_child_index(s) == Some(lane))
+    }
+
+    fn orchestration_fallback_root(&self, selected: &Session) -> Option<String> {
+        if is_orchestration_main_session(selected) {
+            return Some(selected.id.clone());
+        }
+        if orchestration_child_index(selected).is_none() {
+            return None;
+        }
+        self.all_sessions
+            .iter()
+            .filter(|s| {
+                s.id != selected.id
+                    && s.agent == selected.agent
+                    && s.cwd == selected.cwd
+                    && is_orchestration_main_session(s)
+            })
+            .max_by_key(|s| s.started_at)
+            .map(|s| s.id.clone())
+    }
+
+    fn fallback_child_ids(&self, root_id: &str) -> Vec<String> {
+        let Some(root) = self.all_sessions.iter().find(|s| s.id == root_id) else {
+            return Vec::new();
+        };
+        if !is_orchestration_main_session(root) {
+            return Vec::new();
+        }
+        self.all_sessions
+            .iter()
+            .filter(|s| !s.archived)
+            .filter(|s| {
+                s.id != root.id
+                    && s.agent == root.agent
+                    && s.cwd == root.cwd
+                    && orchestration_child_index(s).is_some()
+            })
+            .map(|s| s.id.clone())
+            .collect()
+    }
+
+    fn waiting_child_count(&self, root_id: &str) -> usize {
+        self.thread_child_ids(root_id)
+            .iter()
+            .filter(|id| !self.child_lane_ready_for_synthesis(id))
+            .count()
+    }
+
+    fn child_lane_ready_for_synthesis(&self, id: &str) -> bool {
+        if self.pending.as_ref().is_some_and(|p| p.session_id == id)
+            || self.pending_queue.iter().any(|p| p.session_id == id)
+            || self.pending_initial_inputs.contains_key(id)
+        {
+            return false;
+        }
+        matches!(
+            self.session_status(id),
+            SessionStatus::Idle | SessionStatus::Ended | SessionStatus::Inactive
+        )
+    }
+
+    fn next_orchestration_cycle(&mut self, root_id: &str) -> u64 {
+        let entry = self
+            .orchestration_cycles
+            .entry(root_id.to_string())
+            .or_insert(1);
+        *entry += 1;
+        *entry
+    }
+
+    fn current_orchestration_cycle(&self, root_id: &str) -> u64 {
+        self.orchestration_cycles.get(root_id).copied().unwrap_or(1)
+    }
+
+    fn enqueue_or_submit_to_session(&mut self, session: &Session, input: Vec<u8>) -> bool {
+        if self.ended.contains(&session.id) {
+            return false;
+        }
+        if let Some(pty) = self.ptys.get_mut(&session.id) {
+            if pty.looks_idle() {
+                pty.paste_and_submit(&input);
+                self.turn_submitted.insert(session.id.clone());
+                self.out_at.insert(session.id.clone(), Instant::now());
+            } else {
+                self.queue_initial_input(session.id.clone(), input);
+            }
+            return true;
+        }
+        if session.id.starts_with("new:")
+            || session.id.starts_with("handoff:")
+            || session.id.starts_with("orch:")
+        {
+            return false;
+        }
+        self.enqueue_spawn(PendingSpawn {
+            command: resume(session),
+            session_id: session.id.clone(),
+            initial_input: Some(input),
+            focus_after_spawn: false,
+        });
+        true
+    }
+
+    fn queue_initial_input(&mut self, id: String, input: Vec<u8>) {
+        let now = Instant::now();
+        if let Some(existing) = self.pending_initial_inputs.get_mut(&id) {
+            trim_submit(&mut existing.bytes);
+            existing.bytes.extend_from_slice(b"\n\n---\n\n");
+            existing.bytes.extend(input);
+            existing.queued_at = now;
+        } else {
+            self.pending_initial_inputs.insert(
+                id,
+                DeferredInitialInput {
+                    bytes: input,
+                    queued_at: now,
+                },
+            );
+        }
+    }
+
+    fn enqueue_spawn(&mut self, spawn: PendingSpawn) {
+        if self.pending.is_none() {
+            self.pending = Some(spawn);
+        } else {
+            self.pending_queue.push_back(spawn);
+        }
+    }
+
+    fn push_synthetic_session(&mut self, session: Session) {
+        self.extra_sessions.push(session.clone());
+        self.all_sessions.push(session);
+        self.rebuild_visible();
+    }
+
+    fn select_session_id(&mut self, id: &str) {
+        if let Some(pos) = self
+            .visible
+            .iter()
+            .position(|&i| self.all_sessions[i].id == id)
+        {
+            self.selected = pos;
+        }
+    }
+
     /// Re-attach background-created sessions after a fresh scan: drop the
     /// synthetic placeholder once its real disk session appears (re-keying the
     /// live PTY to the real id), and re-append the ones still unmatched so they
@@ -1114,31 +2362,40 @@ impl App {
                 .unwrap_or_else(Utc::now);
             let baseline = self.new_baselines.get(&extra.id);
             let ptys = &self.ptys;
-            let matched = self
-                .all_sessions
-                .iter()
-                .filter(|s| {
-                    !s.id.starts_with("new:")
-                        && !claimed.contains(&s.id)
-                        // Never re-key onto a session that already owns a live
-                        // PTY (e.g. one the user resumed) — that would drop the
-                        // displaced PtySession and silently SIGKILL its child.
-                        && !ptys.contains_key(&s.id)
-                        // Only adopt a session that did NOT exist when this new
-                        // session was created — i.e. the one codex/claude just
-                        // wrote — never a pre-existing same-dir/same-agent one.
-                        && baseline.is_none_or(|b| !b.contains(&s.id))
-                        && s.agent == extra.agent
-                        && s.cwd == extra.cwd
-                        && s.started_at.is_some_and(|t| t >= after)
-                })
-                .max_by_key(|s| s.started_at)
-                .map(|s| s.id.clone());
+            let matched = self.orchestration_real_match(&extra, &claimed).or_else(|| {
+                self.all_sessions
+                    .iter()
+                    .filter(|s| {
+                        !s.id.starts_with("new:")
+                                && !s.id.starts_with("handoff:")
+                                && !s.id.starts_with("orch:")
+                                && !claimed.contains(&s.id)
+                                // Never re-key onto a session that already owns a live
+                                // PTY (e.g. one the user resumed) — that would drop the
+                                // displaced PtySession and silently SIGKILL its child.
+                                && !ptys.contains_key(&s.id)
+                                // Only adopt a session that did NOT exist when this new
+                                // session was created — i.e. the one codex/claude just
+                                // wrote — never to a pre-existing same-dir/same-agent one.
+                                && baseline.is_none_or(|b| !b.contains(&s.id))
+                                && s.agent == extra.agent
+                                && s.cwd == extra.cwd
+                                && s.started_at.is_some_and(|t| t >= after)
+                    })
+                    .max_by_key(|s| s.started_at)
+                    .map(|s| s.id.clone())
+            });
             match matched {
                 Some(real_id) => {
                     // Move the live PTY / state from the synthetic id to the real
                     // one. The filter guarantees `real_id` is not already a live
                     // PTY, so this insert never clobbers a running session.
+                    if let Some(real) = self.all_sessions.iter_mut().find(|s| s.id == real_id) {
+                        real.title = extra.title.clone();
+                    }
+                    if let Some(label) = extra.title.strip_prefix("🏷 ") {
+                        self.state.set_label(&real_id, label);
+                    }
                     if let Some(pty) = self.ptys.remove(&extra.id) {
                         self.ptys.insert(real_id.clone(), pty);
                     }
@@ -1148,11 +2405,37 @@ impl App {
                     if self.turn_submitted.remove(&extra.id) {
                         self.turn_submitted.insert(real_id.clone());
                     }
+                    if let Some(synced_at) = self.thread_sync_at.remove(&extra.id) {
+                        self.thread_sync_at.insert(real_id.clone(), synced_at);
+                    }
                     if self.ended.remove(&extra.id) {
                         self.ended.insert(real_id.clone());
                     }
                     if self.active.as_deref() == Some(extra.id.as_str()) {
                         self.active = Some(real_id.clone());
+                    }
+                    if let Some(cycle) = self.orchestration_cycles.remove(&extra.id) {
+                        self.orchestration_cycles.insert(real_id.clone(), cycle);
+                    }
+                    for link in self.state.handoff_links.values_mut() {
+                        if link.parent_id == extra.id {
+                            link.parent_id = real_id.clone();
+                        }
+                    }
+                    for pending in &mut self.state.pending_handoffs {
+                        if pending.parent_id == extra.id {
+                            pending.parent_id = real_id.clone();
+                        }
+                    }
+                    if let Some(link) = self.state.handoff_links.remove(&extra.id) {
+                        let parent_id = link.parent_id.clone();
+                        self.state.handoff_links.insert(real_id.clone(), link);
+                        self.state.pending_handoffs.retain(|p| {
+                            !(p.agent == extra.agent.as_str()
+                                && p.cwd == extra.cwd
+                                && p.parent_id == parent_id)
+                        });
+                        let _ = self.state.save();
                     }
                     self.new_baselines.remove(&extra.id);
                     claimed.insert(real_id);
@@ -1165,6 +2448,28 @@ impl App {
             }
         }
         self.extra_sessions = remaining;
+    }
+
+    fn orchestration_real_match(
+        &self,
+        extra: &Session,
+        claimed: &HashSet<String>,
+    ) -> Option<String> {
+        let marker = orchestration_title_marker(&extra.id)?;
+        self.all_sessions
+            .iter()
+            .filter(|s| {
+                !s.id.starts_with("new:")
+                    && !s.id.starts_with("handoff:")
+                    && !s.id.starts_with("orch:")
+                    && !claimed.contains(&s.id)
+                    && !self.ptys.contains_key(&s.id)
+                    && s.agent == extra.agent
+                    && s.cwd == extra.cwd
+                    && s.title.contains(&marker)
+            })
+            .max_by_key(|s| s.started_at)
+            .map(|s| s.id.clone())
     }
 
     /// Consume a pending spawn now that the pane size is known. Other sessions'
@@ -1195,14 +2500,19 @@ impl App {
                     );
                 }
                 self.ptys.insert(id.clone(), pty);
-                self.active = Some(id);
+                if pending.focus_after_spawn {
+                    self.active = Some(id);
+                }
             }
             Err(e) => {
                 self.status = format!("failed to start {}: {e}", pending.command.program);
-                self.focus = Focus::List;
-                self.active = None;
+                if pending.focus_after_spawn {
+                    self.focus = Focus::List;
+                    self.active = None;
+                }
             }
         }
+        self.pending = self.pending_queue.pop_front();
     }
 
     /// Submit queued first-turn prompts only after the child has rendered an
@@ -1237,7 +2547,8 @@ impl App {
             if let Some(pty) = self.ptys.get_mut(&id) {
                 pty.paste_and_submit(&input.bytes);
                 self.turn_submitted.insert(id.clone());
-                self.status = format!("submitted handoff context to {}", short(&id));
+                self.out_at.insert(id.clone(), Instant::now());
+                self.status = format!("submitted initial context to {}", short(&id));
                 sent = true;
             }
         }
@@ -1252,7 +2563,7 @@ impl App {
             return false;
         }
         self.status =
-            "waiting for target prompt to submit handoff context; input is held".to_string();
+            "waiting for target prompt to submit initial context; input is held".to_string();
         true
     }
 
@@ -1478,6 +2789,81 @@ fn short(id: &str) -> String {
     id.chars().take(8).collect()
 }
 
+fn orchestration_title_marker(id: &str) -> Option<String> {
+    if id.starts_with("orch:main:") {
+        return Some("MindPlayer orchestration main session".to_string());
+    }
+    let child = id.strip_prefix("orch:child:")?;
+    let index = child.rsplit(':').next()?;
+    Some(format!("MindPlayer orchestration child lane #{index}"))
+}
+
+fn is_orchestration_main_session(session: &Session) -> bool {
+    session
+        .title
+        .contains("MindPlayer orchestration main session")
+        || (session.title.contains("(orch ") && !session.title.contains(" child "))
+}
+
+fn is_orchestration_child_session(session: &Session) -> bool {
+    session
+        .title
+        .contains("MindPlayer orchestration child lane #")
+        || (session.title.contains("(orch ") && session.title.contains(" child "))
+}
+
+fn orchestration_child_index(session: &Session) -> Option<usize> {
+    let title = session.title.as_str();
+    if let Some((_, rest)) = title.split_once("MindPlayer orchestration child lane #") {
+        return parse_leading_usize(rest);
+    }
+    if let Some((_, rest)) = title.split_once(" child ") {
+        return parse_leading_usize(rest);
+    }
+    orchestration_child_index_from_file(session)
+}
+
+fn orchestration_child_index_from_file(session: &Session) -> Option<usize> {
+    if session.file.as_os_str().is_empty() {
+        return None;
+    }
+    let mut file = std::fs::File::open(&session.file).ok()?;
+    let mut buf = String::new();
+    file.by_ref()
+        .take(ORCHESTRATION_MARKER_READ_BYTES)
+        .read_to_string(&mut buf)
+        .ok()?;
+    let (_, rest) = buf.split_once("MindPlayer orchestration child lane #")?;
+    parse_leading_usize(rest)
+}
+
+fn parse_leading_usize(s: &str) -> Option<usize> {
+    let digits = s
+        .chars()
+        .take_while(|ch| ch.is_ascii_digit())
+        .collect::<String>();
+    if digits.is_empty() {
+        None
+    } else {
+        digits.parse().ok()
+    }
+}
+
+fn trim_submit(bytes: &mut Vec<u8>) {
+    while matches!(bytes.last(), Some(b'\r' | b'\n')) {
+        bytes.pop();
+    }
+}
+
+fn append_submitted_prompt(mut first: Vec<u8>, mut second: Vec<u8>) -> Vec<u8> {
+    trim_submit(&mut first);
+    trim_submit(&mut second);
+    first.extend_from_slice(b"\n\n---\n\n");
+    first.extend(second);
+    first.push(b'\r');
+    first
+}
+
 /// Expand a leading `~` / `~/` to the user's home directory. Other paths are
 /// returned unchanged (relative paths resolve against the process cwd later).
 fn expand_tilde(input: &str) -> PathBuf {
@@ -1555,6 +2941,24 @@ mod tests {
             &transcript,
             r#"{"type":"user","message":{"role":"user","content":"continue deploy investigation"}}
 {"type":"assistant","message":{"role":"assistant","content":"I found the failing health check in deploy.yaml."}}"#,
+        )
+        .unwrap();
+        (dir, transcript)
+    }
+
+    fn write_codex_fixture(name: &str, text: &str) -> (PathBuf, PathBuf) {
+        let dir = std::env::temp_dir().join(format!(
+            "mindplayer-app-codex-{name}-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let transcript = dir.join("codex.jsonl");
+        std::fs::write(
+            &transcript,
+            format!(
+                r#"{{"type":"response_item","payload":{{"type":"message","role":"assistant","content":[{{"type":"output_text","text":"{text}"}}]}}}}"#
+            ),
         )
         .unwrap();
         (dir, transcript)
@@ -1691,6 +3095,51 @@ mod tests {
 
         app.cancel_search();
         assert_eq!(app.visible.len(), 2);
+    }
+
+    #[test]
+    fn visible_groups_thread_roots_by_agent_type() {
+        let now = chrono::Utc::now();
+        let mut codex_old = session("codex-old", Agent::Codex, false);
+        codex_old.last_active = Some(now - chrono::Duration::minutes(30));
+        let mut codex_new = session("codex-new", Agent::Codex, false);
+        codex_new.last_active = Some(now - chrono::Duration::minutes(5));
+        let mut claude_parent = session("claude-parent", Agent::Claude, false);
+        claude_parent.last_active = Some(now - chrono::Duration::minutes(1));
+        let mut codex_child = session("codex-child", Agent::Codex, false);
+        codex_child.last_active = Some(now);
+        let mut kiro = session("kiro-one", Agent::Kiro, false);
+        kiro.last_active = Some(now);
+
+        let mut app = app_with(vec![kiro, claude_parent, codex_old, codex_new, codex_child]);
+        app.state.set_handoff_link(
+            "codex-child",
+            "claude-parent",
+            PathBuf::from("/tmp/handoff.md"),
+            now,
+        );
+        app.rebuild_visible();
+
+        let ids: Vec<_> = (0..app.visible.len())
+            .map(|row| app.session_at(row).unwrap().id.as_str())
+            .collect();
+        assert_eq!(
+            ids,
+            vec![
+                "codex-new",
+                "codex-old",
+                "claude-parent",
+                "codex-child",
+                "kiro-one"
+            ]
+        );
+        assert_eq!(app.visible_section_count(Agent::Codex), 2);
+        assert_eq!(app.visible_section_count(Agent::Claude), 2);
+        assert_eq!(app.visible_section_count(Agent::Kiro), 1);
+        assert_eq!(
+            app.session_section_agent("codex-child"),
+            Some(Agent::Claude)
+        );
     }
 
     #[test]
@@ -1905,37 +3354,16 @@ mod tests {
     }
 
     #[test]
-    fn handoff_is_hidden_without_env_flag() {
-        let _env = STATE_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let _handoff_env = experimental_handoff::TEST_ENV_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        std::env::remove_var(experimental_handoff::ENV_FLAG);
-        let mut app = app_with(vec![session_in(
-            "claude-1",
-            Agent::Claude,
-            "/work",
-            "finish deployment",
-        )]);
-
-        app.begin_handoff();
-
-        assert!(app.handoff_picker.is_none());
-        assert!(app.status.contains(experimental_handoff::ENV_FLAG));
-    }
-
-    #[test]
     fn handoff_queues_target_agent_with_initial_prompt() {
         let _env = STATE_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let _handoff_env = experimental_handoff::TEST_ENV_LOCK
+        let _handoff_env = handoff::TEST_ENV_LOCK
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         let tmp =
             std::env::temp_dir().join(format!("mp-handoff-label-{}.json", std::process::id()));
         std::env::set_var("MINDPLAYER_STATE", &tmp);
-        std::env::set_var(experimental_handoff::ENV_FLAG, "1");
         let (dir, transcript) = write_handoff_fixture("queue");
-        std::env::set_var(experimental_handoff::HANDOFF_DIR_ENV, dir.join("handoffs"));
+        std::env::set_var(handoff::HANDOFF_DIR_ENV, dir.join("handoffs"));
         let mut source = session_in(
             "claude-1",
             Agent::Claude,
@@ -1968,9 +3396,1051 @@ mod tests {
             && p.cwd == std::path::Path::new("/work/project")
             && p.label == "(handoff)msk cohome"));
 
-        std::env::remove_var(experimental_handoff::ENV_FLAG);
-        std::env::remove_var(experimental_handoff::HANDOFF_DIR_ENV);
+        std::env::remove_var(handoff::HANDOFF_DIR_ENV);
         std::env::remove_var("MINDPLAYER_STATE");
+    }
+
+    #[test]
+    fn kiro_handoff_to_codex_creates_child_lane() {
+        let _env = STATE_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _handoff_env = handoff::TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = std::env::temp_dir().join(format!("mp-kiro-handoff-{}.json", std::process::id()));
+        std::env::set_var("MINDPLAYER_STATE", &tmp);
+        let dir =
+            std::env::temp_dir().join(format!("mindplayer-kiro-handoff-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::env::set_var(handoff::HANDOFF_DIR_ENV, dir.join("handoffs"));
+        let mut source = session_in("kiro-1", Agent::Kiro, "/work/project", "test handoff");
+        source.file = PathBuf::new();
+        let mut app = app_with(vec![source]);
+        app.state.set_label("kiro-1", "test handoff");
+
+        app.begin_handoff();
+        assert_eq!(app.handoff_picker, Some(0));
+        assert!(app.status.contains("choose target"));
+        app.confirm_handoff(Agent::Codex);
+
+        let pending = app.pending.as_ref().expect("handoff queues PTY spawn");
+        assert!(pending.session_id.starts_with("handoff:kiro:codex:"));
+        assert_eq!(pending.command.program, "codex");
+        assert_eq!(pending.command.args.len(), 0);
+        assert_eq!(pending.command.cwd, PathBuf::from("/work/project"));
+        assert!(pending.initial_input.is_some());
+        assert_eq!(
+            app.state.handoff_parent(&pending.session_id),
+            Some("kiro-1")
+        );
+        assert!(app.state.pending_handoffs.iter().any(|p| {
+            p.parent_id == "kiro-1"
+                && p.agent == "codex"
+                && p.cwd == std::path::Path::new("/work/project")
+        }));
+        assert_eq!(app.visible.len(), 2);
+        assert_eq!(app.session_at(0).unwrap().id, "kiro-1");
+        assert_eq!(app.session_at(1).unwrap().id, pending.session_id);
+        assert_eq!(app.session_depth(&pending.session_id), 1);
+        assert_eq!(app.thread_child_count("kiro-1"), 1);
+
+        std::env::remove_var(handoff::HANDOFF_DIR_ENV);
+        let _ = std::fs::remove_dir_all(dir);
+        let _ = std::fs::remove_file(&tmp);
+        std::env::remove_var("MINDPLAYER_STATE");
+    }
+
+    #[test]
+    fn orchestration_creates_main_and_child_lanes() {
+        let _env = STATE_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp =
+            std::env::temp_dir().join(format!("mp-orchestration-{}.json", std::process::id()));
+        std::env::set_var("MINDPLAYER_STATE", &tmp);
+        let mut app = App::new();
+        app.scope = Scope::WorkingDir(PathBuf::from("/work/project"));
+
+        app.begin_orchestration();
+        app.confirm_orchestration_step();
+        for c in "$ralplan".chars() {
+            app.orchestration_input_push(c);
+        }
+        app.confirm_orchestration_step();
+        for c in "compare options".chars() {
+            app.orchestration_input_push(c);
+        }
+        app.confirm_orchestration_step();
+        app.orchestration_input_push('2');
+        app.confirm_orchestration_step();
+
+        assert!(app.orchestration.is_none());
+        assert_eq!(app.all_sessions.len(), 3);
+        assert_eq!(app.visible.len(), 3);
+        let main = app.session_at(0).unwrap();
+        assert!(main.id.starts_with("orch:main:"));
+        assert_eq!(main.title, "🏷 (orch codex)$ralplan");
+        let main_id = main.id.clone();
+        assert_eq!(app.session_depth(&main_id), 0);
+        assert_eq!(app.thread_child_count(&main_id), 2);
+        assert!(app
+            .all_sessions
+            .iter()
+            .filter(|s| s.id.starts_with("orch:child:"))
+            .all(|s| app.state.handoff_parent(&s.id) == Some(main_id.as_str())));
+        assert_eq!(app.pending.as_ref().unwrap().session_id, main_id);
+        assert_eq!(app.pending_queue.len(), 2);
+        assert!(app.pending.as_ref().unwrap().focus_after_spawn);
+        assert!(app.pending_queue.iter().all(|p| !p.focus_after_spawn));
+
+        let _ = std::fs::remove_file(&tmp);
+        std::env::remove_var("MINDPLAYER_STATE");
+    }
+
+    #[test]
+    fn orchestration_reconciles_synthetic_rows_to_real_usage_rows() {
+        let _env = STATE_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = std::env::temp_dir().join(format!(
+            "mp-orchestration-merge-{}.json",
+            std::process::id()
+        ));
+        std::env::set_var("MINDPLAYER_STATE", &tmp);
+        let mut app = App::new();
+        app.scope = Scope::WorkingDir(PathBuf::from("/work/project"));
+
+        app.begin_orchestration();
+        app.confirm_orchestration_step();
+        app.orchestration_input_push('m');
+        app.confirm_orchestration_step();
+        for c in "task".chars() {
+            app.orchestration_input_push(c);
+        }
+        app.confirm_orchestration_step();
+        app.orchestration_input_push('1');
+        app.confirm_orchestration_step();
+
+        let main_synthetic = app.session_at(0).unwrap().id.clone();
+        let child_synthetic = app.session_at(1).unwrap().id.clone();
+        let real_main = Session {
+            id: "real-main".into(),
+            agent: Agent::Codex,
+            cwd: PathBuf::from("/work/project"),
+            file: PathBuf::from("/tmp/main.jsonl"),
+            started_at: Some(chrono::Utc::now()),
+            last_active: Some(chrono::Utc::now()),
+            tokens: TokenUsage {
+                input: 10,
+                output: 5,
+                cached: 0,
+                total: 15,
+            },
+            title: "MindPlayer orchestration main session. Skill / mode to use:".into(),
+            archived: false,
+            is_subagent: false,
+            context_pct: None,
+        };
+        let real_child = Session {
+            id: "real-child".into(),
+            agent: Agent::Codex,
+            cwd: PathBuf::from("/work/project"),
+            file: PathBuf::from("/tmp/child.jsonl"),
+            started_at: Some(chrono::Utc::now()),
+            last_active: Some(chrono::Utc::now()),
+            tokens: TokenUsage {
+                input: 20,
+                output: 5,
+                cached: 0,
+                total: 25,
+            },
+            title: "MindPlayer orchestration child lane #1. Skill / mode to use:".into(),
+            archived: false,
+            is_subagent: false,
+            context_pct: None,
+        };
+        app.all_sessions = vec![real_main, real_child];
+        app.merge_extras();
+        app.rebuild_visible();
+
+        assert!(!app.all_sessions.iter().any(|s| s.id == main_synthetic));
+        assert!(!app.all_sessions.iter().any(|s| s.id == child_synthetic));
+        assert_eq!(app.state.handoff_parent("real-child"), Some("real-main"));
+        assert_eq!(app.thread_child_count("real-main"), 1);
+        assert_eq!(app.session_at(0).unwrap().id, "real-main");
+        assert_eq!(app.session_at(1).unwrap().id, "real-child");
+        assert_eq!(app.session_at(0).unwrap().tokens.total, 15);
+        assert_eq!(app.session_at(1).unwrap().tokens.total, 25);
+        assert_eq!(app.session_at(0).unwrap().title, "🏷 (orch codex)m");
+        assert_eq!(app.session_at(1).unwrap().title, "🏷 (orch codex child 1)m");
+        assert_eq!(app.state.label_for("real-main"), Some("(orch codex)m"));
+        assert_eq!(
+            app.state.label_for("real-child"),
+            Some("(orch codex child 1)m")
+        );
+
+        let _ = std::fs::remove_file(&tmp);
+        std::env::remove_var("MINDPLAYER_STATE");
+    }
+
+    #[test]
+    fn broadcast_queues_multiline_instruction_for_child_lanes() {
+        let _env = STATE_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = std::env::temp_dir().join(format!("mp-broadcast-{}.json", std::process::id()));
+        std::env::set_var("MINDPLAYER_STATE", &tmp);
+        let mut app = app_with(vec![
+            session_in("main", Agent::Codex, "/work/project", "(orch codex)mode"),
+            session_in(
+                "child-1",
+                Agent::Codex,
+                "/work/project",
+                "(orch codex child 1)mode",
+            ),
+            session_in(
+                "child-2",
+                Agent::Codex,
+                "/work/project",
+                "(orch codex child 2)mode",
+            ),
+        ]);
+        app.state.set_handoff_link(
+            "child-1",
+            "main",
+            PathBuf::from("mindplayer-orchestration"),
+            chrono::Utc::now(),
+        );
+        app.state.set_handoff_link(
+            "child-2",
+            "main",
+            PathBuf::from("mindplayer-orchestration"),
+            chrono::Utc::now(),
+        );
+        app.rebuild_visible();
+        app.selected = 0;
+
+        app.begin_broadcast();
+        assert!(app.broadcast.is_some());
+        app.broadcast_input_text("다음 사이클\nreview risks");
+        app.confirm_broadcast();
+
+        assert!(app.broadcast.is_none());
+        let queued_ids = std::iter::once(app.pending.as_ref().unwrap().session_id.clone())
+            .chain(app.pending_queue.iter().map(|p| p.session_id.clone()))
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            queued_ids,
+            ["child-1".to_string(), "child-2".to_string()]
+                .into_iter()
+                .collect()
+        );
+        assert_eq!(app.pending_queue.len(), 1);
+        assert!(app.pending_queue.iter().all(|p| !p.focus_after_spawn));
+        let first = String::from_utf8(app.pending.as_ref().unwrap().initial_input.clone().unwrap())
+            .unwrap();
+        let second =
+            String::from_utf8(app.pending_queue[0].initial_input.clone().unwrap()).unwrap();
+        assert!(first.contains("cycle #2"));
+        assert!(first.contains("다음 사이클\nreview risks"));
+        assert!(second.contains("다음 사이클\nreview risks"));
+        assert!(app.status.contains("cycle #2 broadcasted"));
+
+        let _ = std::fs::remove_file(&tmp);
+        std::env::remove_var("MINDPLAYER_STATE");
+    }
+
+    #[test]
+    fn peer_review_cycle_queues_peer_context_for_child_lanes() {
+        let _handoff_env = handoff::TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let dir =
+            std::env::temp_dir().join(format!("mindplayer-peer-review-{}", std::process::id()));
+        std::env::set_var(handoff::HANDOFF_DIR_ENV, dir.join("handoffs"));
+        let mut app = app_with(vec![
+            session_in("main", Agent::Codex, "/work/project", "(orch codex)mode"),
+            session_in(
+                "child-1",
+                Agent::Codex,
+                "/work/project",
+                "(orch codex child 1)mode",
+            ),
+            session_in(
+                "child-2",
+                Agent::Codex,
+                "/work/project",
+                "(orch codex child 2)mode",
+            ),
+        ]);
+        let now = chrono::Utc::now();
+        app.state
+            .set_handoff_link("child-1", "main", PathBuf::from("orch"), now);
+        app.state
+            .set_handoff_link("child-2", "main", PathBuf::from("orch"), now);
+        app.rebuild_visible();
+        app.select_session_id("main");
+
+        app.run_peer_review_cycle();
+
+        assert_eq!(app.pending_queue.len(), 1);
+        let queued_ids = std::iter::once(app.pending.as_ref().unwrap().session_id.clone())
+            .chain(app.pending_queue.iter().map(|p| p.session_id.clone()))
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            queued_ids,
+            ["child-1".to_string(), "child-2".to_string()]
+                .into_iter()
+                .collect()
+        );
+        let first = String::from_utf8(app.pending.as_ref().unwrap().initial_input.clone().unwrap())
+            .unwrap();
+        assert!(first.contains("MindPlayer thread sync"));
+        assert!(first.contains("peer-review cycle #2"));
+        assert!(first.contains("Do not implement"));
+        assert!(app.status.contains("peer review cycle #2 sent"));
+
+        std::env::remove_var(handoff::HANDOFF_DIR_ENV);
+    }
+
+    #[test]
+    fn peer_review_cycle_excludes_linked_non_orchestration_sessions() {
+        let _handoff_env = handoff::TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let dir = std::env::temp_dir().join(format!(
+            "mindplayer-peer-review-filter-{}",
+            std::process::id()
+        ));
+        std::env::set_var(handoff::HANDOFF_DIR_ENV, dir.join("handoffs"));
+        let mut app = app_with(vec![
+            session_in("main", Agent::Codex, "/work/project", "(orch codex)mode"),
+            session_in(
+                "child-1",
+                Agent::Codex,
+                "/work/project",
+                "(orch codex child 1)mode",
+            ),
+            session_in(
+                "reviewer-old",
+                Agent::Codex,
+                "/work/project",
+                "You are an adversarial reviewer for feature area P2",
+            ),
+        ]);
+        let now = chrono::Utc::now();
+        app.state
+            .set_handoff_link("child-1", "main", PathBuf::from("orch"), now);
+        app.state
+            .set_handoff_link("reviewer-old", "main", PathBuf::from("old-review"), now);
+        app.rebuild_visible();
+        app.select_session_id("main");
+
+        app.run_peer_review_cycle();
+
+        let pending = app.pending.as_ref().expect("peer review queues child lane");
+        assert_eq!(pending.session_id, "child-1");
+        assert!(app.pending_queue.is_empty());
+        let input = String::from_utf8(pending.initial_input.clone().unwrap()).unwrap();
+        assert!(input.contains("peer-review cycle #2"));
+        assert!(!input.contains("adversarial reviewer"));
+        assert!(!input.contains("reviewer-old"));
+
+        std::env::remove_var(handoff::HANDOFF_DIR_ENV);
+    }
+
+    #[test]
+    fn dispatch_roster_recovers_child_lane_from_transcript_marker_when_title_changes() {
+        let (_dir, child_transcript) = write_codex_fixture(
+            "changed-title-orch-child",
+            "MindPlayer orchestration child lane #1. Provider: Codex",
+        );
+        let mut child = session_in(
+            "child-1",
+            Agent::Codex,
+            "/work/project",
+            "You are implementing dedicated portal tasks",
+        );
+        child.file = child_transcript;
+        let mut app = app_with(vec![
+            session_in("main", Agent::Codex, "/work/project", "(orch codex)mode"),
+            child,
+            session_in(
+                "reviewer-old",
+                Agent::Codex,
+                "/work/project",
+                "You are an adversarial reviewer for feature area P2",
+            ),
+        ]);
+        let now = chrono::Utc::now();
+        app.state
+            .set_handoff_link("child-1", "main", PathBuf::from("orch"), now);
+        app.state
+            .set_handoff_link("reviewer-old", "main", PathBuf::from("old-review"), now);
+
+        let roster = app.child_lane_roster("main");
+
+        assert!(roster.contains("- lane #1: codex child-1"));
+        assert!(roster.contains("You are implementing dedicated portal tasks"));
+        assert!(!roster.contains("reviewer-old"));
+        assert!(!roster.contains("adversarial reviewer"));
+    }
+
+    #[test]
+    fn peer_review_cycle_falls_back_to_orchestration_titles_without_links() {
+        let _env = STATE_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _handoff_env = handoff::TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = std::env::temp_dir().join(format!(
+            "mp-peer-review-title-fallback-{}.json",
+            std::process::id()
+        ));
+        std::env::set_var("MINDPLAYER_STATE", &tmp);
+        let dir = std::env::temp_dir().join(format!(
+            "mindplayer-peer-review-title-fallback-{}",
+            std::process::id()
+        ));
+        std::env::set_var(handoff::HANDOFF_DIR_ENV, dir.join("handoffs"));
+        let mut app = app_with(vec![
+            session_in(
+                "real-main",
+                Agent::Claude,
+                "/work/project",
+                "MindPlayer orchestration main session. Provider: Claude Code",
+            ),
+            session_in(
+                "real-child",
+                Agent::Claude,
+                "/work/project",
+                "MindPlayer orchestration child lane #6. Provider: Claude Code",
+            ),
+        ]);
+        app.select_session_id("real-child");
+
+        app.run_peer_review_cycle();
+
+        assert_eq!(app.pending.as_ref().unwrap().session_id, "real-child");
+        let input = String::from_utf8(app.pending.as_ref().unwrap().initial_input.clone().unwrap())
+            .unwrap();
+        assert!(input.contains("MindPlayer thread sync"));
+        assert!(input.contains("peer-review cycle #2"));
+        assert!(app.status.contains("peer review cycle #2 sent"));
+
+        std::env::remove_var(handoff::HANDOFF_DIR_ENV);
+        let _ = std::fs::remove_file(&tmp);
+        std::env::remove_var("MINDPLAYER_STATE");
+    }
+
+    #[test]
+    fn peer_review_cycle_includes_linked_and_title_fallback_lanes() {
+        let _env = STATE_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _handoff_env = handoff::TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = std::env::temp_dir().join(format!(
+            "mp-peer-review-mixed-links-{}.json",
+            std::process::id()
+        ));
+        std::env::set_var("MINDPLAYER_STATE", &tmp);
+        let dir = std::env::temp_dir().join(format!(
+            "mindplayer-peer-review-mixed-links-{}",
+            std::process::id()
+        ));
+        std::env::set_var(handoff::HANDOFF_DIR_ENV, dir.join("handoffs"));
+        let mut app = app_with(vec![
+            session_in(
+                "real-main",
+                Agent::Claude,
+                "/work/project",
+                "MindPlayer orchestration main session. Provider: Claude Code",
+            ),
+            session_in(
+                "linked-child",
+                Agent::Claude,
+                "/work/project",
+                "MindPlayer orchestration child lane #1. Provider: Claude Code",
+            ),
+            session_in(
+                "fallback-child",
+                Agent::Claude,
+                "/work/project",
+                "MindPlayer orchestration child lane #4. Provider: Claude Code",
+            ),
+        ]);
+        app.state.set_handoff_link(
+            "linked-child",
+            "real-main",
+            PathBuf::from("orch"),
+            chrono::Utc::now(),
+        );
+        app.rebuild_visible();
+        app.select_session_id("real-main");
+
+        app.run_peer_review_cycle();
+
+        let queued_ids = std::iter::once(app.pending.as_ref().unwrap().session_id.clone())
+            .chain(app.pending_queue.iter().map(|p| p.session_id.clone()))
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            queued_ids,
+            ["fallback-child".to_string(), "linked-child".to_string()]
+                .into_iter()
+                .collect()
+        );
+        assert!(app.status.contains("0 skipped"));
+
+        std::env::remove_var(handoff::HANDOFF_DIR_ENV);
+        let _ = std::fs::remove_file(&tmp);
+        std::env::remove_var("MINDPLAYER_STATE");
+    }
+
+    #[test]
+    fn peer_review_cycle_repairs_missing_title_based_links() {
+        let _env = STATE_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _handoff_env = handoff::TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = std::env::temp_dir().join(format!(
+            "mp-peer-review-repair-links-{}.json",
+            std::process::id()
+        ));
+        std::env::set_var("MINDPLAYER_STATE", &tmp);
+        let dir = std::env::temp_dir().join(format!(
+            "mindplayer-peer-review-repair-links-{}",
+            std::process::id()
+        ));
+        std::env::set_var(handoff::HANDOFF_DIR_ENV, dir.join("handoffs"));
+        let mut app = app_with(vec![
+            session_in(
+                "real-main",
+                Agent::Claude,
+                "/work/project",
+                "MindPlayer orchestration main session. Provider: Claude Code",
+            ),
+            session_in(
+                "fallback-child",
+                Agent::Claude,
+                "/work/project",
+                "MindPlayer orchestration child lane #4. Provider: Claude Code",
+            ),
+        ]);
+        app.select_session_id("real-main");
+
+        app.run_peer_review_cycle();
+
+        assert_eq!(
+            app.state.handoff_parent("fallback-child"),
+            Some("real-main")
+        );
+        assert!(app.status.contains("0 skipped"));
+
+        std::env::remove_var(handoff::HANDOFF_DIR_ENV);
+        let _ = std::fs::remove_file(&tmp);
+        std::env::remove_var("MINDPLAYER_STATE");
+    }
+
+    #[test]
+    fn synthesis_cycle_queues_child_context_for_main_lane() {
+        let _handoff_env = handoff::TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let dir = std::env::temp_dir().join(format!("mindplayer-synthesis-{}", std::process::id()));
+        std::env::set_var(handoff::HANDOFF_DIR_ENV, dir.join("handoffs"));
+        let mut app = app_with(vec![
+            session_in("main", Agent::Codex, "/work/project", "(orch codex)mode"),
+            session_in(
+                "child-1",
+                Agent::Codex,
+                "/work/project",
+                "(orch codex child 1)mode",
+            ),
+        ]);
+        app.state
+            .set_handoff_link("child-1", "main", PathBuf::from("orch"), chrono::Utc::now());
+        app.rebuild_visible();
+        app.select_session_id("child-1");
+
+        app.run_synthesis_cycle();
+
+        let pending = app.pending.as_ref().unwrap();
+        assert_eq!(pending.session_id, "main");
+        let input = String::from_utf8(pending.initial_input.clone().unwrap()).unwrap();
+        assert!(input.contains("MindPlayer thread sync"));
+        assert!(input.contains("synthesis cycle #1"));
+        assert!(input.contains("latest child lane transcripts"));
+        assert!(input.contains("files changed"));
+        assert!(input.contains("latest observed\nimplementation results"));
+        assert!(app.status.contains("synthesis cycle #1 sent"));
+
+        std::env::remove_var(handoff::HANDOFF_DIR_ENV);
+    }
+
+    #[test]
+    fn synthesis_cycle_waits_until_child_lanes_are_idle() {
+        let _handoff_env = handoff::TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let dir =
+            std::env::temp_dir().join(format!("mindplayer-synthesis-wait-{}", std::process::id()));
+        std::env::set_var(handoff::HANDOFF_DIR_ENV, dir.join("handoffs"));
+        let mut app = app_with(vec![
+            session_in("main", Agent::Codex, "/work/project", "(orch codex)mode"),
+            session_in(
+                "child-1",
+                Agent::Codex,
+                "/work/project",
+                "(orch codex child 1)mode",
+            ),
+        ]);
+        app.state
+            .set_handoff_link("child-1", "main", PathBuf::from("orch"), chrono::Utc::now());
+        app.rebuild_visible();
+        app.select_session_id("main");
+        app.pending = Some(PendingSpawn {
+            command: mindplayer_core::new_session(Agent::Codex, PathBuf::from("/work/project")),
+            session_id: "child-1".into(),
+            initial_input: None,
+            focus_after_spawn: false,
+        });
+
+        app.run_synthesis_cycle();
+
+        assert_eq!(app.pending.as_ref().unwrap().session_id, "child-1");
+        assert_eq!(app.pending_synthesis_root.as_deref(), Some("main"));
+        assert!(app.status.contains("synthesis waiting for 1 child lanes"));
+
+        app.pending = None;
+        assert!(app.poll_pending_synthesis());
+
+        let pending = app.pending.as_ref().unwrap();
+        assert_eq!(pending.session_id, "main");
+        let input = String::from_utf8(pending.initial_input.clone().unwrap()).unwrap();
+        assert!(input.contains("synthesis cycle #1"));
+        assert!(app.pending_synthesis_root.is_none());
+
+        std::env::remove_var(handoff::HANDOFF_DIR_ENV);
+    }
+
+    #[test]
+    fn main_dispatch_queues_routing_request_for_main_lane() {
+        let _env = STATE_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _handoff_env = handoff::TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = std::env::temp_dir().join(format!(
+            "mp-main-dispatch-state-{}.json",
+            std::process::id()
+        ));
+        let dir =
+            std::env::temp_dir().join(format!("mindplayer-main-dispatch-{}", std::process::id()));
+        std::env::set_var("MINDPLAYER_STATE", &tmp);
+        std::env::set_var(handoff::HANDOFF_DIR_ENV, dir.join("handoffs"));
+        let (child_dir, child_transcript) =
+            write_codex_fixture("main-dispatch-child", "child lane found stale UI wiring");
+        let main = session_in("main", Agent::Codex, "/work/project", "(orch codex)mode");
+        let mut child = session_in(
+            "child-1",
+            Agent::Codex,
+            "/work/project",
+            "(orch codex child 1)mode",
+        );
+        child.file = child_transcript;
+        let mut app = app_with(vec![main.clone(), child]);
+        app.state
+            .set_handoff_link("child-1", "main", PathBuf::from("orch"), chrono::Utc::now());
+        app.rebuild_visible();
+        app.select_session_id("main");
+
+        app.begin_main_dispatch();
+        app.dispatch_input_text("route only the verification work");
+        app.confirm_main_dispatch();
+
+        let pending = app.pending.as_ref().unwrap();
+        assert_eq!(pending.session_id, main.id);
+        let input = String::from_utf8(pending.initial_input.clone().unwrap()).unwrap();
+        assert!(input.contains("dispatch planning cycle #2"));
+        assert!(input.contains("route only the verification work"));
+        assert!(input.contains("MINDPLAYER_DISPATCH"));
+        assert!(input.contains("lane #1"));
+        assert!(app.status.contains("press M after main answers"));
+
+        std::env::remove_var(handoff::HANDOFF_DIR_ENV);
+        let _ = std::fs::remove_dir_all(dir);
+        let _ = std::fs::remove_dir_all(child_dir);
+        let _ = std::fs::remove_file(tmp);
+        std::env::remove_var("MINDPLAYER_STATE");
+    }
+
+    #[test]
+    fn apply_main_dispatch_targets_only_lanes_in_dispatch_block() {
+        let _env = STATE_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = std::env::temp_dir().join(format!(
+            "mp-apply-dispatch-state-{}.json",
+            std::process::id()
+        ));
+        std::env::set_var("MINDPLAYER_STATE", &tmp);
+        let dir =
+            std::env::temp_dir().join(format!("mindplayer-apply-dispatch-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let transcript = dir.join("main.jsonl");
+        let dispatch_text = "\
+Planning result.
+
+MINDPLAYER_DISPATCH
+lane #1:
+idle
+lane #2:
+Implement the focused fix and report tests.
+END_MINDPLAYER_DISPATCH";
+        std::fs::write(
+            &transcript,
+            serde_json::json!({
+                "type": "response_item",
+                "payload": {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": dispatch_text}]
+                }
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let original = session_in(
+            "original-pulse",
+            Agent::Claude,
+            "/work/project",
+            "pulse original handoff source",
+        );
+        let mut main = session_in("main", Agent::Codex, "/work/project", "(orch codex)mode");
+        main.file = transcript;
+        let child1 = session_in(
+            "child-1",
+            Agent::Codex,
+            "/work/project",
+            "(orch codex child 1)mode",
+        );
+        let child2 = session_in(
+            "child-2",
+            Agent::Codex,
+            "/work/project",
+            "(orch codex child 2)mode",
+        );
+        let mut app = app_with(vec![original, main, child1, child2]);
+        app.state.set_handoff_link(
+            "main",
+            "original-pulse",
+            PathBuf::from("handoff"),
+            chrono::Utc::now(),
+        );
+        app.state
+            .set_handoff_link("child-1", "main", PathBuf::from("orch"), chrono::Utc::now());
+        app.state
+            .set_handoff_link("child-2", "main", PathBuf::from("orch"), chrono::Utc::now());
+        app.rebuild_visible();
+        app.select_session_id("main");
+
+        app.apply_main_dispatch();
+
+        let pending = app.pending.as_ref().unwrap();
+        assert_eq!(pending.session_id, "child-2");
+        let input = String::from_utf8(pending.initial_input.clone().unwrap()).unwrap();
+        assert!(input.contains("dispatch cycle #1 for child lane #2"));
+        assert!(input.contains("Implement the focused fix and report tests."));
+        assert!(app.pending_queue.is_empty());
+        assert!(app.status.contains("1 lanes targeted"));
+
+        let _ = std::fs::remove_dir_all(dir);
+        let _ = std::fs::remove_file(tmp);
+        std::env::remove_var("MINDPLAYER_STATE");
+    }
+
+    #[test]
+    fn manual_dispatch_apply_pastes_block_and_targets_matching_lane() {
+        let _env = STATE_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = std::env::temp_dir().join(format!(
+            "mp-manual-dispatch-state-{}.json",
+            std::process::id()
+        ));
+        std::env::set_var("MINDPLAYER_STATE", &tmp);
+        let main = session_in("main", Agent::Codex, "/work/project", "(orch codex)mode");
+        let child1 = session_in(
+            "child-1",
+            Agent::Codex,
+            "/work/project",
+            "(orch codex child 1)mode",
+        );
+        let child2 = session_in(
+            "child-2",
+            Agent::Codex,
+            "/work/project",
+            "(orch codex child 2)mode",
+        );
+        let mut app = app_with(vec![main, child1, child2]);
+        app.state
+            .set_handoff_link("child-1", "main", PathBuf::from("orch"), chrono::Utc::now());
+        app.state
+            .set_handoff_link("child-2", "main", PathBuf::from("orch"), chrono::Utc::now());
+        app.rebuild_visible();
+        app.select_session_id("main");
+
+        app.begin_dispatch_apply_input();
+        assert!(app.dispatch_apply.is_some());
+        app.dispatch_apply_input_text(
+            "\
+MINDPLAYER_DISPATCH
+lane #1:
+idle
+lane #2:
+Implement only the incident chip fix.
+END_MINDPLAYER_DISPATCH",
+        );
+        app.confirm_dispatch_apply_input();
+
+        assert!(app.dispatch_apply.is_none());
+        let pending = app.pending.as_ref().unwrap();
+        assert_eq!(pending.session_id, "child-2");
+        let input = String::from_utf8(pending.initial_input.clone().unwrap()).unwrap();
+        assert!(input.contains("Implement only the incident chip fix."));
+        assert!(app.status.contains("1 lanes targeted"));
+
+        let _ = std::fs::remove_file(tmp);
+        std::env::remove_var("MINDPLAYER_STATE");
+    }
+
+    #[test]
+    fn apply_main_dispatch_falls_back_to_matching_orchestration_main_with_block() {
+        let _env = STATE_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = std::env::temp_dir().join(format!(
+            "mp-apply-dispatch-fallback-state-{}.json",
+            std::process::id()
+        ));
+        std::env::set_var("MINDPLAYER_STATE", &tmp);
+        let dir = std::env::temp_dir().join(format!(
+            "mindplayer-apply-dispatch-fallback-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let empty_transcript = dir.join("empty-main.jsonl");
+        let dispatch_transcript = dir.join("dispatch-main.jsonl");
+        std::fs::write(
+            &empty_transcript,
+            serde_json::json!({
+                "type": "response_item",
+                "payload": {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": "no dispatch here"}]
+                }
+            })
+            .to_string(),
+        )
+        .unwrap();
+        std::fs::write(
+            &dispatch_transcript,
+            serde_json::json!({
+                "type": "response_item",
+                "payload": {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": "MINDPLAYER_DISPATCH\nlane #2:\nDo the focused work.\nEND_MINDPLAYER_DISPATCH"}]
+                }
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let mut selected_main = session_in(
+            "selected-main",
+            Agent::Codex,
+            "/work/project",
+            "(orch codex)old",
+        );
+        selected_main.file = empty_transcript;
+        selected_main.last_active = Some(chrono::Utc::now() - chrono::Duration::minutes(10));
+        let mut dispatch_main = session_in(
+            "dispatch-main",
+            Agent::Codex,
+            "/work/project",
+            "(orch codex)new",
+        );
+        dispatch_main.file = dispatch_transcript;
+        dispatch_main.last_active = Some(chrono::Utc::now());
+        let selected_child = session_in(
+            "selected-child",
+            Agent::Codex,
+            "/work/project",
+            "(orch codex child 1)old",
+        );
+        let dispatch_child = session_in(
+            "dispatch-child",
+            Agent::Codex,
+            "/work/project",
+            "(orch codex child 2)new",
+        );
+        let mut app = app_with(vec![
+            selected_main,
+            selected_child,
+            dispatch_main,
+            dispatch_child,
+        ]);
+        app.state.set_handoff_link(
+            "selected-child",
+            "selected-main",
+            PathBuf::from("orch"),
+            chrono::Utc::now(),
+        );
+        app.state.set_handoff_link(
+            "dispatch-child",
+            "dispatch-main",
+            PathBuf::from("orch"),
+            chrono::Utc::now(),
+        );
+        app.rebuild_visible();
+        app.select_session_id("selected-main");
+
+        app.apply_main_dispatch();
+
+        let pending = app.pending.as_ref().unwrap();
+        assert_eq!(pending.session_id, "dispatch-child");
+        let input = String::from_utf8(pending.initial_input.clone().unwrap()).unwrap();
+        assert!(input.contains("Do the focused work."));
+        assert!(app.status.contains("1 lanes targeted"));
+
+        let _ = std::fs::remove_dir_all(dir);
+        let _ = std::fs::remove_file(tmp);
+        std::env::remove_var("MINDPLAYER_STATE");
+    }
+
+    #[test]
+    fn modal_paste_supports_multiline_text() {
+        let mut app = App::new();
+        app.begin_orchestration();
+        app.confirm_orchestration_step();
+        assert!(app.paste_to_modal("mode"));
+        app.confirm_orchestration_step();
+        assert!(app.paste_to_modal("한글 instruction\nenglish line"));
+        assert_eq!(
+            app.orchestration.as_ref().unwrap().instruction,
+            "한글 instruction\nenglish line"
+        );
+
+        app.cancel_orchestration();
+        app.broadcast = Some(orchestration::BroadcastDraft::default());
+        assert!(app.paste_to_modal("방송\nbroadcast"));
+        assert_eq!(
+            app.broadcast.as_ref().unwrap().instruction,
+            "방송\nbroadcast"
+        );
+
+        app.broadcast = None;
+        app.dispatch = Some(orchestration::BroadcastDraft::default());
+        assert!(app.paste_to_modal("라우팅\nroute"));
+        assert_eq!(app.dispatch.as_ref().unwrap().instruction, "라우팅\nroute");
+    }
+
+    #[test]
+    fn handoff_child_is_grouped_under_parent_thread() {
+        let mut parent = session_in("claude-1", Agent::Claude, "/work/project", "msk cohome");
+        parent.last_active = Some(chrono::Utc::now() - chrono::Duration::minutes(1));
+        let child = session_in(
+            "codex-1",
+            Agent::Codex,
+            "/work/project",
+            "(handoff)msk cohome",
+        );
+        let mut app = app_with(vec![child, parent]);
+        app.state.set_handoff_link(
+            "codex-1",
+            "claude-1",
+            PathBuf::from("/tmp/handoff.md"),
+            chrono::Utc::now(),
+        );
+        app.rebuild_visible();
+
+        assert_eq!(app.visible.len(), 2);
+        assert_eq!(app.session_at(0).unwrap().id, "claude-1");
+        assert_eq!(app.session_at(1).unwrap().id, "codex-1");
+        assert_eq!(app.session_depth("claude-1"), 0);
+        assert_eq!(app.session_depth("codex-1"), 1);
+        assert_eq!(app.thread_child_count("claude-1"), 1);
+    }
+
+    #[test]
+    fn resuming_thread_lane_injects_peer_context() {
+        let _handoff_env = handoff::TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let (dir, codex_transcript) = write_codex_fixture("sync", "codex fixed tests");
+        std::env::set_var(handoff::HANDOFF_DIR_ENV, dir.join("handoffs"));
+
+        let mut parent = session_in("claude-1", Agent::Claude, "/work/project", "msk cohome");
+        parent.file = dir.join("claude.jsonl");
+        let mut child = session_in(
+            "codex-1",
+            Agent::Codex,
+            "/work/project",
+            "(handoff)msk cohome",
+        );
+        child.file = codex_transcript;
+        let mut app = app_with(vec![parent, child]);
+        app.state.set_handoff_link(
+            "codex-1",
+            "claude-1",
+            PathBuf::from("/tmp/handoff.md"),
+            chrono::Utc::now(),
+        );
+        app.rebuild_visible();
+        app.selected = 0;
+
+        app.request_resume();
+
+        let pending = app.pending.as_ref().expect("resume queues PTY spawn");
+        assert_eq!(pending.session_id, "claude-1");
+        let input = String::from_utf8(pending.initial_input.clone().unwrap()).unwrap();
+        assert!(input.contains("MindPlayer thread sync"));
+        assert!(input.contains("codex fixed tests"));
+        assert!(input.ends_with('\r'));
+
+        std::env::remove_var(handoff::HANDOFF_DIR_ENV);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn resuming_orchestration_main_does_not_auto_submit_thread_sync() {
+        let _handoff_env = handoff::TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let (dir, child_transcript) = write_codex_fixture("orch-sync", "child finished work");
+        std::env::set_var(handoff::HANDOFF_DIR_ENV, dir.join("handoffs"));
+
+        let mut main = session_in(
+            "main",
+            Agent::Codex,
+            "/work/project",
+            "MindPlayer orchestration main session. Provider: Codex",
+        );
+        main.file = dir.join("main.jsonl");
+        let mut child = session_in(
+            "child-1",
+            Agent::Codex,
+            "/work/project",
+            "MindPlayer orchestration child lane #1. Provider: Codex",
+        );
+        child.file = child_transcript;
+        let mut app = app_with(vec![main, child]);
+        app.state.set_handoff_link(
+            "child-1",
+            "main",
+            PathBuf::from("mindplayer-orchestration"),
+            chrono::Utc::now(),
+        );
+        app.rebuild_visible();
+        app.select_session_id("main");
+
+        app.request_resume();
+
+        let pending = app.pending.as_ref().expect("resume queues PTY spawn");
+        assert_eq!(pending.session_id, "main");
+        assert!(pending.initial_input.is_none());
+
+        std::env::remove_var(handoff::HANDOFF_DIR_ENV);
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
@@ -2089,16 +4559,9 @@ mod tests {
             0,
             Duration::from_millis(10)
         ));
-        assert!(!should_send_initial_input(
-            false,
-            0,
-            Duration::from_secs(30)
-        ));
-        assert!(!should_send_initial_input(
-            false,
-            1,
-            Duration::from_secs(30)
-        ));
+        assert!(!should_send_initial_input(false, 0, Duration::from_secs(3)));
+        assert!(should_send_initial_input(false, 1, Duration::from_secs(3)));
+        assert!(should_send_initial_input(false, 0, Duration::from_secs(10)));
     }
 
     #[test]

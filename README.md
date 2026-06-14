@@ -135,6 +135,11 @@ make test                                          # cargo test --all
 | <kbd>n</kbd> | new session — pick codex/claude/kiro, then an optional label |
 | <kbd>d</kbd> | change the working directory (blank = global) and rescan in place |
 | <kbd>e</kbd> | label the selected session (tag an existing one, or edit/clear its label) |
+| <kbd>o</kbd> | start an orchestration group with a main lane and child lanes |
+| <kbd>m</kbd> | ask the orchestration main lane to route work to specific child lanes |
+| <kbd>M</kbd> | paste and apply the main lane's `MINDPLAYER_DISPATCH` block |
+| <kbd>p</kbd> | run a child-lane peer review cycle |
+| <kbd>s</kbd> | send child-lane results back to the main lane for synthesis |
 | <kbd>x</kbd> | close (archive) & stop the selected session |
 | <kbd>a</kbd> | toggle archived view · <kbd>g</kbd> toggle sub‑agents · <kbd>r</kbd> rescan |
 | <kbd>q</kbd> | quit (stops all sessions) |
@@ -145,6 +150,24 @@ submits), and Korean/CJK input works with the cursor tracking the prompt. The
 top stays readable). Because the wheel needs mouse capture, use
 **<kbd>Shift</kbd>+drag** to select &amp; copy text (your terminal's native
 selection — works in Ghostty, iTerm2, Terminal.app, and most others).
+
+### 🧭 Orchestration
+
+MindPlayer can run a public multi-lane orchestration thread across Codex,
+Claude Code, or Kiro:
+
+1. Press <kbd>o</kbd> to create a main coordinator lane plus numbered child
+   lanes.
+2. Press <kbd>m</kbd> on the orchestration thread to ask the main lane to decide
+   which child lanes should receive the next work.
+3. Copy the main lane's `MINDPLAYER_DISPATCH` block, press <kbd>M</kbd>, paste
+   it, and MindPlayer sends each lane only its assigned instruction.
+4. Press <kbd>p</kbd> when child lanes should review one another's results.
+5. Press <kbd>s</kbd> to wait for child lanes to become idle and send the latest
+   implementation/review context back to the main lane for synthesis.
+
+Opening an orchestration lane with <kbd>Enter</kbd> does not auto-submit thread
+sync prompts; explicit orchestration commands control when context is injected.
 
 ## 🍎 macOS app (optional)
 

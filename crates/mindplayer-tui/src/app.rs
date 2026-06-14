@@ -1020,12 +1020,12 @@ impl App {
             self.status = "synthesis failed: no orchestration main session".to_string();
             return;
         };
-        let peers = self.thread_peer_sessions(&root_id);
+        let peers = self.thread_peer_sessions(root_id);
         if peers.is_empty() {
             self.status = "synthesis needs child lanes".to_string();
             return;
         }
-        let cycle = self.current_orchestration_cycle(&root_id);
+        let cycle = self.current_orchestration_cycle(root_id);
         let Ok(sync) = handoff::prepare_thread_sync_input(&main, &peers) else {
             self.status = "synthesis failed: no readable child lane context".to_string();
             return;
@@ -2206,9 +2206,7 @@ impl App {
         if is_orchestration_main_session(selected) {
             return Some(selected.id.clone());
         }
-        if orchestration_child_index(selected).is_none() {
-            return None;
-        }
+        orchestration_child_index(selected)?;
         self.all_sessions
             .iter()
             .filter(|s| {

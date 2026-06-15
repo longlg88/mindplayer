@@ -1243,15 +1243,15 @@ mod tests {
 
     #[test]
     fn cwd_leaf_uses_last_path_component() {
-        assert_eq!(cwd_leaf(Path::new("/Users/eden/project")), "project");
+        assert_eq!(cwd_leaf(Path::new("/Users/alex/project")), "project");
         assert_eq!(cwd_leaf(Path::new("/")), "/");
     }
 
     #[test]
     fn textarea_wraps_long_lines_instead_of_truncating() {
         assert_eq!(
-            wrapped_text_rows("/Users/eden/Work/SendBird", 8),
-            vec!["/Users/e", "den/Work", "/SendBir", "d"]
+            wrapped_text_rows("/Users/alex/Work/project", 8),
+            vec!["/Users/a", "lex/Work", "/project"]
         );
         assert_eq!(
             wrapped_text_rows("first\nsecond line", 6),

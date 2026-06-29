@@ -4,32 +4,28 @@
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 
-const OUT: Color = Color::Rgb(26, 31, 44);
-const BODY: Color = Color::Rgb(126, 162, 247);
-const LT: Color = Color::Rgb(173, 194, 251);
-const DK: Color = Color::Rgb(92, 116, 200);
-const WHITE: Color = Color::Rgb(245, 246, 249);
-const PLAY: Color = Color::Rgb(255, 255, 255);
-const CHEEK: Color = Color::Rgb(245, 150, 170);
+const MINT: Color = Color::Rgb(142, 224, 199);
+const MINT_DK: Color = Color::Rgb(90, 183, 173);
+const FACE: Color = Color::Rgb(237, 249, 227);
+const INK: Color = Color::Rgb(34, 53, 82);
 
-/// 16×16 sprite. Chars: o=outline B=body L=highlight D=belly W=eye-white
-/// k=pupil P=play-badge c=cheek s=smile, space=transparent.
+/// 16×16 Pane Bot sprite. Chars: T=mint, S=shadow, F=face, D=dark body/ink.
 const ART: [&str; 16] = [
-    "      oLLo      ",
-    "      oLLo      ",
-    "    oooooooo    ",
-    "   oBBBBBBBBo   ",
-    "  oBLLBBBBBBBo  ",
-    "  oBWWBBBBWWBo  ",
-    "  oBWkBBBBWkBo  ",
-    "  oBBBBBBBBBBo  ",
-    "  ocBBBssBBBco  ",
-    "  oBDDDPDDDDo   ",
-    "  oBDDDPPDDDo   ",
-    "  oBDDDPDDDDo   ",
-    "   oDDDDDDDo    ",
-    "  oBBo  oBBo    ",
-    "  oo      oo    ",
+    "       TT       ",
+    "       SS       ",
+    "      SSSS      ",
+    "     SSTTSS     ",
+    "    TTTTTTTT    ",
+    "   TTTTTTTTTT   ",
+    "   TFFFFFFFFT   ",
+    "  SSTFDFFDFTSS  ",
+    "  TTTFFDDFFTTT  ",
+    "  TTTTTTTTTTTT  ",
+    "   TTTDDDDTTT   ",
+    "    DDDDDDDD    ",
+    "    DDTDTDTD    ",
+    "    DDDDDDDD    ",
+    "   DD      DD   ",
     "                ",
 ];
 
@@ -40,13 +36,10 @@ pub const HEIGHT: u16 = 9;
 
 fn color(c: char) -> Option<Color> {
     match c {
-        'o' | 'k' | 's' => Some(OUT),
-        'B' => Some(BODY),
-        'L' => Some(LT),
-        'D' => Some(DK),
-        'W' => Some(WHITE),
-        'P' => Some(PLAY),
-        'c' => Some(CHEEK),
+        'T' => Some(MINT),
+        'S' => Some(MINT_DK),
+        'F' => Some(FACE),
+        'D' => Some(INK),
         _ => None,
     }
 }
@@ -59,10 +52,8 @@ pub fn lines(tick: usize) -> Vec<Line<'static>> {
 
     let mut grid: Vec<Vec<char>> = ART.iter().map(|r| r.chars().collect()).collect();
     if blink {
-        // Close the eyes: flatten the white/pupil blocks into a dark line.
-        for &x in &[4usize, 5, 10, 11] {
-            grid[5][x] = 'B';
-            grid[6][x] = 'o';
+        for &x in &[6usize, 9] {
+            grid[7][x] = 'F';
         }
     }
 

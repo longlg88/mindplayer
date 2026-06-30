@@ -113,12 +113,12 @@ body { display: flex; flex-direction: column; height: 100vh; }
    background sessions keep running and their scrollback is retained. */
 .term-instance { position: absolute; inset: 6px 8px; }
 .term-instance.hidden { display: none; }
-#new-label-input, #dir-input, .cwd-input {
+#new-label-input, #label-input, #dir-input, .cwd-input {
   width: 100%; margin: 8px 0; padding: 10px 12px; border-radius: 8px;
   background: var(--panel-2); color: var(--text); border: 1px solid var(--border);
   font-family: inherit; font-size: 13px; box-sizing: border-box;
 }
-#new-label-input:focus, #dir-input:focus, .cwd-input:focus {
+#new-label-input:focus, #label-input:focus, #dir-input:focus, .cwd-input:focus {
   outline: none; border-color: var(--accent);
 }
 .cwd-input:disabled { opacity: .5; }

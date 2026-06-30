@@ -1,6 +1,6 @@
 [package]
 name = "mindplayer-app"
-version = "0.1.0"
+version = "0.10.84"
 edition = "2021"
 description = "MindPlayer macOS app (Tauri) — codex/claude/kiro session manager."
 license = "MIT"

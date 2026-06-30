@@ -6,8 +6,14 @@ use mindplayer_core::Command as MpCommand;
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
 use std::io::{Read, Write};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::mpsc::{self, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex};
 use std::thread;
+
+const DEFAULT_SCROLLBACK_LINES: usize = 2_000;
+const MIN_SCROLLBACK_LINES: usize = 200;
+const MAX_SCROLLBACK_LINES: usize = 5_000;
+const WRITE_QUEUE_CAP: usize = 128;
 
 /// A live child process attached to a PTY, rendered in the right pane.
 pub struct PtySession {
@@ -21,7 +27,7 @@ pub struct PtySession {
     /// (producing output now) from idle/ended ones in the list.
     seq: Arc<AtomicU64>,
     master: Box<dyn MasterPty + Send>,
-    writer: Box<dyn Write + Send>,
+    writer: PtyWriter,
     child: Box<dyn Child + Send + Sync>,
     /// Set once we observe the child has exited. `try_wait()` reaps the child on
     /// unix, freeing its PID for OS reuse; `portable_pty::Child::process_id()`
@@ -51,6 +57,45 @@ pub struct PtySession {
     idle: Arc<AtomicBool>,
     pub rows: u16,
     pub cols: u16,
+}
+
+/// Non-blocking PTY input path. The TUI thread enqueues bytes and returns
+/// immediately; a stuck child can block this writer thread without freezing the
+/// render/event loop.
+struct PtyWriter {
+    tx: SyncSender<Vec<u8>>,
+    closed: Arc<AtomicBool>,
+}
+
+impl PtyWriter {
+    fn spawn(mut writer: Box<dyn Write + Send>) -> Self {
+        let (tx, rx) = mpsc::sync_channel::<Vec<u8>>(WRITE_QUEUE_CAP);
+        let closed = Arc::new(AtomicBool::new(false));
+        let closed_for_thread = closed.clone();
+        thread::spawn(move || {
+            for bytes in rx {
+                if writer
+                    .write_all(&bytes)
+                    .and_then(|_| writer.flush())
+                    .is_err()
+                {
+                    break;
+                }
+            }
+            closed_for_thread.store(true, Ordering::Relaxed);
+        });
+        Self { tx, closed }
+    }
+
+    fn enqueue(&self, bytes: Vec<u8>) -> bool {
+        if bytes.is_empty() || self.closed.load(Ordering::Relaxed) {
+            return false;
+        }
+        match self.tx.try_send(bytes) {
+            Ok(()) => true,
+            Err(TrySendError::Full(_)) | Err(TrySendError::Disconnected(_)) => false,
+        }
+    }
 }
 
 impl PtySession {
@@ -98,8 +143,12 @@ impl PtySession {
         let pgid = child.process_id().map(|p| p as i32);
 
         let mut reader = pair.master.try_clone_reader()?;
-        let writer = pair.master.take_writer()?;
-        let parser = Arc::new(Mutex::new(vt100::Parser::new(rows, cols, 5_000)));
+        let writer = PtyWriter::spawn(pair.master.take_writer()?);
+        let parser = Arc::new(Mutex::new(vt100::Parser::new(
+            rows,
+            cols,
+            scrollback_lines_from_env(),
+        )));
         let dirty = Arc::new(AtomicBool::new(true)); // draw the first frame
         let seq = Arc::new(AtomicU64::new(0));
         let blocked = Arc::new(AtomicBool::new(false));
@@ -214,37 +263,29 @@ impl PtySession {
 
     /// Forward raw bytes (encoded keystrokes) to the child. Typing jumps the
     /// view back to the live bottom (like a normal terminal).
-    pub fn send(&mut self, bytes: &[u8]) {
+    pub fn send(&mut self, bytes: &[u8]) -> bool {
         self.scroll_reset();
-        let _ = self.writer.write_all(bytes);
-        let _ = self.writer.flush();
+        self.writer.enqueue(bytes.to_vec())
     }
 
     /// Forward pasted text to the child. If the child has enabled bracketed
     /// paste (DECSET 2004 — codex/claude do), wrap it in `ESC[200~`/`ESC[201~`
     /// so multi-line content is inserted literally instead of each newline
     /// executing as Enter. Otherwise send it raw (markers would leak as text).
-    pub fn paste(&mut self, text: &str) {
+    pub fn paste(&mut self, text: &str) -> bool {
         self.scroll_reset();
         let bracketed = self
             .parser
             .lock()
             .map(|p| p.screen().bracketed_paste())
             .unwrap_or(false);
-        if bracketed {
-            let _ = self.writer.write_all(b"\x1b[200~");
-            let _ = self.writer.write_all(text.as_bytes());
-            let _ = self.writer.write_all(b"\x1b[201~");
-        } else {
-            let _ = self.writer.write_all(text.as_bytes());
-        }
-        let _ = self.writer.flush();
+        self.writer.enqueue(paste_bytes(text, bracketed))
     }
 
     /// Paste a prepared initial prompt literally, then submit it with Enter.
     /// This keeps multi-line handoff text as one prompt in CLIs that enable
     /// bracketed paste, instead of treating every newline as a submit key.
-    pub fn paste_and_submit(&mut self, bytes: &[u8]) {
+    pub fn paste_and_submit(&mut self, bytes: &[u8]) -> bool {
         let (body, submit) = bytes
             .strip_suffix(b"\r")
             .map(|body| (body, Some(b"\r".as_slice())))
@@ -255,10 +296,17 @@ impl PtySession {
             })
             .unwrap_or((bytes, None));
         let text = String::from_utf8_lossy(body);
-        self.paste(&text);
+        self.scroll_reset();
+        let bracketed = self
+            .parser
+            .lock()
+            .map(|p| p.screen().bracketed_paste())
+            .unwrap_or(false);
+        let mut payload = paste_bytes(&text, bracketed);
         if let Some(submit) = submit {
-            self.send(submit);
+            payload.extend_from_slice(submit);
         }
+        self.writer.enqueue(payload)
     }
 
     /// Does the child have xterm mouse reporting enabled? If so, the wheel/click
@@ -297,9 +345,7 @@ impl PtySession {
             return false;
         }
         let bytes = mouse_sequence(encoding, cb, release, motion, col, row);
-        let _ = self.writer.write_all(&bytes);
-        let _ = self.writer.flush();
-        true
+        self.writer.enqueue(bytes)
     }
 
     pub fn resize(&mut self, rows: u16, cols: u16) {
@@ -384,6 +430,27 @@ impl Drop for PtySession {
     }
 }
 
+fn scrollback_lines_from_env() -> usize {
+    parse_scrollback_lines(std::env::var("MINDPLAYER_SCROLLBACK_LINES").ok().as_deref())
+}
+
+fn parse_scrollback_lines(raw: Option<&str>) -> usize {
+    raw.and_then(|s| s.trim().parse::<usize>().ok())
+        .unwrap_or(DEFAULT_SCROLLBACK_LINES)
+        .clamp(MIN_SCROLLBACK_LINES, MAX_SCROLLBACK_LINES)
+}
+
+fn paste_bytes(text: &str, bracketed: bool) -> Vec<u8> {
+    if !bracketed {
+        return text.as_bytes().to_vec();
+    }
+    let mut bytes = Vec::with_capacity(b"\x1b[200~".len() + text.len() + b"\x1b[201~".len());
+    bytes.extend_from_slice(b"\x1b[200~");
+    bytes.extend_from_slice(text.as_bytes());
+    bytes.extend_from_slice(b"\x1b[201~");
+    bytes
+}
+
 /// Whether a mouse event should be forwarded under the child's reporting mode.
 /// `cb == 3` with `motion` means a plain move (no button held).
 fn mouse_allowed(mode: vt100::MouseProtocolMode, release: bool, motion: bool, cb: u16) -> bool {
@@ -464,6 +531,12 @@ const BLOCKED_ASKS: &[&str] = &[
 /// a question line (`…?`) containing an approval verb — not bare words mid-output.
 fn text_looks_blocked(screen: &str) -> bool {
     let tail = bottom_lines(screen, 10);
+    if tail_looks_like_kiro_approval(&tail) {
+        return true;
+    }
+    if tail_looks_like_interactive_prompt(&tail) {
+        return true;
+    }
     if tail
         .iter()
         .any(|l| BLOCKED_STRUCTURAL.iter().any(|m| l.contains(m)) || line_looks_limit_blocked(l))
@@ -472,6 +545,28 @@ fn text_looks_blocked(screen: &str) -> bool {
     }
     tail.iter()
         .any(|l| l.ends_with('?') && BLOCKED_ASKS.iter().any(|m| l.contains(m)))
+}
+
+/// Claude Code (and similar) interactive pickers — a numbered/checkbox menu
+/// awaiting a choice — render a navigation footer like
+/// "Enter to select · Tab/Arrow keys to navigate · Esc to cancel". The menu's
+/// selection cursor ("› 1.") otherwise reads as a ready input prompt, so the
+/// session would mis-classify as idle (the cursor glyph used by the picker is
+/// the same "›"/"❯" that means "prompt ready" elsewhere). This footer is the
+/// reliable, language-independent signal that the turn is waiting on the user.
+fn tail_looks_like_interactive_prompt(tail: &[String]) -> bool {
+    tail.iter()
+        .any(|l| l.contains("to navigate") && (l.contains("to select") || l.contains("to cancel")))
+}
+
+fn tail_looks_like_kiro_approval(tail: &[String]) -> bool {
+    let has_approval = tail
+        .iter()
+        .any(|l| l.contains("requires approval") || l.contains("always allow in this session"));
+    let has_choice = tail.iter().any(|l| {
+        l.contains("❯ yes") || l.contains("trust, always allow") || l.contains("no (tab to edit)")
+    });
+    has_approval && has_choice
 }
 
 fn line_looks_limit_blocked(line: &str) -> bool {
@@ -497,6 +592,26 @@ const BUSY_MARKERS: &[&str] = &[
     "working…",
     "compacting",
     "still running",
+    // Claude v2.1.x status line uses a RANDOM verb + a parenthesized annotation
+    // and prints NO interrupt hint, e.g. "✻ Honking… (6s · thinking)" /
+    // "… · thought for 7s)". Anchor on the stable annotation, not the verb.
+    "· thinking)",
+    "· thought for",
+];
+
+/// Busy markers that are trusted even when the input prompt is also visible.
+/// Agent TUIs can leave weak spinner text in scrollback after a turn completes,
+/// but these markers indicate an active cancellable job or subprocess.
+const STRONG_BUSY_MARKERS: &[&str] = &[
+    "esc to interrupt",
+    "to interrupt",
+    "ctrl-c to",
+    "compacting",
+    "still running",
+    // Trusted: Claude's live status annotations must win over the
+    // "? for shortcuts" input affordance that stays on screen during a turn.
+    "· thinking)",
+    "· thought for",
 ];
 
 /// The last `n` non-blank lines of a terminal frame, trimmed and lowercased.
@@ -515,11 +630,64 @@ fn bottom_lines(screen: &str, n: usize) -> Vec<String> {
     lines.split_off(start)
 }
 
+/// A streaming-token status line, e.g. "… (1m 1s · ↓2.8k tokens)". The bare word
+/// "tokens" also appears in ordinary prose, so it only counts as a busy signal
+/// when the same row carries a streaming arrow (↓/↑) — structural context the
+/// live status line always emits and prose does not.
+fn line_has_streaming_tokens(l: &str) -> bool {
+    l.contains("tokens") && (l.contains('↓') || l.contains('↑'))
+}
+
+/// The live agent status line ALWAYS shows a parenthesized elapsed timer, e.g.
+/// "(13s · still thinking)", "(6s · thinking)", "(1m 1s · ↓2.8k tokens)". The
+/// verb and the annotation wording drift between releases ("thinking" vs "still
+/// thinking", random verbs, no interrupt hint), but the parenthesized timer plus
+/// `·` status separator is stable. Requiring both avoids prose like
+/// "build finished (13s)".
+fn line_has_elapsed_timer(l: &str) -> bool {
+    let b = l.as_bytes();
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'(' {
+            let mut j = i + 1;
+            let mut saw_digit = false;
+            while j < b.len() && b[j].is_ascii_digit() {
+                saw_digit = true;
+                j += 1;
+            }
+            if saw_digit && j < b.len() && (b[j] == b's' || b[j] == b'm') {
+                let tail = &l[i..];
+                if tail
+                    .split(')')
+                    .next()
+                    .is_some_and(|part| part.contains('·'))
+                {
+                    return true;
+                }
+            }
+        }
+        i += 1;
+    }
+    false
+}
+
 /// True if the visible terminal text shows the agent is actively working.
 fn text_looks_busy(screen: &str) -> bool {
-    bottom_lines(screen, 12)
-        .iter()
-        .any(|l| BUSY_MARKERS.iter().any(|m| l.contains(m)))
+    let lines = bottom_lines(screen, 12);
+    let has_busy = lines.iter().any(|l| {
+        BUSY_MARKERS.iter().any(|m| l.contains(m))
+            || line_has_streaming_tokens(l)
+            || line_has_elapsed_timer(l)
+    });
+    if !has_busy {
+        return false;
+    }
+    let has_strong_busy = lines.iter().any(|l| {
+        STRONG_BUSY_MARKERS.iter().any(|m| l.contains(m))
+            || line_has_streaming_tokens(l)
+            || line_has_elapsed_timer(l)
+    });
+    has_strong_busy || !text_looks_idle(screen)
 }
 
 /// True if the visible terminal text looks like the normal input prompt is
@@ -527,12 +695,20 @@ fn text_looks_busy(screen: &str) -> bool {
 /// prompt/input-box affordances that mean a completed turn is accepting input.
 fn text_looks_idle(screen: &str) -> bool {
     bottom_lines(screen, 14).iter().any(|l| {
-        l == "›"
-            || l.starts_with("› ")
+        let trimmed = l.trim_start();
+        trimmed == "›"
+            || trimmed.starts_with("› ")
+            || trimmed == "❯"
+            || trimmed.starts_with("❯ ")
+            || trimmed == ">"
+            || trimmed.starts_with("> ")
             || l.contains("type your message")
+            || l.contains("enter your message")
+            || l.contains("ask kiro")
+            || l.contains("ask a question or describe a task")
             || l.contains("? for shortcuts")
-            || l.contains("│ >")
-            || l.contains("┃ >")
+            || l.trim() == "│ >"
+            || l.trim() == "┃ >"
     })
 }
 
@@ -585,6 +761,117 @@ fn stderr_log_path(session_id: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn claude_v2_thinking_status_reads_busy() {
+        // v2.1.x thinking line: random verb + "(Ns · thinking)", NO interrupt
+        // hint. "? for shortcuts" is visible mid-turn, so the marker must be
+        // STRONG to win over text_looks_idle (else the badge reads Idle).
+        let screen =
+            "✻ Honking… (6s · thinking)\n╭─────────╮\n│ >       │\n╰─────────╯\n? for shortcuts";
+        assert!(
+            text_looks_idle(screen),
+            "the input affordance is visible during the turn"
+        );
+        assert!(
+            text_looks_busy(screen),
+            "an active thinking turn must read busy"
+        );
+    }
+
+    #[test]
+    fn kiro_approval_prompt_reads_blocked() {
+        // kiro tool-approval dialog ("web_search requires approval") must read
+        // Blocked — some tools still prompt even with --trust-all-tools.
+        let screen = "Tasks · 2 done · 4 remaining\n\nweb_search requires approval\n❯ Yes, single permission\n  Trust, always allow in this session\n  No (Tab to edit)\n\nESC to close · Tab to edit";
+        assert!(
+            text_looks_blocked(screen),
+            "kiro approval dialog must read blocked"
+        );
+    }
+
+    #[test]
+    fn prose_requires_approval_is_not_blocked() {
+        let screen = "This change requires approval from the owner.\nDone.\n❯ ";
+        assert!(
+            !text_looks_blocked(screen),
+            "plain prose mentioning approval is not an approval dialog"
+        );
+    }
+
+    #[test]
+    fn claude_still_thinking_with_timer_reads_busy() {
+        // EXACT real screen (v2.x): sparkle spinner, RANDOM verb, "(13s · still
+        // thinking)" — note "still thinking" (not "thinking") and no interrupt
+        // hint. The parenthesized elapsed timer is the stable busy signal.
+        let screen = "✶ Tinkering… (13s · still thinking)\n  Tip: Use /agents to optimize specific tasks\n│ >       │\n? for shortcuts";
+        assert!(
+            text_looks_idle(screen),
+            "input affordance visible during the turn"
+        );
+        assert!(
+            text_looks_busy(screen),
+            "active 'still thinking' turn (timer present) must read busy"
+        );
+    }
+
+    #[test]
+    fn prose_with_fake_paren_time_is_not_busy() {
+        // "(took 5s)" — digits are not immediately after "(", so this is not a
+        // live elapsed timer and must not read as busy.
+        let screen = "it finished (took 5s) and wrote the file\n│ >       │\n? for shortcuts";
+        assert!(
+            !text_looks_busy(screen),
+            "prose '(took 5s)' is not a live timer"
+        );
+    }
+
+    #[test]
+    fn finished_prose_with_elapsed_seconds_is_not_busy() {
+        let screen = "build finished (13s)\n│ >       │\n? for shortcuts";
+        assert!(
+            !text_looks_busy(screen),
+            "completed prose with '(13s)' is not a live status timer"
+        );
+    }
+
+    #[test]
+    fn claude_v2_streaming_tokens_reads_busy() {
+        let screen = "… (1m 1s · ↓2.8k tokens)\n│ >       │\n? for shortcuts";
+        assert!(
+            text_looks_busy(screen),
+            "streaming tokens with a ↓/↑ arrow is busy"
+        );
+    }
+
+    #[test]
+    fn finished_prose_mentioning_tokens_is_not_busy() {
+        // A completed turn whose prose mentions "tokens)" but has no streaming
+        // arrow and shows the input prompt must not read busy.
+        let screen = "the function returns about 500 tokens)\n│ >       │\n? for shortcuts";
+        assert!(
+            !text_looks_busy(screen),
+            "prose 'tokens)' without a streaming arrow is not busy"
+        );
+    }
+
+    #[test]
+    fn scrollback_env_defaults_and_clamps() {
+        assert_eq!(parse_scrollback_lines(None), DEFAULT_SCROLLBACK_LINES);
+        assert_eq!(
+            parse_scrollback_lines(Some("bad")),
+            DEFAULT_SCROLLBACK_LINES
+        );
+        assert_eq!(parse_scrollback_lines(Some("10")), MIN_SCROLLBACK_LINES);
+        assert_eq!(parse_scrollback_lines(Some("999999")), MAX_SCROLLBACK_LINES);
+        assert_eq!(parse_scrollback_lines(Some("1200")), 1200);
+    }
+
+    #[test]
+    fn bracketed_paste_is_one_enqueued_payload() {
+        assert_eq!(paste_bytes("abc", false), b"abc");
+        assert_eq!(paste_bytes("a\nb", true), b"\x1b[200~a\nb\x1b[201~");
+    }
 
     #[test]
     fn shell_quote_wraps_and_escapes() {
@@ -645,6 +932,14 @@ mod tests {
         assert!(text_looks_blocked(
             "You've hit your org's monthly spend limit · ask your admin to raise it at claude.ai/admin-settings/usage\n›"
         ));
+        // Claude Code interactive picker awaiting a choice: the "› 1." menu
+        // cursor reads as a ready prompt (idle) elsewhere, so the navigation
+        // footer is what marks it blocked — language-independent (Korean Q).
+        assert!(text_looks_blocked(
+            "파일 구조를 어떻게 가져갈까요?\n› 1. 런북 2개 신규 + plan은 링크허브\n  2. 런북 2개만 신규\nEnter to select · Tab/Arrow keys to navigate · Esc to cancel"
+        ));
+        // The same picker without its footer (just a prompt cursor) is idle, not blocked.
+        assert!(!text_looks_blocked("› 1. just a list item\n  2. another"));
         // Working / non-prompt screens must NOT be flagged.
         assert!(!text_looks_blocked("Thinking…  esc to interrupt"));
         assert!(!text_looks_blocked("wrote foo.rs\nall done"));
@@ -670,6 +965,7 @@ mod tests {
         assert!(text_looks_busy("running build\n… (esc to interrupt)"));
         // Idle prompt / finished output is not busy.
         assert!(!text_looks_busy("› \ntype your message"));
+        assert!(!text_looks_busy("Thinking…\n> ask kiro"));
         assert!(!text_looks_busy("wrote foo.rs\nall done"));
         assert!(!text_looks_busy(""));
     }
@@ -722,6 +1018,10 @@ mod tests {
         );
 
         assert!(text_looks_idle("› \ntype your message"));
+        assert!(text_looks_idle("────────────────\n❯ \n────────────────"));
+        assert!(text_looks_idle("ask a question or describe a task ↵"));
+        assert!(text_looks_idle("│ >\n"));
+        assert!(!text_looks_idle("│ >_ OpenAI Codex (v0.141.0)"));
         assert!(!text_looks_idle("running build\n… (esc to interrupt)"));
     }
 

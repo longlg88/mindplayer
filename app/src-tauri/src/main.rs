@@ -125,6 +125,13 @@ fn set_archived(id: String, archived: bool, state: TauriState<AppState>) -> Resu
     archive.save().map_err(|e| e.to_string())
 }
 
+#[tauri::command]
+fn set_label(id: String, label: String, state: TauriState<AppState>) -> Result<(), String> {
+    let mut archive = state.archive.lock().unwrap();
+    archive.set_label(&id, &label);
+    archive.save().map_err(|e| e.to_string())
+}
+
 /// Start (or restart) a PTY resuming `session_id` of `agent`, in `cwd`.
 #[tauri::command]
 fn pty_start(
@@ -234,6 +241,7 @@ fn main() {
             resolve_cwd,
             scan_sessions,
             set_archived,
+            set_label,
             pty_start,
             pty_new,
             pty_write,

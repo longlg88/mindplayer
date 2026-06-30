@@ -9,6 +9,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 pub(crate) const HANDOFF_DIR_ENV: &str = "MINDPLAYER_HANDOFF_DIR";
 const INLINE_CHAR_BUDGET: usize = 60_000;
+const LATEST_EXCERPT_CHAR_BUDGET: usize = 12_000;
 const MAX_SOURCE_BYTES: u64 = 16 * 1024 * 1024;
 
 #[cfg(test)]
@@ -23,7 +24,14 @@ pub fn target_for_choice(choice: usize) -> Agent {
 }
 
 pub fn command_for(source: &Session, target: Agent) -> Command {
-    new_session(target, source.cwd.clone())
+    let mut command = new_session(target, source.cwd.clone());
+    if target == Agent::Kiro {
+        // Hand off into kiro with every tool pre-trusted, matching a freshly
+        // created kiro session (user-requested: no per-tool approval prompts on
+        // a handoff target). Mirrors CliProviderAdapter::start_command.
+        command.args.push("--trust-all-tools".to_string());
+    }
+    command
 }
 
 pub fn title_for(source: &Session, target: Agent) -> String {
@@ -48,7 +56,16 @@ pub fn prepare_initial_input(source: &Session, target: Agent) -> Result<Prepared
     let transcript_chars = transcript.chars().count();
     let inline_truncated = transcript_chars > INLINE_CHAR_BUDGET;
     let inline = (!inline_truncated).then_some(transcript.as_str());
-    let mut prompt = prompt_for(source, target, &artifact, &inline, inline_truncated);
+    let latest_excerpt =
+        inline_truncated.then(|| tail_chars(&transcript, LATEST_EXCERPT_CHAR_BUDGET));
+    let mut prompt = prompt_for(
+        source,
+        target,
+        &artifact,
+        &inline,
+        latest_excerpt.as_deref(),
+        inline_truncated,
+    );
     prompt.push('\r');
     Ok(PreparedHandoff {
         input: prompt.into_bytes(),
@@ -163,6 +180,7 @@ fn prompt_for(
     target: Agent,
     artifact: &Path,
     transcript_inline: &Option<&str>,
+    latest_excerpt: Option<&str>,
     inline_truncated: bool,
 ) -> String {
     let transcript_block = if let Some(transcript_inline) = transcript_inline {
@@ -182,8 +200,21 @@ Do not answer from a preview. Read the handoff artifact before continuing.
 "
         .to_string()
     };
+    let latest_block = latest_excerpt
+        .map(|excerpt| {
+            format!(
+                "\
+Latest source-session excerpt is included directly below so you can continue even before opening the artifact.
+
+```text
+{excerpt}
+```
+"
+            )
+        })
+        .unwrap_or_default();
     let size_note = if inline_truncated {
-        "large source session; artifact-only prompt"
+        "large source session; latest excerpt included; full artifact available"
     } else {
         "full inline transcript included"
     };
@@ -202,6 +233,7 @@ Source session:
 Before answering, first read the handoff artifact above. Then identify the latest user request, summarize the relevant prior context in a few bullets, ignore unrelated runtime/setup/hook noise unless it changes the task, and continue the same task in this working directory.
 Treat the artifact as the previous session context. If the artifact is inaccessible or insufficient, ask me before making irreversible changes.
 
+{latest_block}
 {transcript_block}
 ",
         source_agent = source.agent.as_str(),
@@ -210,8 +242,21 @@ Treat the artifact as the previous session context. If the artifact is inaccessi
         cwd = source.cwd.display(),
         title = source.title,
         artifact = artifact.display(),
+        latest_block = latest_block,
         transcript_block = transcript_block,
         size_note = size_note
+    )
+}
+
+fn tail_chars(text: &str, max_chars: usize) -> String {
+    let total = text.chars().count();
+    if total <= max_chars {
+        return text.to_string();
+    }
+    let skip = total.saturating_sub(max_chars);
+    format!(
+        "[Earlier transcript omitted from inline prompt; see artifact for full context.]\n\n{}",
+        text.chars().skip(skip).collect::<String>()
     )
 }
 
@@ -889,6 +934,21 @@ mod tests {
     }
 
     #[test]
+    fn handoff_into_kiro_pretrusts_all_tools() {
+        let src = session(PathBuf::from("/work/project/claude.jsonl"));
+        let kiro = command_for(&src, Agent::Kiro);
+        assert_eq!(kiro.program, "kiro-cli");
+        assert!(
+            kiro.args.iter().any(|a| a == "--trust-all-tools"),
+            "handoff into kiro must pre-trust all tools (got {:?})",
+            kiro.args
+        );
+        // A non-kiro handoff target gets no trust flag injected here.
+        let codex = command_for(&src, Agent::Codex);
+        assert!(!codex.args.iter().any(|a| a == "--trust-all-tools"));
+    }
+
+    #[test]
     fn prompt_carries_source_transcript_and_submits() {
         let _env = TEST_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let dir = temp_dir("prompt");
@@ -999,10 +1059,10 @@ mod tests {
         assert!(prepared.inline_truncated);
         assert!(prepared.transcript_chars > INLINE_CHAR_BUDGET);
         let prompt = String::from_utf8(prepared.input).unwrap();
-        assert!(prompt.contains("artifact-only prompt"));
-        assert!(prompt.contains("Do not answer from a preview"));
+        assert!(prompt.contains("latest excerpt included"));
+        assert!(prompt.contains("Latest source-session excerpt"));
         assert!(prompt.contains(&prepared.artifact.display().to_string()));
-        assert!(!prompt.contains(recent));
+        assert!(prompt.contains(recent));
         let artifact = fs::read_to_string(&prepared.artifact).unwrap();
         assert!(artifact.contains("old context old context old context"));
         assert!(artifact.contains(recent));
@@ -1018,7 +1078,7 @@ mod tests {
         fs::write(
             &transcript,
             format!(
-                r#"{{"type":"user","message":{{"role":"user","content":"initial pulse task"}}}}
+                r#"{{"type":"user","message":{{"role":"user","content":"initial source task"}}}}
 {{"type":"assistant","message":{{"role":"assistant","content":"{middle}"}}}}
 {{"type":"user","message":{{"role":"user","content":"latest ClaudeCode work: write the todo html and report completion"}}}}"#
             ),
@@ -1029,7 +1089,7 @@ mod tests {
             extract_jsonl_transcript_with_limit(&session(transcript), parse_claude_turn, 512)
                 .unwrap();
 
-        assert!(extracted.contains("initial pulse task"));
+        assert!(extracted.contains("initial source task"));
         assert!(extracted.contains("transcript truncation note"));
         assert!(extracted.contains("latest ClaudeCode work: write the todo html"));
     }
@@ -1042,7 +1102,7 @@ mod tests {
         fs::write(
             &transcript,
             format!(
-                r#"{{"type":"user","message":{{"role":"user","content":"initial pulse task"}}}}
+                r#"{{"type":"user","message":{{"role":"user","content":"initial source task"}}}}
 {{"type":"assistant","message":{{"role":"assistant","content":"{huge_final}"}}}}"#
             ),
         )
@@ -1052,7 +1112,7 @@ mod tests {
             extract_jsonl_transcript_with_limit(&session(transcript), parse_claude_turn, 512)
                 .unwrap();
 
-        assert!(extracted.contains("initial pulse task"));
+        assert!(extracted.contains("initial source task"));
         assert!(extracted.contains("latest JSONL record was larger than the tail window"));
     }
 }

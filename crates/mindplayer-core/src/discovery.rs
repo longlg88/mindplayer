@@ -18,7 +18,7 @@
 //! name before any file is opened.
 
 use crate::session::{Agent, Session, TokenUsage};
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, FixedOffset, Utc};
 use serde_json::Value;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
@@ -129,11 +129,23 @@ pub fn scan(scope: &Scope, cfg: &ScanConfig) -> Vec<Session> {
     sessions
 }
 
-/// Order newest-active first, then newest-created.
+/// True if the session was last touched (active or started) today in Korea
+/// Standard Time (UTC+9). Drives the "Today / Earlier" list categories.
+pub fn touched_today_kst(session: &Session, now: DateTime<Utc>) -> bool {
+    let Some(touched) = session.last_active.or(session.started_at) else {
+        return false;
+    };
+    let kst = FixedOffset::east_opt(9 * 60 * 60).expect("KST offset is valid");
+    touched.with_timezone(&kst).date_naive() == now.with_timezone(&kst).date_naive()
+}
+
+/// Order today's KST work first, then newest-active, then newest-created.
 pub fn sort_by_recency(sessions: &mut [Session]) {
+    let now = Utc::now();
     sessions.sort_by(|a, b| {
-        b.last_active
-            .cmp(&a.last_active)
+        touched_today_kst(b, now)
+            .cmp(&touched_today_kst(a, now))
+            .then(b.last_active.cmp(&a.last_active))
             .then(b.started_at.cmp(&a.started_at))
     });
 }
@@ -899,6 +911,7 @@ fn clean_title(raw: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::TimeZone;
 
     #[test]
     fn codex_usage_reads_all_fields() {
@@ -1008,5 +1021,48 @@ mod tests {
         assert!(scope.matches(Path::new("/a/b")));
         assert!(!scope.matches(Path::new("/a/b/c")));
         assert!(Scope::Global.matches(Path::new("/anything")));
+    }
+
+    #[test]
+    fn sort_by_recency_promotes_sessions_touched_today_kst() {
+        let now = Utc::now();
+        let kst = FixedOffset::east_opt(9 * 60 * 60).unwrap();
+        let today_kst = now.with_timezone(&kst).date_naive();
+        let today_noon = kst
+            .from_local_datetime(&today_kst.and_hms_opt(12, 0, 0).unwrap())
+            .single()
+            .unwrap()
+            .with_timezone(&Utc);
+        let today_afternoon = kst
+            .from_local_datetime(&today_kst.and_hms_opt(13, 0, 0).unwrap())
+            .single()
+            .unwrap()
+            .with_timezone(&Utc);
+        let old_recent = Session {
+            id: "old-recent".into(),
+            agent: Agent::Codex,
+            cwd: PathBuf::new(),
+            file: PathBuf::new(),
+            started_at: Some(now - chrono::Duration::days(2)),
+            last_active: Some(today_noon - chrono::Duration::days(1)),
+            tokens: TokenUsage::default(),
+            title: "old".into(),
+            archived: false,
+            is_subagent: false,
+            context_pct: None,
+        };
+        let mut today_older = old_recent.clone();
+        today_older.id = "today-older".into();
+        today_older.started_at = Some(today_noon);
+        today_older.last_active = Some(today_noon);
+        let mut today_newer = today_older.clone();
+        today_newer.id = "today-newer".into();
+        today_newer.last_active = Some(today_afternoon);
+
+        let mut sessions = vec![old_recent, today_older, today_newer];
+        sort_by_recency(&mut sessions);
+
+        let ids: Vec<_> = sessions.iter().map(|s| s.id.as_str()).collect();
+        assert_eq!(ids, vec!["today-newer", "today-older", "old-recent"]);
     }
 }

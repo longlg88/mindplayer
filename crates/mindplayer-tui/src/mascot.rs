@@ -9,23 +9,24 @@ const MINT_DK: Color = Color::Rgb(90, 183, 173);
 const FACE: Color = Color::Rgb(237, 249, 227);
 const INK: Color = Color::Rgb(34, 53, 82);
 
-/// 16×16 Pane Bot sprite. Chars: T=mint, S=shadow, F=face, D=dark body/ink.
+/// 16x16 Pane Bot sprite, matching `assets/mascot.png` / the README mascot.
+/// Chars: T=mint, S=shadow, F=face, D=dark body/ink.
 const ART: [&str; 16] = [
+    "                ",
     "       TT       ",
     "       SS       ",
-    "      SSSS      ",
-    "     SSTTSS     ",
+    "     SSSSSS     ",
     "    TTTTTTTT    ",
     "   TTTTTTTTTT   ",
-    "   TFFFFFFFFT   ",
-    "  SSTFDFFDFTSS  ",
-    "  TTTFFDDFFTTT  ",
-    "  TTTTTTTTTTTT  ",
-    "   TTTDDDDTTT   ",
-    "    DDDDDDDD    ",
-    "    DDTDTDTD    ",
-    "    DDDDDDDD    ",
-    "   DD      DD   ",
+    "   STTTTTTTTS   ",
+    "   STFFFFFFTS   ",
+    "   STFDFFDFTS   ",
+    "   STFDFFDFTS   ",
+    "   STFFFFFFTS   ",
+    "   STTTTTTTTS   ",
+    "     DDDDDD     ",
+    "   DDDTDTDTDD   ",
+    "     DDDDDD     ",
     "                ",
 ];
 
@@ -53,7 +54,7 @@ pub fn lines(tick: usize) -> Vec<Line<'static>> {
     let mut grid: Vec<Vec<char>> = ART.iter().map(|r| r.chars().collect()).collect();
     if blink {
         for &x in &[6usize, 9] {
-            grid[7][x] = 'F';
+            grid[8][x] = 'F';
         }
     }
 
@@ -86,4 +87,40 @@ pub fn lines(tick: usize) -> Vec<Line<'static>> {
         out.push(blank);
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sprite_rows_are_terminal_cell_width() {
+        assert_eq!(ART.len(), 16);
+        for row in ART {
+            assert_eq!(row.chars().count(), WIDTH as usize, "{row:?}");
+        }
+    }
+
+    #[test]
+    fn rendered_lines_keep_stable_size_while_animating() {
+        for tick in [0, 1, 2, 7, 14, 28] {
+            let frame = lines(tick);
+            assert_eq!(frame.len(), HEIGHT as usize);
+            for line in frame {
+                assert_eq!(line.width(), WIDTH as usize);
+            }
+        }
+    }
+
+    #[test]
+    fn blink_changes_the_eye_row_without_changing_layout() {
+        let blink = lines(0);
+        let open = lines(2);
+        assert_eq!(blink.len(), open.len());
+        assert_eq!(
+            blink.iter().map(Line::width).collect::<Vec<_>>(),
+            open.iter().map(Line::width).collect::<Vec<_>>()
+        );
+        assert_ne!(format!("{blink:?}"), format!("{open:?}"));
+    }
 }

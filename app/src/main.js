@@ -17,6 +17,7 @@ const state = {
   ended: new Set(), // ids whose process exited (frame kept)
   activeId: null,
   newAgent: null,
+  labelTarget: null,
 };
 
 const $ = (id) => document.getElementById(id);
@@ -79,6 +80,25 @@ async function init() {
   $("new-label-input").addEventListener("keydown", (e) => {
     if (e.key === "Enter") startNew();
     if (e.key === "Escape") closeNewModal();
+  });
+
+  // Existing-session label editor. The TUI uses `e`; mirror that in the app
+  // when focus is on the session list, but never steal keystrokes from xterm or
+  // a text input.
+  $("label-btn").addEventListener("click", openLabelModal);
+  $("label-cancel").addEventListener("click", closeLabelModal);
+  $("label-save").addEventListener("click", saveLabel);
+  $("label-input").addEventListener("keydown", (e) => {
+    if (e.key === "Enter") saveLabel();
+    if (e.key === "Escape") closeLabelModal();
+  });
+  document.addEventListener("keydown", (e) => {
+    if (e.key.toLowerCase() !== "e") return;
+    if ($("screen-main").classList.contains("hidden")) return;
+    if (modalOpen()) return;
+    if (isTextEntryTarget(e.target)) return;
+    e.preventDefault();
+    openLabelModal();
   });
 
   // Change-working-dir modal (main view).
@@ -185,25 +205,36 @@ function dotFor(id) {
 
 function renderList() {
   const list = $("session-list");
-  list.innerHTML = "";
+  list.replaceChildren();
   const vis = visibleSessions();
   if (state.selected >= vis.length) state.selected = Math.max(0, vis.length - 1);
 
   vis.forEach((s, i) => {
     const li = document.createElement("li");
     li.className = "session" + (i === state.selected ? " active" : "");
-    li.innerHTML =
-      `<span class="dot">${dotFor(s.id)}</span>` +
-      `<span class="tag ${s.agent}">${s.agent}</span>` +
-      `<span class="title"></span>` +
-      `<span class="tok">${
-        s.agent === "kiro"
-          ? s.context_pct != null
-            ? Math.round(s.context_pct) + "%"
-            : "—"
-          : humanTokens(s.tokens.total)
-      }</span>`;
-    li.querySelector(".title").textContent = s.title || "(untitled)";
+
+    const dot = document.createElement("span");
+    dot.className = "dot";
+    dot.textContent = dotFor(s.id);
+
+    const tag = document.createElement("span");
+    tag.className = `tag ${s.agent}`;
+    tag.textContent = s.agent;
+
+    const title = document.createElement("span");
+    title.className = "title";
+    title.textContent = s.title || "(untitled)";
+
+    const tok = document.createElement("span");
+    tok.className = "tok";
+    tok.textContent =
+      s.agent === "kiro"
+        ? s.context_pct != null
+          ? Math.round(s.context_pct) + "%"
+          : "—"
+        : humanTokens(s.tokens.total);
+
+    li.append(dot, tag, title, tok);
     li.addEventListener("click", () => {
       state.selected = i;
       renderList();
@@ -214,6 +245,24 @@ function renderList() {
 
   const tab = state.showArchived ? "archived" : "active";
   $("list-title").textContent = `Sessions · ${tab} (${vis.length})`;
+}
+
+function modalOpen() {
+  return !$("new-modal").classList.contains("hidden") ||
+    !$("label-modal").classList.contains("hidden") ||
+    !$("dir-modal").classList.contains("hidden");
+}
+
+function isTextEntryTarget(target) {
+  if (!target) return false;
+  const tag = target.tagName;
+  return tag === "INPUT" || tag === "TEXTAREA" || target.isContentEditable ||
+    target.closest?.(".xterm");
+}
+
+function labelFromTitle(title) {
+  const prefix = "🏷 ";
+  return title && title.startsWith(prefix) ? title.slice(prefix.length) : "";
 }
 
 function renderStatus() {
@@ -336,6 +385,35 @@ function openNewModal() {
 
 function closeNewModal() {
   $("new-modal").classList.add("hidden");
+}
+
+function openLabelModal() {
+  const s = selectedSession();
+  if (!s || s.id.startsWith("new:")) return;
+  state.labelTarget = s.id;
+  $("label-input").value = labelFromTitle(s.title);
+  $("label-modal").classList.remove("hidden");
+  $("label-input").focus();
+}
+
+function closeLabelModal() {
+  state.labelTarget = null;
+  $("label-modal").classList.add("hidden");
+}
+
+async function saveLabel() {
+  const id = state.labelTarget;
+  if (!id) return;
+  const label = $("label-input").value.trim();
+  await invoke("set_label", { id, label });
+  const found = state.sessions.find((x) => x.id === id);
+  if (found && label) found.title = `🏷 ${label}`;
+  closeLabelModal();
+  if (label) {
+    renderList();
+  } else {
+    await scanSilent();
+  }
 }
 
 // --- change working dir (main view) ---------------------------------------

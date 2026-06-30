@@ -1,7 +1,7 @@
 //! Rendering for every screen. `render` also records the right-pane size back
 //! into `App` so the PTY can be spawned/resized at the correct dimensions.
 
-use crate::app::{App, Focus, Screen, SessionStatus};
+use crate::app::{App, Focus, PaneLayout, Screen, SessionStatus, MAX_PANES};
 use crate::mascot;
 use crate::orchestration;
 use crate::terminal_view::TerminalView;
@@ -264,11 +264,24 @@ fn main_view(f: &mut Frame, app: &mut App) {
         Focus::Terminal => live_pane(f, app, outer[1]),
     }
 
-    let keys = match app.focus {
-        Focus::List => {
-            "Session: enter open · n new · h handoff   Orch: o start · b all · m route · M paste/apply · p review · s synth   View: / search · ? help"
+    let keys: String = match app.focus {
+        Focus::List if app.multi_select => {
+            "MULTI-SELECT · space mark · enter launch all marked · esc cancel".to_string()
         }
-        Focus::Terminal => "ctrl-x list   wheel history   shift+drag copy",
+        Focus::List => {
+            // When a live view is detached but still running, surface that ctrl-x
+            // jumps back into it.
+            let live = if !app.panes.is_empty() {
+                format!("ctrl-x live ({}) · ", app.panes.len())
+            } else {
+                String::new()
+            };
+            format!("{live}enter open · v multi-select · n new · h handoff   View: / search · ? help")
+        }
+        Focus::Terminal => {
+            "ctrl-x list · tab/ctrl-w pane · ctrl-o layout · ctrl-q close · wheel history · drag=copy this pane"
+                .to_string()
+        }
     };
     let status = if app.status.is_empty() {
         app.summary_line()
@@ -403,44 +416,65 @@ fn session_list(f: &mut Frame, app: &mut App, area: Rect, now: DateTime<Utc>) {
         .as_deref()
         .map(|query| format!(" · /{query}"))
         .unwrap_or_default();
+    let multi = if app.multi_select {
+        format!(" · MULTI-SELECT ({} marked)", app.marked.len())
+    } else {
+        String::new()
+    };
     let block = Block::default()
         .borders(Borders::ALL)
+        .border_style(Style::default().fg(if app.multi_select {
+            Color::Green
+        } else if focused {
+            ACCENT
+        } else {
+            DIM
+        }))
         .title(format!(
-            " Sessions · grouped by agent · {tab}{subs}{search} ({}) ",
+            " Sessions · today first · {tab}{subs}{search}{multi} ({}) ",
             app.visible.len()
-        ))
-        .border_style(Style::default().fg(if focused { ACCENT } else { DIM }));
+        ));
 
     // Fill the pane: title gets whatever width is left after border, status
     // badge, agent, time, identity, and usage columns.
     let show_id = area.width >= 58;
     let show_cwd = area.width >= 78;
     let identity_width = usize::from(show_id) * 11 + usize::from(show_cwd) * 11;
+    // 38 = status badge + agent bar/tag + time + thread prefix + the 2-col
+    // multi-select mark column prepended to every row.
     let max_title = (area.width as usize)
-        .saturating_sub(36 + identity_width)
+        .saturating_sub(38 + identity_width)
         .max(12);
+    // Top-level "Today / Earlier" categories. rebuild_visible sorts every
+    // today group (touched today OR running live now) above the rest and records
+    // the boundary in `today_count`, so the split is position-based — the
+    // headers always match the sort order and never recompute per row.
+    let today_count = app.today_count.min(app.visible.len());
+    let earlier_count = app.visible.len().saturating_sub(today_count);
+
     let mut items: Vec<ListItem> = Vec::new();
     let mut selected_item = None;
-    let mut current_section = None;
+    let mut current_today: Option<bool> = None;
     for row in 0..app.visible.len() {
         let Some(s) = app.session_at(row) else {
             continue;
         };
-        let section_agent = app.session_section_agent(&s.id).unwrap_or(s.agent);
-        if current_section != Some(section_agent) {
-            current_section = Some(section_agent);
-            let (section_tag, section_color) = agent_tag(section_agent);
-            let section_count = app.visible_section_count(section_agent);
+        let is_today = row < today_count;
+        if current_today != Some(is_today) {
+            current_today = Some(is_today);
+            let (label, count) = if is_today {
+                ("today", today_count)
+            } else {
+                ("earlier", earlier_count)
+            };
             items.push(ListItem::new(Line::from(vec![
                 Span::styled("  ── ", Style::default().fg(DIM)),
                 Span::styled(
-                    section_tag,
-                    Style::default()
-                        .fg(section_color)
-                        .add_modifier(Modifier::BOLD),
+                    label,
+                    Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(
-                    format!("  {section_count} {}", plural_session(section_count)),
+                    format!("  {count} {}", plural_session(count)),
                     Style::default().fg(DIM),
                 ),
             ])));
@@ -449,6 +483,7 @@ fn session_list(f: &mut Frame, app: &mut App, area: Rect, now: DateTime<Utc>) {
             selected_item = Some(items.len());
         }
         {
+            let marked = app.marked.contains(&s.id);
             let depth = app.session_depth(&s.id);
             let child_count = app.thread_child_count(&s.id);
             let (tag, tag_color) = agent_tag(s.agent);
@@ -477,7 +512,27 @@ fn session_list(f: &mut Frame, app: &mut App, area: Rect, now: DateTime<Utc>) {
             } else {
                 String::new()
             };
+            let (mark_glyph, mark_style) = if marked {
+                (
+                    "✓ ",
+                    Style::default()
+                        .fg(Color::Green)
+                        .add_modifier(Modifier::BOLD),
+                )
+            } else {
+                ("  ", Style::default())
+            };
+            // Time column reflects live activity: a running session (or a thread
+            // root with a running/active-today lane) reads "now" / its lane's
+            // recent time rather than its own possibly-stale transcript mtime.
+            let (live_now, eff_active) = app.row_activity(s, child_count);
+            let when = if live_now {
+                "now".to_string()
+            } else {
+                relative_time(eff_active, now)
+            };
             let mut spans = vec![
+                Span::styled(mark_glyph, mark_style),
                 Span::styled(format!("{badge} "), badge_style),
                 Span::styled(
                     "▌",
@@ -489,10 +544,7 @@ fn session_list(f: &mut Frame, app: &mut App, area: Rect, now: DateTime<Utc>) {
                 ),
                 // last-active recency: the list is sorted newest-first, so this
                 // column descends from top to bottom.
-                Span::styled(
-                    format!("{:>4} ", relative_time(s.last_active, now)),
-                    Style::default().fg(DIM),
-                ),
+                Span::styled(format!("{when:>4} "), Style::default().fg(DIM)),
                 Span::styled(thread_prefix, Style::default().fg(DIM)),
                 Span::styled(
                     truncate(&format!("{}{title_suffix}", s.title), max_title),
@@ -609,60 +661,85 @@ fn session_list(f: &mut Frame, app: &mut App, area: Rect, now: DateTime<Utc>) {
     }
 }
 
-fn live_pane(f: &mut Frame, app: &mut App, area: Rect) {
-    let focused = app.focus == Focus::Terminal;
-    let active_id = app.active.clone();
-    let ended = app.active_ended();
-    let live_count = app.live_pty_count();
-    let count_suffix = if live_count > 1 {
-        format!(" [{live_count} live]")
-    } else {
-        String::new()
-    };
-    let title = match (active_id.as_deref(), app.selected_session()) {
-        (Some(id), _) if ended => format!(" Live · {} (ended){count_suffix} ", short(id)),
-        (Some(id), _) => format!(" Live · {}{count_suffix} ", short(id)),
-        (None, Some(s)) => format!(" Live · {} (enter to resume) ", short(&s.id)),
-        (None, None) => " Live ".to_string(),
-    };
-    // Top/bottom borders only: a left/right `│` sits in real screen cells next
-    // to the content, so a terminal Shift+drag selection grabs it on every line.
-    // Dropping the side borders lets the PTY content reach the edges, so copying
-    // yields just the content (top title + bottom rule still frame the pane).
-    let block = Block::default()
-        .borders(Borders::TOP | Borders::BOTTOM)
-        .title(title)
-        .border_style(Style::default().fg(if focused { ACCENT } else { DIM }));
-    let inner = block.inner(area);
-    f.render_widget(block, area);
+/// Number of grid rows to split the live area into for `n` panes. Horizontal
+/// layout favors wide grids (fewer rows / more columns), Vertical favors tall
+/// ones, so the chosen split direction still reads as "side-by-side" vs
+/// "stacked" even past the 3-pane point.
+fn grid_rows(n: usize, layout: PaneLayout) -> usize {
+    match (n, layout) {
+        (_, PaneLayout::Single) | (1, _) => 1,
+        (2, PaneLayout::Horizontal) | (3, PaneLayout::Horizontal) => 1,
+        (2, PaneLayout::Vertical) => 2,
+        (3, PaneLayout::Vertical) => 3,
+        (4, _) => 2,
+        (_, PaneLayout::Horizontal) => 2, // 5–6 panes: 3×2
+        (_, PaneLayout::Vertical) => 3,   // 5–6 panes: 2×3
+    }
+}
 
-    // Record pane size so the PTY can be spawned/resized to match.
-    app.pty_rows = inner.height.max(1);
-    app.pty_cols = inner.width.max(1);
-    app.pty_x = inner.x;
-    app.pty_y = inner.y;
+pub fn compute_pane_rects(area: Rect, n: usize, layout: PaneLayout) -> Vec<Rect> {
+    let n = n.clamp(1, MAX_PANES);
+    if n == 1 || layout == PaneLayout::Single {
+        return vec![area];
+    }
 
-    let rendered = if let Some(pty) = app.active_pty() {
-        if let Ok(parser) = pty.parser().lock() {
-            let screen = parser.screen();
-            f.render_widget(TerminalView::new(screen), inner);
-            // Place the real terminal cursor at the PTY's cursor so the macOS
-            // IME composition popup (Korean/CJK) appears in the right spot and
-            // the cursor is visible while typing. Without this the IME preedit
-            // shows at the top-left and CJK input feels broken.
-            if focused && !ended && !screen.hide_cursor() {
-                let (row, col) = screen.cursor_position();
-                let cx = inner.x + col.min(inner.width.saturating_sub(1));
-                let cy = inner.y + row.min(inner.height.saturating_sub(1));
-                f.set_cursor_position((cx, cy));
-            }
+    // Distribute panes row-major across a balanced grid: each row gets either
+    // `base_cols` or `base_cols + 1` columns so there are never empty cells.
+    let rows = grid_rows(n, layout);
+    let base_cols = n / rows;
+    let extra = n % rows;
+    let mut rects = Vec::with_capacity(n);
+    let band_base = area.height / rows as u16;
+    let band_rem = area.height % rows as u16;
+    let mut y = area.y;
+    for r in 0..rows {
+        let band_h = band_base + u16::from((r as u16) < band_rem);
+        let cols = base_cols + usize::from(r < extra);
+        let col_base = area.width / cols as u16;
+        let col_rem = area.width % cols as u16;
+        let mut x = area.x;
+        for c in 0..cols {
+            let cell_w = col_base + u16::from((c as u16) < col_rem);
+            rects.push(Rect {
+                x,
+                y,
+                width: cell_w,
+                height: band_h,
+            });
+            x = x.saturating_add(cell_w);
         }
-        true
-    } else {
-        false
-    };
+        y = y.saturating_add(band_h);
+    }
+    rects
+}
 
-    if !rendered {
+fn live_pane(f: &mut Frame, app: &mut App, area: Rect) {
+    let focused_view = app.focus == Focus::Terminal;
+    let live_count = app.live_pty_count();
+
+    if app.panes.is_empty() {
+        let count_suffix = if live_count > 1 {
+            format!(" [{live_count} live]")
+        } else {
+            String::new()
+        };
+        let title = match app.selected_session() {
+            Some(s) => format!(
+                " Live · {} (enter to resume){count_suffix} ",
+                app.session_display_name(&s.id, 42)
+            ),
+            None => " Live ".to_string(),
+        };
+        let block = Block::default()
+            .borders(Borders::TOP | Borders::BOTTOM)
+            .title(title)
+            .border_style(Style::default().fg(if focused_view { ACCENT } else { DIM }));
+        let inner = block.inner(area);
+        f.render_widget(block, area);
+        app.pty_rows = inner.height.max(1);
+        app.pty_cols = inner.width.max(1);
+        app.pty_x = inner.x;
+        app.pty_y = inner.y;
         draw_mascot(f, inner, app.spinner);
         let hint = Paragraph::new(vec![
             Line::from(Span::styled(
@@ -683,6 +760,81 @@ fn live_pane(f: &mut Frame, app: &mut App, area: Rect) {
             height: inner.height.saturating_sub(mascot::HEIGHT),
         };
         f.render_widget(hint, hint_area);
+        return;
+    }
+
+    let panes = app.panes.clone();
+    let rects = compute_pane_rects(area, panes.len(), app.effective_layout());
+    for (idx, sid) in panes.iter().enumerate() {
+        let pane_area = rects.get(idx).copied().unwrap_or(area);
+        let pane_focused = focused_view && idx == app.focused;
+        let ended = app.ended.contains(sid);
+        let (dot, dot_color) = pane_dot(app, sid, ended);
+        let name = app.session_display_name(sid, pane_area.width.saturating_sub(14) as usize);
+        let title = Line::from(vec![
+            Span::styled(dot, Style::default().fg(dot_color)),
+            Span::raw(format!("{name} {}/{} ", idx + 1, panes.len())),
+            if ended {
+                Span::styled("(ended) ", Style::default().fg(DIM))
+            } else {
+                Span::raw("")
+            },
+        ]);
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .title(title)
+            .border_style(Style::default().fg(if pane_focused { ACCENT } else { DIM }));
+        let inner = block.inner(pane_area);
+        f.render_widget(block, pane_area);
+        app.pane_sizes
+            .insert(sid.clone(), (inner.height.max(1), inner.width.max(1)));
+        app.pane_bounds.insert(
+            sid.clone(),
+            (inner.x, inner.y, inner.height.max(1), inner.width.max(1)),
+        );
+
+        if pane_focused {
+            app.pty_rows = inner.height.max(1);
+            app.pty_cols = inner.width.max(1);
+            app.pty_x = inner.x;
+            app.pty_y = inner.y;
+        }
+
+        let selection = app.selection_for_pane(sid);
+        if let Some(pty) = app.ptys.get(sid) {
+            if let Ok(parser) = pty.parser().lock() {
+                let screen = parser.screen();
+                f.render_widget(TerminalView::new(screen).with_selection(selection), inner);
+                if pane_focused && !ended && !screen.hide_cursor() {
+                    let (row, col) = screen.cursor_position();
+                    let cx = inner.x + col.min(inner.width.saturating_sub(1));
+                    let cy = inner.y + row.min(inner.height.saturating_sub(1));
+                    f.set_cursor_position((cx, cy));
+                }
+            }
+        } else {
+            f.render_widget(
+                Paragraph::new(Line::from(Span::styled(
+                    "starting...",
+                    Style::default().fg(DIM),
+                )))
+                .alignment(Alignment::Center),
+                inner,
+            );
+        }
+    }
+}
+
+fn pane_dot(app: &App, sid: &str, ended: bool) -> (&'static str, Color) {
+    if ended {
+        return ("○ ", Color::Rgb(150, 120, 120));
+    }
+    match app.session_status(sid) {
+        SessionStatus::Blocked => ("● ", Color::Rgb(245, 180, 90)),
+        SessionStatus::Working => ("● ", Color::Green),
+        SessionStatus::Idle => ("● ", ACCENT),
+        SessionStatus::Ended => ("○ ", Color::Rgb(150, 120, 120)),
+        SessionStatus::Inactive => ("  ", DIM),
     }
 }
 
@@ -969,7 +1121,15 @@ fn help_popup(f: &mut Frame) {
     };
     let lines = vec![
         section("Session"),
-        item("enter", "open or resume selected session"),
+        item(
+            "enter",
+            "open the selected session (launch all marked in multi-select)",
+        ),
+        item(
+            "v",
+            "toggle multi-select mode (then space marks, enter launches all)",
+        ),
+        item("space", "mark/unmark session — multi-select mode only"),
         item("n", "start a new session"),
         item("h", "handoff selected session to another provider"),
         item("e", "edit selected session label"),
@@ -992,6 +1152,10 @@ fn help_popup(f: &mut Frame) {
         Line::from(""),
         section("Terminal / Modal"),
         item("ctrl-x", "return from terminal to session list"),
+        item("tab / shift-tab", "cycle live panes (when 2+ open)"),
+        item("ctrl-w", "cycle live panes (always)"),
+        item("ctrl-o", "toggle pane layout (horizontal/vertical)"),
+        item("ctrl-q", "close focused pane"),
         item("ctrl-j", "insert newline in text modals"),
         item("shift/alt-enter", "insert newline in text modals"),
         item("esc", "cancel modal or close this help"),
@@ -1293,5 +1457,100 @@ mod tests {
             .collect::<Vec<_>>();
         assert!(rendered.iter().any(|line| line.contains("5▏")));
         assert!(!rendered.iter().any(|line| line.contains("1")));
+    }
+
+    fn body() -> Rect {
+        Rect {
+            x: 0,
+            y: 1,
+            width: 120,
+            height: 40,
+        }
+    }
+
+    #[test]
+    fn single_pane_fills_the_body() {
+        let rects = compute_pane_rects(body(), 1, PaneLayout::Single);
+        assert_eq!(rects, vec![body()]);
+        let rects = compute_pane_rects(body(), 1, PaneLayout::Horizontal);
+        assert_eq!(rects, vec![body()]);
+    }
+
+    #[test]
+    fn two_panes_split_horizontally_without_gap() {
+        let area = body();
+        let rects = compute_pane_rects(area, 2, PaneLayout::Horizontal);
+        assert_eq!(rects.len(), 2);
+        assert_eq!(rects[0].x, area.x);
+        assert_eq!(rects[0].y, area.y);
+        assert_eq!(rects[0].height, area.height);
+        assert_eq!(rects[1].height, area.height);
+        assert_eq!(rects[0].x + rects[0].width, rects[1].x);
+        assert_eq!(rects[0].width + rects[1].width, area.width);
+    }
+
+    #[test]
+    fn two_panes_split_vertically_without_gap() {
+        let area = body();
+        let rects = compute_pane_rects(area, 2, PaneLayout::Vertical);
+        assert_eq!(rects.len(), 2);
+        assert_eq!(rects[0].x, area.x);
+        assert_eq!(rects[0].width, area.width);
+        assert_eq!(rects[1].width, area.width);
+        assert_eq!(rects[0].y + rects[0].height, rects[1].y);
+        assert_eq!(rects[0].height + rects[1].height, area.height);
+    }
+
+    #[test]
+    fn three_panes_tile_the_body() {
+        let area = body();
+        for layout in [PaneLayout::Horizontal, PaneLayout::Vertical] {
+            let rects = compute_pane_rects(area, 3, layout);
+            assert_eq!(rects.len(), 3);
+            match layout {
+                PaneLayout::Horizontal => {
+                    assert_eq!(rects[0].x + rects[0].width, rects[1].x);
+                    assert_eq!(rects[1].x + rects[1].width, rects[2].x);
+                    assert_eq!(rects.iter().map(|r| r.width).sum::<u16>(), area.width);
+                    assert!(rects.iter().all(|r| r.height == area.height));
+                }
+                PaneLayout::Vertical => {
+                    assert_eq!(rects[0].y + rects[0].height, rects[1].y);
+                    assert_eq!(rects[1].y + rects[1].height, rects[2].y);
+                    assert_eq!(rects.iter().map(|r| r.height).sum::<u16>(), area.height);
+                    assert!(rects.iter().all(|r| r.width == area.width));
+                }
+                PaneLayout::Single => unreachable!(),
+            }
+        }
+    }
+
+    #[test]
+    fn six_panes_tile_without_gaps_or_overlap() {
+        let area = body();
+        for layout in [PaneLayout::Horizontal, PaneLayout::Vertical] {
+            let rects = compute_pane_rects(area, 6, layout);
+            assert_eq!(rects.len(), 6, "all six panes get a rect");
+            // Every cell stays inside the body.
+            for r in &rects {
+                assert!(r.x >= area.x && r.x + r.width <= area.x + area.width);
+                assert!(r.y >= area.y && r.y + r.height <= area.y + area.height);
+                assert!(r.width > 0 && r.height > 0, "no zero-size pane");
+            }
+            // The cells cover the full area exactly (no gaps / no overlap):
+            // summing cell areas equals the body area.
+            let covered: u32 = rects
+                .iter()
+                .map(|r| u32::from(r.width) * u32::from(r.height))
+                .sum();
+            assert_eq!(covered, u32::from(area.width) * u32::from(area.height));
+        }
+    }
+
+    #[test]
+    fn pane_rects_clamp_to_max_panes() {
+        // Asking for more than MAX_PANES never yields more rects than the cap.
+        let rects = compute_pane_rects(body(), MAX_PANES + 3, PaneLayout::Horizontal);
+        assert_eq!(rects.len(), MAX_PANES);
     }
 }

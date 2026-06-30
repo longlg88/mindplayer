@@ -11,7 +11,8 @@ pub mod state;
 pub mod tokens;
 
 pub use discovery::{
-    refresh_activity, refresh_activity_and_usage, scan, sort_by_recency, ScanConfig, Scope,
+    refresh_activity, refresh_activity_and_usage, scan, sort_by_recency, touched_today_kst,
+    ScanConfig, Scope,
 };
 pub use resume::{new_session, resume, Command};
 pub use session::{Agent, Session, TokenUsage};

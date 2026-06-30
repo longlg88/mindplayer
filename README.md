@@ -39,11 +39,17 @@ never modifies them — so it just works with the sessions you already have.
   three from one list (press <kbd>n</kbd> to pick the agent).
 - 🔢 **Token dashboard** — per‑session and total usage, Codex vs Claude vs Kiro.
 - 🪟 **Many sessions at once** — resume or start several; each keeps running in
-  the background.
+  the background. **Mark several** in the list (<kbd>Space</kbd>) and launch them
+  together as live panes with one <kbd>Enter</kbd>.
 - 🚦 **Live status** — each row shows `● working` (producing output now),
   `● idle` (running, waiting), or `○ done` (ended) at a glance.
-- ⛶ **Full‑screen switch UX** — a clean list; press <kbd>Enter</kbd> to take a
-  session full‑screen, <kbd>Ctrl‑x</kbd> to pop back. No cramped split panes.
+- ⛶ **Live panes** — drive one session full‑screen or split the view across up
+  to **6** at once. <kbd>Tab</kbd> (or <kbd>Ctrl‑w</kbd>) cycles focus,
+  <kbd>Ctrl‑o</kbd> toggles the horizontal/vertical split, <kbd>Ctrl‑q</kbd>
+  closes the focused pane, and <kbd>Ctrl‑x</kbd> pops back to the list.
+- 🗓️ **Today first** — the list opens with **today's** sessions (KST) grouped at
+  the top under a `today` / `earlier` divider, so what you're working on now is
+  always in reach.
 - ⚡ **Live & snappy** — the list auto‑reorders by recent activity and refreshes
   in the background; input feels native.
 - 🏷️ **Labels** — tag any session with a subject (a new one at creation, or an
@@ -62,9 +68,11 @@ Two front‑ends, one Rust core:
 
 ## 📦 Install
 
-> **TL;DR** — most people only need the **TUI**. One line:
+> **TL;DR** — most people only need the **TUI**:
 > ```bash
-> curl -fsSL https://raw.githubusercontent.com/longlg88/mindplayer/main/install.sh | bash
+> curl -fsSLO https://raw.githubusercontent.com/longlg88/mindplayer/main/install.sh
+> less install.sh
+> bash install.sh
 > ```
 > The macOS app is optional, and `npm` is only for *that* (run inside `app/`) —
 > **never in the repo root** (the root is a Rust workspace, it has no `package.json`).
@@ -76,10 +84,13 @@ Two front‑ends, one Rust core:
 | The TUI (everyone) | nothing — the installer downloads a prebuilt binary (`curl`/`wget`). Only `--build` needs **Rust**. |
 | Driving sessions | the agent CLIs you use, on `PATH`: [`codex`](https://github.com/openai/codex), [`claude`](https://docs.anthropic.com/claude-code), [`kiro-cli`](https://kiro.dev/docs/cli/) — browsing works without them; a CLI is only needed to *resume/start* that agent |
 
-**Install the TUI** — the one-liner downloads the latest **release binary** (no build):
+**Install the TUI** — the installer downloads the latest **release binary** (no build).
+Download the script, inspect it, then run it:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/longlg88/mindplayer/main/install.sh | bash
+curl -fsSLO https://raw.githubusercontent.com/longlg88/mindplayer/main/install.sh
+less install.sh
+bash install.sh
 ```
 
 Prebuilt binaries: macOS (arm64) and Linux (x86_64). On any other platform the
@@ -92,7 +103,9 @@ PREFIX=/usr/local ./install.sh   # → /usr/local/bin (may need sudo)
 ./install.sh --uninstall         # remove it
 ```
 
-**Update**: just re-run the one-liner — it always fetches the latest release.
+**Update**: download and re-run the installer — it always fetches the latest
+release. For reproducible installs, fetch `install.sh` from a specific git tag
+instead of `main`.
 
 **Use it.** Run it in the project whose sessions you want — the first screen
 asks **working dir** (this project) or **global** (everything):
@@ -109,7 +122,9 @@ lists the rest.
 release and installs it into `/Applications` (re-run to update):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/longlg88/mindplayer/main/install.sh | bash -s -- --app
+curl -fsSLO https://raw.githubusercontent.com/longlg88/mindplayer/main/install.sh
+less install.sh
+bash install.sh --app
 # or from a clone:  ./install.sh --app
 # no-sudo install location:  APP_DIR=~/Applications ./install.sh --app
 ```
@@ -130,9 +145,16 @@ make test                                          # cargo test --all
 | Key | Action |
 | --- | --- |
 | <kbd>↑</kbd> <kbd>↓</kbd> / <kbd>j</kbd> <kbd>k</kbd> | move selection (`▶`) |
-| <kbd>Enter</kbd> | open the selected session full‑screen (resume, or switch if already running) |
+| <kbd>Enter</kbd> | open the selected session alone (resume, or switch if running); in multi‑select mode, launch **all marked** as live panes |
+| <kbd>v</kbd> | toggle **multi‑select** mode — then <kbd>Space</kbd> marks sessions and <kbd>Enter</kbd> launches them all (<kbd>Esc</kbd> cancels) |
+| <kbd>Space</kbd> | mark / unmark the selected session (`✓`) — multi‑select mode only |
+| <kbd>Tab</kbd> / <kbd>Shift‑Tab</kbd> | inside live panes, cycle focus forward / back (only when 2+ panes are open; otherwise <kbd>Tab</kbd> goes to the session) |
+| <kbd>Ctrl‑w</kbd> | cycle live‑pane focus (same as <kbd>Tab</kbd>; needs 2+ panes) |
+| <kbd>Ctrl‑o</kbd> | toggle the live‑pane split (horizontal ⇄ vertical) |
+| <kbd>Ctrl‑q</kbd> | close the focused live pane |
 | <kbd>Ctrl‑x</kbd> | back to the list (the session keeps running) |
 | <kbd>n</kbd> | new session — pick codex/claude/kiro, then an optional label |
+| <kbd>h</kbd> | handoff the selected session to another provider |
 | <kbd>d</kbd> | change the working directory (blank = global) and rescan in place |
 | <kbd>e</kbd> | label the selected session (tag an existing one, or edit/clear its label) |
 | <kbd>o</kbd> | start an orchestration group with a main lane and child lanes |
@@ -147,14 +169,16 @@ make test                                          # cargo test --all
 Inside a live session, <kbd>Shift+Enter</kbd> inserts a newline (<kbd>Enter</kbd>
 submits), and Korean/CJK input works with the cursor tracking the prompt. The
 **mouse wheel scrolls MindPlayer's own scrollback** (so history that ran off the
-top stays readable). Because the wheel needs mouse capture, use
-**<kbd>Shift</kbd>+drag** to select &amp; copy text (your terminal's native
-selection — works in Ghostty, iTerm2, Terminal.app, and most others).
+top stays readable). **Drag inside a pane to select &amp; copy just that pane's
+text** to the system clipboard (via OSC 52) — so a side‑by‑side split never
+copies the neighbor pane too. (For panes running a full‑screen mouse app like
+Codex, the drag goes to that app; use your terminal's <kbd>Shift</kbd>+drag
+native selection there.)
 
 ### 🧭 Orchestration
 
-MindPlayer can run a public multi-lane orchestration thread across Codex,
-Claude Code, or Kiro:
+MindPlayer can run a public multi-lane orchestration thread across Codex, Claude
+Code, or Kiro:
 
 1. Press <kbd>o</kbd> to create a main coordinator lane plus numbered child
    lanes.

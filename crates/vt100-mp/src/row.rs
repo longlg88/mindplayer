@@ -84,15 +84,20 @@ impl Row {
     }
 
     pub fn clear_wide(&mut self, col: u16) {
-        let cell = &self.cells[usize::from(col)];
-        let other = if cell.is_wide() {
-            &mut self.cells[usize::from(col + 1)]
-        } else if cell.is_wide_continuation() {
-            &mut self.cells[usize::from(col - 1)]
-        } else {
+        let col = usize::from(col);
+        let Some(cell) = self.cells.get(col) else {
             return;
         };
-        other.clear(*other.attrs());
+        let other = if cell.is_wide() {
+            col.checked_add(1)
+        } else if cell.is_wide_continuation() {
+            col.checked_sub(1)
+        } else {
+            None
+        };
+        if let Some(other) = other.and_then(|i| self.cells.get_mut(i)) {
+            other.clear(*other.attrs());
+        }
     }
 
     pub fn write_contents(&self, contents: &mut String, start: u16, width: u16, wrapping: bool) {
@@ -426,5 +431,42 @@ impl Row {
         }
 
         (prev_pos, prev_attrs)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn clear_wide_tolerates_edge_cells() {
+        let attrs = crate::attrs::Attrs::default();
+
+        let mut wide_at_end = Row::new(2);
+        wide_at_end.get_mut(1).unwrap().set('한', attrs);
+        wide_at_end.clear_wide(1);
+
+        let mut continuation_at_start = Row::new(2);
+        continuation_at_start
+            .get_mut(0)
+            .unwrap()
+            .set_wide_continuation(true);
+        continuation_at_start.clear_wide(0);
+
+        let mut out_of_bounds = Row::new(2);
+        out_of_bounds.clear_wide(2);
+    }
+
+    #[test]
+    fn clear_wide_still_clears_valid_other_half() {
+        let attrs = crate::attrs::Attrs::default();
+        let mut row = Row::new(2);
+        row.get_mut(0).unwrap().set('한', attrs);
+        row.get_mut(1).unwrap().set_wide_continuation(true);
+
+        row.clear_wide(0);
+
+        assert!(!row.get(1).unwrap().is_wide_continuation());
+        assert!(!row.get(1).unwrap().has_contents());
     }
 }

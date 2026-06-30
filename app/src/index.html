@@ -68,6 +68,7 @@
         <ul id="session-list"></ul>
         <div class="list-actions">
           <button id="new-btn">＋ New</button>
+          <button id="label-btn" title="Edit selected session label">🏷 Label</button>
           <button id="dir-btn" title="Change working directory">📁 Dir</button>
           <button id="rescan-btn">⟳ Rescan</button>
         </div>
@@ -101,6 +102,17 @@
           <button id="new-start" class="primary">Start</button>
         </div>
         <button id="new-cancel" class="muted-btn">Cancel</button>
+      </div>
+    </div>
+
+    <!-- Existing-session label editor -->
+    <div id="label-modal" class="modal hidden">
+      <div class="modal-card">
+        <h3>Session label</h3>
+        <label class="muted" for="label-input">Label / subject (blank clears)</label>
+        <input id="label-input" type="text" placeholder="e.g. deploy check" autocomplete="off" />
+        <button id="label-save" class="primary">Save</button>
+        <button id="label-cancel" class="muted-btn">Cancel</button>
       </div>
     </div>
 

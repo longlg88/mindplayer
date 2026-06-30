@@ -22,7 +22,7 @@ use crossterm::terminal::{
 use mindplayer_core::Agent;
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
-use std::io::{self, Stdout};
+use std::io::{self, Stdout, Write};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -39,8 +39,8 @@ ARGS:
                mindplayer ~/code/my-project
 
 OPTIONS:
-    -h, --help       Print this help
-    -V, --version    Print version
+    -h, --help           Print this help
+    -v, -V, --version    Print version
 
 On the first screen choose 'working dir' (this DIR) or 'global' (all sessions).";
 
@@ -76,7 +76,7 @@ fn explicit_dir_from_args() -> Option<PathBuf> {
                 println!("{HELP}");
                 std::process::exit(0);
             }
-            "-V" | "--version" => {
+            "-v" | "-V" | "--version" => {
                 println!("mindplayer {}", env!("MINDPLAYER_VERSION"));
                 std::process::exit(0);
             }
@@ -234,6 +234,13 @@ fn run(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut App) -> Resu
             }
         }
 
+        // A finished drag-copy selection queued text for the clipboard; push it
+        // now that input handling is done.
+        if let Some(text) = app.take_clipboard() {
+            set_clipboard(&text);
+            needs_draw = true;
+        }
+
         // Animation tick is time-based (~12fps); only the spinner / summary
         // screens animate, so only they force a redraw here.
         if last_anim.elapsed() >= Duration::from_millis(80) {
@@ -278,18 +285,10 @@ fn handle_mouse(app: &mut App, me: MouseEvent) -> bool {
     }
     const STEP: isize = 3;
 
-    // A click/wheel in the left session pane should return keyboard ownership
-    // to the session list. Without this, the list can look selected while keys
-    // like `o`, `p`, and `?` are still being forwarded to the live PTY.
-    if app.focus == Focus::Terminal && app.pty_x > 0 && me.column < app.pty_x {
-        app.focus = Focus::List;
-        match me.kind {
-            MouseEventKind::ScrollUp => app.move_selection(-1),
-            MouseEventKind::ScrollDown => app.move_selection(1),
-            _ => {}
-        }
-        return true;
-    }
+    // NOTE: mouse events never leave the live view — moving the mouse over a
+    // neighbor pane (left of the focused pane) used to flip focus back to the
+    // list, so shaking the mouse or drifting across a multi-pane split kept
+    // dropping the user out. Leaving the live view is keyboard-only (ctrl-x).
 
     // In the list, the wheel moves the selection.
     if app.focus == Focus::List {
@@ -306,11 +305,28 @@ fn handle_mouse(app: &mut App, me: MouseEvent) -> bool {
         };
     }
 
+    // Left-drag is reserved for MindPlayer pane-local copy, even when the child
+    // is a full-screen mouse app. That prevents Ghostty/native selection from
+    // copying the whole terminal row across neighboring panes.
+    match me.kind {
+        MouseEventKind::Down(MouseButton::Left) => {
+            app.selection_start(me.column, me.row);
+            return true;
+        }
+        MouseEventKind::Drag(MouseButton::Left) => {
+            app.selection_update(me.column, me.row);
+            return true;
+        }
+        MouseEventKind::Up(MouseButton::Left) => {
+            app.selection_finish();
+            return true;
+        }
+        _ => {}
+    }
+
     // Live session focused. If the child requested mouse reporting (full-screen
-    // TUIs like codex), forward the event so IT scrolls — its scrollback lives
-    // inside the app, not MindPlayer's vt100 buffer (which is empty on the alt
-    // screen). Otherwise (e.g. claude on the normal screen) scroll MindPlayer's
-    // own scrollback so history that ran off the top stays readable.
+    // TUIs like codex), forward non-selection events so IT scrolls — its
+    // scrollback lives inside the app, not MindPlayer's vt100 buffer.
     if app.active_wants_mouse() {
         if let Some((cb, release, motion)) = encode_mouse_kind(me.kind) {
             let (col, row) = app.pane_relative(me.column, me.row);
@@ -318,11 +334,89 @@ fn handle_mouse(app: &mut App, me: MouseEvent) -> bool {
         }
         return false;
     }
+    // Non-mouse pane (e.g. claude on the normal screen): left-drag selects text
+    // WITHIN the focused pane for copy (so a neighbor pane is never included),
+    // and the wheel scrolls MindPlayer's own scrollback.
     match me.kind {
         MouseEventKind::ScrollUp => app.scroll_active(STEP),
         MouseEventKind::ScrollDown => app.scroll_active(-STEP),
         _ => false,
     }
+}
+
+/// Push text to the system clipboard via the OSC 52 escape sequence (supported
+/// Copy `text` to the system clipboard. Prefers the OS clipboard tool (pbcopy on
+/// macOS, wl-copy / xclip on Linux) because that works regardless of the
+/// terminal's OSC 52 policy (Ghostty and others may silently ignore clipboard
+/// escapes). Falls back to OSC 52 when no tool is available.
+fn set_clipboard(text: &str) {
+    #[cfg(target_os = "macos")]
+    {
+        if copy_via_command("pbcopy", &[], text).is_ok() {
+            return;
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        if copy_via_command("wl-copy", &[], text).is_ok()
+            || copy_via_command("xclip", &["-selection", "clipboard"], text).is_ok()
+        {
+            return;
+        }
+    }
+    let _ = write_clipboard_osc52(text);
+}
+
+/// Pipe `text` into an external clipboard helper's stdin. stdout/stderr are
+/// discarded so it never disturbs the live terminal.
+fn copy_via_command(prog: &str, args: &[&str], text: &str) -> io::Result<()> {
+    use std::process::{Command, Stdio};
+    let mut child = Command::new(prog)
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()?;
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin.write_all(text.as_bytes())?;
+    }
+    child.wait()?;
+    Ok(())
+}
+
+/// by Ghostty, iTerm2, kitty, tmux, and most modern terminals). Dependency-free
+/// — we write straight to the terminal we already own.
+fn write_clipboard_osc52(text: &str) -> io::Result<()> {
+    let b64 = base64_encode(text.as_bytes());
+    let mut out = io::stdout();
+    out.write_all(format!("\x1b]52;c;{b64}\x07").as_bytes())?;
+    out.flush()
+}
+
+/// Minimal standard-alphabet base64 (no padding shortcuts) — avoids pulling in a
+/// crate just for the OSC 52 payload.
+fn base64_encode(data: &[u8]) -> String {
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
+    for chunk in data.chunks(3) {
+        let b0 = chunk[0] as u32;
+        let b1 = *chunk.get(1).unwrap_or(&0) as u32;
+        let b2 = *chunk.get(2).unwrap_or(&0) as u32;
+        let n = (b0 << 16) | (b1 << 8) | b2;
+        out.push(TABLE[((n >> 18) & 63) as usize] as char);
+        out.push(TABLE[((n >> 12) & 63) as usize] as char);
+        out.push(if chunk.len() > 1 {
+            TABLE[((n >> 6) & 63) as usize] as char
+        } else {
+            '='
+        });
+        out.push(if chunk.len() > 2 {
+            TABLE[(n & 63) as usize] as char
+        } else {
+            '='
+        });
+    }
+    out
 }
 
 /// xterm button code for a mouse button (left/middle/right = 0/1/2).
@@ -561,14 +655,52 @@ fn handle_main_key(app: &mut App, key: KeyEvent) {
 
     match app.focus {
         Focus::Terminal => {
-            // Ctrl-x detaches back to the list; everything else goes to the PTY.
-            // Also accept the Korean-layout key in the same physical position
-            // (2-beolsik: the `x` key produces ㅌ when the IME is active).
+            // App-level pane/window chords are intercepted before forwarding
+            // remaining control keys to the focused child PTY.
             if key.modifiers.contains(KeyModifiers::CONTROL)
-                && matches!(key.code, KeyCode::Char('x') | KeyCode::Char('ㅌ'))
+                && !key
+                    .modifiers
+                    .intersects(KeyModifiers::ALT | KeyModifiers::SUPER)
             {
-                app.detach_terminal();
-                return;
+                match key.code {
+                    KeyCode::Char('x') | KeyCode::Char('ㅌ') => {
+                        app.detach_terminal();
+                        return;
+                    }
+                    KeyCode::Char('w') | KeyCode::Char('ㅈ') => {
+                        app.cycle_focus();
+                        return;
+                    }
+                    KeyCode::Char('o') | KeyCode::Char('ㅐ') => {
+                        app.cycle_layout();
+                        return;
+                    }
+                    KeyCode::Char('q') | KeyCode::Char('ㅂ') => {
+                        app.close_focused_pane();
+                        return;
+                    }
+                    _ => {}
+                }
+            }
+            // Tab cycles pane focus, but only when 2+ live panes are open — with
+            // a single pane Tab still falls through to the child PTY so agent /
+            // shell autocompletion keeps working. Shift+Tab (BackTab) reverses.
+            if app.panes.len() >= 2
+                && !key
+                    .modifiers
+                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER)
+            {
+                match key.code {
+                    KeyCode::Tab => {
+                        app.cycle_focus();
+                        return;
+                    }
+                    KeyCode::BackTab => {
+                        app.cycle_focus_back();
+                        return;
+                    }
+                    _ => {}
+                }
             }
             if let Some(bytes) = encode_key(key) {
                 app.send_to_pty(&bytes);
@@ -576,8 +708,17 @@ fn handle_main_key(app: &mut App, key: KeyEvent) {
         }
         Focus::List => {
             // Ignore control-modified letters here so stray Ctrl-x (the
-            // terminal detach key) can never trigger a destructive archive.
+            // terminal detach key) can never trigger a destructive archive —
+            // EXCEPT ctrl-x itself, which toggles back into the live view the
+            // user just detached from (the pane set is still alive).
             if key.modifiers.contains(KeyModifiers::CONTROL) {
+                if !key
+                    .modifiers
+                    .intersects(KeyModifiers::ALT | KeyModifiers::SUPER)
+                    && matches!(key.code, KeyCode::Char('x') | KeyCode::Char('ㅌ'))
+                {
+                    app.resume_live_view();
+                }
                 return;
             }
             if is_apply_dispatch_key(key) {
@@ -591,7 +732,11 @@ fn handle_main_key(app: &mut App, key: KeyEvent) {
                 KeyCode::Down | KeyCode::Char('j') => app.move_selection(1),
                 KeyCode::PageUp => app.move_page(-1),
                 KeyCode::PageDown => app.move_page(1),
+                KeyCode::Enter if app.multi_select => app.launch_marked(),
                 KeyCode::Enter | KeyCode::Char('l') | KeyCode::Right => app.request_resume(),
+                KeyCode::Char('v') => app.toggle_multi_select(),
+                KeyCode::Char(' ') if app.multi_select => app.toggle_mark(),
+                KeyCode::Esc if app.multi_select => app.cancel_multi_select(),
                 KeyCode::Char('n') => app.new_picker = Some(0),
                 code if is_help_key(code, key.modifiers) => app.toggle_help(),
                 KeyCode::Char('/') => app.begin_search(),
@@ -751,11 +896,32 @@ fn encode_key(key: KeyEvent) -> Option<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use mindplayer_core::{Session, TokenUsage};
+    use std::path::PathBuf;
 
     fn main_app() -> App {
         let mut app = App::new_in(std::env::temp_dir());
         app.screen = Screen::Main;
         app.focus = Focus::List;
+        app
+    }
+
+    fn main_app_with_session(id: &str) -> App {
+        let mut app = main_app();
+        app.all_sessions = vec![Session {
+            id: id.to_string(),
+            agent: Agent::Codex,
+            cwd: std::env::temp_dir(),
+            file: PathBuf::new(),
+            started_at: None,
+            last_active: None,
+            tokens: TokenUsage::default(),
+            title: id.to_string(),
+            archived: false,
+            is_subagent: false,
+            context_pct: None,
+        }];
+        app.visible = vec![0];
         app
     }
 
@@ -811,6 +977,25 @@ mod tests {
     }
 
     #[test]
+    fn list_session_shortcuts_keep_label_and_handoff() {
+        let mut app = main_app_with_session("session-1");
+
+        handle_main_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE),
+        );
+        assert_eq!(app.label_target.as_deref(), Some("session-1"));
+        assert_eq!(app.new_label.as_deref(), Some(""));
+
+        let mut app = main_app_with_session("session-1");
+        handle_main_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('h'), KeyModifiers::NONE),
+        );
+        assert_eq!(app.handoff_picker, Some(0));
+    }
+
+    #[test]
     fn list_shortcuts_accept_korean_ime_keys() {
         let mut app = main_app();
         handle_main_key(
@@ -831,12 +1016,26 @@ mod tests {
     }
 
     #[test]
-    fn clicking_session_pane_returns_focus_to_list() {
+    fn mouse_over_neighbor_pane_does_not_exit_to_list() {
         let mut app = main_app();
         app.focus = Focus::Terminal;
+        // Focused pane starts mid-screen (e.g. pane 2 of a horizontal split).
         app.pty_x = 40;
 
-        let handled = handle_mouse(
+        // Moving the mouse left of the focused pane must NOT drop to the list…
+        handle_mouse(
+            &mut app,
+            MouseEvent {
+                kind: MouseEventKind::Moved,
+                column: 2,
+                row: 3,
+                modifiers: KeyModifiers::NONE,
+            },
+        );
+        assert_eq!(app.focus, Focus::Terminal, "mouse move must not exit");
+
+        // …and neither must a click there.
+        handle_mouse(
             &mut app,
             MouseEvent {
                 kind: MouseEventKind::Down(MouseButton::Left),
@@ -845,8 +1044,88 @@ mod tests {
                 modifiers: KeyModifiers::NONE,
             },
         );
+        assert_eq!(app.focus, Focus::Terminal, "mouse click must not exit");
+    }
 
-        assert!(handled);
+    #[test]
+    fn ctrl_x_from_list_reenters_live_view() {
+        let mut app = main_app(); // Main screen, Focus::List
+
+        // No live panes: ctrl-x is a no-op (stays in the list).
+        handle_main_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('x'), KeyModifiers::CONTROL),
+        );
         assert_eq!(app.focus, Focus::List);
+
+        // A detached-but-running live view: ctrl-x toggles back into it.
+        app.panes = vec!["sess".to_string()];
+        handle_main_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('x'), KeyModifiers::CONTROL),
+        );
+        assert_eq!(app.focus, Focus::Terminal);
+    }
+
+    #[test]
+    fn multi_select_mode_gates_space_marking() {
+        let mut app = main_app_with_session("s1");
+        app.all_sessions.push(Session {
+            id: "s2".to_string(),
+            agent: Agent::Codex,
+            cwd: std::env::temp_dir(),
+            file: PathBuf::new(),
+            started_at: None,
+            last_active: None,
+            tokens: TokenUsage::default(),
+            title: "s2".to_string(),
+            archived: false,
+            is_subagent: false,
+            context_pct: None,
+        });
+        app.visible = vec![0, 1];
+
+        // Outside multi-select, space must NOT mark (no accidental multi-launch).
+        handle_main_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE),
+        );
+        assert!(
+            app.marked.is_empty(),
+            "space is a no-op outside multi-select"
+        );
+        assert!(!app.multi_select);
+
+        // `v` enters multi-select; now space marks.
+        handle_main_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE),
+        );
+        assert!(app.multi_select);
+        handle_main_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE),
+        );
+        assert_eq!(app.marked.len(), 1, "space marks inside multi-select");
+        assert_eq!(app.selected, 0, "space must not move the cursor");
+
+        // Esc cancels multi-select and drops the marks.
+        handle_main_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(!app.multi_select);
+        assert!(app.marked.is_empty());
+    }
+
+    #[test]
+    fn base64_encode_matches_known_vectors() {
+        // Padding boundaries (RFC 4648).
+        assert_eq!(base64_encode(b""), "");
+        assert_eq!(base64_encode(b"f"), "Zg==");
+        assert_eq!(base64_encode(b"fo"), "Zm8=");
+        assert_eq!(base64_encode(b"foo"), "Zm9v");
+        assert_eq!(base64_encode(b"foob"), "Zm9vYg==");
+        assert_eq!(base64_encode(b"fooba"), "Zm9vYmE=");
+        assert_eq!(base64_encode(b"foobar"), "Zm9vYmFy");
+        // Multibyte UTF-8 round-trips through the byte encoder.
+        assert_eq!(base64_encode("안녕".as_bytes()), "7JWI64WV");
     }
 }

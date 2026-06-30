@@ -4,8 +4,8 @@
 use crate::{handoff, orchestration, pty::PtySession};
 use chrono::{DateTime, Utc};
 use mindplayer_core::{
-    refresh_activity_and_usage, resume, scan, sort_by_recency, tokens::human_tokens, Agent,
-    Aggregate, ScanConfig, Scope, Session, State, TokenUsage,
+    refresh_activity_and_usage, resume, scan, sort_by_recency, tokens::human_tokens,
+    touched_today_kst, Agent, Aggregate, ScanConfig, Scope, Session, State, TokenUsage,
 };
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::Read;
@@ -34,6 +34,42 @@ pub enum Screen {
 pub enum Focus {
     List,
     Terminal,
+}
+
+pub const MAX_PANES: usize = 6;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PaneLayout {
+    Single,
+    Horizontal,
+    Vertical,
+}
+
+/// A drag-to-copy text selection inside ONE live pane, in pane-relative 0-based
+/// cells. Scoped to a single pane so copying never bleeds into a neighbor pane
+/// (the whole point — native terminal selection spans the full row across the
+/// split; this does not).
+#[derive(Debug, Clone)]
+pub struct PaneSelection {
+    pub pane_id: String,
+    /// (row, col) where the drag started.
+    pub anchor: (u16, u16),
+    /// (row, col) of the current drag end.
+    pub cursor: (u16, u16),
+}
+
+impl PaneSelection {
+    /// Normalized row-major bounds `(start_row, start_col, end_row, end_col)`,
+    /// inclusive of both endpoint cells.
+    pub fn bounds(&self) -> (u16, u16, u16, u16) {
+        let (a, c) = (self.anchor, self.cursor);
+        let (sr, sc, er, ec) = if a <= c {
+            (a.0, a.1, c.0, c.1)
+        } else {
+            (c.0, c.1, a.0, a.1)
+        };
+        (sr, sc, er, ec)
+    }
 }
 
 /// How a session in the list is doing right now, for the status badge.
@@ -177,6 +213,10 @@ pub struct App {
     /// sub-agent view filters. Indices (not clones) keep the refresh cheap.
     pub visible: Vec<usize>,
     pub selected: usize,
+    /// Number of leading `visible` rows that fall in the "today" category (the
+    /// rest are "earlier"). Computed in `rebuild_visible` so the list renderer
+    /// draws the today/earlier section headers from one source of truth.
+    pub today_count: usize,
     pub show_archived: bool,
     /// Show spawned helper/sub-agent sessions (hidden by default).
     pub show_subagents: bool,
@@ -188,11 +228,32 @@ pub struct App {
     pub list_rows: u16,
 
     pub focus: Focus,
+    /// Multi-select mode (toggled with `v`). Only in this mode does Space mark
+    /// sessions; a plain Enter outside it always opens a single session. Keeps
+    /// the default one-session-at-a-time flow free of accidental multi-launch.
+    pub multi_select: bool,
+    /// Session ids the user has marked in the list (Space) to launch together
+    /// as live panes with a single key. Cleared after a bulk launch.
+    pub marked: HashSet<String>,
     /// All concurrently-running (or recently-ended) sessions, keyed by id, so
     /// switching between sessions keeps the others running in the background.
     pub ptys: HashMap<String, PtySession>,
-    /// The session id currently shown in the right pane.
+    /// The focused live pane id. Multi-pane state lives in `panes`/`focused`;
+    /// this keeps legacy single-pane routing paths small.
     pub active: Option<String>,
+    pub panes: Vec<String>,
+    pub focused: usize,
+    pub layout: PaneLayout,
+    pub pane_sizes: HashMap<String, (u16, u16)>,
+    /// Per-pane inner terminal bounds `(x, y, rows, cols)` from the latest
+    /// render. Drag-copy uses this to copy the pane under the mouse, not an
+    /// adjacent pane sharing the same Ghostty row.
+    pub pane_bounds: HashMap<String, (u16, u16, u16, u16)>,
+    /// Active drag-to-copy selection inside the focused pane (None when idle).
+    pub selection: Option<PaneSelection>,
+    /// Text waiting to be pushed to the system clipboard (drained by the event
+    /// loop, which writes the OSC 52 sequence to the terminal).
+    pub pending_clipboard: Option<String>,
     /// Session ids whose child has exited; their final frame is kept visible.
     pub ended: HashSet<String>,
     /// Per-session last-seen output counter and the time it last changed, used
@@ -315,13 +376,23 @@ impl App {
             visible_aggregate: Aggregate::default(),
             visible: Vec::new(),
             selected: 0,
+            today_count: 0,
             show_archived: false,
             show_subagents: false,
             hero_visible: false,
             list_rows: 0,
             focus: Focus::List,
+            multi_select: false,
+            marked: HashSet::new(),
             ptys: HashMap::new(),
             active: None,
+            panes: Vec::new(),
+            focused: 0,
+            layout: PaneLayout::Horizontal,
+            pane_sizes: HashMap::new(),
+            pane_bounds: HashMap::new(),
+            selection: None,
+            pending_clipboard: None,
             ended: HashSet::new(),
             out_seq: HashMap::new(),
             out_at: HashMap::new(),
@@ -370,7 +441,7 @@ impl App {
             // block (when shown), or the idle mascot in an empty live pane.
             Screen::Main => match self.focus {
                 Focus::List => self.hero_visible,
-                Focus::Terminal => self.active_pty().is_none(),
+                Focus::Terminal => self.panes.is_empty() || self.active_pty().is_none(),
             },
         }
     }
@@ -1114,14 +1185,33 @@ impl App {
         let handoff_label = self.state.label_for(&source.id).and_then(handoff_label);
         self.state
             .set_handoff_link(&session_id, &parent_id, prepared.artifact.clone(), now);
-        self.pending = Some(PendingSpawn {
-            command,
-            session_id: session_id.clone(),
-            initial_input: Some(prepared.input),
-            focus_after_spawn: true,
-        });
-        self.active = Some(session_id.clone());
-        self.focus = Focus::Terminal;
+        let initial_input = if target == Agent::Kiro {
+            // Kiro accepts the first question as a positional `chat [INPUT]`
+            // argument. Passing handoff context there is more reliable than
+            // racing startup and pasting into the interactive prompt.
+            let mut prompt = prepared.input.clone();
+            trim_submit(&mut prompt);
+            let mut command = command;
+            command
+                .args
+                .push(String::from_utf8_lossy(&prompt).into_owned());
+            self.pending = Some(PendingSpawn {
+                command,
+                session_id: session_id.clone(),
+                initial_input: None,
+                focus_after_spawn: true,
+            });
+            false
+        } else {
+            self.pending = Some(PendingSpawn {
+                command,
+                session_id: session_id.clone(),
+                initial_input: Some(prepared.input),
+                focus_after_spawn: true,
+            });
+            true
+        };
+        self.focus_or_add_pane(&session_id);
 
         let synthetic = Session {
             id: session_id,
@@ -1172,8 +1262,13 @@ impl App {
             prepared.artifact.clone(),
         );
         let _ = self.state.save();
+        let delivery = if initial_input {
+            "queued initial paste"
+        } else {
+            "sent as first input"
+        };
         self.status = format!(
-            "handoff {} -> {} ({} chars, {trunc}, {})",
+            "handoff {} -> {} ({} chars, {trunc}, {delivery}, {})",
             source.agent.as_str(),
             target.as_str(),
             prepared.transcript_chars,
@@ -1484,7 +1579,24 @@ impl App {
             });
             groups.push((root, ordered));
         }
+        // Top-level list category: sessions touched today (KST) sort above
+        // everything older, so the work you opened today is always at the top
+        // on startup. Agent grouping is preserved as the secondary key, so
+        // within each "Today" / "Earlier" band rows still cluster by agent.
+        let now = Utc::now();
+        // A group counts as "today" if any of its sessions was touched today
+        // (KST file activity) OR is running live in MindPlayer right now — a
+        // session you opened and are driving belongs at the top under "today",
+        // even if its transcript file's mtime is days old (e.g. an orchestration
+        // parent whose lanes write their own files).
+        let group_is_today = |app: &Self, indices: &[usize]| -> bool {
+            indices.iter().any(|&i| {
+                let s = &app.all_sessions[i];
+                app.is_running(&s.id) || touched_today_kst(s, now)
+            })
+        };
         groups.sort_by_cached_key(|(root, indices)| {
+            let today_rank = u8::from(!group_is_today(self, indices));
             let section_agent = self.thread_root_agent_for_indices(root, indices);
             let best_status = indices
                 .iter()
@@ -1496,15 +1608,26 @@ impl App {
                 .filter_map(|&i| self.all_sessions[i].last_active)
                 .max();
             (
+                today_rank,
                 agent_rank(section_agent),
                 best_status,
                 std::cmp::Reverse(latest),
             )
         });
-        self.visible = groups
-            .into_iter()
-            .flat_map(|(_, indices)| indices)
-            .collect();
+        // The sort puts every "today" group first, so the visible list is a
+        // [today…][earlier…] split. Record the boundary so the renderer can draw
+        // the "today" / "earlier" headers from one source of truth — never
+        // recomputing per row (which could disagree with the sort order and
+        // emit duplicate headers).
+        let mut today_count = 0usize;
+        self.visible = Vec::new();
+        for (_, indices) in &groups {
+            if group_is_today(self, indices) {
+                today_count += indices.len();
+            }
+            self.visible.extend(indices.iter().copied());
+        }
+        self.today_count = today_count;
         if self.selected >= self.visible.len() {
             self.selected = self.visible.len().saturating_sub(1);
         }
@@ -1514,6 +1637,17 @@ impl App {
                 .iter()
                 .filter_map(|&i| self.all_sessions.get(i)),
         );
+        // Drop marks for rows no longer visible (filtered out / archived) so a
+        // bulk launch never targets a hidden session.
+        if !self.marked.is_empty() {
+            let visible_ids: HashSet<&str> = self
+                .visible
+                .iter()
+                .filter_map(|&i| self.all_sessions.get(i))
+                .map(|s| s.id.as_str())
+                .collect();
+            self.marked.retain(|id| visible_ids.contains(id.as_str()));
+        }
     }
 
     fn repair_title_based_orchestration_links(&mut self) {
@@ -1587,6 +1721,18 @@ impl App {
             .and_then(|&i| self.all_sessions.get(i))
     }
 
+    pub fn session_display_name(&self, id: &str, max_chars: usize) -> String {
+        let label = self.state.label_for(id).map(str::to_string);
+        let title = self
+            .all_sessions
+            .iter()
+            .find(|s| s.id == id)
+            .map(|s| s.title.trim().to_string())
+            .filter(|s| !s.is_empty());
+        let name = label.or(title).unwrap_or_else(|| short(id));
+        truncate_chars(&name, max_chars.max(8))
+    }
+
     pub fn session_depth(&self, id: &str) -> usize {
         usize::from(self.state.handoff_parent(id).is_some())
     }
@@ -1605,32 +1751,38 @@ impl App {
             .unwrap_or(Agent::Codex)
     }
 
-    pub fn session_section_agent(&self, id: &str) -> Option<Agent> {
-        let root = self.state.thread_root(id);
-        self.all_sessions
-            .iter()
-            .find(|s| s.id == root)
-            .or_else(|| self.all_sessions.iter().find(|s| s.id == id))
-            .map(|s| s.agent)
-    }
-
-    pub fn visible_section_count(&self, agent: Agent) -> usize {
-        self.visible
-            .iter()
-            .filter(|&&i| {
-                self.all_sessions.get(i).is_some_and(|s| {
-                    self.session_section_agent(&s.id)
-                        .is_some_and(|section| section == agent)
-                })
-            })
-            .count()
-    }
-
     pub fn thread_child_count(&self, id: &str) -> usize {
         self.all_sessions
             .iter()
             .filter(|s| self.state.handoff_parent(&s.id) == Some(id))
             .count()
+    }
+
+    /// Activity for a list row's time column: `(live_now, effective_last_active)`.
+    /// A thread root reflects its WHOLE thread — a parent whose own transcript is
+    /// stale (e.g. an orchestration parent whose lanes write their own files)
+    /// still reads "now" when a lane is running, or the lane's recent time when
+    /// the thread was worked on today. `child_count` (already computed by the
+    /// renderer) gates the thread scan so standalone rows stay O(1).
+    pub fn row_activity(&self, s: &Session, child_count: usize) -> (bool, Option<DateTime<Utc>>) {
+        if self.is_running(&s.id) {
+            return (true, s.last_active);
+        }
+        if child_count == 0 {
+            return (false, s.last_active);
+        }
+        let root = self.state.thread_root(&s.id);
+        let mut latest = s.last_active;
+        for other in &self.all_sessions {
+            if other.id == s.id || self.state.thread_root(&other.id) != root {
+                continue;
+            }
+            if self.is_running(&other.id) {
+                return (true, latest.max(other.last_active));
+            }
+            latest = latest.max(other.last_active);
+        }
+        (false, latest)
     }
 
     fn thread_peer_sessions(&self, id: &str) -> Vec<Session> {
@@ -1785,11 +1937,122 @@ impl App {
         self.active.as_ref().and_then(|id| self.ptys.get(id))
     }
 
-    /// Whether the displayed session's child has exited.
-    pub fn active_ended(&self) -> bool {
-        self.active
-            .as_ref()
-            .is_some_and(|id| self.ended.contains(id))
+    pub fn focused_pane(&self) -> Option<&str> {
+        self.panes.get(self.focused).map(String::as_str)
+    }
+
+    fn sync_active(&mut self) {
+        if self.panes.is_empty() {
+            self.focused = 0;
+            self.active = None;
+            return;
+        }
+        if self.focused >= self.panes.len() {
+            self.focused = self.panes.len().saturating_sub(1);
+        }
+        self.active = self.panes.get(self.focused).cloned();
+    }
+
+    pub fn focus_or_add_pane(&mut self, sid: &str) {
+        if let Some(pos) = self.panes.iter().position(|id| id == sid) {
+            self.focused = pos;
+        } else if self.panes.len() < MAX_PANES {
+            self.panes.push(sid.to_string());
+            self.focused = self.panes.len() - 1;
+        } else if self.panes.is_empty() {
+            self.panes.push(sid.to_string());
+            self.focused = 0;
+        } else {
+            let old = std::mem::replace(&mut self.panes[self.focused], sid.to_string());
+            self.pane_sizes.remove(&old);
+            self.pane_bounds.remove(&old);
+        }
+        self.focus = Focus::Terminal;
+        self.sync_active();
+    }
+
+    /// Show ONLY this session as a single live pane, collapsing any other open
+    /// panes. The other sessions keep running in the background (their PTYs stay
+    /// in `self.ptys`) — only the displayed pane set is reset. A multi-pane
+    /// layout is reached solely by marking several sessions and launching them
+    /// together (`launch_marked`); a plain Enter never accumulates panes.
+    pub fn show_single_pane(&mut self, sid: &str) {
+        self.panes.clear();
+        self.pane_sizes.retain(|id, _| id == sid);
+        self.pane_bounds.retain(|id, _| id == sid);
+        self.panes.push(sid.to_string());
+        self.focused = 0;
+        self.focus = Focus::Terminal;
+        self.sync_active();
+    }
+
+    fn remove_pane(&mut self, sid: &str) {
+        if let Some(pos) = self.panes.iter().position(|id| id == sid) {
+            self.panes.remove(pos);
+            self.pane_sizes.remove(sid);
+            self.pane_bounds.remove(sid);
+            if self.focused >= self.panes.len() {
+                self.focused = self.panes.len().saturating_sub(1);
+            }
+            self.sync_active();
+        } else if self.active.as_deref() == Some(sid) {
+            self.active = self.focused_pane().map(str::to_string);
+        }
+    }
+
+    pub fn cycle_focus(&mut self) {
+        if self.panes.len() < 2 {
+            return;
+        }
+        self.selection = None;
+        self.focused = (self.focused + 1) % self.panes.len();
+        self.sync_active();
+        self.status = format!("focused pane {}/{}", self.focused + 1, self.panes.len());
+    }
+
+    /// Cycle pane focus in reverse (Shift+Tab / BackTab).
+    pub fn cycle_focus_back(&mut self) {
+        if self.panes.len() < 2 {
+            return;
+        }
+        self.selection = None;
+        self.focused = (self.focused + self.panes.len() - 1) % self.panes.len();
+        self.sync_active();
+        self.status = format!("focused pane {}/{}", self.focused + 1, self.panes.len());
+    }
+
+    pub fn cycle_layout(&mut self) {
+        self.layout = match self.layout {
+            PaneLayout::Single | PaneLayout::Vertical => PaneLayout::Horizontal,
+            PaneLayout::Horizontal => PaneLayout::Vertical,
+        };
+        self.status = match self.layout {
+            PaneLayout::Horizontal => "live panes split horizontally".to_string(),
+            PaneLayout::Vertical => "live panes split vertically".to_string(),
+            PaneLayout::Single => "single live pane".to_string(),
+        };
+    }
+
+    pub fn effective_layout(&self) -> PaneLayout {
+        if self.panes.len() <= 1 {
+            PaneLayout::Single
+        } else {
+            self.layout
+        }
+    }
+
+    pub fn close_focused_pane(&mut self) {
+        let Some(sid) = self.focused_pane().map(str::to_string) else {
+            self.focus = Focus::List;
+            return;
+        };
+        self.remove_pane(&sid);
+        if self.panes.is_empty() {
+            self.focus = Focus::List;
+            self.status = "closed live pane".to_string();
+        } else {
+            self.status = format!("closed pane {}", short(&sid));
+        }
     }
 
     /// True if a session is alive and is the one being displayed.
@@ -1879,8 +2142,7 @@ impl App {
             if let Some(sync) = self.prepare_thread_sync_for(&session) {
                 let injected = self.ptys.get_mut(&session.id).is_some_and(|pty| {
                     if pty.looks_idle() {
-                        pty.paste_and_submit(&sync.input);
-                        true
+                        pty.paste_and_submit(&sync.input)
                     } else {
                         false
                     }
@@ -1896,14 +2158,14 @@ impl App {
                     );
                 }
             }
-            self.active = Some(session.id);
+            self.show_single_pane(&session.id);
             return;
         }
         // A synthetic new-session has no real id to `resume`; just show its
         // (possibly ended) pane if it still exists, otherwise stay on the list.
         if session.id.starts_with("new:") {
             if self.ptys.contains_key(&session.id) {
-                self.active = Some(session.id);
+                self.show_single_pane(&session.id);
             } else {
                 self.focus = Focus::List;
             }
@@ -1926,10 +2188,98 @@ impl App {
             initial_input,
             focus_after_spawn: true,
         });
-        self.active = Some(session.id.clone());
+        self.show_single_pane(&session.id);
         if !self.status.contains("thread sync") {
             self.status = format!("resuming {} {}", session.agent.as_str(), short(&session.id));
         }
+    }
+
+    /// Toggle the multi-select mark on the currently-selected session, then
+    /// advance the cursor so several sessions can be marked in quick succession.
+    pub fn toggle_mark(&mut self) {
+        let Some(id) = self.selected_session().map(|s| s.id.clone()) else {
+            return;
+        };
+        if !self.marked.remove(&id) {
+            self.marked.insert(id);
+        }
+        let marked = self.marked.len();
+        self.status = if marked == 0 {
+            "selection cleared".to_string()
+        } else {
+            format!("{marked} marked · enter to launch all")
+        };
+    }
+
+    /// Enter or leave multi-select mode (the `v` shortcut). Toggling always
+    /// clears pending marks so each multi-launch starts clean. Only in this mode
+    /// does Space mark sessions; the default Enter stays single-session.
+    pub fn toggle_multi_select(&mut self) {
+        self.multi_select = !self.multi_select;
+        self.marked.clear();
+        self.status = if self.multi_select {
+            "multi-select: space marks · enter launches all · esc cancels".to_string()
+        } else {
+            "multi-select off".to_string()
+        };
+    }
+
+    /// Leave multi-select mode without launching, dropping any marks.
+    pub fn cancel_multi_select(&mut self) {
+        if !self.multi_select {
+            return;
+        }
+        self.multi_select = false;
+        self.marked.clear();
+        self.status = "multi-select cancelled".to_string();
+    }
+
+    /// Launch every marked session as a live pane in one go. Falls back to the
+    /// single-session resume when nothing is marked. Marked ids are taken in
+    /// visible order (capped at MAX_PANES) so the pane order is predictable.
+    /// Clears the marks and leaves multi-select mode afterward.
+    pub fn launch_marked(&mut self) {
+        self.multi_select = false;
+        if self.marked.is_empty() {
+            self.request_resume();
+            return;
+        }
+        let ids: Vec<String> = self
+            .visible
+            .iter()
+            .filter_map(|&i| self.all_sessions.get(i))
+            .filter(|s| self.marked.contains(&s.id))
+            .map(|s| s.id.clone())
+            .take(MAX_PANES)
+            .collect();
+        let total = ids.len();
+        self.focus = Focus::Terminal;
+        for id in &ids {
+            let Some(session) = self.all_sessions.iter().find(|s| &s.id == id).cloned() else {
+                continue;
+            };
+            if self.is_running(&session.id) {
+                self.focus_or_add_pane(&session.id);
+                continue;
+            }
+            // Synthetic new-sessions have no real id to resume; only show an
+            // already-spawned pane if one survives.
+            if session.id.starts_with("new:") {
+                if self.ptys.contains_key(&session.id) {
+                    self.focus_or_add_pane(&session.id);
+                }
+                continue;
+            }
+            self.enqueue_spawn(PendingSpawn {
+                command: resume(&session),
+                session_id: session.id.clone(),
+                initial_input: None,
+                focus_after_spawn: true,
+            });
+            self.focus_or_add_pane(&session.id);
+        }
+        self.marked.clear();
+        self.status = format!("launched {total} sessions into live panes");
     }
 
     /// Spawn a new Codex/Claude session in the current scope dir, optionally
@@ -1954,7 +2304,6 @@ impl App {
             .map(|s| s.id.clone())
             .collect();
         self.new_baselines.insert(session_id.clone(), baseline);
-        self.active = Some(session_id.clone());
         self.pending = Some(PendingSpawn {
             command,
             session_id: session_id.clone(),
@@ -1964,7 +2313,7 @@ impl App {
         self.new_picker = None;
         self.new_label = None;
         self.new_agent = None;
-        self.focus = Focus::Terminal;
+        self.focus_or_add_pane(&session_id);
 
         let label = label.trim();
         let now = Utc::now();
@@ -2087,8 +2436,7 @@ impl App {
             });
         }
 
-        self.active = Some(main_id.clone());
-        self.focus = Focus::Terminal;
+        self.focus_or_add_pane(&main_id);
         self.select_session_id(&main_id);
         self.orchestration_cycles.insert(main_id.clone(), 1);
         let _ = self.state.save();
@@ -2277,7 +2625,10 @@ impl App {
         }
         if let Some(pty) = self.ptys.get_mut(&session.id) {
             if pty.looks_idle() {
-                pty.paste_and_submit(&input);
+                if !pty.paste_and_submit(&input) {
+                    self.status = format!("failed to submit input to {}", short(&session.id));
+                    return false;
+                }
                 self.turn_submitted.insert(session.id.clone());
                 self.out_at.insert(session.id.clone(), Instant::now());
             } else {
@@ -2408,6 +2759,14 @@ impl App {
                     if self.ended.remove(&extra.id) {
                         self.ended.insert(real_id.clone());
                     }
+                    for pane in &mut self.panes {
+                        if *pane == extra.id {
+                            *pane = real_id.clone();
+                        }
+                    }
+                    if let Some(size) = self.pane_sizes.remove(&extra.id) {
+                        self.pane_sizes.insert(real_id.clone(), size);
+                    }
                     if self.active.as_deref() == Some(extra.id.as_str()) {
                         self.active = Some(real_id.clone());
                     }
@@ -2485,7 +2844,12 @@ impl App {
         self.out_seq.remove(&id);
         self.out_at.remove(&id);
         self.turn_submitted.remove(&id);
-        match PtySession::spawn(&pending.command, &id, self.pty_rows, self.pty_cols) {
+        let (rows, cols) = self
+            .pane_sizes
+            .get(&id)
+            .copied()
+            .unwrap_or((self.pty_rows, self.pty_cols));
+        match PtySession::spawn(&pending.command, &id, rows, cols) {
             Ok(pty) => {
                 if let Some(input) = pending.initial_input {
                     self.pending_initial_inputs.insert(
@@ -2498,14 +2862,14 @@ impl App {
                 }
                 self.ptys.insert(id.clone(), pty);
                 if pending.focus_after_spawn {
-                    self.active = Some(id);
+                    self.focus_or_add_pane(&id);
                 }
             }
             Err(e) => {
                 self.status = format!("failed to start {}: {e}", pending.command.program);
                 if pending.focus_after_spawn {
                     self.focus = Focus::List;
-                    self.active = None;
+                    self.remove_pane(&id);
                 }
             }
         }
@@ -2538,11 +2902,15 @@ impl App {
             .collect();
         let mut sent = false;
         for id in ready {
-            let Some(input) = self.pending_initial_inputs.remove(&id) else {
+            let Some(input) = self.pending_initial_inputs.get(&id) else {
                 continue;
             };
             if let Some(pty) = self.ptys.get_mut(&id) {
-                pty.paste_and_submit(&input.bytes);
+                if !pty.paste_and_submit(&input.bytes) {
+                    self.status = format!("failed to submit initial context to {}", short(&id));
+                    continue;
+                }
+                self.pending_initial_inputs.remove(&id);
                 self.turn_submitted.insert(id.clone());
                 self.out_at.insert(id.clone(), Instant::now());
                 self.status = format!("submitted initial context to {}", short(&id));
@@ -2553,10 +2921,10 @@ impl App {
     }
 
     fn active_initial_input_pending(&mut self) -> bool {
-        let Some(id) = self.active.as_ref() else {
+        let Some(id) = self.focused_pane().map(str::to_string) else {
             return false;
         };
-        if !self.pending_initial_inputs.contains_key(id) {
+        if !self.pending_initial_inputs.contains_key(&id) {
             return false;
         }
         self.status =
@@ -2564,11 +2932,27 @@ impl App {
         true
     }
 
-    /// Keep the displayed PTY sized to the right pane (background PTYs are
-    /// resized when they next become active).
+    /// Keep each displayed PTY sized to its pane.
     pub fn sync_pty_size(&mut self) {
-        let (rows, cols) = (self.pty_rows, self.pty_cols);
-        if let Some(id) = self.active.clone() {
+        let targets: Vec<(String, (u16, u16))> = self
+            .panes
+            .iter()
+            .filter_map(|id| {
+                self.pane_sizes
+                    .get(id)
+                    .copied()
+                    .map(|size| (id.clone(), size))
+            })
+            .collect();
+        if targets.is_empty() {
+            if let Some(id) = self.active.clone() {
+                if let Some(pty) = self.ptys.get_mut(&id) {
+                    pty.resize(self.pty_rows, self.pty_cols);
+                }
+            }
+            return;
+        }
+        for (id, (rows, cols)) in targets {
             if let Some(pty) = self.ptys.get_mut(&id) {
                 pty.resize(rows, cols);
             }
@@ -2576,7 +2960,133 @@ impl App {
     }
 
     pub fn detach_terminal(&mut self) {
+        self.selection = None;
         self.focus = Focus::List;
+    }
+
+    /// Re-enter the live view left behind by `detach_terminal` (ctrl-x toggle).
+    /// The pane set survives detaching, so this just brings focus back to it —
+    /// works for a single pane or a multi-pane split alike. To show a *different*
+    /// set, pick sessions in multi-select (`v` + space) and launch them instead.
+    pub fn resume_live_view(&mut self) {
+        if self.panes.is_empty() {
+            self.status = "no live session open — enter to start one".to_string();
+            return;
+        }
+        self.focus = Focus::Terminal;
+        self.sync_active();
+        self.status = if self.panes.len() > 1 {
+            format!("back to {} live panes", self.panes.len())
+        } else {
+            "back to live session".to_string()
+        };
+    }
+
+    // --- pane drag-to-copy selection ---------------------------------------
+
+    /// Convert an absolute terminal cell to a pane-relative 0-based (row, col)
+    /// inside `pane_id`, or None if the pane has no live area or the point is
+    /// above/left of it. Points past that pane clamp to its edge.
+    fn pane_cell(&self, pane_id: &str, col: u16, row: u16) -> Option<(u16, u16)> {
+        let (x, y, rows, cols) = self.pane_bounds.get(pane_id).copied().unwrap_or((
+            self.pty_x,
+            self.pty_y,
+            self.pty_rows,
+            self.pty_cols,
+        ));
+        if cols == 0 || rows == 0 || col < x || row < y {
+            return None;
+        }
+        let pcol = (col - x).min(cols - 1);
+        let prow = (row - y).min(rows - 1);
+        Some((prow, pcol))
+    }
+
+    fn pane_at_cell(&self, col: u16, row: u16) -> Option<String> {
+        self.panes.iter().find_map(|id| {
+            let (x, y, rows, cols) = self.pane_bounds.get(id).copied()?;
+            (col >= x && col < x.saturating_add(cols) && row >= y && row < y.saturating_add(rows))
+                .then(|| id.clone())
+        })
+    }
+
+    /// Begin a drag selection in the pane under the mouse.
+    pub fn selection_start(&mut self, col: u16, row: u16) {
+        let Some(pane_id) = self
+            .pane_at_cell(col, row)
+            .or_else(|| self.focused_pane().map(str::to_string))
+        else {
+            self.selection = None;
+            return;
+        };
+        if let Some(pos) = self.panes.iter().position(|id| id == &pane_id) {
+            self.focused = pos;
+            self.sync_active();
+        }
+        match self.pane_cell(&pane_id, col, row) {
+            Some(cell) => {
+                self.selection = Some(PaneSelection {
+                    pane_id,
+                    anchor: cell,
+                    cursor: cell,
+                })
+            }
+            None => self.selection = None,
+        }
+    }
+
+    /// Extend the active selection to the given absolute cell.
+    pub fn selection_update(&mut self, col: u16, row: u16) {
+        let Some(pane_id) = self.selection.as_ref().map(|sel| sel.pane_id.clone()) else {
+            return;
+        };
+        if let Some(cell) = self.pane_cell(&pane_id, col, row) {
+            if let Some(sel) = self.selection.as_mut() {
+                sel.cursor = cell;
+            }
+        }
+    }
+
+    /// Finish the selection: copy the focused pane's selected text to the
+    /// clipboard (queued as OSC 52) and clear the highlight. A zero-width
+    /// selection (a plain click) copies nothing.
+    pub fn selection_finish(&mut self) {
+        let Some(sel) = self.selection.take() else {
+            return;
+        };
+        let (sr, sc, er, ec) = sel.bounds();
+        let Some(pty) = self.ptys.get(&sel.pane_id) else {
+            return;
+        };
+        let Ok(parser) = pty.parser().lock() else {
+            return;
+        };
+        let screen = parser.screen();
+        let (_, cols) = screen.size();
+        // contents_between's end column is exclusive; +1 includes the cell under
+        // the cursor so the highlight and the copied text cover the same cells.
+        let end_col = ec.saturating_add(1).min(cols);
+        let text = screen.contents_between(sr, sc, er, end_col);
+        let text = text.trim_end().to_string();
+        if !text.is_empty() {
+            let chars = text.chars().count();
+            self.pending_clipboard = Some(text);
+            self.status = format!("copied {chars} chars from pane {}", short(&sel.pane_id));
+        }
+    }
+
+    /// Selection bounds for `sid` if the active selection is in that pane — used
+    /// by the renderer to highlight the selected cells.
+    pub fn selection_for_pane(&self, sid: &str) -> Option<(u16, u16, u16, u16)> {
+        self.selection
+            .as_ref()
+            .filter(|s| s.pane_id == sid)
+            .map(PaneSelection::bounds)
+    }
+
+    /// Take any text queued for the system clipboard (event loop writes OSC 52).
+    pub fn take_clipboard(&mut self) -> Option<String> {
+        self.pending_clipboard.take()
     }
 
     /// Detect children that have exited across ALL sessions. A finished session
@@ -2599,8 +3109,11 @@ impl App {
         }
         for id in newly_dead {
             if self.active.as_deref() == Some(id.as_str()) {
-                self.focus = Focus::List;
-                self.status = "session ended — enter to relaunch".to_string();
+                // Keep showing the ended session's final frame instead of
+                // yanking the user back to the list without their input — they
+                // leave with ctrl-x (or ctrl-q to close the pane) when ready.
+                self.status =
+                    "session ended — ctrl-x for the list · ctrl-q closes the pane".to_string();
             }
             self.ended.insert(id);
         }
@@ -2609,7 +3122,13 @@ impl App {
 
     /// True (resetting) if the displayed PTY produced new output.
     pub fn pty_dirty(&self) -> bool {
-        self.active_pty().is_some_and(|p| p.take_dirty())
+        if self.panes.is_empty() {
+            return self.active_pty().is_some_and(|p| p.take_dirty());
+        }
+        self.panes
+            .iter()
+            .filter_map(|id| self.ptys.get(id))
+            .any(|p| p.take_dirty())
     }
 
     /// Scroll the displayed session's scrollback (positive = older). Returns
@@ -2648,7 +3167,7 @@ impl App {
         col: u16,
         row: u16,
     ) -> bool {
-        if let Some(id) = self.active.clone() {
+        if let Some(id) = self.focused_pane().map(str::to_string) {
             if let Some(pty) = self.ptys.get_mut(&id) {
                 return pty.forward_mouse(cb, release, motion, col, row);
             }
@@ -2684,8 +3203,10 @@ impl App {
         self.pending_initial_inputs.remove(&session.id);
         self.turn_submitted.remove(&session.id);
         if self.active.as_deref() == Some(session.id.as_str()) {
-            self.active = None;
+            self.remove_pane(&session.id);
             self.focus = Focus::List;
+        } else {
+            self.remove_pane(&session.id);
         }
         if session.id.starts_with("new:") {
             // Synthetic placeholder (no rollout file): just remove it.
@@ -2716,13 +3237,14 @@ impl App {
 
     /// Forward encoded keystrokes to the displayed PTY.
     pub fn send_to_pty(&mut self, bytes: &[u8]) {
+        // Typing dismisses any drag-copy highlight, like a normal terminal.
+        self.selection = None;
         if self.active_initial_input_pending() {
             return;
         }
-        if let Some(id) = self.active.clone() {
+        if let Some(id) = self.focused_pane().map(str::to_string) {
             if let Some(pty) = self.ptys.get_mut(&id) {
-                pty.send(bytes);
-                if input_submits_turn(bytes) {
+                if pty.send(bytes) && input_submits_turn(bytes) {
                     self.turn_submitted.insert(id);
                 }
             }
@@ -2739,9 +3261,11 @@ impl App {
         if self.active_initial_input_pending() {
             return true;
         }
-        if let Some(id) = self.active.clone() {
+        if let Some(id) = self.focused_pane().map(str::to_string) {
             if let Some(pty) = self.ptys.get_mut(&id) {
-                pty.paste(text);
+                if !pty.paste(text) {
+                    return false;
+                }
                 if input_submits_turn(text.as_bytes()) {
                     self.turn_submitted.insert(id);
                 }
@@ -2784,6 +3308,15 @@ impl App {
 
 fn short(id: &str) -> String {
     id.chars().take(8).collect()
+}
+
+fn truncate_chars(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        s.to_string()
+    } else {
+        let keep = max.saturating_sub(1);
+        format!("{}…", s.chars().take(keep).collect::<String>())
+    }
 }
 
 fn orchestration_title_marker(id: &str) -> Option<String> {
@@ -3060,6 +3593,242 @@ mod tests {
     }
 
     #[test]
+    fn panes_cap_at_max_and_replace_focused_pane() {
+        let mut app = App::new();
+        for id in ["a", "b", "c", "d", "e", "f"] {
+            app.focus_or_add_pane(id);
+        }
+        assert_eq!(app.panes, vec!["a", "b", "c", "d", "e", "f"]);
+        assert_eq!(app.panes.len(), MAX_PANES);
+        assert_eq!(app.focused_pane(), Some("f"));
+
+        // Wrap focus back to the first pane, then a new pane replaces it once
+        // the pane list is full (cap reached).
+        app.cycle_focus();
+        assert_eq!(app.focused_pane(), Some("a"));
+        app.focus_or_add_pane("g");
+        assert_eq!(app.panes, vec!["g", "b", "c", "d", "e", "f"]);
+        assert_eq!(app.focused_pane(), Some("g"));
+    }
+
+    #[test]
+    fn pane_focus_layout_and_close_update_active() {
+        let mut app = App::new();
+        app.focus_or_add_pane("a");
+        app.focus_or_add_pane("b");
+        assert_eq!(app.active.as_deref(), Some("b"));
+
+        app.cycle_focus();
+        assert_eq!(app.active.as_deref(), Some("a"));
+        app.cycle_layout();
+        assert_eq!(app.layout, PaneLayout::Vertical);
+
+        app.close_focused_pane();
+        assert_eq!(app.panes, vec!["b"]);
+        assert_eq!(app.active.as_deref(), Some("b"));
+        app.close_focused_pane();
+        assert!(app.panes.is_empty());
+        assert_eq!(app.active, None);
+        assert_eq!(app.focus, Focus::List);
+    }
+
+    #[test]
+    fn pane_selection_bounds_normalize_row_major() {
+        // Anchor after cursor (drag up-left) normalizes to start <= end.
+        let s = PaneSelection {
+            pane_id: "x".to_string(),
+            anchor: (3, 5),
+            cursor: (1, 2),
+        };
+        assert_eq!(s.bounds(), (1, 2, 3, 5));
+        // Same row, cursor before anchor.
+        let s2 = PaneSelection {
+            pane_id: "x".to_string(),
+            anchor: (2, 8),
+            cursor: (2, 3),
+        };
+        assert_eq!(s2.bounds(), (2, 3, 2, 8));
+    }
+
+    #[test]
+    fn cycle_focus_back_reverses_pane_focus() {
+        let mut app = App::new();
+        for id in ["a", "b", "c"] {
+            app.focus_or_add_pane(id);
+        }
+        assert_eq!(app.focused_pane(), Some("c"));
+        app.cycle_focus_back();
+        assert_eq!(app.focused_pane(), Some("b"));
+        app.cycle_focus_back();
+        assert_eq!(app.focused_pane(), Some("a"));
+        app.cycle_focus_back();
+        assert_eq!(app.focused_pane(), Some("c"), "wraps around to last");
+    }
+
+    #[test]
+    fn drag_selection_starts_in_pane_under_mouse() {
+        let mut app = App::new();
+        app.focus_or_add_pane("left");
+        app.focus_or_add_pane("right");
+        app.focused = 0;
+        app.sync_active();
+        app.pane_bounds.insert("left".into(), (1, 1, 10, 20));
+        app.pane_bounds.insert("right".into(), (25, 1, 10, 20));
+
+        app.selection_start(30, 4);
+
+        assert_eq!(app.focused_pane(), Some("right"));
+        let selection = app.selection.as_ref().expect("selection started");
+        assert_eq!(selection.pane_id, "right");
+        assert_eq!(selection.anchor, (3, 5));
+        assert_eq!(selection.cursor, (3, 5));
+    }
+
+    #[test]
+    fn session_display_name_prefers_label_then_title() {
+        let mut session = session("session-abcdef", Agent::Codex, false);
+        session.title = "raw transcript title".into();
+        let mut app = app_with(vec![session]);
+
+        assert_eq!(
+            app.session_display_name("session-abcdef", 80),
+            "raw transcript title"
+        );
+
+        app.state.set_label("session-abcdef", "customer migration");
+        assert_eq!(
+            app.session_display_name("session-abcdef", 80),
+            "customer migration"
+        );
+        assert_eq!(app.session_display_name("session-abcdef", 9), "customer…");
+    }
+
+    #[test]
+    fn launch_marked_opens_all_marked_sessions_as_panes() {
+        let now = chrono::Utc::now();
+        let mut sessions = Vec::new();
+        for id in ["a", "b", "c"] {
+            let mut s = session(id, Agent::Codex, false);
+            s.last_active = Some(now);
+            sessions.push(s);
+        }
+        let mut app = app_with(sessions);
+
+        app.selected = 0;
+        app.toggle_mark(); // mark "a"
+        app.selected = 2;
+        app.toggle_mark(); // mark "c"
+        assert_eq!(app.marked.len(), 2);
+
+        app.launch_marked();
+        assert!(app.marked.is_empty(), "marks cleared after launch");
+        assert_eq!(app.focus, Focus::Terminal);
+        assert_eq!(app.panes.len(), 2);
+        assert!(app.panes.contains(&"a".to_string()));
+        assert!(app.panes.contains(&"c".to_string()));
+    }
+
+    #[test]
+    fn launch_marked_falls_back_to_single_resume_when_nothing_marked() {
+        let now = chrono::Utc::now();
+        let mut s = session("solo", Agent::Codex, false);
+        s.last_active = Some(now);
+        let mut app = app_with(vec![s]);
+        app.selected = 0;
+        app.launch_marked();
+        assert_eq!(app.panes, vec!["solo"]);
+    }
+
+    #[test]
+    fn single_enter_replaces_pane_instead_of_accumulating() {
+        // Opening sessions one at a time with Enter (no marks) must show each
+        // ALONE — panes must not pile up into an unintended multi-pane view.
+        // Multi-pane is reached only via marked launch.
+        let now = chrono::Utc::now();
+        let mut sessions = Vec::new();
+        for id in ["a", "b", "c"] {
+            let mut s = session(id, Agent::Codex, false);
+            s.last_active = Some(now);
+            sessions.push(s);
+        }
+        let mut app = app_with(sessions);
+
+        app.selected = 0;
+        app.request_resume();
+        assert_eq!(app.panes, vec!["a"]);
+        app.selected = 1;
+        app.request_resume();
+        assert_eq!(
+            app.panes,
+            vec!["b"],
+            "Enter replaces the pane, never [a, b]"
+        );
+        app.selected = 2;
+        app.request_resume();
+        assert_eq!(app.panes, vec!["c"]);
+        assert_eq!(app.focused, 0);
+    }
+
+    #[test]
+    fn today_sessions_sort_above_older_regardless_of_agent() {
+        let now = chrono::Utc::now();
+        // Codex normally ranks above Kiro; an older Codex must still fall below
+        // a Kiro session touched today, because the "today" category wins.
+        let mut old_codex = session("old-codex", Agent::Codex, false);
+        old_codex.last_active = Some(now - chrono::Duration::days(3));
+        let mut today_kiro = session("today-kiro", Agent::Kiro, false);
+        today_kiro.last_active = Some(now);
+        let mut app = app_with(vec![old_codex, today_kiro]);
+        app.rebuild_visible();
+
+        let ids: Vec<_> = (0..app.visible.len())
+            .map(|row| app.session_at(row).unwrap().id.as_str())
+            .collect();
+        assert_eq!(ids, vec!["today-kiro", "old-codex"]);
+        // Only the kiro session is today, so the today/earlier boundary is 1.
+        assert_eq!(app.today_count, 1);
+    }
+
+    #[test]
+    fn thread_root_time_reflects_freshest_lane_activity() {
+        let now = chrono::Utc::now();
+        // Orchestration parent whose own transcript is 2 weeks stale…
+        let mut parent = session("p", Agent::Claude, false);
+        parent.last_active = Some(now - chrono::Duration::weeks(2));
+        // …but a lane was active today.
+        let mut lane = session("c", Agent::Claude, false);
+        lane.last_active = Some(now);
+        let mut app = app_with(vec![parent, lane]);
+        app.state
+            .set_handoff_link("c", "p", PathBuf::from("/tmp/h.md"), now);
+        app.rebuild_visible();
+
+        let p = app
+            .all_sessions
+            .iter()
+            .find(|s| s.id == "p")
+            .unwrap()
+            .clone();
+        let (live, eff) = app.row_activity(&p, app.thread_child_count("p"));
+        assert!(!live, "no live PTY in a unit test");
+        assert_eq!(
+            eff,
+            Some(now),
+            "parent's time reflects the lane's recent activity, not its own 2w mtime"
+        );
+
+        // A standalone session still uses its own activity.
+        let c = app
+            .all_sessions
+            .iter()
+            .find(|s| s.id == "c")
+            .unwrap()
+            .clone();
+        let (_, eff_c) = app.row_activity(&c, app.thread_child_count("c"));
+        assert_eq!(eff_c, Some(now));
+    }
+
+    #[test]
     fn search_filters_visible_sessions_by_label_or_title() {
         let mut labeled = session("a", Agent::Codex, false);
         labeled.title = "🏷 msk cohome".into();
@@ -3124,13 +3893,6 @@ mod tests {
                 "codex-child",
                 "kiro-one"
             ]
-        );
-        assert_eq!(app.visible_section_count(Agent::Codex), 2);
-        assert_eq!(app.visible_section_count(Agent::Claude), 2);
-        assert_eq!(app.visible_section_count(Agent::Kiro), 1);
-        assert_eq!(
-            app.session_section_agent("codex-child"),
-            Some(Agent::Claude)
         );
     }
 
@@ -3388,6 +4150,53 @@ mod tests {
             && p.cwd == std::path::Path::new("/work/project")
             && p.label == "(handoff)msk cohome"));
 
+        std::env::remove_var(handoff::HANDOFF_DIR_ENV);
+        std::env::remove_var("MINDPLAYER_STATE");
+    }
+
+    #[test]
+    fn handoff_into_kiro_sends_context_as_first_input_argument() {
+        let _env = STATE_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _handoff_env = handoff::TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = std::env::temp_dir().join(format!("mp-handoff-kiro-{}.json", std::process::id()));
+        std::env::set_var("MINDPLAYER_STATE", &tmp);
+        let (dir, transcript) = write_handoff_fixture("kiro-target");
+        std::env::set_var(handoff::HANDOFF_DIR_ENV, dir.join("handoffs"));
+        let mut source = session_in(
+            "claude-1",
+            Agent::Claude,
+            "/work/project",
+            "finish deployment",
+        );
+        source.file = transcript;
+        let mut app = app_with(vec![source]);
+
+        app.confirm_handoff(Agent::Kiro);
+
+        let pending = app.pending.as_ref().expect("handoff queues PTY spawn");
+        assert!(pending.session_id.starts_with("handoff:claude:kiro:"));
+        assert_eq!(pending.command.program, "kiro-cli");
+        assert!(
+            pending
+                .command
+                .args
+                .iter()
+                .any(|arg| arg == "--trust-all-tools"),
+            "kiro handoff must keep trusted-tools mode"
+        );
+        assert!(
+            pending.initial_input.is_none(),
+            "kiro gets the handoff as chat [INPUT], not delayed paste"
+        );
+        let first_input = pending.command.args.last().expect("first input argument");
+        assert!(first_input.contains("from claude to kiro"));
+        assert!(first_input.contains("continue deploy investigation"));
+        assert!(first_input.contains("failing health check"));
+        assert!(!first_input.ends_with('\r'));
+
+        let _ = std::fs::remove_file(&tmp);
         std::env::remove_var(handoff::HANDOFF_DIR_ENV);
         std::env::remove_var("MINDPLAYER_STATE");
     }

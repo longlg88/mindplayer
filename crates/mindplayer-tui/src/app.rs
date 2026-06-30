@@ -3861,12 +3861,16 @@ mod tests {
     #[test]
     fn visible_groups_thread_roots_by_agent_type() {
         let now = chrono::Utc::now();
+        // Keep every session within a few seconds of `now` so they all land on
+        // the same KST calendar day — otherwise a run just after KST midnight
+        // pushes the older ones into the "Earlier" band and reorders the list
+        // (this test checks agent grouping, not the today/earlier split).
         let mut codex_old = session("codex-old", Agent::Codex, false);
-        codex_old.last_active = Some(now - chrono::Duration::minutes(30));
+        codex_old.last_active = Some(now - chrono::Duration::seconds(20));
         let mut codex_new = session("codex-new", Agent::Codex, false);
-        codex_new.last_active = Some(now - chrono::Duration::minutes(5));
+        codex_new.last_active = Some(now - chrono::Duration::seconds(10));
         let mut claude_parent = session("claude-parent", Agent::Claude, false);
-        claude_parent.last_active = Some(now - chrono::Duration::minutes(1));
+        claude_parent.last_active = Some(now - chrono::Duration::seconds(5));
         let mut codex_child = session("codex-child", Agent::Codex, false);
         codex_child.last_active = Some(now);
         let mut kiro = session("kiro-one", Agent::Kiro, false);

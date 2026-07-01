@@ -279,7 +279,7 @@ fn main_view(f: &mut Frame, app: &mut App) {
             format!("{live}enter open · v multi-select · n new · h handoff   View: / search · ? help")
         }
         Focus::Terminal => {
-            "ctrl-x list · tab/ctrl-w pane · ctrl-o layout · ctrl-q close · wheel history · drag=copy this pane"
+            "ctrl-x list · tab/ctrl-w pane · ctrl-z zoom · ctrl-o layout · ctrl-q close · wheel history · drag=copy this pane"
                 .to_string()
         }
     };
@@ -764,64 +764,108 @@ fn live_pane(f: &mut Frame, app: &mut App, area: Rect) {
     }
 
     let panes = app.panes.clone();
+
+    if app.zoomed {
+        // Full-size view of just the focused pane. Bounds for every other pane
+        // are dropped so a stale (smaller, pre-zoom) rect can never steal a
+        // mouse click that lands inside the now-fullscreen pane's area.
+        let idx = app.focused.min(panes.len() - 1);
+        let sid = panes[idx].clone();
+        app.pane_bounds.retain(|id, _| id == &sid);
+        app.pane_sizes.retain(|id, _| id == &sid);
+        render_pane(f, app, &sid, idx, panes.len(), area, focused_view, true);
+        return;
+    }
+
     let rects = compute_pane_rects(area, panes.len(), app.effective_layout());
     for (idx, sid) in panes.iter().enumerate() {
         let pane_area = rects.get(idx).copied().unwrap_or(area);
         let pane_focused = focused_view && idx == app.focused;
-        let ended = app.ended.contains(sid);
-        let (dot, dot_color) = pane_dot(app, sid, ended);
-        let name = app.session_display_name(sid, pane_area.width.saturating_sub(14) as usize);
-        let title = Line::from(vec![
-            Span::styled(dot, Style::default().fg(dot_color)),
-            Span::raw(format!("{name} {}/{} ", idx + 1, panes.len())),
-            if ended {
-                Span::styled("(ended) ", Style::default().fg(DIM))
-            } else {
-                Span::raw("")
-            },
-        ]);
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .title(title)
-            .border_style(Style::default().fg(if pane_focused { ACCENT } else { DIM }));
-        let inner = block.inner(pane_area);
-        f.render_widget(block, pane_area);
-        app.pane_sizes
-            .insert(sid.clone(), (inner.height.max(1), inner.width.max(1)));
-        app.pane_bounds.insert(
-            sid.clone(),
-            (inner.x, inner.y, inner.height.max(1), inner.width.max(1)),
+        render_pane(
+            f,
+            app,
+            sid,
+            idx,
+            panes.len(),
+            pane_area,
+            pane_focused,
+            false,
         );
+    }
+}
 
-        if pane_focused {
-            app.pty_rows = inner.height.max(1);
-            app.pty_cols = inner.width.max(1);
-            app.pty_x = inner.x;
-            app.pty_y = inner.y;
-        }
-
-        let selection = app.selection_for_pane(sid);
-        if let Some(pty) = app.ptys.get(sid) {
-            if let Ok(parser) = pty.parser().lock() {
-                let screen = parser.screen();
-                f.render_widget(TerminalView::new(screen).with_selection(selection), inner);
-                if pane_focused && !ended && !screen.hide_cursor() {
-                    let (row, col) = screen.cursor_position();
-                    let cx = inner.x + col.min(inner.width.saturating_sub(1));
-                    let cy = inner.y + row.min(inner.height.saturating_sub(1));
-                    f.set_cursor_position((cx, cy));
-                }
-            }
+/// Render one live pane's border, title, and terminal contents into `pane_area`
+/// — shared by the normal split-grid layout and the single-pane zoomed view so
+/// the two never drift out of sync.
+#[allow(clippy::too_many_arguments)]
+fn render_pane(
+    f: &mut Frame,
+    app: &mut App,
+    sid: &str,
+    idx: usize,
+    total: usize,
+    pane_area: Rect,
+    pane_focused: bool,
+    zoomed: bool,
+) {
+    let ended = app.ended.contains(sid);
+    let (dot, dot_color) = pane_dot(app, sid, ended);
+    let name = app.session_display_name(sid, pane_area.width.saturating_sub(14) as usize);
+    let title = Line::from(vec![
+        Span::styled(dot, Style::default().fg(dot_color)),
+        Span::raw(format!("{name} {}/{} ", idx + 1, total)),
+        if zoomed {
+            Span::styled("🔍 ", Style::default().fg(ACCENT))
         } else {
-            f.render_widget(
-                Paragraph::new(Line::from(Span::styled(
-                    "starting...",
-                    Style::default().fg(DIM),
-                )))
-                .alignment(Alignment::Center),
-                inner,
-            );
+            Span::raw("")
+        },
+        if ended {
+            Span::styled("(ended) ", Style::default().fg(DIM))
+        } else {
+            Span::raw("")
+        },
+    ]);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(title)
+        .border_style(Style::default().fg(if pane_focused { ACCENT } else { DIM }));
+    let inner = block.inner(pane_area);
+    f.render_widget(block, pane_area);
+    app.pane_sizes
+        .insert(sid.to_string(), (inner.height.max(1), inner.width.max(1)));
+    app.pane_bounds.insert(
+        sid.to_string(),
+        (inner.x, inner.y, inner.height.max(1), inner.width.max(1)),
+    );
+
+    if pane_focused {
+        app.pty_rows = inner.height.max(1);
+        app.pty_cols = inner.width.max(1);
+        app.pty_x = inner.x;
+        app.pty_y = inner.y;
+    }
+
+    let selection = app.selection_for_pane(sid);
+    if let Some(pty) = app.ptys.get(sid) {
+        if let Ok(parser) = pty.parser().lock() {
+            let screen = parser.screen();
+            f.render_widget(TerminalView::new(screen).with_selection(selection), inner);
+            if pane_focused && !ended && !screen.hide_cursor() {
+                let (row, col) = screen.cursor_position();
+                let cx = inner.x + col.min(inner.width.saturating_sub(1));
+                let cy = inner.y + row.min(inner.height.saturating_sub(1));
+                f.set_cursor_position((cx, cy));
+            }
         }
+    } else {
+        f.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                "starting...",
+                Style::default().fg(DIM),
+            )))
+            .alignment(Alignment::Center),
+            inner,
+        );
     }
 }
 
@@ -1123,7 +1167,7 @@ fn help_popup(f: &mut Frame) {
         section("Session"),
         item(
             "enter",
-            "open the selected session (launch all marked in multi-select)",
+            "open the selected session, adding it to the live view (launch all marked in multi-select)",
         ),
         item(
             "v",
@@ -1154,6 +1198,7 @@ fn help_popup(f: &mut Frame) {
         item("ctrl-x", "return from terminal to session list"),
         item("tab / shift-tab", "cycle live panes (when 2+ open)"),
         item("ctrl-w", "cycle live panes (always)"),
+        item("ctrl-z", "zoom the focused pane full-size (toggle back to split)"),
         item("ctrl-o", "toggle pane layout (horizontal/vertical)"),
         item("ctrl-q", "close focused pane"),
         item("ctrl-j", "insert newline in text modals"),

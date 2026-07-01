@@ -24,14 +24,9 @@ pub fn target_for_choice(choice: usize) -> Agent {
 }
 
 pub fn command_for(source: &Session, target: Agent) -> Command {
-    let mut command = new_session(target, source.cwd.clone());
-    if target == Agent::Kiro {
-        // Hand off into kiro with every tool pre-trusted, matching a freshly
-        // created kiro session (user-requested: no per-tool approval prompts on
-        // a handoff target). Mirrors CliProviderAdapter::start_command.
-        command.args.push("--trust-all-tools".to_string());
-    }
-    command
+    // `new_session` already pre-trusts every tool for a kiro target (every way
+    // a kiro session can start does), so a handoff needs no extra handling here.
+    new_session(target, source.cwd.clone())
 }
 
 pub fn title_for(source: &Session, target: Agent) -> String {

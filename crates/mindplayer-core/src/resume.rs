@@ -23,7 +23,12 @@ pub fn resume(session: &Session) -> Command {
     let args = match session.agent {
         Agent::Codex => vec!["resume".to_string(), id],
         Agent::Claude => vec!["--resume".to_string(), id],
-        Agent::Kiro => vec!["chat".to_string(), "--resume-id".to_string(), id],
+        Agent::Kiro => vec![
+            "chat".to_string(),
+            "--resume-id".to_string(),
+            id,
+            KIRO_TRUST_FLAG.to_string(),
+        ],
     };
     Command {
         program: session.agent.program().to_string(),
@@ -32,11 +37,17 @@ pub fn resume(session: &Session) -> Command {
     }
 }
 
+/// Kiro launches every session with every tool pre-trusted (user-requested: no
+/// per-tool / MCP approval prompts, ever) — resume, a brand-new session, and a
+/// handoff target all go through `resume()`/`new_session()` below, so this one
+/// flag covers every way a kiro session can start.
+const KIRO_TRUST_FLAG: &str = "--trust-all-tools";
+
 /// Command to start a brand new session in `cwd`.
 pub fn new_session(agent: Agent, cwd: PathBuf) -> Command {
     let args = match agent {
         // Kiro's chat lives under a subcommand; codex/claude launch bare.
-        Agent::Kiro => vec!["chat".to_string()],
+        Agent::Kiro => vec!["chat".to_string(), KIRO_TRUST_FLAG.to_string()],
         Agent::Codex | Agent::Claude => Vec::new(),
     };
     Command {
@@ -94,7 +105,11 @@ mod tests {
     fn kiro_resume_uses_resume_id_and_cli_binary() {
         let c = resume(&session(Agent::Kiro, "kid-3", "/work"));
         assert_eq!(c.program, "kiro-cli");
-        assert_eq!(c.args, vec!["chat", "--resume-id", "kid-3"]);
+        assert_eq!(
+            c.args,
+            vec!["chat", "--resume-id", "kid-3", "--trust-all-tools"],
+            "resuming a kiro session must stay in trust mode — no per-tool/MCP approval prompts"
+        );
         assert_eq!(c.cwd, PathBuf::from("/work"));
     }
 
@@ -102,6 +117,10 @@ mod tests {
     fn kiro_new_session_launches_chat() {
         let c = new_session(Agent::Kiro, PathBuf::from("/here"));
         assert_eq!(c.program, "kiro-cli");
-        assert_eq!(c.args, vec!["chat"]);
+        assert_eq!(
+            c.args,
+            vec!["chat", "--trust-all-tools"],
+            "a brand-new kiro session must start in trust mode too"
+        );
     }
 }

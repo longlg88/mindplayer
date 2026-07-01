@@ -244,6 +244,11 @@ pub struct App {
     pub panes: Vec<String>,
     pub focused: usize,
     pub layout: PaneLayout,
+    /// When true, the live view shows ONLY the focused pane at full size
+    /// instead of the split grid — the small panes in a multi-pane split can be
+    /// hard to read. Tab / ctrl-w still cycle which pane is focused (and shown)
+    /// while zoomed; ctrl-z toggles back to the split view.
+    pub zoomed: bool,
     pub pane_sizes: HashMap<String, (u16, u16)>,
     /// Per-pane inner terminal bounds `(x, y, rows, cols)` from the latest
     /// render. Drag-copy uses this to copy the pane under the mouse, not an
@@ -389,6 +394,7 @@ impl App {
             panes: Vec::new(),
             focused: 0,
             layout: PaneLayout::Horizontal,
+            zoomed: false,
             pane_sizes: HashMap::new(),
             pane_bounds: HashMap::new(),
             selection: None,
@@ -1834,12 +1840,15 @@ impl App {
         if peers.is_empty() {
             return false;
         }
-        let Some(peer_last_active) = peers.iter().filter_map(|s| s.last_active).max() else {
-            return !self.thread_sync_at.contains_key(id);
-        };
-        self.thread_sync_at
-            .get(id)
-            .is_none_or(|last_sync| *last_sync < peer_last_active)
+        // Sync once, the first time you resume back into the session — not on
+        // every re-entry. This only ever fires for a plain 1:1 handoff (an
+        // orchestration lane's peers always resolve through
+        // `orchestration_root_for_session`, which `prepare_thread_sync_for`
+        // already skips). Comparing against the peer's last-active timestamp
+        // instead would keep re-triggering forever, since the source session
+        // the user handed off from keeps advancing while they keep working in
+        // it — which is exactly the repeated re-summary bug this guards against.
+        !self.thread_sync_at.contains_key(id)
     }
 
     fn prepare_thread_sync_for(&self, session: &Session) -> Option<handoff::PreparedHandoff> {
@@ -1971,21 +1980,6 @@ impl App {
         self.sync_active();
     }
 
-    /// Show ONLY this session as a single live pane, collapsing any other open
-    /// panes. The other sessions keep running in the background (their PTYs stay
-    /// in `self.ptys`) — only the displayed pane set is reset. A multi-pane
-    /// layout is reached solely by marking several sessions and launching them
-    /// together (`launch_marked`); a plain Enter never accumulates panes.
-    pub fn show_single_pane(&mut self, sid: &str) {
-        self.panes.clear();
-        self.pane_sizes.retain(|id, _| id == sid);
-        self.pane_bounds.retain(|id, _| id == sid);
-        self.panes.push(sid.to_string());
-        self.focused = 0;
-        self.focus = Focus::Terminal;
-        self.sync_active();
-    }
-
     fn remove_pane(&mut self, sid: &str) {
         if let Some(pos) = self.panes.iter().position(|id| id == sid) {
             self.panes.remove(pos);
@@ -1993,6 +1987,9 @@ impl App {
             self.pane_bounds.remove(sid);
             if self.focused >= self.panes.len() {
                 self.focused = self.panes.len().saturating_sub(1);
+            }
+            if self.panes.is_empty() {
+                self.zoomed = false;
             }
             self.sync_active();
         } else if self.active.as_deref() == Some(sid) {
@@ -2039,6 +2036,22 @@ impl App {
         } else {
             self.layout
         }
+    }
+
+    /// Toggle full-screen zoom of the focused pane, so a cramped multi-pane
+    /// split can be read at full size. Tab / ctrl-w still cycle which pane is
+    /// focused (and therefore shown) while zoomed; toggling again returns to
+    /// the normal split showing every pane.
+    pub fn toggle_zoom(&mut self) {
+        if self.panes.is_empty() {
+            return;
+        }
+        self.zoomed = !self.zoomed;
+        self.status = if self.zoomed {
+            "zoomed — tab/ctrl-w to browse panes, ctrl-z for the split view".to_string()
+        } else {
+            "back to the split view".to_string()
+        };
     }
 
     pub fn close_focused_pane(&mut self) {
@@ -2158,14 +2171,14 @@ impl App {
                     );
                 }
             }
-            self.show_single_pane(&session.id);
+            self.focus_or_add_pane(&session.id);
             return;
         }
         // A synthetic new-session has no real id to `resume`; just show its
         // (possibly ended) pane if it still exists, otherwise stay on the list.
         if session.id.starts_with("new:") {
             if self.ptys.contains_key(&session.id) {
-                self.show_single_pane(&session.id);
+                self.focus_or_add_pane(&session.id);
             } else {
                 self.focus = Focus::List;
             }
@@ -2188,7 +2201,7 @@ impl App {
             initial_input,
             focus_after_spawn: true,
         });
-        self.show_single_pane(&session.id);
+        self.focus_or_add_pane(&session.id);
         if !self.status.contains("thread sync") {
             self.status = format!("resuming {} {}", session.agent.as_str(), short(&session.id));
         }
@@ -3047,19 +3060,24 @@ impl App {
         }
     }
 
-    /// Finish the selection: copy the focused pane's selected text to the
-    /// clipboard (queued as OSC 52) and clear the highlight. A zero-width
-    /// selection (a plain click) copies nothing.
-    pub fn selection_finish(&mut self) {
+    /// Finish the selection: copy the pane's selected text to the clipboard and
+    /// clear the highlight. Returns true only if it was an actual drag that
+    /// copied something — a plain click (anchor == cursor) copies nothing and
+    /// returns false so the caller can forward the click to a mouse-aware child.
+    pub fn selection_finish(&mut self) -> bool {
         let Some(sel) = self.selection.take() else {
-            return;
+            return false;
         };
+        // A click without dragging is not a selection — don't copy a stray cell.
+        if sel.anchor == sel.cursor {
+            return false;
+        }
         let (sr, sc, er, ec) = sel.bounds();
         let Some(pty) = self.ptys.get(&sel.pane_id) else {
-            return;
+            return false;
         };
         let Ok(parser) = pty.parser().lock() else {
-            return;
+            return false;
         };
         let screen = parser.screen();
         let (_, cols) = screen.size();
@@ -3073,6 +3091,10 @@ impl App {
             self.pending_clipboard = Some(text);
             self.status = format!("copied {chars} chars from pane {}", short(&sel.pane_id));
         }
+        // It was a drag (anchor != cursor): consume it as a selection regardless
+        // of whether the cells held text, so the caller never re-fires it as a
+        // click into the child.
+        true
     }
 
     /// Selection bounds for `sid` if the active selection is in that pane — used
@@ -3651,6 +3673,24 @@ mod tests {
     }
 
     #[test]
+    fn plain_click_selection_does_not_copy() {
+        let mut app = app_with(vec![session("a", Agent::Codex, false)]);
+        // anchor == cursor means the mouse went down and up without dragging.
+        app.selection = Some(PaneSelection {
+            pane_id: "a".to_string(),
+            anchor: (2, 3),
+            cursor: (2, 3),
+        });
+        let copied = app.selection_finish();
+        assert!(!copied, "a click without dragging must not copy");
+        assert!(app.selection.is_none(), "selection is cleared either way");
+        assert!(
+            app.pending_clipboard.is_none(),
+            "nothing queued to clipboard"
+        );
+    }
+
+    #[test]
     fn cycle_focus_back_reverses_pane_focus() {
         let mut app = App::new();
         for id in ["a", "b", "c"] {
@@ -3663,6 +3703,35 @@ mod tests {
         assert_eq!(app.focused_pane(), Some("a"));
         app.cycle_focus_back();
         assert_eq!(app.focused_pane(), Some("c"), "wraps around to last");
+    }
+
+    #[test]
+    fn toggle_zoom_toggles_and_resets_when_panes_close() {
+        let mut app = App::new();
+
+        // No panes open: toggling zoom is a no-op.
+        app.toggle_zoom();
+        assert!(!app.zoomed);
+
+        app.focus_or_add_pane("a");
+        app.focus_or_add_pane("b");
+        app.toggle_zoom();
+        assert!(app.zoomed);
+        // Cycling focus while zoomed keeps zoom on (it should follow whichever
+        // pane is now focused, not drop back to the split).
+        app.cycle_focus();
+        assert!(app.zoomed);
+        app.toggle_zoom();
+        assert!(!app.zoomed, "toggling again returns to the split view");
+
+        // Zoom auto-resets once every pane is closed, so a fresh live view
+        // never starts pre-zoomed.
+        app.toggle_zoom();
+        assert!(app.zoomed);
+        app.close_focused_pane();
+        app.close_focused_pane();
+        assert!(app.panes.is_empty());
+        assert!(!app.zoomed, "zoom resets once the last pane closes");
     }
 
     #[test]
@@ -3740,10 +3809,10 @@ mod tests {
     }
 
     #[test]
-    fn single_enter_replaces_pane_instead_of_accumulating() {
-        // Opening sessions one at a time with Enter (no marks) must show each
-        // ALONE — panes must not pile up into an unintended multi-pane view.
-        // Multi-pane is reached only via marked launch.
+    fn enter_adds_session_to_the_live_view() {
+        // Enter opens the selected session, ADDING it to the current live view
+        // (so returning via ctrl-x and opening another grows the split); panes
+        // are pruned individually with ctrl-q, not by replacing on each open.
         let now = chrono::Utc::now();
         let mut sessions = Vec::new();
         for id in ["a", "b", "c"] {
@@ -3758,14 +3827,14 @@ mod tests {
         assert_eq!(app.panes, vec!["a"]);
         app.selected = 1;
         app.request_resume();
-        assert_eq!(
-            app.panes,
-            vec!["b"],
-            "Enter replaces the pane, never [a, b]"
-        );
+        assert_eq!(app.panes, vec!["a", "b"], "Enter adds to the live view");
         app.selected = 2;
         app.request_resume();
-        assert_eq!(app.panes, vec!["c"]);
+        assert_eq!(app.panes, vec!["a", "b", "c"]);
+        // Re-opening one already shown just focuses it (no duplicate pane).
+        app.selected = 0;
+        app.request_resume();
+        assert_eq!(app.panes, vec!["a", "b", "c"]);
         assert_eq!(app.focused, 0);
     }
 
@@ -5209,6 +5278,38 @@ END_MINDPLAYER_DISPATCH",
 
         std::env::remove_var(handoff::HANDOFF_DIR_ENV);
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn thread_sync_needed_fires_once_then_stays_quiet_even_as_peer_keeps_working() {
+        // Regression: a plain 1:1 handoff must only get its peer-context summary
+        // the first time you resume back into it. The old logic compared the
+        // peer's last-active timestamp against the last sync time, which kept
+        // re-triggering forever because the session you handed off FROM keeps
+        // advancing while you keep working in it — reported as "a summary
+        // prompt gets injected every single time I re-enter the handoff pane."
+        let app = App::new();
+        let mut peer = session("main-session", Agent::Claude, false);
+        peer.last_active = Some(chrono::Utc::now());
+        let peers = vec![peer.clone()];
+
+        assert!(
+            app.thread_sync_needed("handoff-target", &peers),
+            "never synced before: the first entry should sync"
+        );
+
+        let mut app = app;
+        app.thread_sync_at
+            .insert("handoff-target".to_string(), chrono::Utc::now());
+
+        // The peer (main session) keeps producing new activity well after the
+        // sync — this must NOT re-trigger another summary injection.
+        peer.last_active = Some(chrono::Utc::now() + chrono::Duration::hours(1));
+        let peers = vec![peer];
+        assert!(
+            !app.thread_sync_needed("handoff-target", &peers),
+            "already synced once: must not re-fire on later re-entries"
+        );
     }
 
     #[test]

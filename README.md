@@ -45,8 +45,10 @@ never modifies them — so it just works with the sessions you already have.
   `● idle` (running, waiting), or `○ done` (ended) at a glance.
 - ⛶ **Live panes** — drive one session full‑screen or split the view across up
   to **6** at once. <kbd>Tab</kbd> (or <kbd>Ctrl‑w</kbd>) cycles focus,
-  <kbd>Ctrl‑o</kbd> toggles the horizontal/vertical split, <kbd>Ctrl‑q</kbd>
-  closes the focused pane, and <kbd>Ctrl‑x</kbd> pops back to the list.
+  <kbd>Ctrl‑z</kbd> zooms the focused pane back to full size (toggle again for
+  the split — no more squinting at a 6‑way grid), <kbd>Ctrl‑o</kbd> toggles the
+  horizontal/vertical split, <kbd>Ctrl‑q</kbd> closes the focused pane, and
+  <kbd>Ctrl‑x</kbd> pops back to the list.
 - 🗓️ **Today first** — the list opens with **today's** sessions (KST) grouped at
   the top under a `today` / `earlier` divider, so what you're working on now is
   always in reach.
@@ -145,11 +147,12 @@ make test                                          # cargo test --all
 | Key | Action |
 | --- | --- |
 | <kbd>↑</kbd> <kbd>↓</kbd> / <kbd>j</kbd> <kbd>k</kbd> | move selection (`▶`) |
-| <kbd>Enter</kbd> | open the selected session alone (resume, or switch if running); in multi‑select mode, launch **all marked** as live panes |
+| <kbd>Enter</kbd> | open the selected session, **adding it to the live view** (resume, or focus if already shown); remove a pane with <kbd>Ctrl‑q</kbd>. In multi‑select mode, launch **all marked** at once |
 | <kbd>v</kbd> | toggle **multi‑select** mode — then <kbd>Space</kbd> marks sessions and <kbd>Enter</kbd> launches them all (<kbd>Esc</kbd> cancels) |
 | <kbd>Space</kbd> | mark / unmark the selected session (`✓`) — multi‑select mode only |
 | <kbd>Tab</kbd> / <kbd>Shift‑Tab</kbd> | inside live panes, cycle focus forward / back (only when 2+ panes are open; otherwise <kbd>Tab</kbd> goes to the session) |
 | <kbd>Ctrl‑w</kbd> | cycle live‑pane focus (same as <kbd>Tab</kbd>; needs 2+ panes) |
+| <kbd>Ctrl‑z</kbd> | zoom the focused pane to full size (toggle again for the split view) |
 | <kbd>Ctrl‑o</kbd> | toggle the live‑pane split (horizontal ⇄ vertical) |
 | <kbd>Ctrl‑q</kbd> | close the focused live pane |
 | <kbd>Ctrl‑x</kbd> | back to the list (the session keeps running) |

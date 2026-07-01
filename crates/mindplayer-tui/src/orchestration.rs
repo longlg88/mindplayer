@@ -727,13 +727,21 @@ mod tests {
         assert_eq!(kiro_main.program, "kiro-cli");
         assert_eq!(
             kiro_main.args,
-            ["chat", "--model", "opus", "--effort", "max"]
+            ["chat", "--trust-all-tools", "--model", "opus", "--effort", "max"],
+            "an orchestration kiro lane must also start pre-trusted, same as any other kiro session"
         );
         let kiro_child = child_command(&draft, PathBuf::from("/work"), 1);
         assert_eq!(kiro_child.program, "kiro-cli");
         assert_eq!(
             kiro_child.args,
-            ["chat", "--model", "sonnet", "--effort", "max"]
+            [
+                "chat",
+                "--trust-all-tools",
+                "--model",
+                "sonnet",
+                "--effort",
+                "max"
+            ]
         );
     }
 

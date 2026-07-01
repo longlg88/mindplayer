@@ -318,7 +318,17 @@ fn handle_mouse(app: &mut App, me: MouseEvent) -> bool {
             return true;
         }
         MouseEventKind::Up(MouseButton::Left) => {
-            app.selection_finish();
+            // A real drag copies; a plain click (no drag) does not — instead
+            // forward it as a genuine click to a mouse-aware child (codex etc.)
+            // so its UI still responds, and never copies a stray cell.
+            if app.selection_finish() {
+                return true;
+            }
+            if app.active_wants_mouse() {
+                let (col, row) = app.pane_relative(me.column, me.row);
+                app.forward_mouse_to_pty(0, false, false, col, row); // press
+                app.forward_mouse_to_pty(0, true, false, col, row); // release
+            }
             return true;
         }
         _ => {}
@@ -677,6 +687,10 @@ fn handle_main_key(app: &mut App, key: KeyEvent) {
                     }
                     KeyCode::Char('q') | KeyCode::Char('ㅂ') => {
                         app.close_focused_pane();
+                        return;
+                    }
+                    KeyCode::Char('z') | KeyCode::Char('ㅋ') => {
+                        app.toggle_zoom();
                         return;
                     }
                     _ => {}

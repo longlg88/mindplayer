@@ -49,9 +49,10 @@ never modifies them — so it just works with the sessions you already have.
   the split — no more squinting at a 6‑way grid), <kbd>Ctrl‑o</kbd> toggles the
   horizontal/vertical split, <kbd>Ctrl‑q</kbd> closes the focused pane, and
   <kbd>Ctrl‑x</kbd> pops back to the list.
-- 🗓️ **Today first** — the list opens with **today's** sessions (KST) grouped at
-  the top under a `today` / `earlier` divider, so what you're working on now is
-  always in reach.
+- 🗓️ **Recent first** — the list opens with everything touched in the **last
+  24 hours** (a rolling window, not a calendar day — no midnight cliff) grouped
+  at the top under a `recent` / `older` divider, so what you're working on now
+  is always in reach.
 - ⚡ **Live & snappy** — the list auto‑reorders by recent activity and refreshes
   in the background; input feels native.
 - 🏷️ **Labels** — tag any session with a subject (a new one at creation, or an

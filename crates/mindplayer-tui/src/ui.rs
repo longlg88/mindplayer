@@ -431,7 +431,7 @@ fn session_list(f: &mut Frame, app: &mut App, area: Rect, now: DateTime<Utc>) {
             DIM
         }))
         .title(format!(
-            " Sessions · today first · {tab}{subs}{search}{multi} ({}) ",
+            " Sessions · recent first · {tab}{subs}{search}{multi} ({}) ",
             app.visible.len()
         ));
 
@@ -445,27 +445,27 @@ fn session_list(f: &mut Frame, app: &mut App, area: Rect, now: DateTime<Utc>) {
     let max_title = (area.width as usize)
         .saturating_sub(38 + identity_width)
         .max(12);
-    // Top-level "Today / Earlier" categories. rebuild_visible sorts every
-    // today group (touched today OR running live now) above the rest and records
-    // the boundary in `today_count`, so the split is position-based — the
+    // Top-level categories. rebuild_visible sorts every recent group (touched
+    // in the last 24h OR running live now) above the rest and records the
+    // boundary in `recent_count`, so the split is position-based — the
     // headers always match the sort order and never recompute per row.
-    let today_count = app.today_count.min(app.visible.len());
-    let earlier_count = app.visible.len().saturating_sub(today_count);
+    let recent_count = app.recent_count.min(app.visible.len());
+    let older_count = app.visible.len().saturating_sub(recent_count);
 
     let mut items: Vec<ListItem> = Vec::new();
     let mut selected_item = None;
-    let mut current_today: Option<bool> = None;
+    let mut current_recent: Option<bool> = None;
     for row in 0..app.visible.len() {
         let Some(s) = app.session_at(row) else {
             continue;
         };
-        let is_today = row < today_count;
-        if current_today != Some(is_today) {
-            current_today = Some(is_today);
-            let (label, count) = if is_today {
-                ("today", today_count)
+        let is_recent = row < recent_count;
+        if current_recent != Some(is_recent) {
+            current_recent = Some(is_recent);
+            let (label, count) = if is_recent {
+                ("recent", recent_count)
             } else {
-                ("earlier", earlier_count)
+                ("older", older_count)
             };
             items.push(ListItem::new(Line::from(vec![
                 Span::styled("  ── ", Style::default().fg(DIM)),

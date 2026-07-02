@@ -18,7 +18,7 @@
 //! name before any file is opened.
 
 use crate::session::{Agent, Session, TokenUsage};
-use chrono::{DateTime, FixedOffset, Utc};
+use chrono::{DateTime, Utc};
 use serde_json::Value;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
@@ -129,22 +129,23 @@ pub fn scan(scope: &Scope, cfg: &ScanConfig) -> Vec<Session> {
     sessions
 }
 
-/// True if the session was last touched (active or started) today in Korea
-/// Standard Time (UTC+9). Drives the "Today / Earlier" list categories.
-pub fn touched_today_kst(session: &Session, now: DateTime<Utc>) -> bool {
+/// True if the session was last touched (active or started) within the last
+/// 24 hours. Drives the list's "recent" category — a rolling window, not a
+/// calendar-day boundary, so a session from late last night still counts as
+/// recent at 1am rather than instantly aging out at midnight.
+pub fn touched_recently(session: &Session, now: DateTime<Utc>) -> bool {
     let Some(touched) = session.last_active.or(session.started_at) else {
         return false;
     };
-    let kst = FixedOffset::east_opt(9 * 60 * 60).expect("KST offset is valid");
-    touched.with_timezone(&kst).date_naive() == now.with_timezone(&kst).date_naive()
+    now - touched < chrono::Duration::hours(24)
 }
 
-/// Order today's KST work first, then newest-active, then newest-created.
+/// Order the last 24h of work first, then newest-active, then newest-created.
 pub fn sort_by_recency(sessions: &mut [Session]) {
     let now = Utc::now();
     sessions.sort_by(|a, b| {
-        touched_today_kst(b, now)
-            .cmp(&touched_today_kst(a, now))
+        touched_recently(b, now)
+            .cmp(&touched_recently(a, now))
             .then(b.last_active.cmp(&a.last_active))
             .then(b.started_at.cmp(&a.started_at))
     });
@@ -911,7 +912,6 @@ fn clean_title(raw: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::TimeZone;
 
     #[test]
     fn codex_usage_reads_all_fields() {
@@ -1024,45 +1024,62 @@ mod tests {
     }
 
     #[test]
-    fn sort_by_recency_promotes_sessions_touched_today_kst() {
+    fn sort_by_recency_promotes_sessions_touched_within_24h() {
         let now = Utc::now();
-        let kst = FixedOffset::east_opt(9 * 60 * 60).unwrap();
-        let today_kst = now.with_timezone(&kst).date_naive();
-        let today_noon = kst
-            .from_local_datetime(&today_kst.and_hms_opt(12, 0, 0).unwrap())
-            .single()
-            .unwrap()
-            .with_timezone(&Utc);
-        let today_afternoon = kst
-            .from_local_datetime(&today_kst.and_hms_opt(13, 0, 0).unwrap())
-            .single()
-            .unwrap()
-            .with_timezone(&Utc);
-        let old_recent = Session {
-            id: "old-recent".into(),
+        let old = Session {
+            id: "old".into(),
             agent: Agent::Codex,
             cwd: PathBuf::new(),
             file: PathBuf::new(),
             started_at: Some(now - chrono::Duration::days(2)),
-            last_active: Some(today_noon - chrono::Duration::days(1)),
+            // Just past the 24h window — must sort below every recent session
+            // regardless of calendar day (no midnight cliff).
+            last_active: Some(now - chrono::Duration::hours(25)),
             tokens: TokenUsage::default(),
             title: "old".into(),
             archived: false,
             is_subagent: false,
             context_pct: None,
         };
-        let mut today_older = old_recent.clone();
-        today_older.id = "today-older".into();
-        today_older.started_at = Some(today_noon);
-        today_older.last_active = Some(today_noon);
-        let mut today_newer = today_older.clone();
-        today_newer.id = "today-newer".into();
-        today_newer.last_active = Some(today_afternoon);
+        let mut recent_older = old.clone();
+        recent_older.id = "recent-older".into();
+        // Just inside the 24h window (e.g. late last night) — still "recent".
+        recent_older.last_active = Some(now - chrono::Duration::hours(23));
+        let mut recent_newer = recent_older.clone();
+        recent_newer.id = "recent-newer".into();
+        recent_newer.last_active = Some(now - chrono::Duration::hours(1));
 
-        let mut sessions = vec![old_recent, today_older, today_newer];
+        let mut sessions = vec![old, recent_older, recent_newer];
         sort_by_recency(&mut sessions);
 
         let ids: Vec<_> = sessions.iter().map(|s| s.id.as_str()).collect();
-        assert_eq!(ids, vec!["today-newer", "today-older", "old-recent"]);
+        assert_eq!(ids, vec!["recent-newer", "recent-older", "old"]);
+    }
+
+    #[test]
+    fn touched_recently_uses_a_rolling_window_not_a_calendar_day() {
+        let now = Utc::now();
+        let mut s = Session {
+            id: "s".into(),
+            agent: Agent::Codex,
+            cwd: PathBuf::new(),
+            file: PathBuf::new(),
+            started_at: None,
+            last_active: Some(now - chrono::Duration::hours(23)),
+            tokens: TokenUsage::default(),
+            title: String::new(),
+            archived: false,
+            is_subagent: false,
+            context_pct: None,
+        };
+        assert!(
+            touched_recently(&s, now),
+            "23h ago is within the rolling 24h window, even if it crossed midnight"
+        );
+        s.last_active = Some(now - chrono::Duration::hours(25));
+        assert!(
+            !touched_recently(&s, now),
+            "25h ago is outside the window, even if it's still 'today' by calendar date"
+        );
     }
 }

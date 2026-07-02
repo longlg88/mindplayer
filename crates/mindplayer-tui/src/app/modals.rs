@@ -1,0 +1,274 @@
+use super::*;
+
+impl App {
+    /// Picker -> label input: remember the agent, start an empty label buffer.
+    pub fn choose_new_agent(&mut self, agent: Agent) {
+        self.new_agent = Some(agent);
+        self.new_label = Some(String::new());
+        self.new_picker = None;
+    }
+
+    pub fn label_input_push(&mut self, c: char) {
+        if let Some(buf) = self.new_label.as_mut() {
+            buf.push(c);
+        }
+    }
+
+    pub fn label_input_backspace(&mut self) {
+        if let Some(buf) = self.new_label.as_mut() {
+            buf.pop();
+        }
+    }
+
+    /// Confirm the label input and spawn the new session.
+    pub fn confirm_new_session(&mut self) {
+        let agent = self.new_agent.unwrap_or(Agent::Codex);
+        let label = self.new_label.take().unwrap_or_default();
+        self.request_new(agent, &label);
+    }
+
+    pub fn cancel_new_session(&mut self) {
+        self.new_picker = None;
+        self.handoff_picker = None;
+        self.new_label = None;
+        self.new_agent = None;
+        self.label_target = None;
+    }
+
+    pub fn toggle_help(&mut self) {
+        self.help_visible = !self.help_visible;
+    }
+
+    pub fn close_help(&mut self) {
+        self.help_visible = false;
+    }
+
+    // --- orchestration ------------------------------------------------------
+
+    pub fn modal_text_delete(&mut self) {
+        if let Some(draft) = self.dispatch_apply.as_mut() {
+            draft.delete();
+        } else if let Some(draft) = self.dispatch.as_mut() {
+            draft.delete();
+        } else if let Some(draft) = self.broadcast.as_mut() {
+            draft.delete();
+        }
+    }
+
+    pub fn modal_text_move_left(&mut self) {
+        if let Some(draft) = self.dispatch_apply.as_mut() {
+            draft.move_left();
+        } else if let Some(draft) = self.dispatch.as_mut() {
+            draft.move_left();
+        } else if let Some(draft) = self.broadcast.as_mut() {
+            draft.move_left();
+        }
+    }
+
+    pub fn modal_text_move_right(&mut self) {
+        if let Some(draft) = self.dispatch_apply.as_mut() {
+            draft.move_right();
+        } else if let Some(draft) = self.dispatch.as_mut() {
+            draft.move_right();
+        } else if let Some(draft) = self.broadcast.as_mut() {
+            draft.move_right();
+        }
+    }
+
+    pub fn modal_text_move_up(&mut self) {
+        if let Some(draft) = self.dispatch_apply.as_mut() {
+            draft.move_up();
+        } else if let Some(draft) = self.dispatch.as_mut() {
+            draft.move_up();
+        } else if let Some(draft) = self.broadcast.as_mut() {
+            draft.move_up();
+        }
+    }
+
+    pub fn modal_text_move_down(&mut self) {
+        if let Some(draft) = self.dispatch_apply.as_mut() {
+            draft.move_down();
+        } else if let Some(draft) = self.dispatch.as_mut() {
+            draft.move_down();
+        } else if let Some(draft) = self.broadcast.as_mut() {
+            draft.move_down();
+        }
+    }
+
+    pub fn modal_text_move_home(&mut self) {
+        if let Some(draft) = self.dispatch_apply.as_mut() {
+            draft.move_home();
+        } else if let Some(draft) = self.dispatch.as_mut() {
+            draft.move_home();
+        } else if let Some(draft) = self.broadcast.as_mut() {
+            draft.move_home();
+        }
+    }
+
+    pub fn modal_text_move_end(&mut self) {
+        if let Some(draft) = self.dispatch_apply.as_mut() {
+            draft.move_end();
+        } else if let Some(draft) = self.dispatch.as_mut() {
+            draft.move_end();
+        } else if let Some(draft) = self.broadcast.as_mut() {
+            draft.move_end();
+        }
+    }
+
+    pub fn paste_to_modal(&mut self, text: &str) -> bool {
+        if self.orchestration.is_some() {
+            self.orchestration_input_text(text);
+            true
+        } else if self.dispatch_apply.is_some() {
+            self.dispatch_apply_input_text(text);
+            true
+        } else if self.dispatch.is_some() {
+            self.dispatch_input_text(text);
+            true
+        } else if self.broadcast.is_some() {
+            self.broadcast_input_text(text);
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn begin_search(&mut self) {
+        self.search_query = Some(String::new());
+        self.rebuild_visible();
+    }
+
+    pub fn search_push(&mut self, c: char) {
+        if let Some(query) = self.search_query.as_mut() {
+            query.push(c);
+            self.rebuild_visible();
+        }
+    }
+
+    pub fn search_backspace(&mut self) {
+        if let Some(query) = self.search_query.as_mut() {
+            query.pop();
+            self.rebuild_visible();
+        }
+    }
+
+    pub fn cancel_search(&mut self) {
+        self.search_query = None;
+        self.rebuild_visible();
+    }
+
+    /// Open the label-input modal for the currently-selected session so an
+    /// existing session (one created outside MindPlayer, or without a label)
+    /// can be tagged. Pre-fills the current label so it can be edited or
+    /// cleared. Synthetic placeholders use the new-session flow instead.
+    pub fn begin_label_edit(&mut self) {
+        let Some(s) = self.selected_session() else {
+            return;
+        };
+        if s.id.starts_with("new:") {
+            self.status = "label is set when you create a new session".to_string();
+            return;
+        }
+        let id = s.id.clone();
+        let existing = self.state.label_for(&id).unwrap_or_default().to_string();
+        self.label_target = Some(id);
+        self.new_label = Some(existing);
+    }
+
+    /// Confirm the label-input modal when editing an existing session: persist
+    /// the label and update the in-memory title. A blank label clears it (the
+    /// auto-extracted title is restored on the next scan).
+    pub fn confirm_label_edit(&mut self) {
+        let Some(id) = self.label_target.take() else {
+            return;
+        };
+        let buf = self.new_label.take().unwrap_or_default();
+        let label = buf.trim();
+        self.state.set_label(&id, label);
+        let _ = self.state.save();
+        if label.is_empty() {
+            self.status = format!("label cleared for {}", short(&id));
+            // Re-extract the original title from disk shortly.
+            self.rescan_due = Some(Instant::now());
+        } else {
+            if let Some(s) = self.all_sessions.iter_mut().find(|s| s.id == id) {
+                s.title = format!("🏷 {label}");
+            }
+            self.status = format!("labeled: {label}");
+        }
+    }
+
+    // --- working-dir input ------------------------------------------------
+
+    /// Open the working-dir modal, pre-filled with the current directory so it
+    /// can be edited or replaced.
+    pub fn begin_dir_input(&mut self) {
+        self.dir_input = Some(self.cwd.display().to_string());
+    }
+
+    pub fn dir_input_push(&mut self, c: char) {
+        if let Some(buf) = self.dir_input.as_mut() {
+            buf.push(c);
+        }
+    }
+
+    pub fn dir_input_backspace(&mut self) {
+        if let Some(buf) = self.dir_input.as_mut() {
+            buf.pop();
+        }
+    }
+
+    pub fn cancel_dir_input(&mut self) {
+        self.dir_input = None;
+    }
+
+    /// Confirm the working-dir modal: validate the path, re-point the scope at
+    /// it, and kick a fresh scan in place. Invalid paths keep the modal open
+    /// with an error in the status line. A blank entry switches to global scope.
+    pub fn confirm_dir_input(&mut self) {
+        let raw = self.dir_input.clone().unwrap_or_default();
+        let trimmed = raw.trim();
+
+        if trimmed.is_empty() {
+            self.scope = Scope::Global;
+            self.dir_input = None;
+            self.state.last_scope = Some(self.scope.label());
+            let _ = self.state.save();
+            self.status = "scope → global".to_string();
+            self.start_bg_rescan();
+            return;
+        }
+
+        let path = expand_tilde(trimmed);
+        let resolved = path.canonicalize().unwrap_or(path);
+        if !resolved.is_dir() {
+            self.status = format!("not a directory: {}", resolved.display());
+            return; // keep the modal open so the user can fix it
+        }
+
+        self.cwd = resolved.clone();
+        self.scope = Scope::WorkingDir(resolved.clone());
+        self.dir_input = None;
+        self.state.last_scope = Some(self.scope.label());
+        let _ = self.state.save();
+        self.status = format!("working dir → {}", resolved.display());
+        self.start_bg_rescan();
+    }
+
+    // --- scope + scanning -------------------------------------------------
+}
+
+/// Expand a leading `~` / `~/` to the user's home directory. Other paths are
+/// returned unchanged (relative paths resolve against the process cwd later).
+pub(crate) fn expand_tilde(input: &str) -> PathBuf {
+    if input == "~" {
+        if let Some(home) = std::env::var_os("HOME") {
+            return PathBuf::from(home);
+        }
+    } else if let Some(rest) = input.strip_prefix("~/") {
+        if let Some(home) = std::env::var_os("HOME") {
+            return PathBuf::from(home).join(rest);
+        }
+    }
+    PathBuf::from(input)
+}

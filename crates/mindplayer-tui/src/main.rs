@@ -173,6 +173,11 @@ fn run(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut App) -> Resu
             if app.poll_activity() {
                 needs_draw = true;
             }
+            // Keep panes that need attention (blocked, then working) at the
+            // front of the grid regardless of when they were opened.
+            if app.reorder_panes_by_status() {
+                needs_draw = true;
+            }
             if app.flush_initial_inputs() {
                 needs_draw = true;
             }

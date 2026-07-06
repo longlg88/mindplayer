@@ -659,12 +659,6 @@ fn parse_claude_file(path: &Path, cwd_override: Option<&Path>) -> Option<Session
         }
     }
 
-    // Claude file stem IS the sessionId; trust it over a possibly-missing field.
-    let id = id.or_else(|| {
-        path.file_stem()
-            .and_then(|s| s.to_str())
-            .map(str::to_string)
-    })?;
     // Prefer the session's OWN recorded cwd. `encode_cwd` maps both '/' and '.'
     // to '-', so the Claude project directory name can collide across different
     // real cwds; trusting the dir-name-derived scope here could relabel a
@@ -678,6 +672,24 @@ fn parse_claude_file(path: &Path, cwd_override: Option<&Path>) -> Option<Session
         .or(title_fallback)
         .unwrap_or_else(|| "(empty)".to_string());
     let is_subagent = is_sidechain || looks_like_subagent_title(&title);
+    let stem_id = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .map(str::to_string);
+    // A spawned subagent's transcript (under `<session>/subagents/*.jsonl`)
+    // records its PARENT conversation's `sessionId` on every line, not one of
+    // its own — trusting that field here would collide every subagent with its
+    // parent (and with each other) under the same id. That corrupts anything
+    // keyed by id, e.g. the periodic mtime refresh: merging per-id updates
+    // could silently stamp the parent's fresh row with a subagent's stale one.
+    // The file stem (its own unique filename) is what's actually unique.
+    let id = if is_subagent {
+        stem_id.or(id)
+    } else {
+        // Claude file stem IS the sessionId; trust it over a possibly-missing
+        // field for the main transcript.
+        id.or(stem_id)
+    }?;
     Some(Session {
         id,
         agent: Agent::Claude,

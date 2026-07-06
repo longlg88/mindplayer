@@ -349,19 +349,20 @@ impl App {
     }
 
     /// Activity for a list row's time column: `(live_now, effective_last_active)`.
-    /// A thread root reflects its WHOLE thread — a parent whose own transcript is
-    /// stale (e.g. an orchestration parent whose lanes write their own files)
-    /// still reads "now" when a lane is running, or the lane's recent time when
-    /// the thread was worked on today. `child_count` (already computed by the
-    /// renderer) gates the thread scan so standalone rows stay O(1).
+    /// Every session in a thread (root, a middle handoff link, or a leaf child
+    /// lane) reflects the WHOLE thread's freshest activity, not just its own
+    /// transcript — a handoff child whose own file hasn't been touched since
+    /// it was created still reads the parent/sibling's recent time when the
+    /// thread was worked on since. Only a session with no parent AND no
+    /// children (truly standalone) skips the scan and stays O(1).
     pub fn row_activity(&self, s: &Session, child_count: usize) -> (bool, Option<DateTime<Utc>>) {
         if self.is_running(&s.id) {
             return (true, s.last_active);
         }
-        if child_count == 0 {
+        let root = self.state.thread_root(&s.id);
+        if child_count == 0 && root == s.id.as_str() {
             return (false, s.last_active);
         }
-        let root = self.state.thread_root(&s.id);
         let mut latest = s.last_active;
         for other in &self.all_sessions {
             if other.id == s.id || self.state.thread_root(&other.id) != root {
@@ -423,13 +424,27 @@ impl App {
         let Some(rx) = &self.refresh_rx else {
             return false;
         };
-        let Ok(updates) = rx.try_recv() else {
+        let Ok(updates_raw) = rx.try_recv() else {
             return false;
         };
         self.refresh_rx = None;
 
-        let updates: HashMap<String, ActivityUpdate> =
-            updates.into_iter().map(|u| (u.id.clone(), u)).collect();
+        // Defensive: if two discovered sessions ever share an id (e.g. a data
+        // source that embeds the wrong id in a nested transcript), a plain
+        // `collect()` into a HashMap would silently keep whichever update
+        // happened to be last, possibly stamping a freshly-active session with
+        // a stale sibling's timestamp. Keep the most-recently-active update
+        // per id instead, so a collision can only ever look "too fresh", never
+        // corrupt a genuinely active session backwards in time.
+        let mut updates: HashMap<String, ActivityUpdate> = HashMap::new();
+        for u in updates_raw {
+            match updates.get(&u.id) {
+                Some(existing) if existing.last_active >= u.last_active => {}
+                _ => {
+                    updates.insert(u.id.clone(), u);
+                }
+            }
+        }
         for s in self.all_sessions.iter_mut() {
             if let Some(update) = updates.get(&s.id) {
                 s.last_active = update.last_active;

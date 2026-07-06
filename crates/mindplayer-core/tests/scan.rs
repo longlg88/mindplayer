@@ -303,3 +303,61 @@ fn archive_state_merges_into_sessions() {
         .filter(|s| s.id != CODEX_ID)
         .all(|s| !s.archived));
 }
+
+#[test]
+fn claude_subagent_transcript_gets_its_own_id_not_the_parents() {
+    // Regression: a spawned subagent's transcript (`<session>/subagents/*.jsonl`)
+    // records the PARENT conversation's `sessionId` on every line, not one of
+    // its own. Trusting that field verbatim made every subagent collide with
+    // its parent under one id — corrupting anything keyed by id, notably the
+    // periodic mtime refresh (a stale subagent's timestamp could silently
+    // stamp over the parent's genuinely fresh one).
+    let dir = tempdir().unwrap();
+    let claude_dir = dir.path().join("claude");
+    const PARENT_ID: &str = "22222222-3333-4444-5555-666677778888";
+
+    write(
+        &claude_dir.join("-work").join(format!("{PARENT_ID}.jsonl")),
+        &[&format!(
+            r#"{{"type":"user","timestamp":"2026-02-01T09:00:00Z","cwd":"/work","sessionId":"{PARENT_ID}","message":{{"role":"user","content":"parent turn"}}}}"#
+        )],
+    );
+    // The subagent file's OWN name is "agent-sub1"; its content nonetheless
+    // claims the parent's sessionId, exactly like real Claude Code output.
+    write(
+        &claude_dir
+            .join("-work")
+            .join(PARENT_ID)
+            .join("subagents")
+            .join("agent-sub1.jsonl"),
+        &[&format!(
+            r#"{{"type":"user","timestamp":"2026-02-01T09:05:00Z","cwd":"/work","sessionId":"{PARENT_ID}","isSidechain":true,"message":{{"role":"user","content":"You are TEAM WORKER doing the subtask"}}}}"#
+        )],
+    );
+
+    let cfg = ScanConfig {
+        codex_dir: dir.path().join("codex"),
+        claude_dir,
+        kiro_dir: dir.path().join("kiro"),
+    };
+    let sessions = scan(&Scope::Global, &cfg);
+    assert_eq!(
+        sessions.len(),
+        2,
+        "the parent and its subagent must be two distinct sessions, not merged into one"
+    );
+
+    let parent = sessions.iter().find(|s| s.id == PARENT_ID);
+    assert!(parent.is_some(), "the parent keeps its real sessionId");
+    assert!(!parent.unwrap().is_subagent);
+
+    let sub = sessions
+        .iter()
+        .find(|s| s.id != PARENT_ID)
+        .expect("the subagent must not collide with the parent's id");
+    assert_eq!(
+        sub.id, "agent-sub1",
+        "a subagent's id comes from its own unique filename, not the shared sessionId field"
+    );
+    assert!(sub.is_subagent);
+}

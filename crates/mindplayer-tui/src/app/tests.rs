@@ -188,20 +188,47 @@ fn visible_excludes_archived_by_default() {
 #[test]
 fn panes_cap_at_max_and_replace_focused_pane() {
     let mut app = App::new();
-    for id in ["a", "b", "c", "d", "e", "f"] {
+    let ids: Vec<String> = (0..MAX_PANES).map(|i| format!("s{i}")).collect();
+    for id in &ids {
         app.focus_or_add_pane(id);
     }
-    assert_eq!(app.panes, vec!["a", "b", "c", "d", "e", "f"]);
+    assert_eq!(app.panes, ids);
     assert_eq!(app.panes.len(), MAX_PANES);
-    assert_eq!(app.focused_pane(), Some("f"));
+    assert_eq!(app.focused_pane(), Some(ids.last().unwrap().as_str()));
 
     // Wrap focus back to the first pane, then a new pane replaces it once
     // the pane list is full (cap reached).
     app.cycle_focus();
-    assert_eq!(app.focused_pane(), Some("a"));
-    app.focus_or_add_pane("g");
-    assert_eq!(app.panes, vec!["g", "b", "c", "d", "e", "f"]);
-    assert_eq!(app.focused_pane(), Some("g"));
+    assert_eq!(app.focused_pane(), Some(ids[0].as_str()));
+    app.focus_or_add_pane("new-overflow-pane");
+    let mut expected = ids.clone();
+    expected[0] = "new-overflow-pane".to_string();
+    assert_eq!(app.panes, expected);
+    assert_eq!(app.focused_pane(), Some("new-overflow-pane"));
+}
+
+#[test]
+fn reorder_panes_by_status_bubbles_urgent_panes_and_keeps_focus_on_the_same_session() {
+    let mut app = App::new();
+    for id in ["a", "b", "c"] {
+        app.focus_or_add_pane(id);
+    }
+    // "b" has exited (lowest priority, SessionStatus::Ended) and should sink
+    // to the back; "a" and "c" are both Inactive (no pty) and keep their
+    // relative order. Focus started on "c" (the last pane added).
+    app.ended.insert("b".to_string());
+    assert_eq!(app.focused_pane(), Some("c"));
+
+    assert!(app.reorder_panes_by_status());
+    assert_eq!(
+        app.panes,
+        vec!["a".to_string(), "c".to_string(), "b".to_string()]
+    );
+    // Focus follows the session id through the reorder, not the raw index.
+    assert_eq!(app.focused_pane(), Some("c"));
+
+    // Already in sorted order — a second call is a no-op.
+    assert!(!app.reorder_panes_by_status());
 }
 
 #[test]
@@ -466,6 +493,43 @@ fn thread_root_time_reflects_freshest_lane_activity() {
         .clone();
     let (_, eff_c) = app.row_activity(&c, app.thread_child_count("c"));
     assert_eq!(eff_c, Some(now));
+}
+
+#[test]
+fn handoff_child_leaf_reflects_parent_activity_even_though_it_has_no_children() {
+    // Regression: a handoff child (e.g. "(handoff)pulse") is a thread LEAF — it
+    // has zero children of its own, so `thread_child_count` is 0. The old code
+    // used that as a shortcut to skip the whole-thread scan and show only the
+    // child's own (possibly long-stale) transcript mtime — even though the
+    // parent it was handed off from was worked on minutes ago. A session with
+    // a parent is just as much "part of a thread" as one with children.
+    let now = chrono::Utc::now();
+    let mut parent = session("parent", Agent::Claude, false);
+    parent.last_active = Some(now); // touched moments ago
+    let mut child = session("child", Agent::Codex, false);
+    child.last_active = Some(now - chrono::Duration::hours(25)); // "1d" by itself
+    let mut app = app_with(vec![parent, child]);
+    app.state
+        .set_handoff_link("child", "parent", PathBuf::from("/tmp/h.md"), now);
+    app.rebuild_visible();
+
+    let child = app
+        .all_sessions
+        .iter()
+        .find(|s| s.id == "child")
+        .unwrap()
+        .clone();
+    assert_eq!(
+        app.thread_child_count("child"),
+        0,
+        "the child has no children of its own"
+    );
+    let (_, eff) = app.row_activity(&child, app.thread_child_count("child"));
+    assert_eq!(
+        eff,
+        Some(now),
+        "the child's row must reflect the parent's recent activity, not its own 25h-stale mtime"
+    );
 }
 
 #[test]

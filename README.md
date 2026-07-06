@@ -43,12 +43,13 @@ never modifies them — so it just works with the sessions you already have.
   together as live panes with one <kbd>Enter</kbd>.
 - 🚦 **Live status** — each row shows `● working` (producing output now),
   `● idle` (running, waiting), or `○ done` (ended) at a glance.
-- ⛶ **Live panes** — drive one session full‑screen or split the view across up
-  to **6** at once. <kbd>Tab</kbd> (or <kbd>Ctrl‑w</kbd>) cycles focus,
+- ⛶ **Live panes** — drive one session full‑screen or split the view across
+  every session you launch together (an orchestration thread's 20+ lanes all
+  land in one grid). <kbd>Tab</kbd> (or <kbd>Ctrl‑w</kbd>) cycles focus,
   <kbd>Ctrl‑z</kbd> zooms the focused pane back to full size (toggle again for
-  the split — no more squinting at a 6‑way grid), <kbd>Ctrl‑o</kbd> toggles the
-  horizontal/vertical split, <kbd>Ctrl‑q</kbd> closes the focused pane, and
-  <kbd>Ctrl‑x</kbd> pops back to the list.
+  the split — no more squinting at a packed grid), <kbd>Ctrl‑o</kbd> toggles
+  the horizontal/vertical split, <kbd>Ctrl‑q</kbd> closes the focused pane,
+  and <kbd>Ctrl‑x</kbd> pops back to the list.
 - 🗓️ **Recent first** — the list opens with everything touched in the **last
   24 hours** (a rolling window, not a calendar day — no midnight cliff) grouped
   at the top under a `recent` / `older` divider, so what you're working on now

@@ -203,6 +203,38 @@ impl App {
         }
     }
 
+    /// Bubble panes that need attention (blocked, then working) to the front
+    /// of the grid, so a busy session is never buried at the bottom of a
+    /// large multi-pane view. `session_status` already debounces its
+    /// classification (`WORKING_HOLD`), so this settles instead of flickering
+    /// when a pane's output merely pauses for a moment. A no-op ordering
+    /// returns `false` without touching `self.panes` or forcing a redraw.
+    pub fn reorder_panes_by_status(&mut self) -> bool {
+        if self.panes.len() < 2 {
+            return false;
+        }
+        let focused_id = self.focused_pane().map(str::to_string);
+        let mut ranked: Vec<(u8, usize, String)> = self
+            .panes
+            .iter()
+            .enumerate()
+            .map(|(i, id)| (status_rank(self.session_status(id)), i, id.clone()))
+            .collect();
+        ranked.sort_by_key(|(rank, i, _)| (*rank, *i));
+        let reordered: Vec<String> = ranked.into_iter().map(|(_, _, id)| id).collect();
+        if reordered == self.panes {
+            return false;
+        }
+        self.panes = reordered;
+        if let Some(id) = focused_id {
+            if let Some(pos) = self.panes.iter().position(|p| p == &id) {
+                self.focused = pos;
+            }
+        }
+        self.sync_active();
+        true
+    }
+
     /// Request a resume of the selected session in the right pane. If it is
     /// already running, just switch to it (keeping every other session alive).
     pub fn request_resume(&mut self) {

@@ -11,7 +11,9 @@ use mindplayer_core::Agent;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, Gauge, List, ListItem, ListState, Paragraph, Wrap};
+use ratatui::widgets::{
+    Block, BorderType, Borders, Clear, Gauge, List, ListItem, ListState, Paragraph, Wrap,
+};
 use ratatui::Frame;
 use std::path::Path;
 
@@ -664,7 +666,11 @@ fn session_list(f: &mut Frame, app: &mut App, area: Rect, now: DateTime<Utc>) {
 /// Number of grid rows to split the live area into for `n` panes. Horizontal
 /// layout favors wide grids (fewer rows / more columns), Vertical favors tall
 /// ones, so the chosen split direction still reads as "side-by-side" vs
-/// "stacked" even past the 3-pane point.
+/// "stacked" even past the 3-pane point. Small counts (up to 6) use
+/// hand-tuned layouts; an orchestration thread can easily have far more lanes
+/// than that (20+ is routine), so anything larger falls back to a near-square
+/// grid sized by `sqrt(n)` — still biased wide (floor) or tall (ceil) to match
+/// the chosen layout.
 fn grid_rows(n: usize, layout: PaneLayout) -> usize {
     match (n, layout) {
         (_, PaneLayout::Single) | (1, _) => 1,
@@ -672,8 +678,10 @@ fn grid_rows(n: usize, layout: PaneLayout) -> usize {
         (2, PaneLayout::Vertical) => 2,
         (3, PaneLayout::Vertical) => 3,
         (4, _) => 2,
-        (_, PaneLayout::Horizontal) => 2, // 5–6 panes: 3×2
-        (_, PaneLayout::Vertical) => 3,   // 5–6 panes: 2×3
+        (5, PaneLayout::Horizontal) | (6, PaneLayout::Horizontal) => 2,
+        (5, PaneLayout::Vertical) | (6, PaneLayout::Vertical) => 3,
+        (_, PaneLayout::Horizontal) => ((n as f64).sqrt().floor() as usize).max(1),
+        (_, PaneLayout::Vertical) => ((n as f64).sqrt().ceil() as usize).max(1),
     }
 }
 
@@ -810,10 +818,24 @@ fn render_pane(
 ) {
     let ended = app.ended.contains(sid);
     let (dot, dot_color) = pane_dot(app, sid, ended);
-    let name = app.session_display_name(sid, pane_area.width.saturating_sub(14) as usize);
+    let name = app.session_display_name(sid, pane_area.width.saturating_sub(18) as usize);
+    // A plain-colored name blends into the border line and is easy to miss when
+    // several panes are open — a bold, high-contrast chip (bg = the same color
+    // as the status dot) makes "which session is this" readable at a glance
+    // without stealing a content row from the terminal view.
     let title = Line::from(vec![
         Span::styled(dot, Style::default().fg(dot_color)),
-        Span::raw(format!("{name} {}/{} ", idx + 1, total)),
+        Span::styled(
+            format!(" {name} "),
+            Style::default()
+                .fg(Color::Rgb(15, 17, 22))
+                .bg(dot_color)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            format!(" {}/{} ", idx + 1, total),
+            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+        ),
         if zoomed {
             Span::styled("🔍 ", Style::default().fg(ACCENT))
         } else {
@@ -825,10 +847,21 @@ fn render_pane(
             Span::raw("")
         },
     ]);
+    // A thick border on the focused pane makes it unmistakable which one Tab
+    // will act on next when several panes are open side by side.
     let block = Block::default()
         .borders(Borders::ALL)
+        .border_type(if pane_focused {
+            BorderType::Thick
+        } else {
+            BorderType::Plain
+        })
         .title(title)
-        .border_style(Style::default().fg(if pane_focused { ACCENT } else { DIM }));
+        .border_style(if pane_focused {
+            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(DIM)
+        });
     let inner = block.inner(pane_area);
     f.render_widget(block, pane_area);
     app.pane_sizes
@@ -1570,26 +1603,36 @@ mod tests {
         }
     }
 
-    #[test]
-    fn six_panes_tile_without_gaps_or_overlap() {
-        let area = body();
+    /// Every cell of an `n`-pane grid stays inside `area`, has no zero-size
+    /// pane, and the cells cover `area` exactly (no gaps / no overlap, checked
+    /// via summed cell area) — for both split layouts.
+    fn assert_tiles_exactly(area: Rect, n: usize) {
         for layout in [PaneLayout::Horizontal, PaneLayout::Vertical] {
-            let rects = compute_pane_rects(area, 6, layout);
-            assert_eq!(rects.len(), 6, "all six panes get a rect");
-            // Every cell stays inside the body.
+            let rects = compute_pane_rects(area, n, layout);
+            assert_eq!(rects.len(), n, "all {n} panes get a rect");
             for r in &rects {
                 assert!(r.x >= area.x && r.x + r.width <= area.x + area.width);
                 assert!(r.y >= area.y && r.y + r.height <= area.y + area.height);
                 assert!(r.width > 0 && r.height > 0, "no zero-size pane");
             }
-            // The cells cover the full area exactly (no gaps / no overlap):
-            // summing cell areas equals the body area.
             let covered: u32 = rects
                 .iter()
                 .map(|r| u32::from(r.width) * u32::from(r.height))
                 .sum();
             assert_eq!(covered, u32::from(area.width) * u32::from(area.height));
         }
+    }
+
+    #[test]
+    fn six_panes_tile_without_gaps_or_overlap() {
+        assert_tiles_exactly(body(), 6);
+    }
+
+    #[test]
+    fn twenty_panes_tile_without_gaps_or_overlap() {
+        // A real orchestration thread routinely accumulates this many lanes —
+        // the grid must still generalize cleanly past the hand-tuned 1-6 cases.
+        assert_tiles_exactly(body(), 20);
     }
 
     #[test]

@@ -36,7 +36,12 @@ pub enum Focus {
     Terminal,
 }
 
-pub const MAX_PANES: usize = 6;
+/// Not a UI preference — an orchestration thread can accumulate many more
+/// lanes than fit comfortably on screen (20+ is routine), and the point of
+/// multi-select launch is to show ALL of them, not an arbitrary small slice.
+/// This is a resource safety ceiling only (each pane spawns a real child
+/// process), sized well above any observed real thread.
+pub const MAX_PANES: usize = 32;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PaneLayout {

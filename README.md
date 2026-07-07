@@ -41,8 +41,17 @@ never modifies them — so it just works with the sessions you already have.
 - 🪟 **Many sessions at once** — resume or start several; each keeps running in
   the background. **Mark several** in the list (<kbd>Space</kbd>) and launch them
   together as live panes with one <kbd>Enter</kbd>.
-- 🚦 **Live status** — each row shows `● working` (producing output now),
+- 🚦 **Live status** — each row shows `● blocked` (paused at an approval
+  prompt — needs you, sorted first), `● working` (producing output now),
   `● idle` (running, waiting), or `○ done` (ended) at a glance.
+- 🟣 **In-progress mark** — flag a session with <kbd>i</kbd> as work you're not
+  done with yet, independent of its live status; a thin rail keeps it visible
+  even once it's buried in `older`.
+- 💬 **Catch-up prompt** — pick up a session you left mid-task with
+  <kbd>c</kbd>: it asks that session's own agent to introduce the project,
+  open (or create) `backlog.html`, and summarize what you last asked and what
+  it did — no need to remember, and mindplayer never reads the answer itself.
+- 🔍 **Search** — <kbd>/</kbd> filters the visible list as you type.
 - ⛶ **Live panes** — drive one session full‑screen or split the view across
   every session you launch together (an orchestration thread's 20+ lanes all
   land in one grid). <kbd>Tab</kbd> (or <kbd>Ctrl‑w</kbd>) cycles focus,
@@ -162,13 +171,18 @@ make test                                          # cargo test --all
 | <kbd>h</kbd> | handoff the selected session to another provider |
 | <kbd>d</kbd> | change the working directory (blank = global) and rescan in place |
 | <kbd>e</kbd> | label the selected session (tag an existing one, or edit/clear its label) |
+| <kbd>i</kbd> | toggle the **in-progress** mark on the selected session (see above) |
+| <kbd>c</kbd> | send a **catch-up prompt** to the selected session (confirms first if it's busy) |
 | <kbd>o</kbd> | start an orchestration group with a main lane and child lanes |
+| <kbd>b</kbd> | broadcast the same instruction to every child lane in an orchestration thread |
 | <kbd>m</kbd> | ask the orchestration main lane to route work to specific child lanes |
 | <kbd>M</kbd> | paste and apply the main lane's `MINDPLAYER_DISPATCH` block |
 | <kbd>p</kbd> | run a child-lane peer review cycle |
 | <kbd>s</kbd> | send child-lane results back to the main lane for synthesis |
+| <kbd>/</kbd> | search / filter the visible sessions |
 | <kbd>x</kbd> | close (archive) & stop the selected session |
 | <kbd>a</kbd> | toggle archived view · <kbd>g</kbd> toggle sub‑agents · <kbd>r</kbd> rescan |
+| <kbd>?</kbd> | show the full keyboard-shortcut list |
 | <kbd>q</kbd> | quit (stops all sessions) |
 
 Inside a live session, <kbd>Shift+Enter</kbd> inserts a newline (<kbd>Enter</kbd>
@@ -187,12 +201,15 @@ Code, or Kiro:
 
 1. Press <kbd>o</kbd> to create a main coordinator lane plus numbered child
    lanes.
-2. Press <kbd>m</kbd> on the orchestration thread to ask the main lane to decide
-   which child lanes should receive the next work.
-3. Copy the main lane's `MINDPLAYER_DISPATCH` block, press <kbd>M</kbd>, paste
+2. Press <kbd>b</kbd> to send every child lane the **same** instruction at
+   once — skip this if lanes need different work.
+3. Or press <kbd>m</kbd> on the orchestration thread to ask the main lane to
+   decide which child lanes should receive the next (possibly different)
+   work.
+4. Copy the main lane's `MINDPLAYER_DISPATCH` block, press <kbd>M</kbd>, paste
    it, and MindPlayer sends each lane only its assigned instruction.
-4. Press <kbd>p</kbd> when child lanes should review one another's results.
-5. Press <kbd>s</kbd> to wait for child lanes to become idle and send the latest
+5. Press <kbd>p</kbd> when child lanes should review one another's results.
+6. Press <kbd>s</kbd> to wait for child lanes to become idle and send the latest
    implementation/review context back to the main lane for synthesis.
 
 Opening an orchestration lane with <kbd>Enter</kbd> does not auto-submit thread
@@ -220,7 +237,8 @@ Read‑only data sources:
   timestamps, and title). Kiro records no cumulative token counts, so the usage
   column shows its **context‑window occupancy** (e.g. `15%`) instead.
 
-MindPlayer keeps its own tiny sidecar state (archived ids, labels) at
+MindPlayer keeps its own tiny sidecar state (archived ids, labels,
+in-progress marks) at
 `~/.mindplayer/state.json` and per‑session stderr logs at
 `~/.mindplayer/logs/`. Resuming launches `codex resume <id>` /
 `claude --resume <id>` / `kiro-cli chat --resume-id <id>` in an embedded PTY in

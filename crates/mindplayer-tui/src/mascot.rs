@@ -12,68 +12,89 @@ const TAIL: Color = Color::Rgb(74, 134, 173);
 const INK: Color = Color::Rgb(28, 43, 51);
 const LIGHT: Color = Color::Rgb(234, 246, 251);
 const BLUSH: Color = Color::Rgb(246, 166, 192);
+const HIGHLIGHT: Color = Color::Rgb(127, 178, 224);
 
 /// One expression: a 24-wide sprite plus which cells are its eye (so blink
 /// can close the right pixels regardless of how big/where that variant's
 /// eye is drawn).
 struct Variant {
-    art: [&'static str; 10],
+    art: [&'static str; 13],
     eye: &'static [(usize, usize)],
 }
+
+// Rows 0-3 are the spout (a stem bursting into a horizontal arm, plus two
+// stray droplets) and are identical across every variant — only the body
+// below it (head, back highlight, belly, tail) changes per expression.
+const SPOUT: [&str; 4] = [
+    ".......D....D...........",
+    ".........DDDDD..........",
+    "...........DD...........",
+    "...........DD...........",
+];
 
 const VARIANTS: [Variant; 3] = [
     // "큰눈 + 볼터치" — bigger two-pixel eye, blushing cheek.
     Variant {
         art: [
-            "...D.D..................",
-            ".AAAAA..................",
-            ".AAAAAAAAAAAA...........",
-            ".AAAAAAAAAAAAAAAAA.BB...",
-            "AAACCAAAAAAAAAAAABBB....",
-            "CAEAAAAAAAAAAAAABB......",
-            ".AAABAAAAAAAAAA.........",
-            "..AAADDDDDDDDD..........",
-            "....DDDDDDD.............",
-            "......DDD...............",
+            SPOUT[0],
+            SPOUT[1],
+            SPOUT[2],
+            SPOUT[3],
+            "....AAAAAAAAAA..........",
+            "..FFFAAAAAAAAAAAAA......",
+            ".AAAACCAAAAAAAAAAABB....",
+            ".AEAAAAAAAAAAAAAAAABBB..",
+            ".DDDDDAAAAAAAAAAABBB....",
+            ".DDDDDDDDAAAAAAAAA......",
+            "..DDDDDDDDDAAAAA........",
+            "...DDDDDDDDDAA..........",
+            ".....DDDDDDD............",
         ],
-        eye: &[(4, 3), (4, 4)],
+        eye: &[(6, 5), (6, 6)],
     },
-    // "방긋 미소 + 볼터치" — soft open smile instead of a closed mouth dot.
+    // "차분한 표정" — plain single-pixel eye, no blush.
     Variant {
         art: [
-            "...D.D..................",
-            ".AAAAA..................",
-            ".AAAAAAAAAAAA...........",
-            ".AAAAAAAAAAAAAAAAA.BB...",
-            "AAACAAAAAAAAAAAAABBB....",
-            "DDEAAAAAAAAAAAAABB......",
-            "D.AABAAAAAAAAAA.........",
-            "..AAADDDDDDDDD..........",
-            "....DDDDDDD.............",
-            "......DDD...............",
+            SPOUT[0],
+            SPOUT[1],
+            SPOUT[2],
+            SPOUT[3],
+            "....AAAAAAAAAA..........",
+            "..FFFAAAAAAAAAAAAA......",
+            ".AAAACAAAAAAAAAAAABB....",
+            ".AAAAAAAAAAAAAAAAAABBB..",
+            ".DDDDDAAAAAAAAAAABBB....",
+            ".DDDDDDDDAAAAAAAAA......",
+            "..DDDDDDDDDAAAAA........",
+            "...DDDDDDDDDAA..........",
+            ".....DDDDDDD............",
         ],
-        eye: &[(4, 3)],
+        eye: &[(6, 5)],
     },
-    // "큰 꼬리, 다이나믹" — a taller, higher tail fluke mid-swing.
+    // "다이나믹, 큰 꼬리" — same eye as above, tail hook stretched up a row
+    // higher so it reads mid-swing.
     Variant {
         art: [
-            "...D.D..................",
-            ".AAAAA..................",
-            ".AAAAAAAAAAAA.......BB..",
-            ".AAAAAAAAAAAAAAAAABBB...",
-            "AAACAAAAAAAAAAAAABBBB...",
-            "CAAAAAAAAAAAAAAABBB.....",
-            ".AAABAAAAAAAAAA.........",
-            "..AAADDDDDDDDD..........",
-            "....DDDDDDD.............",
-            "......DDD...............",
+            SPOUT[0],
+            SPOUT[1],
+            SPOUT[2],
+            SPOUT[3],
+            "....AAAAAAAAAA..........",
+            "..FFFAAAAAAAAAAAAABB....",
+            ".AAAACAAAAAAAAAAAABB....",
+            ".AAAAAAAAAAAAAAAAAABBB..",
+            ".DDDDDAAAAAAAAAAABBB....",
+            ".DDDDDDDDAAAAAAAAA......",
+            "..DDDDDDDDDAAAAA........",
+            "...DDDDDDDDDAA..........",
+            ".....DDDDDDD............",
         ],
-        eye: &[(4, 3)],
+        eye: &[(6, 5)],
     },
 ];
 
 const ART_WIDTH: usize = 24;
-const ART_HEIGHT: usize = 10;
+const ART_HEIGHT: usize = 13;
 /// How many terminal cells each pixel of the 24x10 art becomes. Upscaling
 /// the validated pixel data (rather than hand-drawing a bigger grid) keeps
 /// the exact same silhouette/eye coordinates and just makes it read bigger.
@@ -109,6 +130,7 @@ fn color(c: char) -> Option<Color> {
         'C' => Some(INK),
         'D' => Some(LIGHT),
         'E' => Some(BLUSH),
+        'F' => Some(HIGHLIGHT),
         _ => None,
     }
 }

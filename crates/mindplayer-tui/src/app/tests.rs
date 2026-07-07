@@ -249,6 +249,34 @@ fn pane_focus_layout_and_close_update_active() {
 }
 
 #[test]
+fn typing_while_initial_input_pending_is_held_not_dropped() {
+    let mut app = App::new();
+    app.focus_or_add_pane("a");
+    app.pending_initial_inputs.insert(
+        "a".to_string(),
+        DeferredInitialInput {
+            bytes: b"handoff context".to_vec(),
+            queued_at: Instant::now(),
+            held_input: Vec::new(),
+        },
+    );
+
+    app.send_to_pty(b"h");
+    app.send_to_pty(b"i");
+    assert_eq!(
+        app.pending_initial_inputs.get("a").unwrap().held_input,
+        b"hi"
+    );
+    assert!(app.status.contains("input is held"));
+
+    assert!(app.paste_to_pty("more"));
+    assert_eq!(
+        app.pending_initial_inputs.get("a").unwrap().held_input,
+        b"himore"
+    );
+}
+
+#[test]
 fn pane_selection_bounds_normalize_row_major() {
     // Anchor after cursor (drag up-left) normalizes to start <= end.
     let s = PaneSelection {
@@ -677,6 +705,53 @@ fn close_selected_archives_and_hides() {
             .archived
     );
     assert!(app.visible.iter().all(|&i| app.all_sessions[i].id != "a"));
+}
+
+#[test]
+fn toggle_in_progress_marks_persists_and_unmarks() {
+    let _env = STATE_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let tmp = std::env::temp_dir().join(format!("mp-inprog-{}.json", std::process::id()));
+    std::env::set_var("MINDPLAYER_STATE", &tmp);
+
+    let mut app = app_with(vec![session("a", Agent::Codex, false)]);
+    app.selected = 0;
+
+    app.toggle_in_progress();
+    assert!(app.state.is_in_progress("a"));
+    let saved = mindplayer_core::State::load_from(&tmp);
+    assert!(saved.is_in_progress("a"), "mark persisted to sidecar");
+
+    app.toggle_in_progress();
+    assert!(!app.state.is_in_progress("a"));
+    let saved = mindplayer_core::State::load_from(&tmp);
+    assert!(!saved.is_in_progress("a"), "unmark persisted to sidecar");
+
+    let _ = std::fs::remove_file(&tmp);
+    std::env::remove_var("MINDPLAYER_STATE");
+}
+
+#[test]
+fn begin_catchup_on_a_session_with_no_live_pty_leaves_no_confirm() {
+    // No PTY registered → session_status reads Inactive, not one of the
+    // Blocked/Working/Idle states this feature is scoped to — it should
+    // explain why instead of resuming the session just to deliver a prompt.
+    let mut app = app_with(vec![session("a", Agent::Codex, false)]);
+    app.selected = 0;
+    app.begin_catchup();
+    assert!(app.catchup_confirm.is_none());
+    assert!(
+        app.status.contains("live session"),
+        "status should explain why nothing was sent: {}",
+        app.status
+    );
+}
+
+#[test]
+fn cancel_catchup_clears_the_confirm_without_sending() {
+    let mut app = app_with(vec![session("a", Agent::Codex, false)]);
+    app.catchup_confirm = Some("a".to_string());
+    app.cancel_catchup();
+    assert!(app.catchup_confirm.is_none());
 }
 
 #[test]

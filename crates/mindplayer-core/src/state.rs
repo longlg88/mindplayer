@@ -49,6 +49,11 @@ pub struct State {
     pub version: u32,
     #[serde(default)]
     pub archived: BTreeSet<String>,
+    /// Sessions the user has manually marked as "my work here isn't done yet" —
+    /// independent of the live PTY status (a session can be Idle/Ended and
+    /// still be in progress, or Working and not be something you're tracking).
+    #[serde(default)]
+    pub in_progress: BTreeSet<String>,
     /// User-chosen labels for sessions created through MindPlayer (sessionId -> label).
     #[serde(default)]
     pub labels: BTreeMap<String, String>,
@@ -74,6 +79,7 @@ impl Default for State {
         State {
             version: default_version(),
             archived: BTreeSet::new(),
+            in_progress: BTreeSet::new(),
             labels: BTreeMap::new(),
             pending_labels: Vec::new(),
             pending_handoffs: Vec::new(),
@@ -145,6 +151,18 @@ impl State {
             self.archived.insert(id.to_string());
         } else {
             self.archived.remove(id);
+        }
+    }
+
+    pub fn is_in_progress(&self, id: &str) -> bool {
+        self.in_progress.contains(id)
+    }
+
+    pub fn set_in_progress(&mut self, id: &str, in_progress: bool) {
+        if in_progress {
+            self.in_progress.insert(id.to_string());
+        } else {
+            self.in_progress.remove(id);
         }
     }
 

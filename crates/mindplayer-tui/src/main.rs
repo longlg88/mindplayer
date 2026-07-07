@@ -660,6 +660,17 @@ fn handle_main_key(app: &mut App, key: KeyEvent) {
         return;
     }
 
+    // Catch-up confirm: only reached for a Working/Blocked target (Idle sends
+    // at once in begin_catchup) — asks before queuing in behind its turn.
+    if app.catchup_confirm.is_some() {
+        match key.code {
+            KeyCode::Enter => app.confirm_catchup(),
+            KeyCode::Esc => app.cancel_catchup(),
+            _ => {}
+        }
+        return;
+    }
+
     if app.search_query.is_some() {
         match key.code {
             KeyCode::Backspace => app.search_backspace(),
@@ -669,6 +680,12 @@ fn handle_main_key(app: &mut App, key: KeyEvent) {
             KeyCode::Down => app.move_selection(1),
             KeyCode::PageUp => app.move_page(-1),
             KeyCode::PageDown => app.move_page(1),
+            // Marking still wins over typing while both modes are on —
+            // otherwise Space/v would silently go into the filter text
+            // instead of marking/leaving multi-select, with no way back
+            // except abandoning the search.
+            KeyCode::Char(' ') if app.multi_select => app.toggle_mark(),
+            KeyCode::Char('v') if app.multi_select => app.toggle_multi_select(),
             KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
                 app.search_push(c)
             }
@@ -765,7 +782,17 @@ fn handle_main_key(app: &mut App, key: KeyEvent) {
                 KeyCode::Char('v') => app.toggle_multi_select(),
                 KeyCode::Char(' ') if app.multi_select => app.toggle_mark(),
                 KeyCode::Esc if app.multi_select => app.cancel_multi_select(),
+                // These four act on "the one row under the cursor," which is
+                // meaningless (and, for 'x', destructive) while several rows
+                // are marked — block them instead of silently acting on
+                // whichever row happens to be highlighted.
+                KeyCode::Char('n' | 'e' | 'h' | 'x' | 'i' | 'c') if app.multi_select => {
+                    app.status =
+                        "multi-select: finish (enter) or cancel (esc) before this".to_string();
+                }
                 KeyCode::Char('n') => app.new_picker = Some(0),
+                KeyCode::Char('i') => app.toggle_in_progress(),
+                KeyCode::Char('c') => app.begin_catchup(),
                 code if is_help_key(code, key.modifiers) => app.toggle_help(),
                 KeyCode::Char('/') => app.begin_search(),
                 KeyCode::Char('d') => app.begin_dir_input(),
@@ -1192,6 +1219,91 @@ mod tests {
         handle_main_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
         assert!(!app.multi_select);
         assert!(app.marked.is_empty());
+    }
+
+    #[test]
+    fn search_mode_gives_space_and_v_to_multi_select_instead_of_the_query() {
+        let mut app = main_app_with_session("s1");
+        handle_main_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE),
+        );
+        assert!(app.multi_select);
+        handle_main_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE),
+        );
+        assert!(app.search_query.is_some(), "search can still open");
+
+        // Space marks the row instead of typing a space into the query.
+        handle_main_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE),
+        );
+        assert_eq!(app.marked.len(), 1);
+        assert_eq!(app.search_query.as_deref(), Some(""));
+
+        // 'v' leaves multi-select instead of typing "v" into the query.
+        handle_main_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE),
+        );
+        assert!(!app.multi_select);
+        assert_eq!(app.search_query.as_deref(), Some(""));
+
+        // Search itself still works for any other character.
+        handle_main_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE),
+        );
+        assert_eq!(app.search_query.as_deref(), Some("x"));
+    }
+
+    #[test]
+    fn multi_select_blocks_single_session_shortcuts_instead_of_acting_on_the_cursor_row() {
+        let mut app = main_app_with_session("s1");
+        handle_main_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE),
+        );
+        assert!(app.multi_select);
+
+        for c in ['n', 'e', 'h', 'x', 'i', 'c'] {
+            app.status.clear();
+            handle_main_key(
+                &mut app,
+                KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE),
+            );
+            assert!(
+                !app.status.is_empty(),
+                "{c} should explain why it did nothing"
+            );
+            assert!(app.multi_select, "{c} must not cancel multi-select");
+            // Each key's own real action, checked directly rather than by
+            // inference — in particular 'x' actually archives on its normal
+            // path, so this is the one that matters most to get right.
+            match c {
+                'n' => assert!(
+                    app.new_picker.is_none(),
+                    "n must not open the new-session picker"
+                ),
+                'e' => assert!(app.new_label.is_none(), "e must not open the label editor"),
+                'h' => assert!(
+                    app.handoff_picker.is_none(),
+                    "h must not open the handoff picker"
+                ),
+                'x' => assert!(!app.state.is_archived("s1"), "x must not archive the row"),
+                'i' => assert!(
+                    !app.state.is_in_progress("s1"),
+                    "i must not toggle the in-progress mark"
+                ),
+                'c' => assert!(
+                    app.catchup_confirm.is_none(),
+                    "c must not open the catch-up confirm"
+                ),
+                _ => unreachable!(),
+            }
+        }
     }
 
     #[test]

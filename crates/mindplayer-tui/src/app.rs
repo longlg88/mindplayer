@@ -289,6 +289,9 @@ pub struct App {
     pub dispatch: Option<orchestration::BroadcastDraft>,
     /// Manual dispatch-block paste prompt opened by `M`.
     pub dispatch_apply: Option<orchestration::BroadcastDraft>,
+    /// Set by `c` on a Working/Blocked session, holding its id, while the
+    /// "send anyway?" confirm is up. Idle sessions skip this and send at once.
+    pub catchup_confirm: Option<String>,
     /// Keyboard shortcut help overlay opened by `?`.
     pub help_visible: bool,
     /// Orchestration root waiting for child lanes to become idle before
@@ -408,6 +411,7 @@ impl App {
             broadcast: None,
             dispatch: None,
             dispatch_apply: None,
+            catchup_confirm: None,
             help_visible: false,
             pending_synthesis_root: None,
             search_query: None,

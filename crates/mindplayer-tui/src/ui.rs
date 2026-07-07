@@ -23,6 +23,10 @@ const DIM: Color = Color::Rgb(140, 146, 158);
 // the focus border/selection highlight, so an idle+focused/selected session
 // had no color-based way to tell "this is idle" apart from "this is focused."
 const IDLE: Color = Color::Rgb(111, 154, 149);
+// Orchid — reserved for the manual "in progress" mark so it never gets
+// mistaken for a live-status color (blocked/working/idle/done all sit in the
+// amber/green/teal/rose range).
+const IN_PROGRESS: Color = Color::Rgb(201, 166, 255);
 const SPINNER: [&str; 8] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧"];
 
 fn agent_tag(agent: Agent) -> (&'static str, Color) {
@@ -277,7 +281,11 @@ fn main_view(f: &mut Frame, app: &mut App) {
         Focus::Terminal => live_pane(f, app, outer[1]),
     }
 
-    let keys: String = if app.search_query.is_some() {
+    let keys: String = if app.search_query.is_some() && app.multi_select {
+        // Marking wins over typing for these two keys (see main.rs) — say so,
+        // instead of only ever showing one of the two active modes' hints.
+        "MULTI-SELECT + search · space mark · v exit multi-select · type to filter · esc exit search".to_string()
+    } else if app.search_query.is_some() {
         "type to filter · enter open · ↑↓ move · esc exit search".to_string()
     } else {
         match app.focus {
@@ -328,7 +336,7 @@ fn main_view(f: &mut Frame, app: &mut App) {
     if show_more_keys {
         f.render_widget(
             Paragraph::new(Line::from(Span::styled(
-                "o orchestrate · b broadcast    +10 more · ? help",
+                "o orchestrate · b broadcast · i in progress · c catch-up    +10 more · ? help",
                 Style::default().fg(Color::Rgb(90, 95, 108)),
             )))
             .alignment(Alignment::Right),
@@ -358,7 +366,40 @@ fn main_view(f: &mut Frame, app: &mut App) {
         }
     } else if let Some(path) = &app.dir_input {
         dir_input_popup(f, path);
+    } else if let Some(id) = &app.catchup_confirm {
+        let title = app
+            .all_sessions
+            .iter()
+            .find(|s| &s.id == id)
+            .map(|s| s.title.as_str())
+            .unwrap_or("this session");
+        catchup_confirm_popup(f, title);
     }
+}
+
+fn catchup_confirm_popup(f: &mut Frame, title: &str) {
+    let area = centered(f.area(), 64, 7);
+    f.render_widget(Clear, area);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(ACCENT))
+        .title(" Send catch-up prompt? ");
+    let lines = vec![
+        Line::from(Span::styled(
+            "This session is still busy — the prompt will queue in behind",
+            Style::default().fg(DIM),
+        )),
+        Line::from(Span::styled(
+            format!("its current turn: {}", truncate(title, 56)),
+            Style::default(),
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            "enter send anyway   esc cancel",
+            Style::default().fg(DIM),
+        )),
+    ];
+    f.render_widget(Paragraph::new(lines).block(block), area);
 }
 
 fn dir_input_popup(f: &mut Frame, path: &str) {
@@ -477,10 +518,11 @@ fn session_list(f: &mut Frame, app: &mut App, area: Rect, now: DateTime<Utc>) {
     let show_id = area.width >= 58;
     let show_cwd = area.width >= 78;
     let identity_width = usize::from(show_id) * 11 + usize::from(show_cwd) * 11;
-    // 38 = status badge + agent bar/tag + time + thread prefix + the 2-col
-    // multi-select mark column prepended to every row.
+    // 39 = status badge + agent bar/tag + time + thread prefix + the 2-col
+    // multi-select mark column + the 1-col in-progress rail prepended to
+    // every row.
     let max_title = (area.width as usize)
-        .saturating_sub(38 + identity_width)
+        .saturating_sub(39 + identity_width)
         .max(12);
     // Top-level categories. rebuild_visible sorts every recent group (touched
     // in the last 24h OR running live now) above the rest and records the
@@ -571,8 +613,17 @@ fn session_list(f: &mut Frame, app: &mut App, area: Rect, now: DateTime<Utc>) {
             } else {
                 relative_time(eff_active, now)
             };
+            // A 1-col rail, independent of recent/older and the live status
+            // badge — it's the one thing that survives a session going
+            // Idle/Ended and staying buried in "older".
+            let rail = if app.state.is_in_progress(&s.id) {
+                Span::styled("┃", Style::default().fg(IN_PROGRESS))
+            } else {
+                Span::raw(" ")
+            };
             let mut spans = vec![
                 Span::styled(mark_glyph, mark_style),
+                rail,
                 Span::styled(format!("{badge} "), badge_style),
                 Span::styled(
                     "▌",
@@ -1313,6 +1364,11 @@ fn help_popup(f: &mut Frame) {
         item("h", "handoff selected session to another provider"),
         item("e", "edit selected session label"),
         item("x", "close/archive selected session"),
+        item("i", "toggle the 'in progress' mark on selected session"),
+        item(
+            "c",
+            "send a catch-up prompt to selected session (confirms if busy)",
+        ),
         Line::from(""),
         section("Orchestration"),
         item("o", "start an orchestration group"),

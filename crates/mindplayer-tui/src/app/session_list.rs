@@ -1,6 +1,15 @@
 use super::orchestration_lanes::{is_orchestration_child_session, is_orchestration_main_session};
 use super::*;
 
+/// Sent verbatim into a live session's CLI by `c` (catch-up) — the target
+/// agent answers using its own project/backlog/transcript, mindplayer never
+/// reads or summarizes any of it itself.
+const CATCHUP_PROMPT: &str = "\
+잠깐 다른 일 하다가 돌아왔어. 아래 정리해서 알려줘:
+1. 지금 이 프로젝트가 뭐 하는 프로젝트인지 간단히 소개
+2. 이 프로젝트에 backlog.html이 있으면 열어서 보여주고, 없으면 지금까지 진행 상황 기반으로 하나 만들어줘
+3. 최근에 내가 뭘 물어봤고 네가 뭘 했는지 요약";
+
 pub(crate) fn matches_search(s: &Session, query: &str) -> bool {
     let query = query.trim().to_lowercase();
     query.is_empty()
@@ -386,6 +395,70 @@ impl App {
         self.show_subagents = !self.show_subagents;
         self.selected = 0;
         self.rebuild_visible();
+    }
+
+    /// Toggle the manual "my work here isn't done yet" mark on the selected
+    /// session — orthogonal to its live PTY status (see [`SessionStatus`]),
+    /// so it survives the session going Idle/Ended and stays visible even
+    /// buried in the older group.
+    pub fn toggle_in_progress(&mut self) {
+        let Some(session) = self.selected_session() else {
+            return;
+        };
+        let id = session.id.clone();
+        let now_in_progress = !self.state.is_in_progress(&id);
+        self.state.set_in_progress(&id, now_in_progress);
+        let _ = self.state.save();
+        self.status = if now_in_progress {
+            "marked in progress".to_string()
+        } else {
+            "unmarked in progress".to_string()
+        };
+    }
+
+    /// `c` on the selected session. Idle sessions get the catch-up prompt
+    /// right away; Working/Blocked ones confirm first since it queues in
+    /// behind whatever turn is already running. Ended/Inactive sessions have
+    /// no live PTY to receive it, so they're left alone rather than resumed
+    /// just to deliver this.
+    pub fn begin_catchup(&mut self) {
+        let Some(session) = self.selected_session() else {
+            return;
+        };
+        let id = session.id.clone();
+        match self.session_status(&id) {
+            SessionStatus::Idle => self.send_catchup(&id),
+            SessionStatus::Working | SessionStatus::Blocked => {
+                self.catchup_confirm = Some(id);
+                self.status = "catch-up: session is busy — send anyway? (enter/esc)".to_string();
+            }
+            SessionStatus::Ended | SessionStatus::Inactive => {
+                self.status = "catch-up only works on a live session".to_string();
+            }
+        }
+    }
+
+    pub fn confirm_catchup(&mut self) {
+        if let Some(id) = self.catchup_confirm.take() {
+            self.send_catchup(&id);
+        }
+    }
+
+    pub fn cancel_catchup(&mut self) {
+        self.catchup_confirm = None;
+    }
+
+    fn send_catchup(&mut self, id: &str) {
+        let Some(session) = self.all_sessions.iter().find(|s| s.id == id).cloned() else {
+            return;
+        };
+        let mut input = CATCHUP_PROMPT.to_string();
+        input.push('\r');
+        if self.enqueue_or_submit_to_session(&session, input.into_bytes()) {
+            self.status = format!("catch-up prompt sent to {}", short(&session.id));
+        } else {
+            self.status = format!("catch-up failed to send to {}", short(&session.id));
+        }
     }
 
     pub fn rescan(&mut self) {

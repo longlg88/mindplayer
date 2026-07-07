@@ -203,25 +203,21 @@ impl App {
         }
     }
 
-    /// Bubble panes that need attention (blocked, then working) to the front
-    /// of the grid, so a busy session is never buried at the bottom of a
-    /// large multi-pane view. `session_status` already debounces its
-    /// classification (`WORKING_HOLD`), so this settles instead of flickering
-    /// when a pane's output merely pauses for a moment. A no-op ordering
-    /// returns `false` without touching `self.panes` or forcing a redraw.
+    /// Bubble only *blocked* panes to the front of the grid — a rare, stable
+    /// event that genuinely needs you now. Working/idle panes are drawn with
+    /// their own glow/color (see `ui::render_pane`) but never reordered:
+    /// "working" turns on the instant any pty emits a byte, so with several
+    /// panes streaming at once it is far too noisy a signal to reposition on.
+    /// A no-op ordering returns `false` without touching `self.panes` or
+    /// forcing a redraw.
     pub fn reorder_panes_by_status(&mut self) -> bool {
         if self.panes.len() < 2 {
             return false;
         }
         let focused_id = self.focused_pane().map(str::to_string);
-        let mut ranked: Vec<(u8, usize, String)> = self
-            .panes
-            .iter()
-            .enumerate()
-            .map(|(i, id)| (status_rank(self.session_status(id)), i, id.clone()))
-            .collect();
-        ranked.sort_by_key(|(rank, i, _)| (*rank, *i));
-        let reordered: Vec<String> = ranked.into_iter().map(|(_, _, id)| id).collect();
+        let reordered = bubble_urgent_to_front(&self.panes, |id| {
+            self.session_status(id) == SessionStatus::Blocked
+        });
         if reordered == self.panes {
             return false;
         }
@@ -519,5 +515,38 @@ impl App {
             }
         }
         false
+    }
+}
+
+/// Stable-partitions `ids` into "urgent first, everyone else after," keeping
+/// each group's original relative order. Pulled out of `App` so the sort
+/// itself can be tested without a real `PtySession` (see the `pane` test
+/// module for the App-level focus-preservation smoke test).
+fn bubble_urgent_to_front(ids: &[String], mut is_urgent: impl FnMut(&str) -> bool) -> Vec<String> {
+    let mut ranked: Vec<(u8, usize, &String)> = ids
+        .iter()
+        .enumerate()
+        .map(|(i, id)| (u8::from(!is_urgent(id)), i, id))
+        .collect();
+    ranked.sort_by_key(|(rank, i, _)| (*rank, *i));
+    ranked.into_iter().map(|(_, _, id)| id.clone()).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::bubble_urgent_to_front;
+
+    #[test]
+    fn bubble_urgent_to_front_preserves_relative_order_within_each_group() {
+        let ids: Vec<String> = ["a", "b", "c", "d"].iter().map(|s| s.to_string()).collect();
+        let out = bubble_urgent_to_front(&ids, |id| id == "c");
+        assert_eq!(out, vec!["c", "a", "b", "d"]);
+    }
+
+    #[test]
+    fn bubble_urgent_to_front_is_a_no_op_when_nothing_is_urgent() {
+        let ids: Vec<String> = ["a", "b", "c"].iter().map(|s| s.to_string()).collect();
+        let out = bubble_urgent_to_front(&ids, |_| false);
+        assert_eq!(out, ids);
     }
 }

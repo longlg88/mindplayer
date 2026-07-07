@@ -208,27 +208,23 @@ fn panes_cap_at_max_and_replace_focused_pane() {
 }
 
 #[test]
-fn reorder_panes_by_status_bubbles_urgent_panes_and_keeps_focus_on_the_same_session() {
+fn reorder_panes_by_status_is_quiet_unless_a_pane_is_actually_blocked() {
     let mut app = App::new();
     for id in ["a", "b", "c"] {
         app.focus_or_add_pane(id);
     }
-    // "b" has exited (lowest priority, SessionStatus::Ended) and should sink
-    // to the back; "a" and "c" are both Inactive (no pty) and keep their
-    // relative order. Focus started on "c" (the last pane added).
+    // None of these panes have a real pty, so none can classify as Blocked —
+    // Ended/Inactive/Idle/Working no longer trigger a reorder on their own
+    // (see bubble_urgent_to_front's unit tests for the actual sort logic).
     app.ended.insert("b".to_string());
     assert_eq!(app.focused_pane(), Some("c"));
 
-    assert!(app.reorder_panes_by_status());
+    assert!(!app.reorder_panes_by_status());
     assert_eq!(
         app.panes,
-        vec!["a".to_string(), "c".to_string(), "b".to_string()]
+        vec!["a".to_string(), "b".to_string(), "c".to_string()]
     );
-    // Focus follows the session id through the reorder, not the raw index.
     assert_eq!(app.focused_pane(), Some("c"));
-
-    // Already in sorted order — a second call is a no-op.
-    assert!(!app.reorder_panes_by_status());
 }
 
 #[test]

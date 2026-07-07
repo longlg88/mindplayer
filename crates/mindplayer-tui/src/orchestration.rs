@@ -30,6 +30,11 @@ pub struct Draft {
     pub skill: String,
     pub instruction: String,
     pub children: usize,
+    /// Cursor position within whichever field is active for the current
+    /// `step` (byte offset — see [`Draft::active_text`]). Reset to the end
+    /// of that field whenever `step` changes, so entering Skill/Instruction
+    /// always starts out appending.
+    pub cursor: usize,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -52,12 +57,15 @@ impl Default for Draft {
             skill: String::new(),
             instruction: String::new(),
             children: 3,
+            cursor: 0,
         }
     }
 }
 
 impl Provider {
-    const ALL: [Self; 3] = [Self::ClaudeCode, Self::Codex, Self::Kiro];
+    // Same order as the New Session and Handoff pickers, so "choose an
+    // agent" means the same thing everywhere in the app.
+    const ALL: [Self; 3] = [Self::Codex, Self::ClaudeCode, Self::Kiro];
 
     pub fn label(self) -> &'static str {
         match self {
@@ -117,14 +125,133 @@ impl Draft {
         }
     }
 
-    pub fn push_text(&mut self, text: &str) {
-        if let Some(buf) = self.active_input_mut() {
-            buf.push_str(text);
+    /// Read-only counterpart of [`Draft::active_input_mut`], used by the
+    /// cursor-motion helpers below (which need to inspect the text without
+    /// necessarily writing to it).
+    pub fn active_text(&self) -> &str {
+        match self.step {
+            Step::Skill => &self.skill,
+            Step::Instruction => &self.instruction,
+            Step::Provider | Step::Children => "",
         }
     }
 
+    pub fn push_text(&mut self, text: &str) {
+        self.clamp_cursor();
+        let cursor = self.cursor;
+        if let Some(buf) = self.active_input_mut() {
+            buf.insert_str(cursor, text);
+        }
+        self.cursor = cursor + text.len();
+    }
+
+    pub fn push_char(&mut self, c: char) {
+        self.clamp_cursor();
+        let cursor = self.cursor;
+        if let Some(buf) = self.active_input_mut() {
+            buf.insert(cursor, c);
+        }
+        self.cursor = cursor + c.len_utf8();
+    }
+
+    pub fn backspace(&mut self) {
+        self.clamp_cursor();
+        let Some(prev) = previous_boundary(self.active_text(), self.cursor) else {
+            return;
+        };
+        let cursor = self.cursor;
+        if let Some(buf) = self.active_input_mut() {
+            buf.drain(prev..cursor);
+        }
+        self.cursor = prev;
+    }
+
+    pub fn delete(&mut self) {
+        self.clamp_cursor();
+        let Some(next) = next_boundary(self.active_text(), self.cursor) else {
+            return;
+        };
+        let cursor = self.cursor;
+        if let Some(buf) = self.active_input_mut() {
+            buf.drain(cursor..next);
+        }
+    }
+
+    pub fn move_left(&mut self) {
+        self.clamp_cursor();
+        if let Some(prev) = previous_boundary(self.active_text(), self.cursor) {
+            self.cursor = prev;
+        }
+    }
+
+    pub fn move_right(&mut self) {
+        self.clamp_cursor();
+        if let Some(next) = next_boundary(self.active_text(), self.cursor) {
+            self.cursor = next;
+        }
+    }
+
+    pub fn move_home(&mut self) {
+        self.clamp_cursor();
+        self.cursor = line_start(self.active_text(), self.cursor);
+    }
+
+    pub fn move_end(&mut self) {
+        self.clamp_cursor();
+        self.cursor = line_end(self.active_text(), self.cursor);
+    }
+
+    pub fn move_up(&mut self) {
+        self.move_vertical(-1);
+    }
+
+    pub fn move_down(&mut self) {
+        self.move_vertical(1);
+    }
+
+    fn move_vertical(&mut self, delta: isize) {
+        self.clamp_cursor();
+        let text = self.active_text();
+        let current_start = line_start(text, self.cursor);
+        let current_end = line_end(text, self.cursor);
+        let current_col = text[current_start..self.cursor].chars().count();
+        let target = if delta < 0 {
+            if current_start == 0 {
+                return;
+            }
+            let prev_end = current_start.saturating_sub(1);
+            let prev_start = line_start(text, prev_end);
+            Some((prev_start, prev_end))
+        } else {
+            if current_end >= text.len() {
+                return;
+            }
+            let next_start = current_end + 1;
+            let next_end = line_end(text, next_start);
+            Some((next_start, next_end))
+        };
+        let Some((target_start, target_end)) = target else {
+            return;
+        };
+        self.cursor = byte_index_at_char_col(text, target_start, target_end, current_col);
+    }
+
+    fn clamp_cursor(&mut self) {
+        let len = self.active_text().len();
+        if self.cursor > len {
+            self.cursor = len;
+        }
+        while self.cursor > 0 && !self.active_text().is_char_boundary(self.cursor) {
+            self.cursor -= 1;
+        }
+    }
+
+    /// Advance to the next step, resetting the cursor to the end of that
+    /// step's own text so entering Skill/Instruction always starts out
+    /// appending rather than carrying over a stale position from whichever
+    /// field (or non-text step) was active before.
     pub fn advance(&mut self) -> bool {
-        match self.step {
+        let done = match self.step {
             Step::Provider => {
                 self.step = Step::Skill;
                 false
@@ -138,7 +265,9 @@ impl Draft {
                 false
             }
             Step::Children => true,
-        }
+        };
+        self.cursor = self.active_text().len();
+        done
     }
 
     pub fn adjust_children(&mut self, delta: isize) {
@@ -155,15 +284,6 @@ impl Draft {
         if let Some(n) = c.to_digit(10) {
             self.children = (n as usize).clamp(1, MAX_CHILDREN);
         }
-    }
-
-    pub fn set_provider_key(&mut self, c: char) {
-        self.provider = match c {
-            '1' | 'c' | 'C' => Provider::ClaudeCode,
-            '2' | 'x' | 'X' | 'o' | 'O' => Provider::Codex,
-            '3' | 'k' | 'K' => Provider::Kiro,
-            _ => self.provider,
-        };
     }
 }
 
@@ -690,6 +810,7 @@ mod tests {
             skill: "$ralplan".into(),
             instruction: "compare alternatives".into(),
             children: 2,
+            cursor: 0,
         };
         let prompt = String::from_utf8(main_prompt(&draft, Path::new("/work"))).unwrap();
         assert!(prompt.contains("MindPlayer orchestration main session"));
@@ -706,6 +827,7 @@ mod tests {
             skill: "$ralplan".into(),
             instruction: "compare alternatives".into(),
             children: 2,
+            cursor: 0,
         };
         let codex = main_command(&draft, PathBuf::from("/work"));
         assert_eq!(codex.program, "codex");

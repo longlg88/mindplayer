@@ -565,11 +565,20 @@ fn handle_main_key(app: &mut App, key: KeyEvent) {
     if app.orchestration.is_some() {
         match key.code {
             KeyCode::Backspace => app.orchestration_input_backspace(),
+            KeyCode::Delete => app.modal_text_delete(),
+            KeyCode::Left => app.modal_text_move_left(),
+            KeyCode::Right => app.modal_text_move_right(),
+            KeyCode::Home => app.modal_text_move_home(),
+            KeyCode::End => app.modal_text_move_end(),
             KeyCode::Enter if text_newline_key(key) => app.orchestration_input_text("\n"),
             KeyCode::Enter => app.confirm_orchestration_step(),
             KeyCode::Esc => app.cancel_orchestration(),
-            KeyCode::Up => app.orchestration_adjust_children(1),
-            KeyCode::Down => app.orchestration_adjust_children(-1),
+            // Up/Down means something different per wizard step (provider,
+            // cursor motion, or child-lane count) — these dispatch on the
+            // active step instead of always touching child count
+            // regardless of what's actually on screen.
+            KeyCode::Up => app.orchestration_up(),
+            KeyCode::Down => app.orchestration_down(),
             KeyCode::Char('j') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 app.orchestration_input_text("\n")
             }
@@ -993,6 +1002,57 @@ mod tests {
             "dispatch apply needs an orchestration main/thread row"
         );
         assert!(app.dispatch_apply.is_none());
+    }
+
+    #[test]
+    fn orchestration_up_down_moves_cursor_not_the_invisible_child_count() {
+        let mut app = main_app();
+        handle_main_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('o'), KeyModifiers::NONE),
+        );
+        assert!(app.orchestration.is_some());
+
+        // Provider step: ↑↓ still cycles the provider, not children.
+        let before = app.orchestration.as_ref().unwrap().provider;
+        handle_main_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        assert_ne!(app.orchestration.as_ref().unwrap().provider, before);
+
+        // Advance to Skill, then Instruction.
+        handle_main_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        handle_main_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(
+            app.orchestration.as_ref().unwrap().step,
+            orchestration::Step::Instruction
+        );
+
+        for c in "line one".chars() {
+            handle_main_key(
+                &mut app,
+                KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE),
+            );
+        }
+        let children_before = app.orchestration.as_ref().unwrap().children;
+
+        // This is the bug: ↑↓ while typing free text used to silently
+        // change the (not-yet-visible) step-4 child count instead of moving
+        // the cursor.
+        handle_main_key(&mut app, KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+        handle_main_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        assert_eq!(
+            app.orchestration.as_ref().unwrap().children,
+            children_before
+        );
+        assert_eq!(app.orchestration.as_ref().unwrap().instruction, "line one");
+
+        // ←← then a keystroke inserts mid-string instead of only appending.
+        handle_main_key(&mut app, KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
+        handle_main_key(&mut app, KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
+        handle_main_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('X'), KeyModifiers::NONE),
+        );
+        assert_eq!(app.orchestration.as_ref().unwrap().instruction, "line oXne");
     }
 
     #[test]

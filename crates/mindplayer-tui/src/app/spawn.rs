@@ -118,6 +118,7 @@ impl App {
                 DeferredInitialInput {
                     bytes: input,
                     queued_at: now,
+                    held_input: Vec::new(),
                 },
             );
         }
@@ -311,6 +312,7 @@ impl App {
                         DeferredInitialInput {
                             bytes: input,
                             queued_at: Instant::now(),
+                            held_input: Vec::new(),
                         },
                     );
                 }
@@ -359,28 +361,40 @@ impl App {
             let Some(input) = self.pending_initial_inputs.get(&id) else {
                 continue;
             };
-            if let Some(pty) = self.ptys.get_mut(&id) {
-                if !pty.paste_and_submit(&input.bytes) {
-                    self.status = format!("failed to submit initial context to {}", short(&id));
-                    continue;
-                }
-                self.pending_initial_inputs.remove(&id);
-                self.turn_submitted.insert(id.clone());
-                self.out_at.insert(id.clone(), Instant::now());
-                self.status = format!("submitted initial context to {}", short(&id));
-                sent = true;
+            let Some(pty) = self.ptys.get_mut(&id) else {
+                continue;
+            };
+            if !pty.paste_and_submit(&input.bytes) {
+                self.status = format!("failed to submit initial context to {}", short(&id));
+                continue;
             }
+            // Replay whatever the user typed while this was held, now that it
+            // can no longer land in the middle of the queued prompt.
+            if !input.held_input.is_empty() {
+                pty.send(&input.held_input);
+            }
+            self.pending_initial_inputs.remove(&id);
+            self.turn_submitted.insert(id.clone());
+            self.out_at.insert(id.clone(), Instant::now());
+            self.status = format!("submitted initial context to {}", short(&id));
+            sent = true;
         }
         sent
     }
 
-    pub(crate) fn active_initial_input_pending(&mut self) -> bool {
+    /// If the focused pane still has a deferred initial-input (handoff /
+    /// orchestration / thread-sync prompt) waiting to go out, buffer these
+    /// bytes on it instead of forwarding them to the child now — so typing
+    /// right after opening such a session is held and replayed afterward
+    /// (see `flush_initial_inputs`) rather than silently dropped.
+    pub(crate) fn hold_for_pending_initial_input(&mut self, bytes: &[u8]) -> bool {
         let Some(id) = self.focused_pane().map(str::to_string) else {
             return false;
         };
-        if !self.pending_initial_inputs.contains_key(&id) {
+        let Some(entry) = self.pending_initial_inputs.get_mut(&id) else {
             return false;
-        }
+        };
+        entry.held_input.extend_from_slice(bytes);
         self.status =
             "waiting for target prompt to submit initial context; input is held".to_string();
         true

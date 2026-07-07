@@ -19,6 +19,10 @@ use std::path::Path;
 
 const ACCENT: Color = Color::Rgb(126, 162, 247);
 const DIM: Color = Color::Rgb(140, 146, 158);
+// A quiet teal, not ACCENT — the idle-status dot used to share ACCENT with
+// the focus border/selection highlight, so an idle+focused/selected session
+// had no color-based way to tell "this is idle" apart from "this is focused."
+const IDLE: Color = Color::Rgb(111, 154, 149);
 const SPINNER: [&str; 8] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧"];
 
 fn agent_tag(agent: Agent) -> (&'static str, Color) {
@@ -244,12 +248,19 @@ fn scan_summary(f: &mut Frame, app: &App) {
 }
 
 fn main_view(f: &mut Frame, app: &mut App) {
+    // The plain list view hides ~12 shortcuts (the whole orchestration
+    // feature set plus session-management basics) behind the `?` help modal.
+    // Multi-select, search, and the live-pane hints are already complete for
+    // their own mode, so only the plain list gets a second footer row.
+    let show_more_keys =
+        app.focus == Focus::List && !app.multi_select && app.search_query.is_none();
+    let footer_h: u16 = if show_more_keys { 2 } else { 1 };
     let outer = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(1),
             Constraint::Min(0),
-            Constraint::Length(1),
+            Constraint::Length(footer_h),
         ])
         .split(f.area());
     title_bar(outer[0], f);
@@ -266,7 +277,10 @@ fn main_view(f: &mut Frame, app: &mut App) {
         Focus::Terminal => live_pane(f, app, outer[1]),
     }
 
-    let keys: String = match app.focus {
+    let keys: String = if app.search_query.is_some() {
+        "type to filter · enter open · ↑↓ move · esc exit search".to_string()
+    } else {
+        match app.focus {
         Focus::List if app.multi_select => {
             "MULTI-SELECT · space mark · enter launch all marked · esc cancel".to_string()
         }
@@ -284,16 +298,24 @@ fn main_view(f: &mut Frame, app: &mut App) {
             "ctrl-x list · tab/ctrl-w pane · ctrl-z zoom · ctrl-o layout · ctrl-q close · wheel history · drag=copy this pane"
                 .to_string()
         }
+        }
     };
     let status = if app.status.is_empty() {
         app.summary_line()
     } else {
         format!("{}  ·  {}", app.status, app.summary_line())
     };
+    // Row 2 (Min(0), so it collapses to nothing when show_more_keys is false)
+    // surfaces a couple of the most-reached-for hidden shortcuts plus an
+    // honest count of the rest, instead of hiding all of them silently.
+    let footer_rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(1), Constraint::Min(0)])
+        .split(outer[2]);
     let footer_line = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(60), Constraint::Percentage(40)])
-        .split(outer[2]);
+        .split(footer_rows[0]);
     f.render_widget(
         Paragraph::new(Line::from(Span::styled(status, Style::default().fg(DIM)))),
         footer_line[0],
@@ -303,6 +325,16 @@ fn main_view(f: &mut Frame, app: &mut App) {
             .alignment(Alignment::Right),
         footer_line[1],
     );
+    if show_more_keys {
+        f.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                "o orchestrate · b broadcast    +10 more · ? help",
+                Style::default().fg(Color::Rgb(90, 95, 108)),
+            )))
+            .alignment(Alignment::Right),
+            footer_rows[1],
+        );
+    }
 
     if app.help_visible {
         help_popup(f);
@@ -413,10 +445,13 @@ fn session_list(f: &mut Frame, app: &mut App, area: Rect, now: DateTime<Utc>) {
         "active"
     };
     let subs = if app.show_subagents { " +sub" } else { "" };
+    // A trailing cursor makes search the same kind of "live text entry" as
+    // every popup input, instead of the one text-entry mode with no visible
+    // caret at all.
     let search = app
         .search_query
         .as_deref()
-        .map(|query| format!(" · /{query}"))
+        .map(|query| format!(" · /{query}▏"))
         .unwrap_or_default();
     let multi = if app.multi_select {
         format!(" · MULTI-SELECT ({} marked)", app.marked.len())
@@ -494,7 +529,7 @@ fn session_list(f: &mut Frame, app: &mut App, area: Rect, now: DateTime<Utc>) {
             let (badge, badge_color, badge_bold) = match app.session_status(&s.id) {
                 SessionStatus::Blocked => ("● blocked", Color::Rgb(245, 180, 90), true),
                 SessionStatus::Working => ("● working", Color::Green, true),
-                SessionStatus::Idle => ("● idle   ", ACCENT, false),
+                SessionStatus::Idle => ("● idle   ", IDLE, false),
                 SessionStatus::Ended => ("○ done   ", Color::Rgb(150, 120, 120), false),
                 SessionStatus::Inactive => ("         ", DIM, false),
             };
@@ -514,11 +549,14 @@ fn session_list(f: &mut Frame, app: &mut App, area: Rect, now: DateTime<Utc>) {
             } else {
                 String::new()
             };
+            // Plain white, not Green — Green is also the "working" status
+            // color, so a marked+working row used to show two same-colored,
+            // different-shaped glyphs side by side.
             let (mark_glyph, mark_style) = if marked {
                 (
                     "✓ ",
                     Style::default()
-                        .fg(Color::Green)
+                        .fg(Color::White)
                         .add_modifier(Modifier::BOLD),
                 )
             } else {
@@ -630,13 +668,40 @@ fn session_list(f: &mut Frame, app: &mut App, area: Rect, now: DateTime<Utc>) {
             },
             app.spinner,
         );
-        let tagline = Paragraph::new(Line::from(Span::styled(
-            "Run many Codex · Claude · Kiro sessions like tabs",
-            Style::default().fg(DIM),
-        )))
-        .alignment(Alignment::Center);
+        // A true first run (never collected a single session) has nothing for
+        // the status legend below to describe — show a call to action instead
+        // of a legend for statuses that don't exist yet.
+        let (line1, line2) = if app.all_sessions.is_empty() {
+            (
+                Line::from(Span::styled("No sessions yet.", Style::default().fg(DIM))),
+                Line::from(vec![
+                    Span::styled("Press ", Style::default().fg(DIM)),
+                    Span::styled(
+                        "n",
+                        Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(
+                        " to start your first Codex, Claude, or Kiro session.",
+                        Style::default().fg(DIM),
+                    ),
+                ]),
+            )
+        } else {
+            (
+                Line::from(Span::styled(
+                    "Run many Codex · Claude · Kiro sessions like tabs",
+                    Style::default().fg(DIM),
+                )),
+                Line::from(vec![
+                    Span::styled("● blocked", Style::default().fg(Color::Rgb(245, 180, 90))),
+                    Span::styled("   ● working", Style::default().fg(Color::Green)),
+                    Span::styled("   ● idle", Style::default().fg(IDLE)),
+                    Span::styled("   ○ done", Style::default().fg(Color::Rgb(150, 120, 120))),
+                ]),
+            )
+        };
         f.render_widget(
-            tagline,
+            Paragraph::new(line1).alignment(Alignment::Center),
             Rect {
                 x: inner_x,
                 y: top + mascot::HEIGHT + GAP,
@@ -644,15 +709,8 @@ fn session_list(f: &mut Frame, app: &mut App, area: Rect, now: DateTime<Utc>) {
                 height: 1,
             },
         );
-        let legend = Paragraph::new(Line::from(vec![
-            Span::styled("● blocked", Style::default().fg(Color::Rgb(245, 180, 90))),
-            Span::styled("   ● working", Style::default().fg(Color::Green)),
-            Span::styled("   ● idle", Style::default().fg(ACCENT)),
-            Span::styled("   ○ done", Style::default().fg(Color::Rgb(150, 120, 120))),
-        ]))
-        .alignment(Alignment::Center);
         f.render_widget(
-            legend,
+            Paragraph::new(line2).alignment(Alignment::Center),
             Rect {
                 x: inner_x,
                 y: top + mascot::HEIGHT + GAP + 1,
@@ -755,7 +813,7 @@ fn live_pane(f: &mut Frame, app: &mut App, area: Rect) {
                 Style::default().fg(DIM),
             )),
             Line::from(Span::styled(
-                "Press n to start a new Codex or Claude session.",
+                "Press n to start a new Codex, Claude, or Kiro session.",
                 Style::default().fg(DIM),
             )),
         ])
@@ -818,12 +876,25 @@ fn render_pane(
 ) {
     let ended = app.ended.contains(sid);
     let (dot, dot_color) = pane_dot(app, sid, ended);
-    let name = app.session_display_name(sid, pane_area.width.saturating_sub(18) as usize);
+    let name = app.session_display_name(sid, pane_area.width.saturating_sub(20) as usize);
     // A plain-colored name blends into the border line and is easy to miss when
     // several panes are open — a bold, high-contrast chip (bg = the same color
     // as the status dot) makes "which session is this" readable at a glance
     // without stealing a content row from the terminal view.
+    //
+    // Focus gets its own glyph (▸), not just the accent-colored border: the
+    // idle status dot is drawn in that same accent color, so a focused+idle
+    // pane would otherwise read as just "blue" — shape, not hue, is what
+    // actually disambiguates focus from status here.
     let title = Line::from(vec![
+        if pane_focused {
+            Span::styled(
+                "▸ ",
+                Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+            )
+        } else {
+            Span::raw("")
+        },
         Span::styled(dot, Style::default().fg(dot_color)),
         Span::styled(
             format!(" {name} "),
@@ -909,7 +980,7 @@ fn pane_dot(app: &App, sid: &str, ended: bool) -> (&'static str, Color) {
     match app.session_status(sid) {
         SessionStatus::Blocked => ("● ", Color::Rgb(245, 180, 90)),
         SessionStatus::Working => ("● ", Color::Green),
-        SessionStatus::Idle => ("● ", ACCENT),
+        SessionStatus::Idle => ("● ", IDLE),
         SessionStatus::Ended => ("○ ", Color::Rgb(150, 120, 120)),
         SessionStatus::Inactive => ("  ", DIM),
     }
@@ -989,7 +1060,7 @@ fn handoff_popup(f: &mut Frame, choice: usize, source: Option<Agent>) {
 }
 
 fn orchestration_popup(f: &mut Frame, draft: &orchestration::Draft) {
-    let area = centered(f.area(), 88, 19);
+    let area = centered(f.area(), 88, 21);
     f.render_widget(Clear, area);
     let block = Block::default()
         .borders(Borders::ALL)
@@ -1017,23 +1088,28 @@ fn orchestration_popup(f: &mut Frame, draft: &orchestration::Draft) {
     } else {
         &draft.instruction
     };
-    let provider_choice = |provider, label: &str| {
-        if draft.provider == provider {
-            Span::styled(
-                format!("[{label}] "),
-                Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
-            )
+    // Same vertical ▶-list pattern as the New Session / Handoff pickers, so
+    // "choose an agent" looks and behaves the same everywhere in the app.
+    let provider_row = |provider: orchestration::Provider, label: &str| {
+        let selected = draft.provider == provider;
+        let marker = if selected { "▶ " } else { "  " };
+        let style = if selected {
+            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)
         } else {
-            Span::styled(format!("{label} "), Style::default().fg(DIM))
-        }
+            Style::default().fg(DIM)
+        };
+        Line::from(Span::styled(format!("{marker}{label}"), style))
     };
+    let provider_lines = vec![
+        Line::from(Span::styled(
+            "1 provider",
+            step_style(orchestration::Step::Provider),
+        )),
+        provider_row(orchestration::Provider::Codex, "codex"),
+        provider_row(orchestration::Provider::ClaudeCode, "claude"),
+        provider_row(orchestration::Provider::Kiro, "kiro"),
+    ];
     let mut lines = vec![
-        Line::from(vec![
-            Span::styled("1 provider ", step_style(orchestration::Step::Provider)),
-            provider_choice(orchestration::Provider::ClaudeCode, "cc"),
-            provider_choice(orchestration::Provider::Codex, "codex"),
-            provider_choice(orchestration::Provider::Kiro, "kiro"),
-        ]),
         Line::from(""),
         Line::from(vec![
             Span::styled("2 skill / mode ", step_style(orchestration::Step::Skill)),
@@ -1045,8 +1121,14 @@ fn orchestration_popup(f: &mut Frame, draft: &orchestration::Draft) {
             step_style(orchestration::Step::Instruction),
         )]),
     ];
-    lines.extend(textarea_lines(
+    // A live caret here (like the Broadcast/Dispatch textareas) makes it
+    // obvious ↑↓/←→ move the cursor rather than silently touching the
+    // (currently invisible) child-lane count from step 4.
+    let instruction_cursor =
+        (draft.step == orchestration::Step::Instruction).then_some(draft.cursor);
+    lines.extend(textarea_lines_with_cursor(
         instruction,
+        instruction_cursor,
         "Paste or type English/Korean instructions here.",
         6,
         78,
@@ -1059,16 +1141,36 @@ fn orchestration_popup(f: &mut Frame, draft: &orchestration::Draft) {
         ]),
         Line::from(""),
         Line::from(Span::styled(
-            "1/2/3 provider   enter next/start   ctrl-j or shift/alt-enter newline   paste keeps newlines   esc cancel",
+            "↑↓ provider/cursor/count   enter next/start   ctrl-j or shift/alt-enter newline   paste keeps newlines   esc cancel",
             Style::default().fg(DIM),
         )),
     ]);
+    // The provider picker is rendered as its own unwrapped Paragraph: the
+    // "  " indent on non-selected rows would otherwise be stripped by the
+    // Wrap{trim: true} below (needed for the instruction textarea beneath
+    // it), silently breaking the vertical-list alignment.
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+    let provider_h = (provider_lines.len() as u16).min(inner.height);
+    f.render_widget(
+        Paragraph::new(provider_lines).alignment(Alignment::Left),
+        Rect {
+            x: inner.x,
+            y: inner.y,
+            width: inner.width,
+            height: provider_h,
+        },
+    );
     f.render_widget(
         Paragraph::new(lines)
-            .block(block)
             .alignment(Alignment::Left)
             .wrap(Wrap { trim: true }),
-        area,
+        Rect {
+            x: inner.x,
+            y: inner.y + provider_h,
+            width: inner.width,
+            height: inner.height.saturating_sub(provider_h),
+        },
     );
 }
 
@@ -1261,10 +1363,6 @@ fn centered(area: Rect, width: u16, height: u16) -> Rect {
         width: w,
         height: h,
     }
-}
-
-fn textarea_lines(text: &str, placeholder: &str, rows: usize, width: usize) -> Vec<Line<'static>> {
-    textarea_lines_with_cursor(text, None, placeholder, rows, width)
 }
 
 fn textarea_lines_with_cursor(

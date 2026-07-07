@@ -52,6 +52,8 @@ impl App {
             draft.delete();
         } else if let Some(draft) = self.broadcast.as_mut() {
             draft.delete();
+        } else if let Some(draft) = self.orchestration.as_mut() {
+            draft.delete();
         }
     }
 
@@ -62,6 +64,8 @@ impl App {
             draft.move_left();
         } else if let Some(draft) = self.broadcast.as_mut() {
             draft.move_left();
+        } else if let Some(draft) = self.orchestration.as_mut() {
+            draft.move_left();
         }
     }
 
@@ -71,6 +75,8 @@ impl App {
         } else if let Some(draft) = self.dispatch.as_mut() {
             draft.move_right();
         } else if let Some(draft) = self.broadcast.as_mut() {
+            draft.move_right();
+        } else if let Some(draft) = self.orchestration.as_mut() {
             draft.move_right();
         }
     }
@@ -102,6 +108,8 @@ impl App {
             draft.move_home();
         } else if let Some(draft) = self.broadcast.as_mut() {
             draft.move_home();
+        } else if let Some(draft) = self.orchestration.as_mut() {
+            draft.move_home();
         }
     }
 
@@ -111,6 +119,8 @@ impl App {
         } else if let Some(draft) = self.dispatch.as_mut() {
             draft.move_end();
         } else if let Some(draft) = self.broadcast.as_mut() {
+            draft.move_end();
+        } else if let Some(draft) = self.orchestration.as_mut() {
             draft.move_end();
         }
     }

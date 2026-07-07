@@ -16,7 +16,8 @@ impl App {
             return;
         };
         if draft.step == orchestration::Step::Provider {
-            draft.set_provider_key(c);
+            // Provider is navigated with ↑↓ only now (same control model as
+            // the New Session / Handoff pickers) — plain chars are a no-op.
         } else if draft.step == orchestration::Step::Children {
             if c == '+' || c == '=' {
                 draft.adjust_children(1);
@@ -25,8 +26,8 @@ impl App {
             } else {
                 draft.set_children_digit(c);
             }
-        } else if let Some(buf) = draft.active_input_mut() {
-            buf.push(c);
+        } else {
+            draft.push_char(c);
         }
     }
 
@@ -37,22 +38,37 @@ impl App {
     }
 
     pub fn orchestration_input_backspace(&mut self) {
-        if let Some(buf) = self
-            .orchestration
-            .as_mut()
-            .and_then(orchestration::Draft::active_input_mut)
-        {
-            buf.pop();
+        if let Some(draft) = self.orchestration.as_mut() {
+            draft.backspace();
         }
     }
 
-    pub fn orchestration_adjust_children(&mut self, delta: isize) {
-        if let Some(draft) = self.orchestration.as_mut() {
-            if draft.step == orchestration::Step::Provider {
-                draft.adjust_provider(delta);
-            } else {
-                draft.adjust_children(delta);
-            }
+    /// Up/Down means something different per step — move to the previous
+    /// provider in the list, increase the child-lane count, or move the
+    /// cursor up a line — never more than one of those for a single
+    /// keypress. Each step keeps its own natural "up" direction rather than
+    /// sharing one signed delta (list-nav "up" means the previous index,
+    /// but a lane-count stepper's "up" means +1 — they aren't the same
+    /// direction numerically).
+    pub fn orchestration_up(&mut self) {
+        let Some(draft) = self.orchestration.as_mut() else {
+            return;
+        };
+        match draft.step {
+            orchestration::Step::Provider => draft.adjust_provider(-1),
+            orchestration::Step::Children => draft.adjust_children(1),
+            orchestration::Step::Skill | orchestration::Step::Instruction => draft.move_up(),
+        }
+    }
+
+    pub fn orchestration_down(&mut self) {
+        let Some(draft) = self.orchestration.as_mut() else {
+            return;
+        };
+        match draft.step {
+            orchestration::Step::Provider => draft.adjust_provider(1),
+            orchestration::Step::Children => draft.adjust_children(-1),
+            orchestration::Step::Skill | orchestration::Step::Instruction => draft.move_down(),
         }
     }
 

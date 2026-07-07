@@ -343,6 +343,11 @@ pub struct PendingSpawn {
 struct DeferredInitialInput {
     bytes: Vec<u8>,
     queued_at: Instant,
+    /// Keystrokes the user typed into this pane while `bytes` was still
+    /// waiting to go out. Held here instead of forwarded to the pty so they
+    /// never interleave with (and corrupt) the queued prompt; replayed in
+    /// order once `flush_initial_inputs` actually sends it.
+    held_input: Vec<u8>,
 }
 
 impl App {

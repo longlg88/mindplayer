@@ -481,7 +481,7 @@ impl App {
     pub fn send_to_pty(&mut self, bytes: &[u8]) {
         // Typing dismisses any drag-copy highlight, like a normal terminal.
         self.selection = None;
-        if self.active_initial_input_pending() {
+        if self.hold_for_pending_initial_input(bytes) {
             return;
         }
         if let Some(id) = self.focused_pane().map(str::to_string) {
@@ -500,7 +500,7 @@ impl App {
         if self.focus != Focus::Terminal {
             return false;
         }
-        if self.active_initial_input_pending() {
+        if self.hold_for_pending_initial_input(text.as_bytes()) {
             return true;
         }
         if let Some(id) = self.focused_pane().map(str::to_string) {

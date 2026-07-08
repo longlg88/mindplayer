@@ -537,13 +537,22 @@ fn text_looks_blocked(screen: &str) -> bool {
     if tail_looks_like_interactive_prompt(&tail) {
         return true;
     }
-    if tail
+    // Everything below only ever matches the agent's own narration — never
+    // the input line itself. Without this, typing a not-yet-submitted draft
+    // like "should we continue?" would echo onto the input line and read as
+    // a real approval prompt purely from your own wording, flipping the
+    // session to Blocked (and, with 2+ live panes open, permanently bubbling
+    // it to the front of the grid — see `reorder_panes_by_status`) while you
+    // are still mid-sentence.
+    let narration: Vec<&String> = tail.iter().filter(|l| !is_prompt_cursor_line(l)).collect();
+    if narration
         .iter()
         .any(|l| BLOCKED_STRUCTURAL.iter().any(|m| l.contains(m)) || line_looks_limit_blocked(l))
     {
         return true;
     }
-    tail.iter()
+    narration
+        .iter()
         .any(|l| l.ends_with('?') && BLOCKED_ASKS.iter().any(|m| l.contains(m)))
 }
 
@@ -690,18 +699,32 @@ fn text_looks_busy(screen: &str) -> bool {
     has_strong_busy || !text_looks_idle(screen)
 }
 
+/// True if `line` (already trimmed) is *just* the bare input-prompt cursor
+/// glyph codex/claude/kiro print to mark "type here" — not narration that
+/// happens to start with the same character. Shared by [`text_looks_idle`]
+/// (a bare cursor IS the idle signal) and [`text_looks_blocked`] (a bare
+/// cursor is where the user's own not-yet-submitted draft lives, so it must
+/// never itself be read as the agent's narration).
+///
+/// Checks the character *after* the glyph with `char::is_whitespace` rather
+/// than matching a literal `" "` — Claude Code's own input line renders as
+/// `❯\u{a0}your draft` (a no-break space, confirmed from a live capture),
+/// which a plain `starts_with("❯ ")` silently never matches.
+fn is_prompt_cursor_line(line: &str) -> bool {
+    for glyph in ['›', '❯', '>'] {
+        if let Some(rest) = line.strip_prefix(glyph) {
+            return rest.is_empty() || rest.starts_with(char::is_whitespace);
+        }
+    }
+    false
+}
+
 /// True if the visible terminal text looks like the normal input prompt is
 /// ready. This is intentionally narrower than "not busy": it only recognizes
 /// prompt/input-box affordances that mean a completed turn is accepting input.
 fn text_looks_idle(screen: &str) -> bool {
     bottom_lines(screen, 14).iter().any(|l| {
-        let trimmed = l.trim_start();
-        trimmed == "›"
-            || trimmed.starts_with("› ")
-            || trimmed == "❯"
-            || trimmed.starts_with("❯ ")
-            || trimmed == ">"
-            || trimmed.starts_with("> ")
+        is_prompt_cursor_line(l.trim_start())
             || l.contains("type your message")
             || l.contains("enter your message")
             || l.contains("ask kiro")
@@ -953,6 +976,34 @@ mod tests {
         assert!(!text_looks_blocked(
             "You've hit the retry limit in that loop.\n›"
         ));
+    }
+
+    #[test]
+    fn typed_but_unsubmitted_draft_on_the_input_line_is_not_blocked() {
+        // Regression: the draft the user is still typing (not yet submitted)
+        // is echoed onto the input line by codex/claude/kiro's own raw-mode
+        // input box. Before this was excluded, a draft ending in "?" that
+        // happened to contain an approval word ("continue"/"confirm"/
+        // "proceed"/...) would itself flip the session to Blocked while the
+        // user was still mid-sentence — and with 2+ live panes open,
+        // permanently bubble that pane to the front of the grid (see
+        // `reorder_panes_by_status`, which has no memory of "original"
+        // position to restore once the false positive clears).
+        assert!(!text_looks_blocked("❯ should we continue?"));
+        assert!(!text_looks_blocked("› Continue?"));
+        assert!(!text_looks_blocked("> Do you want to proceed?"));
+        // Claude Code's actual input line uses a no-break space (U+00A0)
+        // after the glyph, not a plain " " — confirmed from a live tmux
+        // capture (`printf` can't type U+00A0 from a shell literal, hence
+        // the explicit \u{a0} here). This is the exact byte sequence that
+        // silently defeated a first attempt at this fix.
+        assert!(!text_looks_blocked("❯\u{a0}should we continue?"));
+        // The identical wording as the agent's own narration (no input
+        // cursor prefix) must still read as a real blocked prompt.
+        assert!(text_looks_blocked("should we continue?"));
+        // A genuine approval question printed above a now-empty input line
+        // is still blocked — only the cursor line itself is excluded.
+        assert!(text_looks_blocked("Do you want to proceed? (y/n)\n❯ "));
     }
 
     #[test]

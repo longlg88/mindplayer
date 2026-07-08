@@ -67,6 +67,12 @@ impl App {
         self.focus_or_add_pane(&main_id);
         self.select_session_id(&main_id);
         self.orchestration_cycles.insert(main_id.clone(), 1);
+        mindplayer_core::log_event_to(
+            &self.audit_path,
+            mindplayer_core::AuditEvent::OrchestrationStart {
+                children: draft.children,
+            },
+        );
         let _ = self.state.save();
         self.status = format!(
             "orchestration started: main + {} child lanes",

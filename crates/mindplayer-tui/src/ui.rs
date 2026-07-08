@@ -7,12 +7,12 @@ use crate::orchestration;
 use crate::terminal_view::TerminalView;
 use chrono::{DateTime, Utc};
 use mindplayer_core::tokens::human_tokens;
-use mindplayer_core::Agent;
+use mindplayer_core::{Agent, UsageStats};
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{
-    Block, BorderType, Borders, Clear, Gauge, List, ListItem, ListState, Paragraph, Wrap,
+    Block, BorderType, Borders, Clear, Gauge, List, ListItem, ListState, Paragraph, Sparkline, Wrap,
 };
 use ratatui::Frame;
 use std::path::Path;
@@ -374,7 +374,88 @@ fn main_view(f: &mut Frame, app: &mut App) {
             .map(|s| s.title.as_str())
             .unwrap_or("this session");
         catchup_confirm_popup(f, title);
+    } else if let Some(stats) = &app.usage_stats {
+        usage_popup(f, stats);
+    } else if let Some(input) = &app.transition_report_input {
+        transition_report_popup(f, input);
+    } else if let Some(draft) = &app.transition_report_review {
+        transition_report_review_popup(f, draft, app.transition_report_review_editing);
     }
+}
+
+fn transition_report_popup(f: &mut Frame, input: &str) {
+    let area = centered(f.area(), 70, 8);
+    f.render_widget(Clear, area);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(ACCENT))
+        .title(" Transition report ");
+    let lines = vec![
+        Line::from(Span::styled(
+            "topic / RUNBOOK §n / files (free text — sent to the focused pane):",
+            Style::default().fg(DIM),
+        )),
+        Line::from(vec![
+            Span::raw(input.to_string()),
+            Span::styled("▏", Style::default().fg(ACCENT)),
+        ]),
+        Line::from(""),
+        Line::from(Span::styled(
+            "enter send   esc cancel",
+            Style::default().fg(DIM),
+        )),
+    ];
+    f.render_widget(Paragraph::new(lines).block(block), area);
+}
+
+fn transition_report_review_popup(
+    f: &mut Frame,
+    draft: &orchestration::BroadcastDraft,
+    editing: bool,
+) {
+    let area = centered(f.area(), 88, 14);
+    f.render_widget(Clear, area);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(ACCENT))
+        .title(if editing {
+            " Transition report — editing "
+        } else {
+            " Transition report — review "
+        });
+    let mut lines = vec![Line::from(Span::styled(
+        if editing {
+            "Editing the assembled prompt:"
+        } else {
+            "About to send this to the focused pane:"
+        },
+        Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+    ))];
+    lines.extend(textarea_lines_with_cursor(
+        &draft.instruction,
+        editing.then_some(draft.cursor),
+        "",
+        8,
+        78,
+    ));
+    lines.extend([
+        Line::from(""),
+        Line::from(Span::styled(
+            if editing {
+                "enter send   ctrl-j or shift/alt-enter newline   esc cancel"
+            } else {
+                "enter send as-is   e edit first   esc cancel"
+            },
+            Style::default().fg(DIM),
+        )),
+    ]);
+    f.render_widget(
+        Paragraph::new(lines)
+            .block(block)
+            .alignment(Alignment::Left)
+            .wrap(Wrap { trim: false }),
+        area,
+    );
 }
 
 fn catchup_confirm_popup(f: &mut Frame, title: &str) {
@@ -400,6 +481,209 @@ fn catchup_confirm_popup(f: &mut Frame, title: &str) {
         )),
     ];
     f.render_widget(Paragraph::new(lines).block(block), area);
+}
+
+/// "2h 14m" / "45m" / "0m" — the popup only ever needs coarse hours+minutes,
+/// never seconds.
+fn format_duration_short(total_secs: i64) -> String {
+    let secs = total_secs.max(0);
+    let hours = secs / 3600;
+    let mins = (secs % 3600) / 60;
+    if hours > 0 {
+        format!("{hours}h {mins:02}m")
+    } else {
+        format!("{mins}m")
+    }
+}
+
+/// A single-row proportional bar (no ratatui widget for this — it's just
+/// colored block runs sized to each count's share of the total, unfilled
+/// space left dim). `width` is the number of terminal cells available.
+fn proportional_bar(counts: [(usize, Color); 3], width: usize) -> Vec<Span<'static>> {
+    let total: usize = counts.iter().map(|(n, _)| *n).sum();
+    if total == 0 || width == 0 {
+        return vec![Span::styled(".".repeat(width), Style::default().fg(DIM))];
+    }
+    let mut spans = Vec::new();
+    let mut used = 0usize;
+    for &(count, color) in &counts {
+        let cells = (width * count) / total;
+        if cells > 0 {
+            spans.push(Span::styled("█".repeat(cells), Style::default().fg(color)));
+            used += cells;
+        }
+    }
+    if used < width {
+        spans.push(Span::styled(
+            "░".repeat(width - used),
+            Style::default().fg(DIM),
+        ));
+    }
+    spans
+}
+
+fn usage_popup(f: &mut Frame, stats: &UsageStats) {
+    let area = centered(f.area(), 66, 14);
+    f.render_widget(Clear, area);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(ACCENT))
+        .title(" mindplayer usage ");
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1), // blank
+            Constraint::Length(1), // active time label + sparkline
+            Constraint::Length(1), // today / all-time numbers
+            Constraint::Length(1), // blank
+            Constraint::Length(1), // sessions opened bar
+            Constraint::Length(1), // agent legend
+            Constraint::Length(1), // blank
+            Constraint::Length(1), // handoffs / catch-up
+            Constraint::Length(1), // divider
+            Constraint::Length(1), // orchestration (phasing out)
+            Constraint::Length(1), // blank
+            Constraint::Length(1), // footer
+        ])
+        .split(inner);
+
+    let trend_row = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Length(15),
+            Constraint::Min(0),
+            Constraint::Length(5),
+        ])
+        .split(rows[1]);
+    f.render_widget(
+        Paragraph::new(Span::styled("active time", Style::default().fg(DIM))),
+        trend_row[0],
+    );
+    let sparkline_data: Vec<u64> = stats
+        .daily_active_secs
+        .iter()
+        .map(|&s| s.max(0) as u64)
+        .collect();
+    f.render_widget(
+        Sparkline::default()
+            .data(&sparkline_data)
+            .style(Style::default().fg(ACCENT)),
+        trend_row[1],
+    );
+    f.render_widget(
+        Paragraph::new(Span::styled(
+            format!("{}d", sparkline_data.len()),
+            Style::default().fg(DIM),
+        ))
+        .alignment(Alignment::Right),
+        trend_row[2],
+    );
+
+    f.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(
+                format_duration_short(stats.active_secs_today),
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(" today  ·  ", Style::default().fg(DIM)),
+            Span::styled(
+                format_duration_short(stats.active_secs_all_time),
+                Style::default().fg(DIM),
+            ),
+            Span::styled(" all-time", Style::default().fg(DIM)),
+        ])),
+        rows[2],
+    );
+
+    let bar_row = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Length(17),
+            Constraint::Min(0),
+            Constraint::Length(8),
+        ])
+        .split(rows[4]);
+    f.render_widget(
+        Paragraph::new(Span::styled("sessions opened", Style::default().fg(DIM))),
+        bar_row[0],
+    );
+    let opened = stats.sessions_opened_all_time;
+    let bar_spans = proportional_bar(
+        [
+            (opened.codex, ACCENT),
+            (opened.claude, Color::Magenta),
+            (opened.kiro, Color::Cyan),
+        ],
+        bar_row[1].width as usize,
+    );
+    f.render_widget(Paragraph::new(Line::from(bar_spans)), bar_row[1]);
+    f.render_widget(
+        Paragraph::new(Span::styled(
+            opened.total().to_string(),
+            Style::default().add_modifier(Modifier::BOLD),
+        ))
+        .alignment(Alignment::Right),
+        bar_row[2],
+    );
+
+    f.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(
+                format!("codex {}", opened.codex),
+                Style::default().fg(ACCENT),
+            ),
+            Span::styled(" · ", Style::default().fg(DIM)),
+            Span::styled(
+                format!("claude {}", opened.claude),
+                Style::default().fg(Color::Magenta),
+            ),
+            Span::styled(" · ", Style::default().fg(DIM)),
+            Span::styled(
+                format!("kiro {}", opened.kiro),
+                Style::default().fg(Color::Cyan),
+            ),
+        ])),
+        rows[5],
+    );
+
+    f.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled("handoffs ", Style::default().fg(DIM)),
+            Span::raw(stats.handoffs_all_time.to_string()),
+            Span::styled("  ·  catch-up ", Style::default().fg(DIM)),
+            Span::raw(stats.catchups_all_time.to_string()),
+            Span::styled("  ·  transition reports ", Style::default().fg(DIM)),
+            Span::raw(stats.transition_reports_all_time.to_string()),
+        ])),
+        rows[7],
+    );
+
+    f.render_widget(
+        Paragraph::new(Span::styled(
+            "─".repeat(inner.width as usize),
+            Style::default().fg(DIM),
+        )),
+        rows[8],
+    );
+
+    f.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled("orchestration (phasing out)  ", Style::default().fg(DIM)),
+            Span::styled("lanes ", Style::default().fg(DIM)),
+            Span::raw(stats.orchestration_lanes_all_time.to_string()),
+            Span::styled("  ·  cmds sent ", Style::default().fg(DIM)),
+            Span::raw(stats.automation_sent_all_time.to_string()),
+        ])),
+        rows[9],
+    );
+
+    f.render_widget(
+        Paragraph::new(Span::styled("esc / enter  close", Style::default().fg(DIM))),
+        rows[11],
+    );
 }
 
 fn dir_input_popup(f: &mut Frame, path: &str) {
@@ -1384,6 +1668,7 @@ fn help_popup(f: &mut Frame) {
         item("a", "toggle archived sessions"),
         item("g", "toggle subagent sessions"),
         item("r", "rescan sessions"),
+        item("u", "show usage stats (active time, sessions opened, ...)"),
         Line::from(""),
         section("Terminal / Modal"),
         item("ctrl-x", "return from terminal to session list"),
@@ -1392,6 +1677,10 @@ fn help_popup(f: &mut Frame) {
         item("ctrl-z", "zoom the focused pane full-size (toggle back to split)"),
         item("ctrl-o", "toggle pane layout (horizontal/vertical)"),
         item("ctrl-q", "close focused pane"),
+        item(
+            "ctrl-t",
+            "transition report: topic/RUNBOOK/files -> review the assembled prompt -> enter sends, e edits first",
+        ),
         item("ctrl-j", "insert newline in text modals"),
         item("shift/alt-enter", "insert newline in text modals"),
         item("esc", "cancel modal or close this help"),

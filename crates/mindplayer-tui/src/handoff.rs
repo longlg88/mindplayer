@@ -904,6 +904,138 @@ mod tests {
     use std::fs;
     use std::path::PathBuf;
 
+    /// Not a synthetic fixture: reads the user's own real handoff/orchestration
+    /// data (the `saav`-style setup that actually froze the UI) straight from
+    /// `~/.codex/sessions`, to confirm the freeze-fix claim against real data
+    /// rather than a lab-sized simulation. `#[ignore]`d because it depends on
+    /// this specific machine's home directory contents; run explicitly with
+    /// `cargo test -p mindplayer-tui -- --ignored real_user_data_thread_sync_completes_and_is_fast`.
+    #[test]
+    #[ignore]
+    fn real_user_data_thread_sync_completes_and_is_fast() {
+        let home = std::env::var("HOME").expect("HOME must be set");
+        let root_file = PathBuf::from(&home).join(
+            ".codex/sessions/2026/06/12/rollout-2026-06-12T20-36-15-019ebb9e-5083-7961-8f8d-a3bcffae5702.jsonl",
+        );
+        let child_ids = [
+            "019ebb97-f789-7942-a058-e0e0ba9b4c2f",
+            "019ebb97-f7a8-7a72-a9d0-0e640ae7745d",
+            "019ebb97-f7c8-7592-8cd1-b871993c8246",
+            "019ebb97-f7c9-7dd2-9358-9414c61a58c9",
+            "019ebb97-f803-75a2-95b9-43ecf78e6417",
+            "019ebb97-f86b-7300-bc64-9adf765a4343",
+            "019ebb9e-505f-7280-a163-16d3aa758a39",
+            "019ebb9e-50a5-7371-bb8e-34faae3b3c7a",
+            "019ebb9e-50ad-72e1-bc34-1c56b8080b46",
+            "019ebb9e-50c1-75d3-af96-ba3f89930ab1",
+            "019ebb9e-50c3-74d3-9661-1d5b43250262",
+            "019ebb9e-52fb-76d0-886f-8f640936b301",
+        ];
+
+        assert!(
+            root_file.exists(),
+            "expected real root transcript at {}",
+            root_file.display()
+        );
+
+        let target = Session {
+            id: "019ebb9e-5083-7961-8f8d-a3bcffae5702".into(),
+            agent: Agent::Codex,
+            cwd: PathBuf::from("/work/project"),
+            file: root_file,
+            started_at: None,
+            last_active: None,
+            tokens: TokenUsage::default(),
+            title: "real root lane".into(),
+            archived: false,
+            is_subagent: false,
+            context_pct: None,
+        };
+
+        let mut peers = Vec::new();
+        let mut total_bytes: u64 = 0;
+        for id in child_ids {
+            // Real rollout files live under a date directory that varies per
+            // session; do a bounded search under ~/.codex/sessions instead of
+            // hardcoding every date path.
+            let pattern = format!("rollout-*{id}.jsonl");
+            let found = find_one(&PathBuf::from(&home).join(".codex/sessions"), &pattern);
+            let Some(path) = found else {
+                continue;
+            };
+            total_bytes += fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+            peers.push(Session {
+                id: id.into(),
+                agent: Agent::Codex,
+                cwd: PathBuf::from("/work/project"),
+                file: path,
+                started_at: None,
+                last_active: None,
+                tokens: TokenUsage::default(),
+                title: "real peer lane".into(),
+                archived: false,
+                is_subagent: false,
+                context_pct: None,
+            });
+        }
+        assert!(
+            peers.len() >= 10,
+            "expected at least 10 of the 12 known real peer transcripts to still exist, found {}",
+            peers.len()
+        );
+
+        let started = std::time::Instant::now();
+        let result = prepare_thread_sync_input(&target, &peers);
+        let elapsed = started.elapsed();
+
+        println!(
+            "real-data thread sync: {} peers, {total_bytes} total bytes, took {elapsed:?}",
+            peers.len()
+        );
+        let prepared = result.expect("real user data must parse into a valid thread-sync prompt");
+        assert!(prepared.transcript_chars > 0);
+        assert!(!prepared.input.is_empty());
+        // This is the actual synchronous cost `request_resume` used to pay on
+        // the main thread for exactly this data. It's now paid on a
+        // background thread instead (see `spawn_thread_sync_for`), but the
+        // read itself is still real work — printed above for the record.
+        //
+        // Sanity floor: this real data is real I/O + JSON parsing, not free.
+        // If this ever comes back near-zero, something is silently skipping
+        // the read rather than actually performing it.
+        assert!(
+            elapsed >= std::time::Duration::from_millis(1),
+            "real-data read completed suspiciously fast ({elapsed:?}) — is it actually reading the files?"
+        );
+    }
+
+    fn find_one(root: &std::path::Path, glob_suffix: &str) -> Option<PathBuf> {
+        fn walk(dir: &std::path::Path, suffix: &str, depth: u32) -> Option<PathBuf> {
+            if depth > 6 {
+                return None;
+            }
+            let entries = std::fs::read_dir(dir).ok()?;
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    if let Some(found) = walk(&path, suffix, depth + 1) {
+                        return Some(found);
+                    }
+                } else if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                    // suffix looks like "rollout-*<id>.jsonl" — match the part
+                    // after the last '*' as a literal suffix.
+                    if let Some(needle) = suffix.rsplit('*').next() {
+                        if name.ends_with(needle) && name.starts_with("rollout-") {
+                            return Some(path);
+                        }
+                    }
+                }
+            }
+            None
+        }
+        walk(root, glob_suffix, 0)
+    }
+
     fn session(file: PathBuf) -> Session {
         Session {
             id: "claude-session-123456".into(),

@@ -51,7 +51,19 @@ never modifies them — so it just works with the sessions you already have.
   <kbd>c</kbd>: it asks that session's own agent to introduce the project,
   open (or create) `backlog.html`, and summarize what you last asked and what
   it did — no need to remember, and mindplayer never reads the answer itself.
+- 📝 **Transition report** — <kbd>Ctrl‑t</kbd> from a live pane opens a
+  one-line prompt (`topic / RUNBOOK §n / files`), then shows the fully
+  assembled prompt for review: <kbd>Enter</kbd> sends it as-is, or
+  <kbd>e</kbd> edits it first (multi-line, same editor as broadcast/dispatch)
+  before sending. Asks the focused pane's own agent to write
+  `transition-<topic>.html` against your `_assets/transition-template.html`
+  structure. Provider-agnostic (it's just text) and works whether one pane or
+  several are open.
 - 🔍 **Search** — <kbd>/</kbd> filters the visible list as you type.
+- 📊 **Usage stats** — <kbd>u</kbd> shows a popup with active time (today/all
+  time, plus a 14‑day trend), sessions opened per agent, handoffs, and
+  catch‑ups sent — from a small local append-only log
+  (`~/.mindplayer/audit.jsonl`), not from reading any transcript content.
 - ⛶ **Live panes** — drive one session full‑screen or split the view across
   every session you launch together (an orchestration thread's 20+ lanes all
   land in one grid). <kbd>Tab</kbd> (or <kbd>Ctrl‑w</kbd>) cycles focus,
@@ -166,6 +178,7 @@ make test                                          # cargo test --all
 | <kbd>Ctrl‑z</kbd> | zoom the focused pane to full size (toggle again for the split view) |
 | <kbd>Ctrl‑o</kbd> | toggle the live‑pane split (horizontal ⇄ vertical) |
 | <kbd>Ctrl‑q</kbd> | close the focused live pane |
+| <kbd>Ctrl‑t</kbd> | **transition report** — `topic / RUNBOOK §n / files` → review the assembled prompt → <kbd>Enter</kbd> sends, <kbd>e</kbd> edits first |
 | <kbd>Ctrl‑x</kbd> | back to the list (the session keeps running) |
 | <kbd>n</kbd> | new session — pick codex/claude/kiro, then an optional label |
 | <kbd>h</kbd> | handoff the selected session to another provider |
@@ -182,6 +195,7 @@ make test                                          # cargo test --all
 | <kbd>/</kbd> | search / filter the visible sessions |
 | <kbd>x</kbd> | close (archive) & stop the selected session |
 | <kbd>a</kbd> | toggle archived view · <kbd>g</kbd> toggle sub‑agents · <kbd>r</kbd> rescan |
+| <kbd>u</kbd> | show usage stats (active time, sessions opened, handoffs, catch-ups) |
 | <kbd>?</kbd> | show the full keyboard-shortcut list |
 | <kbd>q</kbd> | quit (stops all sessions) |
 
@@ -239,8 +253,18 @@ Read‑only data sources:
 
 MindPlayer keeps its own tiny sidecar state (archived ids, labels,
 in-progress marks) at
-`~/.mindplayer/state.json` and per‑session stderr logs at
-`~/.mindplayer/logs/`. Resuming launches `codex resume <id>` /
+`~/.mindplayer/state.json`, an append-only usage-audit log (counts/timestamps
+only — no session id, title, or cwd) at `~/.mindplayer/audit.jsonl` for the
+<kbd>u</kbd> stats popup, and per‑session stderr logs at
+`~/.mindplayer/logs/`.
+
+Canned prompts (<kbd>c</kbd> catch-up, <kbd>Ctrl‑t</kbd> transition report)
+live as plain `.md` files under `~/.mindplayer/prompts/` — `catchup.md`,
+`transition_report.md` — seeded with the built-in default the first time
+each is used. Edit them in any text editor; the next send picks up the
+change immediately, no rebuild or restart needed.
+
+Resuming launches `codex resume <id>` /
 `claude --resume <id>` / `kiro-cli chat --resume-id <id>` in an embedded PTY in
 the session's original directory.
 

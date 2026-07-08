@@ -149,6 +149,7 @@ impl App {
         let cycle = self.next_orchestration_cycle(&root_id);
         let input = orchestration::dispatch_request_prompt(&draft.instruction, cycle, &roster);
         if self.enqueue_or_submit_to_session(&main, input) {
+            mindplayer_core::log_event_to(&self.audit_path, mindplayer_core::AuditEvent::Dispatch);
             self.thread_sync_at.insert(main.id.clone(), Utc::now());
             self.status = format!(
                 "dispatch planning cycle #{cycle} sent to main; press M after main answers to apply"
@@ -235,6 +236,7 @@ impl App {
         root_id: &str,
         plan: Vec<orchestration::DispatchItem>,
     ) {
+        mindplayer_core::log_event_to(&self.audit_path, mindplayer_core::AuditEvent::Dispatch);
         let cycle = self.current_orchestration_cycle(root_id);
         let mut delivered = 0usize;
         let mut queued = 0usize;
@@ -403,6 +405,12 @@ impl App {
             return;
         }
         let cycle = self.next_orchestration_cycle(&root_id);
+        mindplayer_core::log_event_to(
+            &self.audit_path,
+            mindplayer_core::AuditEvent::Broadcast {
+                children: child_ids.len(),
+            },
+        );
         let mut delivered = 0usize;
         let mut queued = 0usize;
         let mut spawned = 0usize;
@@ -445,6 +453,7 @@ impl App {
             return;
         }
         let cycle = self.next_orchestration_cycle(&root_id);
+        mindplayer_core::log_event_to(&self.audit_path, mindplayer_core::AuditEvent::PeerReview);
         let mut delivered = 0usize;
         let mut queued = 0usize;
         let mut spawned = 0usize;
@@ -542,6 +551,7 @@ impl App {
             return;
         };
         if self.enqueue_or_submit_to_session(&main, sync.input) {
+            mindplayer_core::log_event_to(&self.audit_path, mindplayer_core::AuditEvent::Synthesis);
             self.thread_sync_at.insert(main.id.clone(), Utc::now());
             self.status = format!(
                 "synthesis cycle #{cycle} sent to main ({} chars, {})",

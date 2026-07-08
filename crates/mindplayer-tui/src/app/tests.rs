@@ -82,6 +82,34 @@ fn write_codex_fixture(name: &str, text: &str) -> (PathBuf, PathBuf) {
     (dir, transcript)
 }
 
+/// A codex transcript with `line_count` turns, each padded to roughly
+/// `line_len_bytes` — big enough that parsing it synchronously would take
+/// measurable wall-clock time, which is exactly what the freeze regression
+/// test below needs to be able to detect.
+fn write_large_codex_fixture(
+    name: &str,
+    line_count: usize,
+    line_len_bytes: usize,
+) -> (PathBuf, PathBuf) {
+    let dir = std::env::temp_dir().join(format!(
+        "mindplayer-app-codex-large-{name}-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let transcript = dir.join("codex.jsonl");
+    let padding = "x".repeat(line_len_bytes);
+    let mut out = String::new();
+    for i in 0..line_count {
+        out.push_str(&format!(
+            r#"{{"type":"response_item","payload":{{"type":"message","role":"assistant","content":[{{"type":"output_text","text":"turn {i} {padding}"}}]}}}}"#
+        ));
+        out.push('\n');
+    }
+    std::fs::write(&transcript, out).unwrap();
+    (dir, transcript)
+}
+
 #[test]
 fn new_session_persists_then_reconciles() {
     let _env = STATE_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -1971,13 +1999,241 @@ fn resuming_thread_lane_injects_peer_context() {
 
     let pending = app.pending.as_ref().expect("resume queues PTY spawn");
     assert_eq!(pending.session_id, "claude-1");
-    let input = String::from_utf8(pending.initial_input.clone().unwrap()).unwrap();
+    // The peer-transcript read now runs on a background thread (see
+    // `spawn_thread_sync_for`) so it never blocks `request_resume` itself;
+    // the initial PTY spawn has no inline prompt yet.
+    assert!(pending.initial_input.is_none());
+
+    // Wait for the background read to finish, then apply it like the main
+    // loop's `poll_thread_sync` does every frame.
+    for _ in 0..200 {
+        if app.poll_thread_sync() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    let queued = app
+        .pending_initial_inputs
+        .get("claude-1")
+        .expect("thread sync queues a deferred initial input for the not-yet-spawned session");
+    let input = String::from_utf8(queued.bytes.clone()).unwrap();
     assert!(input.contains("MindPlayer thread sync"));
     assert!(input.contains("codex fixed tests"));
     assert!(input.ends_with('\r'));
 
     std::env::remove_var(handoff::HANDOFF_DIR_ENV);
     let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn resuming_a_session_with_large_peer_transcripts_does_not_block_the_caller() {
+    // Regression for the UI-freeze bug: reopening a session with several
+    // handoff/orchestration peers used to read + parse every peer's
+    // transcript (up to `MAX_SOURCE_BYTES` each) synchronously inside
+    // `request_resume`, on the main/render thread — freezing input and
+    // rendering both for as long as that took. `request_resume` must now
+    // return immediately regardless of peer transcript size; the read runs
+    // on a background thread (see `spawn_thread_sync_for`) and is applied
+    // later by `poll_thread_sync`.
+    let _handoff_env = handoff::TEST_ENV_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+
+    const PEER_COUNT: usize = 6;
+    // ~2MB per peer (4000 lines * ~500 bytes) — large enough that a
+    // synchronous parse of all of them takes many tens of milliseconds,
+    // comfortably clearing the 50ms budget asserted below on any machine.
+    let mut dirs = Vec::new();
+    let mut peers = Vec::new();
+    for i in 0..PEER_COUNT {
+        let (dir, transcript) = write_large_codex_fixture(&format!("freeze-{i}"), 4000, 500);
+        let mut peer = session_in(
+            &format!("codex-{i}"),
+            Agent::Codex,
+            "/work/project",
+            &format!("(handoff)peer {i}"),
+        );
+        peer.file = transcript;
+        dirs.push(dir);
+        peers.push(peer);
+    }
+    let handoff_dir = dirs[0].join("handoffs");
+    std::env::set_var(handoff::HANDOFF_DIR_ENV, &handoff_dir);
+
+    let mut root = session_in("claude-root", Agent::Claude, "/work/project", "root lane");
+    root.file = dirs[0].join("claude.jsonl");
+    std::fs::write(
+        &root.file,
+        "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"go\"}}",
+    )
+    .unwrap();
+
+    let mut sessions = vec![root];
+    sessions.extend(peers.iter().cloned());
+    let mut app = app_with(sessions);
+    for peer in &peers {
+        app.state.set_handoff_link(
+            &peer.id,
+            "claude-root",
+            PathBuf::from("/tmp/handoff.md"),
+            chrono::Utc::now(),
+        );
+    }
+    app.rebuild_visible();
+    app.selected = 0;
+
+    let started = std::time::Instant::now();
+    app.request_resume();
+    let elapsed = started.elapsed();
+
+    // The generous 50ms ceiling only needs to rule out "read N x ~2MB files
+    // synchronously" (which the old code path did); it's not a tight
+    // performance budget.
+    assert!(
+        elapsed < std::time::Duration::from_millis(50),
+        "request_resume took {elapsed:?} — peer transcripts appear to be read synchronously again"
+    );
+
+    // The background read does eventually complete and land somewhere
+    // (queued as a deferred initial input, since the session hasn't spawned
+    // yet) — confirms this isn't fast merely because the sync was skipped.
+    let mut applied = false;
+    for _ in 0..300 {
+        if app.poll_thread_sync() {
+            applied = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert!(applied, "background thread-sync read never completed");
+    assert!(
+        app.pending_initial_inputs.contains_key("claude-root"),
+        "completed sync should queue a deferred initial input for the not-yet-spawned session"
+    );
+
+    std::env::remove_var(handoff::HANDOFF_DIR_ENV);
+    for dir in dirs {
+        let _ = std::fs::remove_dir_all(dir);
+    }
+}
+
+#[test]
+#[ignore]
+fn real_user_saav_style_data_request_resume_does_not_block() {
+    // Same intent as `resuming_a_session_with_large_peer_transcripts_does_not_block_the_caller`,
+    // but against this machine's actual `~/.mindplayer/state.json` handoff
+    // graph and actual `~/.codex/sessions` transcripts — the exact kind of
+    // data (12 real peer lanes, ~6.85MB total, confirmed via
+    // `handoff::tests::real_user_data_thread_sync_completes_and_is_fast` to
+    // take ~121ms to read+parse synchronously) that produced the reported
+    // freeze. `#[ignore]`d for the same reason: depends on this machine's
+    // home directory. Run explicitly with:
+    //   cargo test -p mindplayer-tui -- --ignored real_user_saav_style_data_request_resume_does_not_block --nocapture
+    let _handoff_env = handoff::TEST_ENV_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let _state_env = STATE_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
+    let home = std::env::var("HOME").expect("HOME must be set");
+    let root_id = "019ebb9e-5083-7961-8f8d-a3bcffae5702";
+    let child_ids = [
+        "019ebb97-f789-7942-a058-e0e0ba9b4c2f",
+        "019ebb97-f7a8-7a72-a9d0-0e640ae7745d",
+        "019ebb97-f7c8-7592-8cd1-b871993c8246",
+        "019ebb97-f7c9-7dd2-9358-9414c61a58c9",
+        "019ebb97-f803-75a2-95b9-43ecf78e6417",
+        "019ebb97-f86b-7300-bc64-9adf765a4343",
+        "019ebb9e-505f-7280-a163-16d3aa758a39",
+        "019ebb9e-50a5-7371-bb8e-34faae3b3c7a",
+        "019ebb9e-50ad-72e1-bc34-1c56b8080b46",
+        "019ebb9e-50c1-75d3-af96-ba3f89930ab1",
+        "019ebb9e-50c3-74d3-9661-1d5b43250262",
+        "019ebb9e-52fb-76d0-886f-8f640936b301",
+    ];
+
+    fn find_rollout(root: &std::path::Path, id: &str, depth: u32) -> Option<PathBuf> {
+        if depth > 6 {
+            return None;
+        }
+        let entries = std::fs::read_dir(root).ok()?;
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                if let Some(found) = find_rollout(&path, id, depth + 1) {
+                    return Some(found);
+                }
+            } else if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                if name.starts_with("rollout-") && name.ends_with(&format!("{id}.jsonl")) {
+                    return Some(path);
+                }
+            }
+        }
+        None
+    }
+
+    let sessions_root = PathBuf::from(&home).join(".codex/sessions");
+    let root_file = find_rollout(&sessions_root, root_id, 0)
+        .expect("expected the real root transcript to still exist on this machine");
+
+    let mut root = session_in(root_id, Agent::Codex, "/work/project", "real root lane");
+    root.file = root_file;
+    let mut sessions = vec![root];
+    let mut found_children = 0;
+    for id in child_ids {
+        if let Some(path) = find_rollout(&sessions_root, id, 0) {
+            let mut peer = session_in(id, Agent::Codex, "/work/project", "real peer lane");
+            peer.file = path;
+            sessions.push(peer);
+            found_children += 1;
+        }
+    }
+    assert!(
+        found_children >= 10,
+        "expected at least 10 of the 12 known real peer transcripts, found {found_children}"
+    );
+
+    let mut app = app_with(sessions);
+    for id in child_ids {
+        app.state.set_handoff_link(
+            id,
+            root_id,
+            PathBuf::from("/tmp/handoff.md"),
+            chrono::Utc::now(),
+        );
+    }
+    app.rebuild_visible();
+    app.selected = 0;
+    assert_eq!(app.session_at(0).map(|s| s.id.as_str()), Some(root_id));
+
+    let started = std::time::Instant::now();
+    app.request_resume();
+    let elapsed = started.elapsed();
+    println!("request_resume() on real saav-style data took {elapsed:?}");
+
+    assert!(
+        elapsed < std::time::Duration::from_millis(50),
+        "request_resume took {elapsed:?} against real user data — the freeze is NOT fixed"
+    );
+
+    let mut applied = false;
+    let mut wait_elapsed = std::time::Duration::ZERO;
+    for _ in 0..500 {
+        if app.poll_thread_sync() {
+            applied = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        wait_elapsed += std::time::Duration::from_millis(10);
+    }
+    println!("background real-data sync resolved after {wait_elapsed:?} (roughly matches the ~121ms synchronous cost measured separately)");
+    assert!(
+        applied,
+        "background thread-sync over real data never completed"
+    );
+    assert!(
+        app.pending_initial_inputs.contains_key(root_id),
+        "completed real-data sync should queue a deferred initial input"
+    );
 }
 
 #[test]
@@ -2259,4 +2515,422 @@ fn dir_input_blank_switches_to_global() {
 
     assert!(app.dir_input.is_none());
     assert!(matches!(app.scope, Scope::Global));
+}
+
+// --- usage audit instrumentation -------------------------------------------
+//
+// `app.audit_path` is a plain field (unlike `MINDPLAYER_STATE`, no env var or
+// process-wide lock needed) — each test points it at its own temp file, so
+// these never touch the real `~/.mindplayer/audit.jsonl` even without the
+// `cfg!(test)` fallback in `audit_path_for_app()`.
+
+fn audit_tmp_path(name: &str) -> PathBuf {
+    std::env::temp_dir().join(format!(
+        "mp-audit-{name}-{}-{}.jsonl",
+        std::process::id(),
+        name.len() // cheap extra uniqueness across calls with the same name in one process
+    ))
+}
+
+#[test]
+fn close_selected_logs_a_session_close_event() {
+    let _env = STATE_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let state_tmp =
+        std::env::temp_dir().join(format!("mp-audit-close-state-{}.json", std::process::id()));
+    std::env::set_var("MINDPLAYER_STATE", &state_tmp);
+    let audit_tmp = audit_tmp_path("close");
+
+    let mut app = app_with(vec![session("a", Agent::Codex, false)]);
+    app.audit_path = audit_tmp.clone();
+    app.selected = 0;
+    app.close_selected();
+
+    let events = mindplayer_core::read_events(&audit_tmp);
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].event, mindplayer_core::AuditEvent::SessionClose);
+
+    let _ = std::fs::remove_file(&state_tmp);
+    let _ = std::fs::remove_file(&audit_tmp);
+}
+
+#[test]
+fn confirm_catchup_logs_catchup_sent_on_a_successful_send() {
+    let audit_tmp = audit_tmp_path("catchup");
+    let mut app = app_with(vec![session("a", Agent::Codex, false)]);
+    app.audit_path = audit_tmp.clone();
+    app.catchup_confirm = Some("a".to_string());
+    app.confirm_catchup();
+
+    let events = mindplayer_core::read_events(&audit_tmp);
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].event, mindplayer_core::AuditEvent::CatchupSent);
+
+    let _ = std::fs::remove_file(&audit_tmp);
+}
+
+#[test]
+fn confirm_catchup_logs_nothing_when_the_send_fails() {
+    let audit_tmp = audit_tmp_path("catchup-fail");
+    let mut app = app_with(vec![session("a", Agent::Codex, false)]);
+    app.audit_path = audit_tmp.clone();
+    app.ended.insert("a".to_string()); // enqueue_or_submit_to_session bails on this
+    app.catchup_confirm = Some("a".to_string());
+    app.confirm_catchup();
+
+    assert!(mindplayer_core::read_events(&audit_tmp).is_empty());
+    let _ = std::fs::remove_file(&audit_tmp);
+}
+
+#[test]
+fn begin_transition_report_requires_a_focused_pane() {
+    let mut app = App::new();
+    app.begin_transition_report();
+    assert!(app.transition_report_input.is_none());
+    assert!(app.status.contains("live pane"));
+}
+
+#[test]
+fn begin_transition_report_opens_the_input_when_a_pane_is_focused() {
+    let mut app = app_with(vec![session("a", Agent::Codex, false)]);
+    app.focus_or_add_pane("a");
+    app.begin_transition_report();
+    assert_eq!(app.transition_report_input, Some(String::new()));
+}
+
+#[test]
+fn transition_report_input_push_and_backspace_edit_the_buffer() {
+    let mut app = app_with(vec![session("a", Agent::Codex, false)]);
+    app.focus_or_add_pane("a");
+    app.begin_transition_report();
+    for c in "eks / §3".chars() {
+        app.transition_report_input_push(c);
+    }
+    assert_eq!(app.transition_report_input.as_deref(), Some("eks / §3"));
+    app.transition_report_input_backspace();
+    assert_eq!(app.transition_report_input.as_deref(), Some("eks / §"));
+}
+
+#[test]
+fn cancel_transition_report_clears_without_sending() {
+    let audit_tmp = audit_tmp_path("transition-cancel");
+    let mut app = app_with(vec![session("a", Agent::Codex, false)]);
+    app.audit_path = audit_tmp.clone();
+    app.focus_or_add_pane("a");
+    app.begin_transition_report();
+    app.transition_report_input_push('x');
+    app.cancel_transition_report();
+
+    assert!(app.transition_report_input.is_none());
+    assert!(mindplayer_core::read_events(&audit_tmp).is_empty());
+    let _ = std::fs::remove_file(&audit_tmp);
+}
+
+#[test]
+fn confirm_transition_report_sends_to_the_focused_pane_and_logs_it() {
+    let audit_tmp = audit_tmp_path("transition-confirm");
+    let mut app = app_with(vec![
+        session("a", Agent::Codex, false),
+        session("b", Agent::Claude, false),
+    ]);
+    app.audit_path = audit_tmp.clone();
+    app.focus_or_add_pane("a");
+    app.focus_or_add_pane("b");
+    assert_eq!(app.focused_pane(), Some("b"));
+
+    app.begin_transition_report();
+    for c in "eks-migration / §3 / infra/eks.tf".chars() {
+        app.transition_report_input_push(c);
+    }
+    app.confirm_transition_report_input();
+    assert!(
+        app.transition_report_review.is_some(),
+        "enter shows a review, not an immediate send"
+    );
+    app.send_transition_report_review();
+
+    assert!(app.transition_report_input.is_none());
+    assert!(app.transition_report_review.is_none());
+    let events = mindplayer_core::read_events(&audit_tmp);
+    assert_eq!(events.len(), 1);
+    assert_eq!(
+        events[0].event,
+        mindplayer_core::AuditEvent::TransitionReportSent
+    );
+    assert!(app.status.contains(&short("b")));
+
+    let _ = std::fs::remove_file(&audit_tmp);
+}
+
+#[test]
+fn transition_report_uses_a_user_edited_prompt_file_when_present() {
+    // The whole point of externalizing the prompt to a file: editing it on
+    // disk must actually change what gets sent, with no rebuild/restart.
+    let prompts_dir =
+        std::env::temp_dir().join(format!("mp-prompts-edited-{}", std::process::id()));
+    std::fs::create_dir_all(&prompts_dir).unwrap();
+    std::fs::write(
+        prompts_dir.join("transition_report.md"),
+        "my custom template — {{input}}",
+    )
+    .unwrap();
+
+    let mut app = app_with(vec![session("a", Agent::Codex, false)]);
+    app.prompts_dir = prompts_dir.clone();
+    app.focus_or_add_pane("a");
+    app.begin_transition_report();
+    for c in "eks / §3".chars() {
+        app.transition_report_input_push(c);
+    }
+    app.confirm_transition_report_input();
+    app.send_transition_report_review();
+
+    let sent = app
+        .pending
+        .as_ref()
+        .expect("no live pty for 'a' — should have queued a spawn")
+        .initial_input
+        .as_ref()
+        .expect("prompt bytes queued as initial input");
+    let sent = String::from_utf8_lossy(sent);
+    assert!(
+        sent.contains("my custom template — eks / §3"),
+        "expected the edited template with the input substituted, got: {sent:?}"
+    );
+    // The compiled-in default text must NOT leak through once a real file exists.
+    assert!(!sent.contains("transition-<주제>.html"));
+
+    let _ = std::fs::remove_dir_all(&prompts_dir);
+}
+
+#[test]
+fn transition_report_review_starts_read_only_with_the_assembled_prompt() {
+    let mut app = app_with(vec![session("a", Agent::Codex, false)]);
+    app.focus_or_add_pane("a");
+    app.begin_transition_report();
+    for c in "eks / §3".chars() {
+        app.transition_report_input_push(c);
+    }
+    app.confirm_transition_report_input();
+
+    let draft = app
+        .transition_report_review
+        .as_ref()
+        .expect("review opened");
+    assert!(draft.instruction.contains("eks / §3"));
+    assert!(!app.transition_report_review_editing);
+}
+
+#[test]
+fn editing_the_review_changes_what_gets_sent() {
+    let audit_tmp = audit_tmp_path("transition-edit");
+    let mut app = app_with(vec![session("a", Agent::Codex, false)]);
+    app.audit_path = audit_tmp.clone();
+    app.focus_or_add_pane("a");
+    app.begin_transition_report();
+    for c in "eks / §3".chars() {
+        app.transition_report_input_push(c);
+    }
+    app.confirm_transition_report_input();
+
+    app.begin_editing_transition_report_review();
+    assert!(app.transition_report_review_editing);
+    // Move to the very end of the (multi-line) buffer, then append a line —
+    // this is the whole point of the review step: the sent text can differ
+    // from what was auto-assembled.
+    for _ in 0..500 {
+        app.transition_report_review_move_down();
+    }
+    app.transition_report_review_move_end();
+    app.transition_report_review_push_text("\nEXTRA HAND-EDITED LINE");
+    app.send_transition_report_review();
+
+    let sent = app
+        .pending
+        .as_ref()
+        .expect("queued a spawn")
+        .initial_input
+        .as_ref()
+        .expect("prompt bytes queued");
+    let sent = String::from_utf8_lossy(sent);
+    assert!(sent.contains("EXTRA HAND-EDITED LINE"));
+    assert_eq!(mindplayer_core::read_events(&audit_tmp).len(), 1);
+
+    let _ = std::fs::remove_file(&audit_tmp);
+}
+
+#[test]
+fn esc_cancels_the_review_without_sending() {
+    let audit_tmp = audit_tmp_path("transition-review-cancel");
+    let mut app = app_with(vec![session("a", Agent::Codex, false)]);
+    app.audit_path = audit_tmp.clone();
+    app.focus_or_add_pane("a");
+    app.begin_transition_report();
+    app.transition_report_input_push('x');
+    app.confirm_transition_report_input();
+    assert!(app.transition_report_review.is_some());
+
+    app.cancel_transition_report_review();
+
+    assert!(app.transition_report_review.is_none());
+    assert!(!app.transition_report_review_editing);
+    assert!(app.pending.is_none());
+    assert!(mindplayer_core::read_events(&audit_tmp).is_empty());
+
+    let _ = std::fs::remove_file(&audit_tmp);
+}
+
+#[test]
+fn start_orchestration_logs_child_count() {
+    let _env = STATE_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let state_tmp =
+        std::env::temp_dir().join(format!("mp-audit-orch-state-{}.json", std::process::id()));
+    std::env::set_var("MINDPLAYER_STATE", &state_tmp);
+    let audit_tmp = audit_tmp_path("orch");
+
+    let mut app = App::new();
+    app.audit_path = audit_tmp.clone();
+    app.scope = Scope::WorkingDir(PathBuf::from("/work/project"));
+    app.begin_orchestration();
+    app.confirm_orchestration_step();
+    for c in "$ralplan".chars() {
+        app.orchestration_input_push(c);
+    }
+    app.confirm_orchestration_step();
+    for c in "compare options".chars() {
+        app.orchestration_input_push(c);
+    }
+    app.confirm_orchestration_step();
+    app.orchestration_input_push('2');
+    app.confirm_orchestration_step();
+
+    let events = mindplayer_core::read_events(&audit_tmp);
+    assert_eq!(events.len(), 1);
+    assert_eq!(
+        events[0].event,
+        mindplayer_core::AuditEvent::OrchestrationStart { children: 2 }
+    );
+
+    let _ = std::fs::remove_file(&state_tmp);
+    let _ = std::fs::remove_file(&audit_tmp);
+}
+
+#[test]
+fn run_peer_review_cycle_logs_peer_review() {
+    // Regression: PeerReview/Synthesis were defined in AuditEvent and counted
+    // in compute_stats, but nothing ever called log_event_to for them —
+    // caught by the auto-generated backlog.html noticing the gap.
+    let _env = STATE_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _handoff_env = handoff::TEST_ENV_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let state_tmp = std::env::temp_dir().join(format!(
+        "mp-audit-peerreview-state-{}.json",
+        std::process::id()
+    ));
+    std::env::set_var("MINDPLAYER_STATE", &state_tmp);
+    let dir = std::env::temp_dir().join(format!(
+        "mindplayer-audit-peer-review-{}",
+        std::process::id()
+    ));
+    std::env::set_var(handoff::HANDOFF_DIR_ENV, dir.join("handoffs"));
+    let audit_tmp = audit_tmp_path("peer-review");
+
+    let mut app = app_with(vec![
+        session_in("main", Agent::Codex, "/work/project", "(orch codex)mode"),
+        session_in(
+            "child-1",
+            Agent::Codex,
+            "/work/project",
+            "(orch codex child 1)mode",
+        ),
+    ]);
+    app.audit_path = audit_tmp.clone();
+    app.state
+        .set_handoff_link("child-1", "main", PathBuf::from("orch"), chrono::Utc::now());
+    app.rebuild_visible();
+    app.select_session_id("main");
+
+    app.run_peer_review_cycle();
+
+    let events = mindplayer_core::read_events(&audit_tmp);
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].event, mindplayer_core::AuditEvent::PeerReview);
+
+    std::env::remove_var(handoff::HANDOFF_DIR_ENV);
+    let _ = std::fs::remove_file(&state_tmp);
+    let _ = std::fs::remove_file(&audit_tmp);
+}
+
+#[test]
+fn run_synthesis_cycle_logs_synthesis_once_it_actually_sends() {
+    let _handoff_env = handoff::TEST_ENV_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let dir =
+        std::env::temp_dir().join(format!("mindplayer-audit-synthesis-{}", std::process::id()));
+    std::env::set_var(handoff::HANDOFF_DIR_ENV, dir.join("handoffs"));
+    let audit_tmp = audit_tmp_path("synthesis");
+
+    let mut app = app_with(vec![
+        session_in("main", Agent::Codex, "/work/project", "(orch codex)mode"),
+        session_in(
+            "child-1",
+            Agent::Codex,
+            "/work/project",
+            "(orch codex child 1)mode",
+        ),
+    ]);
+    app.audit_path = audit_tmp.clone();
+    app.state
+        .set_handoff_link("child-1", "main", PathBuf::from("orch"), chrono::Utc::now());
+    app.rebuild_visible();
+    app.select_session_id("child-1");
+
+    app.run_synthesis_cycle();
+
+    let events = mindplayer_core::read_events(&audit_tmp);
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].event, mindplayer_core::AuditEvent::Synthesis);
+
+    std::env::remove_var(handoff::HANDOFF_DIR_ENV);
+    let _ = std::fs::remove_file(&audit_tmp);
+}
+
+#[test]
+fn open_usage_popup_computes_stats_from_the_audit_log() {
+    let audit_tmp = audit_tmp_path("open-popup");
+    mindplayer_core::log_event_to(
+        &audit_tmp,
+        mindplayer_core::AuditEvent::SessionOpen {
+            agent: "codex".to_string(),
+        },
+    );
+    mindplayer_core::log_event_to(&audit_tmp, mindplayer_core::AuditEvent::Handoff);
+
+    let mut app = app_with(vec![]);
+    app.audit_path = audit_tmp.clone();
+    assert!(!app.usage_popup);
+    app.open_usage_popup();
+
+    assert!(app.usage_popup);
+    let stats = app.usage_stats.as_ref().expect("stats computed");
+    assert_eq!(stats.sessions_opened_all_time.codex, 1);
+    assert_eq!(stats.handoffs_all_time, 1);
+
+    let _ = std::fs::remove_file(&audit_tmp);
+}
+
+#[test]
+fn close_usage_popup_clears_the_cached_stats() {
+    let audit_tmp = audit_tmp_path("close-popup");
+    let mut app = app_with(vec![]);
+    app.audit_path = audit_tmp.clone();
+    app.open_usage_popup();
+    assert!(app.usage_popup);
+
+    app.close_usage_popup();
+    assert!(!app.usage_popup);
+    assert!(app.usage_stats.is_none());
+
+    let _ = std::fs::remove_file(&audit_tmp);
 }

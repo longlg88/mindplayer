@@ -292,6 +292,33 @@ pub struct App {
     /// Set by `c` on a Working/Blocked session, holding its id, while the
     /// "send anyway?" confirm is up. Idle sessions skip this and send at once.
     pub catchup_confirm: Option<String>,
+    /// Opened by `Ctrl-T` from a live pane (single or multi). Holds the
+    /// one-line "topic / RUNBOOK §n / files" text typed so far; sent to the
+    /// *focused* pane's own CLI on confirm, wrapped in a fixed instruction
+    /// template — never to every pane, unlike broadcast.
+    pub transition_report_input: Option<String>,
+    /// Set once the one-line input above is confirmed: the fully assembled
+    /// prompt (template + typed specifics), shown read-only by default.
+    /// Reuses `BroadcastDraft` purely as a text+cursor buffer so switching
+    /// into edit mode gets multi-line editing for free.
+    pub transition_report_review: Option<orchestration::BroadcastDraft>,
+    /// False = read-only preview (enter sends as-is, `e` edits); true = the
+    /// buffer above is directly editable (enter still sends; ctrl-j /
+    /// shift/alt-enter inserts a newline instead, same as broadcast/dispatch).
+    pub transition_report_review_editing: bool,
+    /// Resolved once at construction (see [`audit_path_for_app`]) so every
+    /// instrumentation call site logs to the same place without re-resolving
+    /// `MINDPLAYER_AUDIT`/`cfg!(test)` on every keypress.
+    pub(crate) audit_path: PathBuf,
+    /// Resolved once at construction (see [`prompts_dir_for_app`]) — the
+    /// directory `load_prompt` calls read/seed catchup.md, transition_report.md, etc. from.
+    pub(crate) prompts_dir: PathBuf,
+    /// Whether the `u` usage-stats popup is open.
+    pub usage_popup: bool,
+    /// Recomputed fresh from the audit log each time the popup opens — the
+    /// log is small enough that a full read+aggregate is effectively instant,
+    /// so there's no cache to keep in sync.
+    pub usage_stats: Option<mindplayer_core::UsageStats>,
     /// Keyboard shortcut help overlay opened by `?`.
     pub help_visible: bool,
     /// Orchestration root waiting for child lanes to become idle before
@@ -330,6 +357,14 @@ pub struct App {
     bg_rescan_rx: Option<Receiver<Vec<Session>>>,
     /// When to kick the next background re-scan (after creating a session).
     rescan_due: Option<Instant>,
+    /// In-flight background peer-lane transcript read for a thread-sync
+    /// prompt (see `prepare_thread_sync_for`). Reading + parsing peer
+    /// transcripts can take real time on a large/long-lived session, so it
+    /// runs off the main thread — otherwise every re-entry into such a
+    /// session would freeze the whole UI (input and rendering both) until
+    /// the read finished. Keyed by the target session id so a stale result
+    /// can never land on a pane the user has since switched away from.
+    thread_sync_rx: Option<Receiver<(String, Result<handoff::PreparedHandoff, String>)>>,
     pub spinner: usize,
     pub status: String,
     pub should_quit: bool,
@@ -412,6 +447,13 @@ impl App {
             dispatch: None,
             dispatch_apply: None,
             catchup_confirm: None,
+            transition_report_input: None,
+            transition_report_review: None,
+            transition_report_review_editing: false,
+            audit_path: audit_path_for_app(),
+            prompts_dir: prompts_dir_for_app(),
+            usage_popup: false,
+            usage_stats: None,
             help_visible: false,
             pending_synthesis_root: None,
             search_query: None,
@@ -427,6 +469,7 @@ impl App {
             refresh_rx: None,
             bg_rescan_rx: None,
             rescan_due: None,
+            thread_sync_rx: None,
             spinner: 0,
             status: String::new(),
             should_quit: false,
@@ -511,6 +554,47 @@ impl App {
 
 fn short(id: &str) -> String {
     id.chars().take(8).collect()
+}
+
+/// The audit-log path an `App` logs to. In a real build this is always
+/// `mindplayer_core::default_audit_path()`. Under `cargo test`, `cfg!(test)`
+/// is true for every test in this crate regardless of whether that
+/// particular test knows anything about auditing — so it defaults to a
+/// per-process temp file instead, and the real `~/.mindplayer/audit.jsonl`
+/// is never touched by a test that never opted in. A test that wants to
+/// assert on actual audit content still sets `MINDPLAYER_AUDIT` itself
+/// (same pattern `MINDPLAYER_STATE` already uses for `state.json`).
+fn audit_path_for_app() -> PathBuf {
+    if cfg!(test) {
+        std::env::var("MINDPLAYER_AUDIT")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| {
+                std::env::temp_dir().join(format!(
+                    "mindplayer-test-audit-{}.jsonl",
+                    std::process::id()
+                ))
+            })
+    } else {
+        mindplayer_core::default_audit_path()
+    }
+}
+
+/// The prompt-templates directory an `App` reads from, mirroring
+/// [`audit_path_for_app`]'s test-isolation reasoning exactly: real build →
+/// `mindplayer_core::default_prompts_dir()`; under `cargo test` → a
+/// per-process temp directory, so a test that never opted in (by setting
+/// `MINDPLAYER_PROMPTS_DIR` itself) can't seed/overwrite a real user's
+/// `~/.mindplayer/prompts/*.md`.
+fn prompts_dir_for_app() -> PathBuf {
+    if cfg!(test) {
+        std::env::var("MINDPLAYER_PROMPTS_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| {
+                std::env::temp_dir().join(format!("mindplayer-test-prompts-{}", std::process::id()))
+            })
+    } else {
+        mindplayer_core::default_prompts_dir()
+    }
 }
 
 fn truncate_chars(s: &str, max: usize) -> String {

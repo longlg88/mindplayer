@@ -1,10 +1,12 @@
 use super::orchestration_lanes::{is_orchestration_child_session, is_orchestration_main_session};
 use super::*;
 
-/// Sent verbatim into a live session's CLI by `c` (catch-up) — the target
-/// agent answers using its own project/backlog/transcript, mindplayer never
-/// reads or summarizes any of it itself.
-const CATCHUP_PROMPT: &str = "\
+/// Default content for `~/.mindplayer/prompts/catchup.md` — seeded there on
+/// first use (see `mindplayer_core::load_prompt`) so it can be rewritten at
+/// any time without a rebuild. Sent verbatim into a live session's CLI by
+/// `c` (catch-up) — the target agent answers using its own project/backlog/
+/// transcript, mindplayer never reads or summarizes any of it itself.
+const DEFAULT_CATCHUP_PROMPT: &str = "\
 잠깐 다른 일 하다가 돌아왔어. 아래 정리해서 알려줘:
 1. 지금 이 프로젝트가 뭐 하는 프로젝트인지 간단히 소개
 2. 이 프로젝트에 backlog.html이 있으면 열어서 보여주고, 없으면 지금까지 진행 상황 기반으로 하나 만들어줘
@@ -452,9 +454,14 @@ impl App {
         let Some(session) = self.all_sessions.iter().find(|s| s.id == id).cloned() else {
             return;
         };
-        let mut input = CATCHUP_PROMPT.to_string();
+        let mut input =
+            mindplayer_core::load_prompt_from(&self.prompts_dir, "catchup", DEFAULT_CATCHUP_PROMPT);
         input.push('\r');
         if self.enqueue_or_submit_to_session(&session, input.into_bytes()) {
+            mindplayer_core::log_event_to(
+                &self.audit_path,
+                mindplayer_core::AuditEvent::CatchupSent,
+            );
             self.status = format!("catch-up prompt sent to {}", short(&session.id));
         } else {
             self.status = format!("catch-up failed to send to {}", short(&session.id));
@@ -463,6 +470,22 @@ impl App {
 
     pub fn rescan(&mut self) {
         self.start_scan();
+    }
+
+    /// `u`: recompute usage stats from the audit log and show the popup.
+    pub fn open_usage_popup(&mut self) {
+        let events = mindplayer_core::read_events(&self.audit_path);
+        self.usage_stats = Some(mindplayer_core::compute_stats(
+            &events,
+            Utc::now(),
+            std::process::id(),
+        ));
+        self.usage_popup = true;
+    }
+
+    pub fn close_usage_popup(&mut self) {
+        self.usage_popup = false;
+        self.usage_stats = None;
     }
 
     /// Kick off a background usage refresh (no-op if one is already running).
@@ -549,6 +572,7 @@ impl App {
         let Some(session) = self.selected_session().cloned() else {
             return;
         };
+        mindplayer_core::log_event_to(&self.audit_path, mindplayer_core::AuditEvent::SessionClose);
         // Remember a deliberate neighbor (the row that will slide under the
         // cursor) by id, so after the list shrinks the selection lands on it
         // instead of silently inheriting whatever shifted into the old index —

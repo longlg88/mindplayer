@@ -5,6 +5,7 @@ mod handoff;
 mod mascot;
 mod orchestration;
 mod pty;
+mod render_writer;
 mod terminal_view;
 mod ui;
 
@@ -22,7 +23,8 @@ use crossterm::terminal::{
 use mindplayer_core::Agent;
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
-use std::io::{self, Stdout, Write};
+use render_writer::FrameSink;
+use std::io::{self, Write};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -60,7 +62,20 @@ fn main() -> Result<()> {
         Some(dir) => App::new_in(dir),
         None => App::new(), // current directory
     };
+    // `std::process::id()` is the join key for pairing this run's start/stop
+    // in the audit log — needed because more than one mindplayer instance is
+    // routinely open at once (one per project), so chronological order alone
+    // can't tell overlapping runs apart.
+    let run_id = std::process::id();
+    mindplayer_core::log_event_to(
+        &app.audit_path,
+        mindplayer_core::AuditEvent::AppStart { run_id },
+    );
     let res = run(&mut terminal, &mut app);
+    mindplayer_core::log_event_to(
+        &app.audit_path,
+        mindplayer_core::AuditEvent::AppStop { run_id },
+    );
     teardown(&mut terminal)?;
     res
 }
@@ -96,6 +111,13 @@ fn explicit_dir_from_args() -> Option<PathBuf> {
 /// stdout so it works from a panic hook (no Terminal handle needed). Each step
 /// is independent so one failure never blocks the rest.
 fn restore_terminal() {
+    // Wait for any frame still in flight through the render-writer thread
+    // (see `render_writer`) before writing anything to stdout ourselves —
+    // otherwise these escape codes can race a queued frame and corrupt the
+    // terminal right as the user quits, exactly the scenario that module
+    // exists to protect against mid-session. A no-op if the render writer
+    // never started (e.g. a panic before `setup()` ran).
+    render_writer::drain_global();
     let mut out = io::stdout();
     let _ = execute!(out, PopKeyboardEnhancementFlags);
     let _ = execute!(out, DisableBracketedPaste);
@@ -112,7 +134,7 @@ fn install_panic_hook() {
     }));
 }
 
-fn setup() -> Result<Terminal<CrosstermBackend<Stdout>>> {
+fn setup() -> Result<Terminal<CrosstermBackend<FrameSink>>> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen)?;
@@ -129,19 +151,24 @@ fn setup() -> Result<Terminal<CrosstermBackend<Stdout>>> {
     // Event::Paste (no per-key replay) AND stops showing its own "this paste
     // may be dangerous" protection prompt — we forward the paste safely below.
     let _ = execute!(stdout, EnableBracketedPaste);
-    let backend = CrosstermBackend::new(stdout);
+    // From here on the real stdout is owned by the render-writer thread; the
+    // Terminal itself only ever renders into an in-memory buffer (see
+    // `render_writer` for why: a stuck terminal must not stall input polling).
+    let backend = CrosstermBackend::new(FrameSink::spawn(stdout));
     Ok(Terminal::new(backend)?)
 }
 
-fn teardown(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> Result<()> {
+fn teardown(terminal: &mut Terminal<CrosstermBackend<FrameSink>>) -> Result<()> {
     // Best-effort and unconditional: every mode is undone even if an earlier
-    // step errors, so we never leave the terminal half-restored.
+    // step errors, so we never leave the terminal half-restored. Writes
+    // directly to a fresh stdout handle (not through the render-writer),
+    // which is also what makes this safe to call from the panic hook.
     restore_terminal();
     let _ = terminal.show_cursor();
     Ok(())
 }
 
-fn run(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut App) -> Result<()> {
+fn run(terminal: &mut Terminal<CrosstermBackend<FrameSink>>, app: &mut App) -> Result<()> {
     let mut summary_since: Option<Instant> = None;
     let mut last_anim = Instant::now();
     let mut last_refresh = Instant::now();
@@ -153,6 +180,10 @@ fn run(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut App) -> Resu
 
     while !app.should_quit {
         if needs_draw {
+            // `FrameSink` (see `render_writer`) buffers this in memory and
+            // hands it to a background writer thread on flush, so a
+            // terminal that's fallen behind under load can never stall the
+            // input-polling loop below.
             terminal.draw(|f| ui::render(f, app))?;
             needs_draw = false;
         }
@@ -186,6 +217,13 @@ fn run(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut App) -> Resu
             }
             // Live re-ordering from the background mtime refresh.
             if app.poll_refresh() {
+                needs_draw = true;
+            }
+            // Apply a finished background peer-lane transcript read (see
+            // `spawn_thread_sync_for`) — kept off this thread so reopening a
+            // thread-synced session never freezes input/rendering while its
+            // peers' transcripts are read.
+            if app.poll_thread_sync() {
                 needs_draw = true;
             }
             if last_refresh.elapsed() >= Duration::from_secs(3) {
@@ -489,6 +527,13 @@ fn handle_main_key(app: &mut App, key: KeyEvent) {
         }
         return;
     }
+    if app.usage_popup {
+        match key.code {
+            KeyCode::Esc | KeyCode::Enter | KeyCode::Char('u') => app.close_usage_popup(),
+            _ => {}
+        }
+        return;
+    }
 
     if app.dispatch_apply.is_some() {
         match key.code {
@@ -660,6 +705,62 @@ fn handle_main_key(app: &mut App, key: KeyEvent) {
         return;
     }
 
+    // Transition-report input: opened by Ctrl-T from a live pane (see the
+    // Focus::Terminal chord handling below) — checked here, before that
+    // match, so its keystrokes never fall through to the raw pty-forwarding
+    // path.
+    if app.transition_report_input.is_some() {
+        match key.code {
+            KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                app.transition_report_input_push(c)
+            }
+            KeyCode::Backspace => app.transition_report_input_backspace(),
+            KeyCode::Enter => app.confirm_transition_report_input(),
+            KeyCode::Esc => app.cancel_transition_report(),
+            _ => {}
+        }
+        return;
+    }
+
+    // Transition-report review: the assembled prompt, read-only until `e`
+    // switches it into the same multi-line editor broadcast/dispatch use.
+    // Enter sends in both modes — only whether plain typing edits the buffer
+    // or falls through differs.
+    if app.transition_report_review.is_some() {
+        if app.transition_report_review_editing {
+            match key.code {
+                KeyCode::Backspace => app.transition_report_review_backspace(),
+                KeyCode::Delete => app.transition_report_review_delete(),
+                KeyCode::Left => app.transition_report_review_move_left(),
+                KeyCode::Right => app.transition_report_review_move_right(),
+                KeyCode::Up => app.transition_report_review_move_up(),
+                KeyCode::Down => app.transition_report_review_move_down(),
+                KeyCode::Home => app.transition_report_review_move_home(),
+                KeyCode::End => app.transition_report_review_move_end(),
+                KeyCode::Enter if text_newline_key(key) => {
+                    app.transition_report_review_push_text("\n")
+                }
+                KeyCode::Enter => app.send_transition_report_review(),
+                KeyCode::Esc => app.cancel_transition_report_review(),
+                KeyCode::Char('j') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    app.transition_report_review_push_text("\n")
+                }
+                KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    app.transition_report_review_push_char(c)
+                }
+                _ => {}
+            }
+        } else {
+            match key.code {
+                KeyCode::Enter => app.send_transition_report_review(),
+                KeyCode::Char('e') => app.begin_editing_transition_report_review(),
+                KeyCode::Esc => app.cancel_transition_report_review(),
+                _ => {}
+            }
+        }
+        return;
+    }
+
     // Catch-up confirm: only reached for a Working/Blocked target (Idle sends
     // at once in begin_catchup) — asks before queuing in behind its turn.
     if app.catchup_confirm.is_some() {
@@ -722,6 +823,10 @@ fn handle_main_key(app: &mut App, key: KeyEvent) {
                     }
                     KeyCode::Char('z') | KeyCode::Char('ㅋ') => {
                         app.toggle_zoom();
+                        return;
+                    }
+                    KeyCode::Char('t') | KeyCode::Char('ㅅ') => {
+                        app.begin_transition_report();
                         return;
                     }
                     _ => {}
@@ -807,6 +912,7 @@ fn handle_main_key(app: &mut App, key: KeyEvent) {
                 KeyCode::Char('a') => app.toggle_archived_view(),
                 KeyCode::Char('g') => app.toggle_subagents(),
                 KeyCode::Char('r') => app.rescan(),
+                KeyCode::Char('u') => app.open_usage_popup(),
                 KeyCode::Char('q') => app.quit(),
                 _ => {}
             }
@@ -1029,6 +1135,105 @@ mod tests {
             "dispatch apply needs an orchestration main/thread row"
         );
         assert!(app.dispatch_apply.is_none());
+    }
+
+    #[test]
+    fn u_opens_the_usage_popup_and_esc_enter_or_u_closes_it() {
+        for closing_key in [
+            KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            KeyEvent::new(KeyCode::Char('u'), KeyModifiers::NONE),
+        ] {
+            let mut app = main_app();
+            handle_main_key(
+                &mut app,
+                KeyEvent::new(KeyCode::Char('u'), KeyModifiers::NONE),
+            );
+            assert!(app.usage_popup);
+            assert!(app.usage_stats.is_some());
+
+            // While open, unrelated keys (e.g. rescan) are swallowed rather
+            // than acting on the list underneath the popup.
+            handle_main_key(
+                &mut app,
+                KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE),
+            );
+            assert!(app.usage_popup, "unrelated key must not close the popup");
+
+            handle_main_key(&mut app, closing_key);
+            assert!(!app.usage_popup, "{closing_key:?} should close the popup");
+            assert!(app.usage_stats.is_none());
+        }
+    }
+
+    #[test]
+    fn ctrl_t_opens_transition_report_input_from_a_live_pane_and_esc_cancels() {
+        let mut app = main_app_with_session("s1");
+        app.focus_or_add_pane("s1");
+        app.focus = Focus::Terminal;
+
+        handle_main_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('t'), KeyModifiers::CONTROL),
+        );
+        assert_eq!(app.transition_report_input, Some(String::new()));
+
+        // While open, plain typing must fill the input, not fall through to
+        // the raw pty-forwarding path Focus::Terminal normally takes.
+        handle_main_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE),
+        );
+        assert_eq!(app.transition_report_input.as_deref(), Some("x"));
+
+        handle_main_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(app.transition_report_input.is_none());
+    }
+
+    #[test]
+    fn transition_report_review_e_edits_plain_enter_sends_esc_cancels() {
+        let mut app = main_app_with_session("s1");
+        app.focus_or_add_pane("s1");
+        app.focus = Focus::Terminal;
+        handle_main_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('t'), KeyModifiers::CONTROL),
+        );
+        for c in "topic".chars() {
+            handle_main_key(
+                &mut app,
+                KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE),
+            );
+        }
+        handle_main_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(app.transition_report_review.is_some());
+        assert!(!app.transition_report_review_editing);
+
+        // Read-only: 'e' switches to editing instead of typing a literal "e".
+        handle_main_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE),
+        );
+        assert!(app.transition_report_review_editing);
+        let before = app
+            .transition_report_review
+            .as_ref()
+            .unwrap()
+            .instruction
+            .clone();
+
+        // Editing: plain characters now edit the buffer.
+        handle_main_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('!'), KeyModifiers::NONE),
+        );
+        assert_ne!(
+            app.transition_report_review.as_ref().unwrap().instruction,
+            before
+        );
+
+        handle_main_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(app.transition_report_review.is_none());
     }
 
     #[test]

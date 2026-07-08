@@ -317,6 +317,16 @@ impl App {
                     );
                 }
                 self.ptys.insert(id.clone(), pty);
+                // The one choke point every new/resumed/handoff/orchestration
+                // PTY passes through — one log line here covers all of them.
+                if let Some(session) = self.all_sessions.iter().find(|s| s.id == id) {
+                    mindplayer_core::log_event_to(
+                        &self.audit_path,
+                        mindplayer_core::AuditEvent::SessionOpen {
+                            agent: session.agent.as_str().to_string(),
+                        },
+                    );
+                }
                 if pending.focus_after_spawn {
                     self.focus_or_add_pane(&id);
                 }

@@ -42,6 +42,7 @@ impl App {
                 return;
             }
         };
+        mindplayer_core::log_event_to(&self.audit_path, mindplayer_core::AuditEvent::Handoff);
         let command = handoff::command_for(&source, target);
         let parent_id = self.state.thread_root(&source.id).to_string();
         let now = Utc::now();
@@ -216,17 +217,88 @@ impl App {
         !self.thread_sync_at.contains_key(id)
     }
 
-    pub(crate) fn prepare_thread_sync_for(
-        &self,
-        session: &Session,
-    ) -> Option<handoff::PreparedHandoff> {
+    /// Non-blocking read of a session's peer-lane thread-sync context (see
+    /// `spawn_thread_sync_for`/`poll_thread_sync`). The "is a sync even
+    /// needed" check runs here on the main thread (cheap — no file I/O),
+    /// but the actual peer-transcript read/parse (`extract_transcript`, up to
+    /// `MAX_SOURCE_BYTES` per peer) happens on a background thread. Reading
+    /// several peer lanes' transcripts synchronously used to freeze the whole
+    /// UI — both input and rendering — for as long as the read took, every
+    /// time a thread-synced session was reopened. Returns `false` if no sync
+    /// is needed (nothing was spawned) so the caller can fall through to its
+    /// normal resume path immediately instead of waiting on a channel that
+    /// will never produce anything.
+    pub(crate) fn spawn_thread_sync_for(&mut self, session: &Session) -> bool {
+        if self.thread_sync_rx.is_some() {
+            // A previous sync is still in flight; don't start a second one
+            // (poll_thread_sync drops it once resolved).
+            return false;
+        }
         if self.orchestration_root_for_session(session).is_some() {
-            return None;
+            return false;
         }
         let peers = self.thread_peer_sessions(&session.id);
         if !self.thread_sync_needed(&session.id, &peers) {
-            return None;
+            return false;
         }
-        handoff::prepare_thread_sync_input(session, &peers).ok()
+        let target = session.clone();
+        let id = session.id.clone();
+        let (tx, rx) = mpsc::channel();
+        thread::spawn(move || {
+            let result = handoff::prepare_thread_sync_input(&target, &peers);
+            let _ = tx.send((target.id, result));
+        });
+        self.thread_sync_rx = Some(rx);
+        // Mark it needed-and-in-flight immediately so a second reopen before
+        // this one resolves doesn't queue a duplicate read for the same id.
+        self.thread_sync_at.insert(id, Utc::now());
+        true
+    }
+
+    /// Apply a finished background thread-sync read (see
+    /// `spawn_thread_sync_for`). If the target session is still live and idle,
+    /// paste-and-submit it directly like the old synchronous path did;
+    /// otherwise queue it as a deferred initial input so it goes out via the
+    /// normal `flush_initial_inputs` path once the prompt is ready. Returns
+    /// true if anything changed (caller redraws).
+    pub fn poll_thread_sync(&mut self) -> bool {
+        let Some(rx) = &self.thread_sync_rx else {
+            return false;
+        };
+        let Ok((id, result)) = rx.try_recv() else {
+            return false;
+        };
+        self.thread_sync_rx = None;
+        let Ok(sync) = result else {
+            return false;
+        };
+        if self.ended.contains(&id) {
+            return false;
+        }
+        let injected = self.ptys.get_mut(&id).is_some_and(|pty| {
+            if pty.looks_idle() {
+                pty.paste_and_submit(&sync.input)
+            } else {
+                false
+            }
+        });
+        if injected {
+            self.turn_submitted.insert(id.clone());
+            self.status = format!(
+                "synced peer lanes into {} ({} chars, {})",
+                short(&id),
+                sync.transcript_chars,
+                sync.artifact.display()
+            );
+        } else {
+            // Either live but not idle right now, or not spawned yet (a fresh
+            // resume's PTY is still pending on pane-size). Either way, hand it
+            // to the same deferred-input path a fresh spawn's initial prompt
+            // uses, so it still goes out (via `flush_initial_inputs`) once the
+            // target prompt is ready instead of being silently dropped.
+            self.queue_initial_input(id.clone(), sync.input);
+            self.status = format!("peer-lane sync for {} queued", short(&id));
+        }
+        true
     }
 }

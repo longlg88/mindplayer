@@ -1,0 +1,199 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8" />
+<title>MindPlayer — Backlog</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #0f1115;
+    --panel: #171a21;
+    --border: #2a2f3a;
+    --text: #e6e8ec;
+    --muted: #9aa3b2;
+    --accent: #7ea2f7;
+    --ok: #6fd08c;
+    --warn: #f2c14e;
+    --todo: #8892a0;
+  }
+  @media (prefers-color-scheme: light) {
+    :root {
+      --bg: #f7f8fa;
+      --panel: #ffffff;
+      --border: #e2e5ea;
+      --text: #1c2027;
+      --muted: #5b6472;
+      --accent: #3a63c9;
+      --ok: #1f9d55;
+      --warn: #a06b00;
+      --todo: #6b7280;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #0f1115; --panel: #171a21; --border: #2a2f3a; --text: #e6e8ec;
+    --muted: #9aa3b2; --accent: #7ea2f7; --ok: #6fd08c; --warn: #f2c14e; --todo: #8892a0;
+  }
+  :root[data-theme="light"] {
+    --bg: #f7f8fa; --panel: #ffffff; --border: #e2e5ea; --text: #1c2027;
+    --muted: #5b6472; --accent: #3a63c9; --ok: #1f9d55; --warn: #a06b00; --todo: #6b7280;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Pretendard, sans-serif;
+    line-height: 1.5;
+  }
+  .wrap { max-width: 880px; margin: 0 auto; padding: 40px 24px 80px; }
+  header { margin-bottom: 32px; }
+  header .kicker { color: var(--accent); font-weight: 600; font-size: 13px; letter-spacing: 0.04em; text-transform: uppercase; }
+  h1 { margin: 6px 0 8px; font-size: 28px; }
+  .sub { color: var(--muted); font-size: 14.5px; }
+  section { margin-bottom: 36px; }
+  h2 {
+    font-size: 15px; text-transform: uppercase; letter-spacing: 0.05em;
+    color: var(--muted); border-bottom: 1px solid var(--border);
+    padding-bottom: 8px; margin: 0 0 16px;
+  }
+  .card {
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 10px; padding: 16px 18px; margin-bottom: 10px;
+  }
+  .row { display: flex; gap: 10px; align-items: flex-start; }
+  .badge {
+    flex: 0 0 auto; font-size: 11px; font-weight: 700; letter-spacing: 0.03em;
+    padding: 2px 8px; border-radius: 999px; text-transform: uppercase;
+    margin-top: 2px;
+  }
+  .badge.done { background: color-mix(in srgb, var(--ok) 20%, transparent); color: var(--ok); }
+  .badge.next { background: color-mix(in srgb, var(--warn) 20%, transparent); color: var(--warn); }
+  .badge.idea { background: color-mix(in srgb, var(--todo) 20%, transparent); color: var(--todo); }
+  .item-title { font-weight: 600; margin-bottom: 2px; }
+  .item-desc { color: var(--muted); font-size: 14px; }
+  code {
+    background: color-mix(in srgb, var(--border) 60%, transparent);
+    padding: 1px 6px; border-radius: 5px; font-size: 0.9em;
+  }
+  ul { margin: 6px 0 0; padding-left: 20px; color: var(--muted); font-size: 14px; }
+  li { margin: 3px 0; }
+  .meta { color: var(--muted); font-size: 13px; margin-top: 4px; }
+  a { color: var(--accent); }
+  .qa { border-left: 3px solid var(--accent); padding-left: 14px; margin-bottom: 18px; }
+  .qa .q { font-weight: 600; margin-bottom: 4px; }
+  .qa .a { color: var(--muted); font-size: 14px; }
+  footer { color: var(--muted); font-size: 12.5px; text-align: center; margin-top: 48px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <div class="kicker">MindPlayer</div>
+    <h1>Backlog</h1>
+    <div class="sub">Generated from git history + working-tree state — no <code>backlog.html</code> existed yet, so this one was created fresh. Regenerate any time by re-running the catch-up prompt (<kbd>c</kbd>).</div>
+  </header>
+
+  <section>
+    <h2>1. 이 프로젝트는</h2>
+    <div class="card">
+      <p style="margin:0 0 8px"><strong>MindPlayer</strong> — Codex / Claude Code / Kiro 세션을 하나의 터미널 창에서 브라우저 탭처럼 다루는 Rust 앱입니다.</p>
+      <p style="margin:0; color:var(--muted); font-size:14px;">
+        <code>~/.codex</code>, <code>~/.claude</code>, <code>~/.kiro</code> 트랜스크립트를 읽기 전용으로 스캔해 세션 목록을 보여주고,
+        여러 세션을 동시에 재개/실행하며 (라이브 상태 표시, 멀티 페인),
+        핸드오프/오케스트레이션/캐치업 같은 세션 간 컨텍스트 전달 기능을 제공합니다.
+        코어 로직은 <code>crates/mindplayer-core</code>, TUI는 <code>crates/mindplayer-tui</code> (ratatui), macOS 앱은 <code>app/</code> (Tauri) 입니다.
+      </p>
+    </div>
+  </section>
+
+  <section>
+    <h2>2. Backlog</h2>
+
+    <div class="card row">
+      <span class="badge done">done</span>
+      <div>
+        <div class="item-title">Usage audit / stats popup (<code>u</code>)</div>
+        <div class="item-desc">
+          <code>docs/plans/2026-07-08-usage-audit-design.md</code>.
+          Append-only <code>~/.mindplayer/audit.jsonl</code> + a stats popup showing active time (sparkline, 14d),
+          sessions opened per agent, handoffs, catch-ups, transition reports.
+        </div>
+        <ul>
+          <li>✅ <code>mindplayer-core::audit</code> — events, <code>compute_stats</code>, round-trip/corrupt-line/run-id-pairing tests all pass</li>
+          <li>✅ Wired: <code>app_start</code>/<code>app_stop</code>, <code>session_open</code>, <code>session_close</code>, <code>handoff</code>, <code>catchup_sent</code>, <code>transition_report_sent</code>, <code>orchestration_start</code>, <code>broadcast</code>, <code>dispatch</code>, <code>peer_review</code>, <code>synthesis</code></li>
+          <li>✅ <code>u</code> popup implemented in <code>ui.rs</code> (Sparkline + agent-split bar), 155/155 tests green, workspace builds clean</li>
+          <li>✅ <strong>Gap closed:</strong> <code>run_peer_review_cycle()</code> / <code>send_synthesis_cycle_now()</code> now call <code>log_event_to</code> — regression tests added (<code>run_peer_review_cycle_logs_peer_review</code>, <code>run_synthesis_cycle_logs_synthesis_once_it_actually_sends</code>)</li>
+          <li>Prompts (<code>catchup.md</code>, <code>transition_report.md</code>) externalized to <code>~/.mindplayer/prompts/*.md</code> — editable any time, no rebuild</li>
+          <li>Not yet committed — sitting in the working tree</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="card row">
+      <span class="badge idea">next</span>
+      <div>
+        <div class="item-title">Commit the usage-audit + prompt-externalization work</div>
+        <div class="item-desc">Working tree has the full feature (core + tui + tests + docs) uncommitted, gate green. Ready for a commit once the user says so — not done automatically per this project's convention.</div>
+      </div>
+    </div>
+
+    <div class="card row">
+      <span class="badge idea">next</span>
+      <div>
+        <div class="item-title">Ctrl-T review/edit-before-send step</div>
+        <div class="item-desc">Under discussion: after typing topic/§n/files, show the assembled prompt (read-only) with <code>enter</code> to send as-is or <code>e</code> to drop into an editable textarea first — instead of always sending immediately.</div>
+      </div>
+    </div>
+
+    <div class="card row">
+      <span class="badge idea">idea</span>
+      <div>
+        <div class="item-title">Orchestration commands are "phasing out"</div>
+        <div class="item-desc">The design doc itself notes <code>orchestration_start</code>/<code>broadcast</code>/<code>dispatch</code>/<code>peer_review</code>/<code>synthesis</code> map to a feature slated for removal — when that happens, their audit events (and the "orchestration (phasing out)" line in the stats popup) go with it.</div>
+      </div>
+    </div>
+
+    <div class="card row">
+      <span class="badge done">recently shipped</span>
+      <div>
+        <div class="item-title">In-progress marks, catch-up prompt, reference-matched whale mascot</div>
+        <div class="item-desc"><code>6fc0ac8</code> — the <code>c</code> catch-up prompt (project intro + open/create <code>backlog.html</code> + last-ask summary) is exactly the flow this document was generated by.</div>
+      </div>
+    </div>
+
+    <div class="card row">
+      <span class="badge done">recently shipped</span>
+      <div>
+        <div class="item-title">README refresh</div>
+        <div class="item-desc"><code>ecf775c</code> — brought README up to date with current keys/features (catch-up, in-progress mark, usage stats sections all documented).</div>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>3. 최근 대화 요약</h2>
+
+    <div class="qa">
+      <div class="q">이전 요청 (codex 세션): "Reply with exactly OK."</div>
+      <div class="a">단순 응답 확인용 요청이었고 <code>OK</code>로 응답 완료. 실질적인 구현 작업은 없었음.</div>
+    </div>
+
+    <div class="qa">
+      <div class="q">이번 요청: 잠깐 다른 일 하다 돌아와서 (1) 프로젝트 소개, (2) <code>backlog.html</code> 열거나 없으면 생성, (3) 최근 질문/작업 요약</div>
+      <div class="a">
+        <code>backlog.html</code>이 리포지토리에 없어서 git 로그 + 워킹트리 상태(수정 14개 파일, 신규 <code>audit.rs</code> / <code>docs/plans/2026-07-08-usage-audit-design.md</code>) + 계획 문서를 근거로 이 파일을 새로 생성했습니다.
+        <code>cargo build --workspace</code> 성공, <code>cargo test --workspace</code> 144개 전부 통과 확인.
+        진행 중인 작업은 usage-audit/stats 기능이며, 거의 완성되었지만 <code>peer_review</code>/<code>synthesis</code> 이벤트 로깅이 빠져 있는 것을 발견해 위 backlog에 반영했습니다.
+      </div>
+    </div>
+  </section>
+
+  <footer>
+    Generated by Claude · sources: <code>git log</code>, <code>git status</code>/<code>git diff --stat</code>, <code>docs/plans/2026-07-08-usage-audit-design.md</code>, <code>cargo build</code>/<code>cargo test</code> — no transcript content read beyond this session.
+  </footer>
+
+</div>
+</body>
+</html>

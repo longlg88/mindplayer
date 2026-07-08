@@ -239,26 +239,12 @@ impl App {
         };
         self.focus = Focus::Terminal;
         if self.is_running(&session.id) {
-            // Already live in the background — just bring it to the foreground.
-            if let Some(sync) = self.prepare_thread_sync_for(&session) {
-                let injected = self.ptys.get_mut(&session.id).is_some_and(|pty| {
-                    if pty.looks_idle() {
-                        pty.paste_and_submit(&sync.input)
-                    } else {
-                        false
-                    }
-                });
-                if injected {
-                    self.thread_sync_at.insert(session.id.clone(), Utc::now());
-                    self.turn_submitted.insert(session.id.clone());
-                    self.status = format!(
-                        "synced peer lanes into {} ({} chars, {})",
-                        short(&session.id),
-                        sync.transcript_chars,
-                        sync.artifact.display()
-                    );
-                }
-            }
+            // Already live in the background — just bring it to the
+            // foreground now; any peer-lane sync reads happen off the main
+            // thread (see `spawn_thread_sync_for`/`poll_thread_sync`) so
+            // reopening a session with several handoff/orchestration peers
+            // never freezes the UI while their transcripts are read.
+            self.spawn_thread_sync_for(&session);
             self.focus_or_add_pane(&session.id);
             return;
         }
@@ -272,26 +258,168 @@ impl App {
             }
             return;
         }
-        let initial_input = self.prepare_thread_sync_for(&session).map(|sync| {
-            self.thread_sync_at.insert(session.id.clone(), Utc::now());
-            self.status = format!(
-                "resuming {} {} with thread sync ({} chars, {})",
-                session.agent.as_str(),
-                short(&session.id),
-                sync.transcript_chars,
-                sync.artifact.display()
-            );
-            sync.input
-        });
+        // Same off-main-thread treatment for a fresh spawn: kick off the
+        // background sync read (if one is needed) and spawn immediately
+        // without it. `poll_thread_sync` queues the result as a deferred
+        // initial input once it's ready, same as a handoff's own initial
+        // prompt already does.
+        self.spawn_thread_sync_for(&session);
         self.pending = Some(PendingSpawn {
             command: resume(&session),
             session_id: session.id.clone(),
-            initial_input,
+            initial_input: None,
             focus_after_spawn: true,
         });
         self.focus_or_add_pane(&session.id);
-        if !self.status.contains("thread sync") {
-            self.status = format!("resuming {} {}", session.agent.as_str(), short(&session.id));
+        self.status = format!("resuming {} {}", session.agent.as_str(), short(&session.id));
+    }
+
+    /// `Ctrl-T` from a live pane: open the one-line "topic / RUNBOOK §n /
+    /// files" input. Works the same with one pane or several open — it only
+    /// ever targets whichever pane is currently focused, never every pane
+    /// (unlike broadcast).
+    pub fn begin_transition_report(&mut self) {
+        if self.focused_pane().is_none() {
+            self.status = "transition report needs a live pane".to_string();
+            return;
+        }
+        self.transition_report_input = Some(String::new());
+        self.status = "transition report: topic / RUNBOOK §n / files, then enter".to_string();
+    }
+
+    pub fn cancel_transition_report(&mut self) {
+        self.transition_report_input = None;
+    }
+
+    pub fn transition_report_input_push(&mut self, c: char) {
+        if let Some(s) = self.transition_report_input.as_mut() {
+            s.push(c);
+        }
+    }
+
+    pub fn transition_report_input_backspace(&mut self) {
+        if let Some(s) = self.transition_report_input.as_mut() {
+            s.pop();
+        }
+    }
+
+    /// Enter on the one-line input: assemble the real prompt (template +
+    /// typed specifics) and show it read-only rather than sending it —
+    /// `send_transition_report_review` / `begin_editing_transition_report_review`
+    /// take it from here. Nothing is sent to the session yet.
+    pub fn confirm_transition_report_input(&mut self) {
+        let Some(input) = self.transition_report_input.take() else {
+            return;
+        };
+        if self.focused_pane().is_none() {
+            self.status = "transition report failed: no focused pane".to_string();
+            return;
+        }
+        let assembled = transition_report_prompt(&self.prompts_dir, &input);
+        let mut draft = orchestration::BroadcastDraft::default();
+        draft.push_text(&assembled);
+        self.transition_report_review = Some(draft);
+        self.transition_report_review_editing = false;
+        self.status = "transition report: enter send · e edit · esc cancel".to_string();
+    }
+
+    pub fn cancel_transition_report_review(&mut self) {
+        self.transition_report_review = None;
+        self.transition_report_review_editing = false;
+    }
+
+    pub fn begin_editing_transition_report_review(&mut self) {
+        if self.transition_report_review.is_some() {
+            self.transition_report_review_editing = true;
+        }
+    }
+
+    /// Enter on the review screen (read-only or mid-edit): send whatever
+    /// text is currently in the buffer — the untouched assembled prompt if
+    /// the user never pressed `e`, or their edited version otherwise.
+    pub fn send_transition_report_review(&mut self) {
+        let Some(draft) = self.transition_report_review.take() else {
+            return;
+        };
+        self.transition_report_review_editing = false;
+        let Some(id) = self.focused_pane().map(str::to_string) else {
+            self.status = "transition report failed: no focused pane".to_string();
+            return;
+        };
+        let Some(session) = self.all_sessions.iter().find(|s| s.id == id).cloned() else {
+            self.status = "transition report failed: session no longer tracked".to_string();
+            return;
+        };
+        let mut prompt = draft.instruction;
+        prompt.push('\r');
+        if self.enqueue_or_submit_to_session(&session, prompt.into_bytes()) {
+            mindplayer_core::log_event_to(
+                &self.audit_path,
+                mindplayer_core::AuditEvent::TransitionReportSent,
+            );
+            self.status = format!("transition report prompt sent to {}", short(&session.id));
+        } else {
+            self.status = format!("transition report failed to send to {}", short(&session.id));
+        }
+    }
+
+    pub fn transition_report_review_push_char(&mut self, c: char) {
+        if let Some(draft) = self.transition_report_review.as_mut() {
+            draft.push_char(c);
+        }
+    }
+
+    pub fn transition_report_review_push_text(&mut self, text: &str) {
+        if let Some(draft) = self.transition_report_review.as_mut() {
+            draft.push_text(text);
+        }
+    }
+
+    pub fn transition_report_review_backspace(&mut self) {
+        if let Some(draft) = self.transition_report_review.as_mut() {
+            draft.backspace();
+        }
+    }
+
+    pub fn transition_report_review_delete(&mut self) {
+        if let Some(draft) = self.transition_report_review.as_mut() {
+            draft.delete();
+        }
+    }
+
+    pub fn transition_report_review_move_left(&mut self) {
+        if let Some(draft) = self.transition_report_review.as_mut() {
+            draft.move_left();
+        }
+    }
+
+    pub fn transition_report_review_move_right(&mut self) {
+        if let Some(draft) = self.transition_report_review.as_mut() {
+            draft.move_right();
+        }
+    }
+
+    pub fn transition_report_review_move_up(&mut self) {
+        if let Some(draft) = self.transition_report_review.as_mut() {
+            draft.move_up();
+        }
+    }
+
+    pub fn transition_report_review_move_down(&mut self) {
+        if let Some(draft) = self.transition_report_review.as_mut() {
+            draft.move_down();
+        }
+    }
+
+    pub fn transition_report_review_move_home(&mut self) {
+        if let Some(draft) = self.transition_report_review.as_mut() {
+            draft.move_home();
+        }
+    }
+
+    pub fn transition_report_review_move_end(&mut self) {
+        if let Some(draft) = self.transition_report_review.as_mut() {
+            draft.move_end();
         }
     }
 
@@ -515,6 +643,37 @@ impl App {
             }
         }
         false
+    }
+}
+
+/// Default content for `~/.mindplayer/prompts/transition_report.md` —
+/// seeded there on first use so it can be rewritten at any time without a
+/// rebuild. Handed to *any* provider (codex/claude/kiro — it's plain text,
+/// nothing provider-specific) by `Ctrl-T`. The bracketed placeholders are
+/// intentionally left for the agent itself to fill in from whatever the
+/// user typed in `input` — mindplayer never parses "topic / §n / files"
+/// itself, since splitting on "/" would break the moment a file path
+/// contains one. `{{input}}` marks where that typed text is substituted in;
+/// if a rewritten template drops the token, it's appended instead so
+/// nothing the user typed is silently lost.
+const DEFAULT_TRANSITION_REPORT_PROMPT: &str = "\
+transition-<주제>.html을 _assets/transition-template.html 구조로 만들어줘.
+소스: [RUNBOOK.md §n] + [실제 대상 파일들 경로].
+TL;DR/Topology/검증/Glossary는 항상, 핵심판단·wiring토글·steps는
+실제로 그 구조(2단 비교/현재-목표/순서)가 있을 때만 써줘.
+
+이번 건 세부사항: {{input}}";
+
+fn transition_report_prompt(prompts_dir: &std::path::Path, input: &str) -> String {
+    let template = mindplayer_core::load_prompt_from(
+        prompts_dir,
+        "transition_report",
+        DEFAULT_TRANSITION_REPORT_PROMPT,
+    );
+    if template.contains("{{input}}") {
+        template.replace("{{input}}", input)
+    } else {
+        format!("{template}\n\n이번 건 세부사항: {input}")
     }
 }
 

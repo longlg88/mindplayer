@@ -1366,8 +1366,6 @@ fn handoff_popup(f: &mut Frame, choice: usize, source: Option<Agent>) {
 }
 
 fn help_popup(f: &mut Frame) {
-    let area = centered(f.area(), 92, 24);
-    f.render_widget(Clear, area);
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(ACCENT))
@@ -1432,6 +1430,12 @@ fn help_popup(f: &mut Frame) {
         item("esc", "cancel modal or close this help"),
         item("?", "show or close this help"),
     ];
+    // Sized to content (+ borders and a little slack for lines that wrap at
+    // narrower terminal widths) rather than a fixed guess, so adding an
+    // entry above can't silently clip the ones below it again.
+    let height = lines.len() as u16 + 6;
+    let area = centered(f.area(), 96, height);
+    f.render_widget(Clear, area);
     f.render_widget(
         Paragraph::new(lines)
             .block(block)

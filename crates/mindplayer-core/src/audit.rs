@@ -33,11 +33,6 @@ pub enum AuditEvent {
     Handoff,
     CatchupSent,
     TransitionReportSent,
-    OrchestrationStart { children: usize },
-    Broadcast { children: usize },
-    Dispatch,
-    PeerReview,
-    Synthesis,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -127,10 +122,6 @@ pub struct UsageStats {
     pub handoffs_all_time: usize,
     pub catchups_all_time: usize,
     pub transition_reports_all_time: usize,
-    pub orchestration_lanes_all_time: usize,
-    /// broadcast + dispatch + peer_review + synthesis, one count per action
-    /// (not per child lane it fanned out to).
-    pub automation_sent_all_time: usize,
     /// One active-seconds total per rolling 24h bucket, oldest first,
     /// covering the last [`SPARKLINE_DAYS`] days (today included).
     pub daily_active_secs: Vec<i64>,
@@ -208,15 +199,6 @@ pub fn compute_stats(
             AuditEvent::Handoff => stats.handoffs_all_time += 1,
             AuditEvent::CatchupSent => stats.catchups_all_time += 1,
             AuditEvent::TransitionReportSent => stats.transition_reports_all_time += 1,
-            AuditEvent::OrchestrationStart { children } => {
-                stats.orchestration_lanes_all_time += children;
-            }
-            AuditEvent::Broadcast { .. }
-            | AuditEvent::Dispatch
-            | AuditEvent::PeerReview
-            | AuditEvent::Synthesis => {
-                stats.automation_sent_all_time += 1;
-            }
             AuditEvent::AppStart { .. } | AuditEvent::AppStop { .. } => {}
         }
     }
@@ -376,21 +358,6 @@ mod tests {
             }
         );
         assert_eq!(stats.sessions_opened_all_time.total(), 4);
-    }
-
-    #[test]
-    fn orchestration_lanes_sum_children_but_automation_counts_actions() {
-        let now = Utc::now();
-        let events = vec![
-            rec(now, AuditEvent::OrchestrationStart { children: 4 }),
-            rec(now, AuditEvent::Broadcast { children: 4 }),
-            rec(now, AuditEvent::Dispatch),
-            rec(now, AuditEvent::PeerReview),
-            rec(now, AuditEvent::Synthesis),
-        ];
-        let stats = compute_stats(&events, now, 0);
-        assert_eq!(stats.orchestration_lanes_all_time, 4);
-        assert_eq!(stats.automation_sent_all_time, 4);
     }
 
     #[test]

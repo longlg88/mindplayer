@@ -3,10 +3,10 @@
 mod app;
 mod handoff;
 mod mascot;
-mod orchestration;
 mod pty;
 mod render_writer;
 mod terminal_view;
+mod text_input;
 mod ui;
 
 use anyhow::Result;
@@ -212,9 +212,6 @@ fn run(terminal: &mut Terminal<CrosstermBackend<FrameSink>>, app: &mut App) -> R
             if app.flush_initial_inputs() {
                 needs_draw = true;
             }
-            if app.poll_pending_synthesis() {
-                needs_draw = true;
-            }
             // Live re-ordering from the background mtime refresh.
             if app.poll_refresh() {
                 needs_draw = true;
@@ -264,7 +261,7 @@ fn run(terminal: &mut Terminal<CrosstermBackend<FrameSink>>, app: &mut App) -> R
                         }
                     }
                     Event::Paste(text) => {
-                        if app.paste_to_modal(&text) || app.paste_to_pty(&text) {
+                        if app.paste_to_pty(&text) {
                             needs_draw = true;
                         }
                     }
@@ -535,106 +532,6 @@ fn handle_main_key(app: &mut App, key: KeyEvent) {
         return;
     }
 
-    if app.dispatch_apply.is_some() {
-        match key.code {
-            KeyCode::Backspace => app.dispatch_apply_input_backspace(),
-            KeyCode::Delete => app.modal_text_delete(),
-            KeyCode::Left => app.modal_text_move_left(),
-            KeyCode::Right => app.modal_text_move_right(),
-            KeyCode::Up => app.modal_text_move_up(),
-            KeyCode::Down => app.modal_text_move_down(),
-            KeyCode::Home => app.modal_text_move_home(),
-            KeyCode::End => app.modal_text_move_end(),
-            KeyCode::Enter if text_newline_key(key) => app.dispatch_apply_input_text("\n"),
-            KeyCode::Enter => app.confirm_dispatch_apply_input(),
-            KeyCode::Esc => app.cancel_dispatch_apply(),
-            KeyCode::Char('j') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                app.dispatch_apply_input_text("\n")
-            }
-            KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
-                app.dispatch_apply_input_push(c)
-            }
-            _ => {}
-        }
-        return;
-    }
-
-    if app.dispatch.is_some() {
-        match key.code {
-            KeyCode::Backspace => app.dispatch_input_backspace(),
-            KeyCode::Delete => app.modal_text_delete(),
-            KeyCode::Left => app.modal_text_move_left(),
-            KeyCode::Right => app.modal_text_move_right(),
-            KeyCode::Up => app.modal_text_move_up(),
-            KeyCode::Down => app.modal_text_move_down(),
-            KeyCode::Home => app.modal_text_move_home(),
-            KeyCode::End => app.modal_text_move_end(),
-            KeyCode::Enter if text_newline_key(key) => app.dispatch_input_text("\n"),
-            KeyCode::Enter => app.confirm_main_dispatch(),
-            KeyCode::Esc => app.cancel_main_dispatch(),
-            KeyCode::Char('j') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                app.dispatch_input_text("\n")
-            }
-            KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
-                app.dispatch_input_push(c)
-            }
-            _ => {}
-        }
-        return;
-    }
-
-    if app.broadcast.is_some() {
-        match key.code {
-            KeyCode::Backspace => app.broadcast_input_backspace(),
-            KeyCode::Delete => app.modal_text_delete(),
-            KeyCode::Left => app.modal_text_move_left(),
-            KeyCode::Right => app.modal_text_move_right(),
-            KeyCode::Up => app.modal_text_move_up(),
-            KeyCode::Down => app.modal_text_move_down(),
-            KeyCode::Home => app.modal_text_move_home(),
-            KeyCode::End => app.modal_text_move_end(),
-            KeyCode::Enter if text_newline_key(key) => app.broadcast_input_text("\n"),
-            KeyCode::Enter => app.confirm_broadcast(),
-            KeyCode::Esc => app.cancel_broadcast(),
-            KeyCode::Char('j') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                app.broadcast_input_text("\n")
-            }
-            KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
-                app.broadcast_input_push(c)
-            }
-            _ => {}
-        }
-        return;
-    }
-
-    if app.orchestration.is_some() {
-        match key.code {
-            KeyCode::Backspace => app.orchestration_input_backspace(),
-            KeyCode::Delete => app.modal_text_delete(),
-            KeyCode::Left => app.modal_text_move_left(),
-            KeyCode::Right => app.modal_text_move_right(),
-            KeyCode::Home => app.modal_text_move_home(),
-            KeyCode::End => app.modal_text_move_end(),
-            KeyCode::Enter if text_newline_key(key) => app.orchestration_input_text("\n"),
-            KeyCode::Enter => app.confirm_orchestration_step(),
-            KeyCode::Esc => app.cancel_orchestration(),
-            // Up/Down means something different per wizard step (provider,
-            // cursor motion, or child-lane count) — these dispatch on the
-            // active step instead of always touching child count
-            // regardless of what's actually on screen.
-            KeyCode::Up => app.orchestration_up(),
-            KeyCode::Down => app.orchestration_down(),
-            KeyCode::Char('j') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                app.orchestration_input_text("\n")
-            }
-            KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
-                app.orchestration_input_push(c)
-            }
-            _ => {}
-        }
-        return;
-    }
-
     // Cross-agent handoff picker.
     if let Some(choice) = app.handoff_picker {
         match key.code {
@@ -723,7 +620,7 @@ fn handle_main_key(app: &mut App, key: KeyEvent) {
     }
 
     // Transition-report review: the assembled prompt, read-only until `e`
-    // switches it into the same multi-line editor broadcast/dispatch use.
+    // switches it into the same multi-line editor as the input step above.
     // Enter sends in both modes — only whether plain typing edits the buffer
     // or falls through differs.
     if app.transition_report_review.is_some() {
@@ -871,10 +768,6 @@ fn handle_main_key(app: &mut App, key: KeyEvent) {
                 }
                 return;
             }
-            if is_apply_dispatch_key(key) {
-                app.begin_dispatch_apply_input();
-                return;
-            }
             // Normalize Korean 2-beolsik jamo to the QWERTY letter so the list
             // shortcuts work regardless of the active input source.
             match normalize_shortcut(key.code) {
@@ -903,11 +796,6 @@ fn handle_main_key(app: &mut App, key: KeyEvent) {
                 KeyCode::Char('d') => app.begin_dir_input(),
                 KeyCode::Char('e') => app.begin_label_edit(),
                 KeyCode::Char('h') => app.begin_handoff(),
-                KeyCode::Char('o') => app.begin_orchestration(),
-                KeyCode::Char('b') => app.begin_broadcast(),
-                KeyCode::Char('m') => app.begin_main_dispatch(),
-                KeyCode::Char('p') => app.run_peer_review_cycle(),
-                KeyCode::Char('s') => app.run_synthesis_cycle(),
                 KeyCode::Char('x') => app.close_selected(),
                 KeyCode::Char('a') => app.toggle_archived_view(),
                 KeyCode::Char('g') => app.toggle_subagents(),
@@ -923,11 +811,6 @@ fn handle_main_key(app: &mut App, key: KeyEvent) {
 fn is_help_key(code: KeyCode, modifiers: KeyModifiers) -> bool {
     matches!(code, KeyCode::Char('?'))
         || (matches!(code, KeyCode::Char('/')) && modifiers.contains(KeyModifiers::SHIFT))
-}
-
-fn is_apply_dispatch_key(key: KeyEvent) -> bool {
-    matches!(key.code, KeyCode::Char('M'))
-        || (matches!(key.code, KeyCode::Char('m')) && key.modifiers.contains(KeyModifiers::SHIFT))
 }
 
 fn text_newline_key(key: KeyEvent) -> bool {
@@ -1087,57 +970,6 @@ mod tests {
     }
 
     #[test]
-    fn list_shortcuts_route_to_help_orchestration_and_review() {
-        let mut app = main_app();
-        handle_main_key(
-            &mut app,
-            KeyEvent::new(KeyCode::Char('/'), KeyModifiers::SHIFT),
-        );
-        assert!(app.help_visible);
-
-        handle_main_key(
-            &mut app,
-            KeyEvent::new(KeyCode::Char('?'), KeyModifiers::NONE),
-        );
-        assert!(!app.help_visible);
-
-        handle_main_key(
-            &mut app,
-            KeyEvent::new(KeyCode::Char('o'), KeyModifiers::NONE),
-        );
-        assert!(app.orchestration.is_some());
-
-        app.cancel_orchestration();
-        handle_main_key(
-            &mut app,
-            KeyEvent::new(KeyCode::Char('p'), KeyModifiers::NONE),
-        );
-        assert_eq!(
-            app.status,
-            "peer review needs an orchestration main/thread row"
-        );
-
-        handle_main_key(
-            &mut app,
-            KeyEvent::new(KeyCode::Char('m'), KeyModifiers::NONE),
-        );
-        assert_eq!(
-            app.status,
-            "dispatch needs an orchestration main/thread row"
-        );
-
-        handle_main_key(
-            &mut app,
-            KeyEvent::new(KeyCode::Char('M'), KeyModifiers::SHIFT),
-        );
-        assert_eq!(
-            app.status,
-            "dispatch apply needs an orchestration main/thread row"
-        );
-        assert!(app.dispatch_apply.is_none());
-    }
-
-    #[test]
     fn u_opens_the_usage_popup_and_esc_enter_or_u_closes_it() {
         for closing_key in [
             KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
@@ -1237,57 +1069,6 @@ mod tests {
     }
 
     #[test]
-    fn orchestration_up_down_moves_cursor_not_the_invisible_child_count() {
-        let mut app = main_app();
-        handle_main_key(
-            &mut app,
-            KeyEvent::new(KeyCode::Char('o'), KeyModifiers::NONE),
-        );
-        assert!(app.orchestration.is_some());
-
-        // Provider step: ↑↓ still cycles the provider, not children.
-        let before = app.orchestration.as_ref().unwrap().provider;
-        handle_main_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
-        assert_ne!(app.orchestration.as_ref().unwrap().provider, before);
-
-        // Advance to Skill, then Instruction.
-        handle_main_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-        handle_main_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-        assert_eq!(
-            app.orchestration.as_ref().unwrap().step,
-            orchestration::Step::Instruction
-        );
-
-        for c in "line one".chars() {
-            handle_main_key(
-                &mut app,
-                KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE),
-            );
-        }
-        let children_before = app.orchestration.as_ref().unwrap().children;
-
-        // This is the bug: ↑↓ while typing free text used to silently
-        // change the (not-yet-visible) step-4 child count instead of moving
-        // the cursor.
-        handle_main_key(&mut app, KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
-        handle_main_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
-        assert_eq!(
-            app.orchestration.as_ref().unwrap().children,
-            children_before
-        );
-        assert_eq!(app.orchestration.as_ref().unwrap().instruction, "line one");
-
-        // ←← then a keystroke inserts mid-string instead of only appending.
-        handle_main_key(&mut app, KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
-        handle_main_key(&mut app, KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
-        handle_main_key(
-            &mut app,
-            KeyEvent::new(KeyCode::Char('X'), KeyModifiers::NONE),
-        );
-        assert_eq!(app.orchestration.as_ref().unwrap().instruction, "line oXne");
-    }
-
-    #[test]
     fn list_session_shortcuts_keep_label_and_handoff() {
         let mut app = main_app_with_session("session-1");
 
@@ -1309,21 +1090,19 @@ mod tests {
     #[test]
     fn list_shortcuts_accept_korean_ime_keys() {
         let mut app = main_app();
-        handle_main_key(
-            &mut app,
-            KeyEvent::new(KeyCode::Char('ㅐ'), KeyModifiers::NONE),
-        );
-        assert!(app.orchestration.is_some());
+        assert!(!app.show_subagents);
 
-        app.cancel_orchestration();
         handle_main_key(
             &mut app,
-            KeyEvent::new(KeyCode::Char('ㅔ'), KeyModifiers::NONE),
+            KeyEvent::new(KeyCode::Char('ㅎ'), KeyModifiers::NONE),
         );
-        assert_eq!(
-            app.status,
-            "peer review needs an orchestration main/thread row"
+        assert!(app.show_subagents);
+
+        handle_main_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('ㅎ'), KeyModifiers::NONE),
         );
+        assert!(!app.show_subagents);
     }
 
     #[test]

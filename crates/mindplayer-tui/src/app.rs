@@ -1,14 +1,13 @@
 //! Application state machine: scope select -> scanning -> main, plus the
 //! embedded PTY lifecycle and archive actions.
 
-use crate::{handoff, orchestration, pty::PtySession};
+use crate::{handoff, pty::PtySession, text_input};
 use chrono::{DateTime, Utc};
 use mindplayer_core::{
     refresh_activity_and_usage, resume, scan, sort_by_recency, tokens::human_tokens,
     touched_recently, Agent, Aggregate, ScanConfig, Scope, Session, State, TokenUsage,
 };
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::io::Read;
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver};
 use std::thread;
@@ -36,11 +35,11 @@ pub enum Focus {
     Terminal,
 }
 
-/// Not a UI preference — an orchestration thread can accumulate many more
-/// lanes than fit comfortably on screen (20+ is routine), and the point of
-/// multi-select launch is to show ALL of them, not an arbitrary small slice.
-/// This is a resource safety ceiling only (each pane spawns a real child
-/// process), sized well above any observed real thread.
+/// Not a UI preference — a multi-select launch can pick more sessions than
+/// fit comfortably on screen (20+ is routine), and the point of multi-select
+/// launch is to show ALL of them, not an arbitrary small slice. This is a
+/// resource safety ceiling only (each pane spawns a real child process),
+/// sized well above any observed real selection.
 pub const MAX_PANES: usize = 32;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -129,7 +128,6 @@ const WORKING_HOLD: Duration = Duration::from_secs(6);
 const BUSY_TRUST: Duration = Duration::from_secs(20);
 const INITIAL_INPUT_OUTPUT_TIMEOUT: Duration = Duration::from_secs(3);
 const INITIAL_INPUT_ABSOLUTE_TIMEOUT: Duration = Duration::from_secs(10);
-const ORCHESTRATION_MARKER_READ_BYTES: u64 = 1024 * 1024;
 /// Whether a session counts as working, given when it last produced output.
 /// Demotion is delayed by `hold` (see [`WORKING_HOLD`]); promotion is instant
 /// because `last_output` is stamped to "now" the moment any output arrives.
@@ -263,7 +261,7 @@ pub struct App {
     pending_initial_inputs: HashMap<String, DeferredInitialInput>,
     /// Set when a resume is requested; consumed once the right-pane size is known.
     pub pending: Option<PendingSpawn>,
-    /// Additional PTY spawns queued behind `pending`, used by orchestration.
+    /// Additional PTY spawns queued behind `pending`, e.g. multi-select launch.
     pending_queue: VecDeque<PendingSpawn>,
     /// codex/claude picker for a new session; None when hidden.
     pub new_picker: Option<usize>,
@@ -281,14 +279,6 @@ pub struct App {
     /// When `Some`, the working-dir input modal is open and holds the path text
     /// typed so far. Confirming re-points the scope at that directory.
     pub dir_input: Option<String>,
-    /// Orchestration wizard opened by `o`.
-    pub orchestration: Option<orchestration::Draft>,
-    /// Orchestration broadcast prompt opened by `b`.
-    pub broadcast: Option<orchestration::BroadcastDraft>,
-    /// Main-mediated dispatch prompt opened by `m`.
-    pub dispatch: Option<orchestration::BroadcastDraft>,
-    /// Manual dispatch-block paste prompt opened by `M`.
-    pub dispatch_apply: Option<orchestration::BroadcastDraft>,
     /// Set by `c` on a Working/Blocked session, holding its id, while the
     /// "send anyway?" confirm is up. Idle sessions skip this and send at once.
     pub catchup_confirm: Option<String>,
@@ -301,7 +291,7 @@ pub struct App {
     /// prompt (template + typed specifics), shown read-only by default.
     /// Reuses `BroadcastDraft` purely as a text+cursor buffer so switching
     /// into edit mode gets multi-line editing for free.
-    pub transition_report_review: Option<orchestration::BroadcastDraft>,
+    pub transition_report_review: Option<text_input::BroadcastDraft>,
     /// False = read-only preview (enter sends as-is, `e` edits); true = the
     /// buffer above is directly editable (enter still sends; ctrl-j /
     /// shift/alt-enter inserts a newline instead, same as broadcast/dispatch).
@@ -321,9 +311,6 @@ pub struct App {
     pub usage_stats: Option<mindplayer_core::UsageStats>,
     /// Keyboard shortcut help overlay opened by `?`.
     pub help_visible: bool,
-    /// Orchestration root waiting for child lanes to become idle before
-    /// synthesis is sent to the main lane.
-    pending_synthesis_root: Option<String>,
     /// When `Some`, the session list is filtered as the user types after `/`.
     pub search_query: Option<String>,
     /// Monotonic counter so each new session gets a unique synthetic id.
@@ -338,7 +325,6 @@ pub struct App {
     /// session that is NOT in this baseline, so it can never re-key the new
     /// session's live PTY onto a pre-existing (or freshly-resumed) session.
     new_baselines: HashMap<String, HashSet<String>>,
-    orchestration_cycles: HashMap<String, u64>,
 
     /// Last known inner size of the right pane (rows, cols).
     pub pty_rows: u16,
@@ -442,10 +428,6 @@ impl App {
             new_agent: None,
             label_target: None,
             dir_input: None,
-            orchestration: None,
-            broadcast: None,
-            dispatch: None,
-            dispatch_apply: None,
             catchup_confirm: None,
             transition_report_input: None,
             transition_report_review: None,
@@ -455,12 +437,10 @@ impl App {
             usage_popup: false,
             usage_stats: None,
             help_visible: false,
-            pending_synthesis_root: None,
             search_query: None,
             new_counter: 0,
             extra_sessions: Vec::new(),
             new_baselines: HashMap::new(),
-            orchestration_cycles: HashMap::new(),
             pty_rows: 24,
             pty_cols: 80,
             pty_x: 0,
@@ -614,8 +594,6 @@ fn trim_submit(bytes: &mut Vec<u8>) {
 
 mod handoff_sync;
 mod modals;
-mod orchestration_lanes;
-mod orchestration_ui;
 mod pane;
 mod selection;
 mod session_list;

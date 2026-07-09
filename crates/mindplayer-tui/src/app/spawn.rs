@@ -1,4 +1,3 @@
-use super::orchestration_lanes::orchestration_title_marker;
 use super::*;
 
 impl App {
@@ -93,18 +92,6 @@ impl App {
         self.rescan_due = Some(Instant::now() + Duration::from_secs(3));
     }
 
-    pub(crate) fn real_session_ids(&self) -> HashSet<String> {
-        self.all_sessions
-            .iter()
-            .filter(|s| {
-                !s.id.starts_with("new:")
-                    && !s.id.starts_with("handoff:")
-                    && !s.id.starts_with("orch:")
-            })
-            .map(|s| s.id.clone())
-            .collect()
-    }
-
     pub(crate) fn queue_initial_input(&mut self, id: String, input: Vec<u8>) {
         let now = Instant::now();
         if let Some(existing) = self.pending_initial_inputs.get_mut(&id) {
@@ -132,20 +119,40 @@ impl App {
         }
     }
 
-    pub(crate) fn push_synthetic_session(&mut self, session: Session) {
-        self.extra_sessions.push(session.clone());
-        self.all_sessions.push(session);
-        self.rebuild_visible();
-    }
-
-    pub(crate) fn select_session_id(&mut self, id: &str) {
-        if let Some(pos) = self
-            .visible
-            .iter()
-            .position(|&i| self.all_sessions[i].id == id)
-        {
-            self.selected = pos;
+    /// Deliver `input` to `session`'s CLI: paste-and-submit if its PTY is
+    /// live and idle, defer it if live but busy, or resume/spawn it with the
+    /// input queued as the first turn if it has no PTY yet at all.
+    pub(crate) fn enqueue_or_submit_to_session(
+        &mut self,
+        session: &Session,
+        input: Vec<u8>,
+    ) -> bool {
+        if self.ended.contains(&session.id) {
+            return false;
         }
+        if let Some(pty) = self.ptys.get_mut(&session.id) {
+            if pty.looks_idle() {
+                if !pty.paste_and_submit(&input) {
+                    self.status = format!("failed to submit input to {}", short(&session.id));
+                    return false;
+                }
+                self.turn_submitted.insert(session.id.clone());
+                self.out_at.insert(session.id.clone(), Instant::now());
+            } else {
+                self.queue_initial_input(session.id.clone(), input);
+            }
+            return true;
+        }
+        if session.id.starts_with("new:") || session.id.starts_with("handoff:") {
+            return false;
+        }
+        self.enqueue_spawn(PendingSpawn {
+            command: resume(session),
+            session_id: session.id.clone(),
+            initial_input: Some(input),
+            focus_after_spawn: false,
+        });
+        true
     }
 
     /// Re-attach background-created sessions after a fresh scan: drop the
@@ -165,29 +172,27 @@ impl App {
                 .unwrap_or_else(Utc::now);
             let baseline = self.new_baselines.get(&extra.id);
             let ptys = &self.ptys;
-            let matched = self.orchestration_real_match(&extra, &claimed).or_else(|| {
-                self.all_sessions
-                    .iter()
-                    .filter(|s| {
-                        !s.id.starts_with("new:")
-                                && !s.id.starts_with("handoff:")
-                                && !s.id.starts_with("orch:")
-                                && !claimed.contains(&s.id)
-                                // Never re-key onto a session that already owns a live
-                                // PTY (e.g. one the user resumed) — that would drop the
-                                // displaced PtySession and silently SIGKILL its child.
-                                && !ptys.contains_key(&s.id)
-                                // Only adopt a session that did NOT exist when this new
-                                // session was created — i.e. the one codex/claude just
-                                // wrote — never to a pre-existing same-dir/same-agent one.
-                                && baseline.is_none_or(|b| !b.contains(&s.id))
-                                && s.agent == extra.agent
-                                && s.cwd == extra.cwd
-                                && s.started_at.is_some_and(|t| t >= after)
-                    })
-                    .max_by_key(|s| s.started_at)
-                    .map(|s| s.id.clone())
-            });
+            let matched = self
+                .all_sessions
+                .iter()
+                .filter(|s| {
+                    !s.id.starts_with("new:")
+                            && !s.id.starts_with("handoff:")
+                            && !claimed.contains(&s.id)
+                            // Never re-key onto a session that already owns a live
+                            // PTY (e.g. one the user resumed) — that would drop the
+                            // displaced PtySession and silently SIGKILL its child.
+                            && !ptys.contains_key(&s.id)
+                            // Only adopt a session that did NOT exist when this new
+                            // session was created — i.e. the one codex/claude just
+                            // wrote — never to a pre-existing same-dir/same-agent one.
+                            && baseline.is_none_or(|b| !b.contains(&s.id))
+                            && s.agent == extra.agent
+                            && s.cwd == extra.cwd
+                            && s.started_at.is_some_and(|t| t >= after)
+                })
+                .max_by_key(|s| s.started_at)
+                .map(|s| s.id.clone());
             match matched {
                 Some(real_id) => {
                     // Move the live PTY / state from the synthetic id to the real
@@ -225,9 +230,6 @@ impl App {
                     if self.active.as_deref() == Some(extra.id.as_str()) {
                         self.active = Some(real_id.clone());
                     }
-                    if let Some(cycle) = self.orchestration_cycles.remove(&extra.id) {
-                        self.orchestration_cycles.insert(real_id.clone(), cycle);
-                    }
                     for link in self.state.handoff_links.values_mut() {
                         if link.parent_id == extra.id {
                             link.parent_id = real_id.clone();
@@ -259,28 +261,6 @@ impl App {
             }
         }
         self.extra_sessions = remaining;
-    }
-
-    pub(crate) fn orchestration_real_match(
-        &self,
-        extra: &Session,
-        claimed: &HashSet<String>,
-    ) -> Option<String> {
-        let marker = orchestration_title_marker(&extra.id)?;
-        self.all_sessions
-            .iter()
-            .filter(|s| {
-                !s.id.starts_with("new:")
-                    && !s.id.starts_with("handoff:")
-                    && !s.id.starts_with("orch:")
-                    && !claimed.contains(&s.id)
-                    && !self.ptys.contains_key(&s.id)
-                    && s.agent == extra.agent
-                    && s.cwd == extra.cwd
-                    && s.title.contains(&marker)
-            })
-            .max_by_key(|s| s.started_at)
-            .map(|s| s.id.clone())
     }
 
     /// Consume a pending spawn now that the pane size is known. Other sessions'
@@ -317,8 +297,8 @@ impl App {
                     );
                 }
                 self.ptys.insert(id.clone(), pty);
-                // The one choke point every new/resumed/handoff/orchestration
-                // PTY passes through — one log line here covers all of them.
+                // The one choke point every new/resumed/handoff PTY passes
+                // through — one log line here covers all of them.
                 if let Some(session) = self.all_sessions.iter().find(|s| s.id == id) {
                     mindplayer_core::log_event_to(
                         &self.audit_path,
@@ -393,7 +373,7 @@ impl App {
     }
 
     /// If the focused pane still has a deferred initial-input (handoff /
-    /// orchestration / thread-sync prompt) waiting to go out, buffer these
+    /// thread-sync prompt) waiting to go out, buffer these
     /// bytes on it instead of forwarding them to the child now — so typing
     /// right after opening such a session is held and replayed afterward
     /// (see `flush_initial_inputs`) rather than silently dropped.

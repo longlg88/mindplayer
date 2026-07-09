@@ -1,4 +1,3 @@
-use super::orchestration_lanes::{is_orchestration_child_session, is_orchestration_main_session};
 use super::*;
 
 /// Default content for `~/.mindplayer/prompts/catchup.md` — seeded there on
@@ -77,7 +76,6 @@ impl App {
         self.aggregate = Aggregate::of(&sessions);
         self.all_sessions = sessions;
         self.merge_extras();
-        self.repair_title_based_orchestration_links();
         self.rebuild_visible();
         if let Some(id) = selected_id {
             if let Some(pos) = self
@@ -108,7 +106,6 @@ impl App {
                 self.aggregate = Aggregate::of(&sessions);
                 self.all_sessions = sessions;
                 self.merge_extras();
-                self.repair_title_based_orchestration_links();
                 self.rebuild_visible();
                 self.scan_rx = None;
                 self.screen = Screen::ScanSummary;
@@ -188,8 +185,7 @@ impl App {
         // A group counts as "recent" if any of its sessions was touched in the
         // last 24h OR is running live in MindPlayer right now — a session you
         // opened and are driving belongs at the top, even if its transcript
-        // file's mtime is stale (e.g. an orchestration parent whose lanes
-        // write their own files).
+        // file's mtime is stale.
         let group_is_recent = |app: &Self, indices: &[usize]| -> bool {
             indices.iter().any(|&i| {
                 let s = &app.all_sessions[i];
@@ -249,43 +245,6 @@ impl App {
                 .collect();
             self.marked.retain(|id| visible_ids.contains(id.as_str()));
         }
-    }
-
-    pub(crate) fn repair_title_based_orchestration_links(&mut self) {
-        let mut repairs = Vec::new();
-        for child in self.all_sessions.iter() {
-            if self.state.handoff_parent(&child.id).is_some()
-                || !is_orchestration_child_session(child)
-            {
-                continue;
-            }
-            let parent = self
-                .all_sessions
-                .iter()
-                .filter(|candidate| {
-                    candidate.id != child.id
-                        && candidate.agent == child.agent
-                        && candidate.cwd == child.cwd
-                        && is_orchestration_main_session(candidate)
-                })
-                .max_by_key(|candidate| candidate.started_at);
-            if let Some(parent) = parent {
-                repairs.push((child.id.clone(), parent.id.clone()));
-            }
-        }
-        if repairs.is_empty() {
-            return;
-        }
-        let now = Utc::now();
-        for (child_id, parent_id) in repairs {
-            self.state.set_handoff_link(
-                &child_id,
-                &parent_id,
-                PathBuf::from("mindplayer-orchestration-title-fallback"),
-                now,
-            );
-        }
-        let _ = self.state.save();
     }
 
     pub fn move_selection(&mut self, delta: isize) {

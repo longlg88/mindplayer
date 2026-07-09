@@ -242,8 +242,8 @@ impl App {
             // Already live in the background — just bring it to the
             // foreground now; any peer-lane sync reads happen off the main
             // thread (see `spawn_thread_sync_for`/`poll_thread_sync`) so
-            // reopening a session with several handoff/orchestration peers
-            // never freezes the UI while their transcripts are read.
+            // reopening a session with several handoff peers never freezes
+            // the UI while their transcripts are read.
             self.spawn_thread_sync_for(&session);
             self.focus_or_add_pane(&session.id);
             return;
@@ -316,7 +316,7 @@ impl App {
             return;
         }
         let assembled = transition_report_prompt(&self.prompts_dir, &input);
-        let mut draft = orchestration::BroadcastDraft::default();
+        let mut draft = text_input::BroadcastDraft::default();
         draft.push_text(&assembled);
         self.transition_report_review = Some(draft);
         self.transition_report_review_editing = false;

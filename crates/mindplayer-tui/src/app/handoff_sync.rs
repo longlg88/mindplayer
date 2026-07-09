@@ -158,47 +158,11 @@ impl App {
     // --- session search ----------------------------------------------------
 
     pub(crate) fn thread_peer_sessions(&self, id: &str) -> Vec<Session> {
-        if let Some(session) = self.all_sessions.iter().find(|s| s.id == id) {
-            if let Some(root_id) = self.orchestration_root_for_session(session) {
-                let mut peer_ids = self.thread_child_ids(&root_id);
-                if id != root_id {
-                    peer_ids.push(root_id);
-                }
-                peer_ids.sort();
-                peer_ids.dedup();
-                return peer_ids
-                    .into_iter()
-                    .filter(|peer_id| peer_id != id)
-                    .filter_map(|peer_id| {
-                        self.all_sessions.iter().find(|s| s.id == peer_id).cloned()
-                    })
-                    .collect();
-            }
-        }
         let root = self.state.thread_root(id).to_string();
-        let linked = self
-            .all_sessions
+        self.all_sessions
             .iter()
             .filter(|s| s.id != id && self.state.thread_root(&s.id) == root)
             .cloned()
-            .collect::<Vec<_>>();
-        if !linked.is_empty() {
-            return linked;
-        }
-        let Some(session) = self.all_sessions.iter().find(|s| s.id == id) else {
-            return Vec::new();
-        };
-        let Some(root_id) = self.orchestration_fallback_root(session) else {
-            return Vec::new();
-        };
-        let mut peer_ids = self.fallback_child_ids(&root_id);
-        peer_ids.push(root_id);
-        peer_ids.sort();
-        peer_ids.dedup();
-        peer_ids
-            .into_iter()
-            .filter(|peer_id| peer_id != id)
-            .filter_map(|peer_id| self.all_sessions.iter().find(|s| s.id == peer_id).cloned())
             .collect()
     }
 
@@ -207,10 +171,7 @@ impl App {
             return false;
         }
         // Sync once, the first time you resume back into the session — not on
-        // every re-entry. This only ever fires for a plain 1:1 handoff (an
-        // orchestration lane's peers always resolve through
-        // `orchestration_root_for_session`, which `prepare_thread_sync_for`
-        // already skips). Comparing against the peer's last-active timestamp
+        // every re-entry. Comparing against the peer's last-active timestamp
         // instead would keep re-triggering forever, since the source session
         // the user handed off from keeps advancing while they keep working in
         // it — which is exactly the repeated re-summary bug this guards against.
@@ -232,9 +193,6 @@ impl App {
         if self.thread_sync_rx.is_some() {
             // A previous sync is still in flight; don't start a second one
             // (poll_thread_sync drops it once resolved).
-            return false;
-        }
-        if self.orchestration_root_for_session(session).is_some() {
             return false;
         }
         let peers = self.thread_peer_sessions(&session.id);

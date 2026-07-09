@@ -91,31 +91,6 @@ pub fn prepare_thread_sync_input(
     })
 }
 
-pub fn prepare_thread_command_input(
-    target: &Session,
-    peers: &[Session],
-    mut command: Vec<u8>,
-) -> Result<PreparedHandoff, String> {
-    let context = prepare_thread_context(target, peers)?;
-    trim_submit(&mut command);
-    let command = String::from_utf8_lossy(&command);
-    let mut prompt = thread_command_prompt_for(
-        target,
-        peers,
-        &context.artifact,
-        &context.inline.as_deref(),
-        context.inline_truncated,
-        &command,
-    );
-    prompt.push('\r');
-    Ok(PreparedHandoff {
-        input: prompt.into_bytes(),
-        artifact: context.artifact,
-        transcript_chars: context.transcript_chars,
-        inline_truncated: context.inline_truncated,
-    })
-}
-
 struct ThreadContext {
     artifact: PathBuf,
     transcript_chars: usize,
@@ -163,11 +138,6 @@ fn prepare_thread_context(target: &Session, peers: &[Session]) -> Result<ThreadC
         inline_truncated,
         inline,
     })
-}
-
-#[cfg(test)]
-pub fn extract_session_transcript(source: &Session) -> Result<String, String> {
-    extract_transcript(source)
 }
 
 fn prompt_for(
@@ -321,85 +291,6 @@ Before answering the user's next request, first read the sync artifact above if 
         size_note = size_note,
         transcript_block = transcript_block,
     )
-}
-
-fn thread_command_prompt_for(
-    target: &Session,
-    peers: &[Session],
-    artifact: &Path,
-    transcript_inline: &Option<&str>,
-    inline_truncated: bool,
-    command: &str,
-) -> String {
-    let peer_list = peers
-        .iter()
-        .filter(|p| p.id != target.id)
-        .map(|p| format!("- {}: {} ({})", p.agent.as_str(), p.id, p.title))
-        .collect::<Vec<_>>()
-        .join("\n");
-    let transcript_block = if let Some(transcript_inline) = transcript_inline {
-        format!(
-            "\
-The peer lane transcripts are included below and also saved in the sync artifact.
-
-```text
-{transcript_inline}
-```
-"
-        )
-    } else {
-        "\
-The peer lane transcripts are large, so they are not pasted into this prompt.
-Read the sync artifact before completing the orchestration command below.
-"
-        .to_string()
-    };
-    let size_note = if inline_truncated {
-        "large peer lanes; artifact-only prompt"
-    } else {
-        "full inline peer transcripts included"
-    };
-    format!(
-        "\
-MindPlayer orchestration peer context for this {target_agent} session.
-
-Use the peer lane context only as background for the orchestration command after
-the separator. Do not stop after acknowledging this context; complete the
-orchestration command in the same response.
-
-Current lane:
-- agent: {target_agent}
-- session id: {target_id}
-- working directory: {cwd}
-- title: {title}
-
-Peer lanes:
-{peer_list}
-
-Full peer context artifact: {artifact}
-Transcript mode: {size_note}
-
-{transcript_block}
----
-
-{command}
-",
-        target_agent = target.agent.as_str(),
-        target_id = target.id,
-        cwd = target.cwd.display(),
-        title = target.title,
-        peer_list = peer_list,
-        artifact = artifact.display(),
-        size_note = size_note,
-        transcript_block = transcript_block,
-        command = command.trim(),
-    )
-}
-
-fn trim_submit(bytes: &mut Vec<u8>) {
-    while matches!(bytes.last(), Some(b'\r' | b'\n')) {
-        bytes.pop();
-    }
 }
 
 fn extract_transcript(source: &Session) -> Result<String, String> {

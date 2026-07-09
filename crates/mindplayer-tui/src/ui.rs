@@ -3,8 +3,8 @@
 
 use crate::app::{App, Focus, PaneLayout, Screen, SessionStatus, MAX_PANES};
 use crate::mascot;
-use crate::orchestration;
 use crate::terminal_view::TerminalView;
+use crate::text_input;
 use chrono::{DateTime, Utc};
 use mindplayer_core::tokens::human_tokens;
 use mindplayer_core::{Agent, UsageStats};
@@ -252,10 +252,10 @@ fn scan_summary(f: &mut Frame, app: &App) {
 }
 
 fn main_view(f: &mut Frame, app: &mut App) {
-    // The plain list view hides ~12 shortcuts (the whole orchestration
-    // feature set plus session-management basics) behind the `?` help modal.
-    // Multi-select, search, and the live-pane hints are already complete for
-    // their own mode, so only the plain list gets a second footer row.
+    // The plain list view hides ~8 shortcuts (session-management and
+    // view-toggle basics) behind the `?` help modal. Multi-select, search,
+    // and the live-pane hints are already complete for their own mode, so
+    // only the plain list gets a second footer row.
     let show_more_keys =
         app.focus == Focus::List && !app.multi_select && app.search_query.is_none();
     let footer_h: u16 = if show_more_keys { 2 } else { 1 };
@@ -336,7 +336,7 @@ fn main_view(f: &mut Frame, app: &mut App) {
     if show_more_keys {
         f.render_widget(
             Paragraph::new(Line::from(Span::styled(
-                "o orchestrate · b broadcast · i in progress · c catch-up    +10 more · ? help",
+                "i in progress · c catch-up    +8 more · ? help",
                 Style::default().fg(Color::Rgb(90, 95, 108)),
             )))
             .alignment(Alignment::Right),
@@ -346,14 +346,6 @@ fn main_view(f: &mut Frame, app: &mut App) {
 
     if app.help_visible {
         help_popup(f);
-    } else if let Some(draft) = &app.dispatch_apply {
-        dispatch_apply_popup(f, draft);
-    } else if let Some(draft) = &app.dispatch {
-        dispatch_popup(f, draft);
-    } else if let Some(draft) = &app.broadcast {
-        broadcast_popup(f, draft);
-    } else if let Some(draft) = &app.orchestration {
-        orchestration_popup(f, draft);
     } else if let Some(choice) = app.handoff_picker {
         handoff_popup(f, choice, app.selected_session().map(|s| s.agent));
     } else if let Some(choice) = app.new_picker {
@@ -410,7 +402,7 @@ fn transition_report_popup(f: &mut Frame, input: &str) {
 
 fn transition_report_review_popup(
     f: &mut Frame,
-    draft: &orchestration::BroadcastDraft,
+    draft: &text_input::BroadcastDraft,
     editing: bool,
 ) {
     let area = centered(f.area(), 88, 14);
@@ -523,7 +515,7 @@ fn proportional_bar(counts: [(usize, Color); 3], width: usize) -> Vec<Span<'stat
 }
 
 fn usage_popup(f: &mut Frame, stats: &UsageStats) {
-    let area = centered(f.area(), 66, 14);
+    let area = centered(f.area(), 66, 12);
     f.render_widget(Clear, area);
     let block = Block::default()
         .borders(Borders::ALL)
@@ -543,8 +535,6 @@ fn usage_popup(f: &mut Frame, stats: &UsageStats) {
             Constraint::Length(1), // agent legend
             Constraint::Length(1), // blank
             Constraint::Length(1), // handoffs / catch-up
-            Constraint::Length(1), // divider
-            Constraint::Length(1), // orchestration (phasing out)
             Constraint::Length(1), // blank
             Constraint::Length(1), // footer
         ])
@@ -662,27 +652,8 @@ fn usage_popup(f: &mut Frame, stats: &UsageStats) {
     );
 
     f.render_widget(
-        Paragraph::new(Span::styled(
-            "─".repeat(inner.width as usize),
-            Style::default().fg(DIM),
-        )),
-        rows[8],
-    );
-
-    f.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled("orchestration (phasing out)  ", Style::default().fg(DIM)),
-            Span::styled("lanes ", Style::default().fg(DIM)),
-            Span::raw(stats.orchestration_lanes_all_time.to_string()),
-            Span::styled("  ·  cmds sent ", Style::default().fg(DIM)),
-            Span::raw(stats.automation_sent_all_time.to_string()),
-        ])),
-        rows[9],
-    );
-
-    f.render_widget(
         Paragraph::new(Span::styled("esc / enter  close", Style::default().fg(DIM))),
-        rows[11],
+        rows[9],
     );
 }
 
@@ -1060,8 +1031,8 @@ fn session_list(f: &mut Frame, app: &mut App, area: Rect, now: DateTime<Utc>) {
 /// layout favors wide grids (fewer rows / more columns), Vertical favors tall
 /// ones, so the chosen split direction still reads as "side-by-side" vs
 /// "stacked" even past the 3-pane point. Small counts (up to 6) use
-/// hand-tuned layouts; an orchestration thread can easily have far more lanes
-/// than that (20+ is routine), so anything larger falls back to a near-square
+/// hand-tuned layouts; a multi-select launch can easily pick far more
+/// sessions than that (20+ is routine), so anything larger falls back to a near-square
 /// grid sized by `sqrt(n)` — still biased wide (floor) or tall (ceil) to match
 /// the chosen layout.
 fn grid_rows(n: usize, layout: PaneLayout) -> usize {
@@ -1394,223 +1365,6 @@ fn handoff_popup(f: &mut Frame, choice: usize, source: Option<Agent>) {
     );
 }
 
-fn orchestration_popup(f: &mut Frame, draft: &orchestration::Draft) {
-    let area = centered(f.area(), 88, 21);
-    f.render_widget(Clear, area);
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(ACCENT))
-        .title(" Orchestration ");
-    let step_style = |step| {
-        if draft.step == step {
-            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(DIM)
-        }
-    };
-    let skill = if draft.skill.is_empty() {
-        ""
-    } else {
-        &draft.skill
-    };
-    let skill_display = if skill.is_empty() {
-        "mode, $ralplan, $analyze ...".to_string()
-    } else {
-        truncate(skill, 60)
-    };
-    let instruction = if draft.instruction.is_empty() {
-        ""
-    } else {
-        &draft.instruction
-    };
-    // Same vertical ▶-list pattern as the New Session / Handoff pickers, so
-    // "choose an agent" looks and behaves the same everywhere in the app.
-    let provider_row = |provider: orchestration::Provider, label: &str| {
-        let selected = draft.provider == provider;
-        let marker = if selected { "▶ " } else { "  " };
-        let style = if selected {
-            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(DIM)
-        };
-        Line::from(Span::styled(format!("{marker}{label}"), style))
-    };
-    let provider_lines = vec![
-        Line::from(Span::styled(
-            "1 provider",
-            step_style(orchestration::Step::Provider),
-        )),
-        provider_row(orchestration::Provider::Codex, "codex"),
-        provider_row(orchestration::Provider::ClaudeCode, "claude"),
-        provider_row(orchestration::Provider::Kiro, "kiro"),
-    ];
-    let mut lines = vec![
-        Line::from(""),
-        Line::from(vec![
-            Span::styled("2 skill / mode ", step_style(orchestration::Step::Skill)),
-            Span::raw(skill_display),
-        ]),
-        Line::from(""),
-        Line::from(vec![Span::styled(
-            "3 instruction",
-            step_style(orchestration::Step::Instruction),
-        )]),
-    ];
-    // A live caret here (like the Broadcast/Dispatch textareas) makes it
-    // obvious ↑↓/←→ move the cursor rather than silently touching the
-    // (currently invisible) child-lane count from step 4.
-    let instruction_cursor =
-        (draft.step == orchestration::Step::Instruction).then_some(draft.cursor);
-    lines.extend(textarea_lines_with_cursor(
-        instruction,
-        instruction_cursor,
-        "Paste or type English/Korean instructions here.",
-        6,
-        78,
-    ));
-    lines.extend([
-        Line::from(""),
-        Line::from(vec![
-            Span::styled("4 child lanes ", step_style(orchestration::Step::Children)),
-            Span::raw(format!("{}", draft.children)),
-        ]),
-        Line::from(""),
-        Line::from(Span::styled(
-            "↑↓ provider/cursor/count   enter next/start   ctrl-j or shift/alt-enter newline   paste keeps newlines   esc cancel",
-            Style::default().fg(DIM),
-        )),
-    ]);
-    // The provider picker is rendered as its own unwrapped Paragraph: the
-    // "  " indent on non-selected rows would otherwise be stripped by the
-    // Wrap{trim: true} below (needed for the instruction textarea beneath
-    // it), silently breaking the vertical-list alignment.
-    let inner = block.inner(area);
-    f.render_widget(block, area);
-    let provider_h = (provider_lines.len() as u16).min(inner.height);
-    f.render_widget(
-        Paragraph::new(provider_lines).alignment(Alignment::Left),
-        Rect {
-            x: inner.x,
-            y: inner.y,
-            width: inner.width,
-            height: provider_h,
-        },
-    );
-    f.render_widget(
-        Paragraph::new(lines)
-            .alignment(Alignment::Left)
-            .wrap(Wrap { trim: true }),
-        Rect {
-            x: inner.x,
-            y: inner.y + provider_h,
-            width: inner.width,
-            height: inner.height.saturating_sub(provider_h),
-        },
-    );
-}
-
-fn broadcast_popup(f: &mut Frame, draft: &orchestration::BroadcastDraft) {
-    let area = centered(f.area(), 88, 14);
-    f.render_widget(Clear, area);
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(ACCENT))
-        .title(" Broadcast cycle ");
-    let mut lines = vec![Line::from(Span::styled(
-        "Instruction for all child lanes",
-        Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
-    ))];
-    lines.extend(textarea_lines_with_cursor(
-        &draft.instruction,
-        Some(draft.cursor),
-        "Paste or type the next cycle instruction.",
-        8,
-        78,
-    ));
-    lines.extend([
-        Line::from(""),
-        Line::from(Span::styled(
-            "enter broadcast   ctrl-j or shift/alt-enter newline   paste keeps newlines   esc cancel",
-            Style::default().fg(DIM),
-        )),
-    ]);
-    f.render_widget(
-        Paragraph::new(lines)
-            .block(block)
-            .alignment(Alignment::Left)
-            .wrap(Wrap { trim: false }),
-        area,
-    );
-}
-
-fn dispatch_popup(f: &mut Frame, draft: &orchestration::BroadcastDraft) {
-    let area = centered(f.area(), 88, 14);
-    f.render_widget(Clear, area);
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(ACCENT))
-        .title(" Main dispatch ");
-    let mut lines = vec![Line::from(Span::styled(
-        "Topic for main to route across child lanes",
-        Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
-    ))];
-    lines.extend(textarea_lines_with_cursor(
-        &draft.instruction,
-        Some(draft.cursor),
-        "Paste or type the dispatch topic for the main lane.",
-        8,
-        78,
-    ));
-    lines.extend([
-        Line::from(""),
-        Line::from(Span::styled(
-            "enter ask main   ctrl-j or shift/alt-enter newline   M apply after main answers   esc cancel",
-            Style::default().fg(DIM),
-        )),
-    ]);
-    f.render_widget(
-        Paragraph::new(lines)
-            .block(block)
-            .alignment(Alignment::Left)
-            .wrap(Wrap { trim: false }),
-        area,
-    );
-}
-
-fn dispatch_apply_popup(f: &mut Frame, draft: &orchestration::BroadcastDraft) {
-    let area = centered(f.area(), 92, 18);
-    f.render_widget(Clear, area);
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(ACCENT))
-        .title(" Apply dispatch ");
-    let mut lines = vec![Line::from(Span::styled(
-        "Paste MINDPLAYER_DISPATCH block",
-        Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
-    ))];
-    lines.extend(textarea_lines_with_cursor(
-        &draft.instruction,
-        Some(draft.cursor),
-        "Paste main's MINDPLAYER_DISPATCH block here.",
-        12,
-        82,
-    ));
-    lines.extend([
-        Line::from(""),
-        Line::from(Span::styled(
-            "enter apply   ctrl-j or shift/alt-enter newline   paste keeps newlines   esc cancel",
-            Style::default().fg(DIM),
-        )),
-    ]);
-    f.render_widget(
-        Paragraph::new(lines)
-            .block(block)
-            .alignment(Alignment::Left)
-            .wrap(Wrap { trim: false }),
-        area,
-    );
-}
-
 fn help_popup(f: &mut Frame) {
     let area = centered(f.area(), 92, 24);
     f.render_widget(Clear, area);
@@ -1653,14 +1407,6 @@ fn help_popup(f: &mut Frame) {
             "c",
             "send a catch-up prompt to selected session (confirms if busy)",
         ),
-        Line::from(""),
-        section("Orchestration"),
-        item("o", "start an orchestration group"),
-        item("b", "broadcast same instruction to all child lanes"),
-        item("m", "ask main to route work to selected child lanes"),
-        item("M", "paste and apply main dispatch block to child lanes"),
-        item("p", "run child peer-review cycle"),
-        item("s", "send synthesis prompt to main lane"),
         Line::from(""),
         section("View"),
         item("/", "search visible sessions"),
@@ -2073,7 +1819,7 @@ mod tests {
 
     #[test]
     fn twenty_panes_tile_without_gaps_or_overlap() {
-        // A real orchestration thread routinely accumulates this many lanes —
+        // A real multi-select launch routinely accumulates this many panes —
         // the grid must still generalize cleanly past the hand-tuned 1-6 cases.
         assert_tiles_exactly(body(), 20);
     }

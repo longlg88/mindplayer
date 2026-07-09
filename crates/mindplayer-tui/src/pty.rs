@@ -285,28 +285,23 @@ impl PtySession {
     /// Paste a prepared initial prompt literally, then submit it with Enter.
     /// This keeps multi-line handoff text as one prompt in CLIs that enable
     /// bracketed paste, instead of treating every newline as a submit key.
+    ///
+    /// Prefixed with the same `\n\n---\n\n` separator `queue_initial_input`
+    /// uses to merge two of *our own* deferred prompts — here it guards
+    /// against merging with whatever the user may have already typed into
+    /// this session's own input line and left unsent. Without it, this
+    /// paste would land mid-keystroke with no boundary at all, silently
+    /// concatenating an old draft with mindplayer's prompt into one garbled
+    /// message the target agent then acts on.
     pub fn paste_and_submit(&mut self, bytes: &[u8]) -> bool {
-        let (body, submit) = bytes
-            .strip_suffix(b"\r")
-            .map(|body| (body, Some(b"\r".as_slice())))
-            .or_else(|| {
-                bytes
-                    .strip_suffix(b"\n")
-                    .map(|body| (body, Some(b"\n".as_slice())))
-            })
-            .unwrap_or((bytes, None));
-        let text = String::from_utf8_lossy(body);
         self.scroll_reset();
         let bracketed = self
             .parser
             .lock()
             .map(|p| p.screen().bracketed_paste())
             .unwrap_or(false);
-        let mut payload = paste_bytes(&text, bracketed);
-        if let Some(submit) = submit {
-            payload.extend_from_slice(submit);
-        }
-        self.writer.enqueue(payload)
+        self.writer
+            .enqueue(paste_and_submit_payload(bytes, bracketed))
     }
 
     /// Does the child have xterm mouse reporting enabled? If so, the wheel/click
@@ -449,6 +444,29 @@ fn paste_bytes(text: &str, bracketed: bool) -> Vec<u8> {
     bytes.extend_from_slice(text.as_bytes());
     bytes.extend_from_slice(b"\x1b[201~");
     bytes
+}
+
+/// Build the write payload for [`PtySession::paste_and_submit`]: a
+/// `\n\n---\n\n`-separated paste of `bytes` (see that method's doc comment
+/// for why the separator matters) followed by whatever submit key `bytes`
+/// ended with, if any.
+fn paste_and_submit_payload(bytes: &[u8], bracketed: bool) -> Vec<u8> {
+    let (body, submit) = bytes
+        .strip_suffix(b"\r")
+        .map(|body| (body, Some(b"\r".as_slice())))
+        .or_else(|| {
+            bytes
+                .strip_suffix(b"\n")
+                .map(|body| (body, Some(b"\n".as_slice())))
+        })
+        .unwrap_or((bytes, None));
+    let text = String::from_utf8_lossy(body);
+    let separated = format!("\n\n---\n\n{text}");
+    let mut payload = paste_bytes(&separated, bracketed);
+    if let Some(submit) = submit {
+        payload.extend_from_slice(submit);
+    }
+    payload
 }
 
 /// Whether a mouse event should be forwarded under the child's reporting mode.
@@ -894,6 +912,27 @@ mod tests {
     fn bracketed_paste_is_one_enqueued_payload() {
         assert_eq!(paste_bytes("abc", false), b"abc");
         assert_eq!(paste_bytes("a\nb", true), b"\x1b[200~a\nb\x1b[201~");
+    }
+
+    #[test]
+    fn paste_and_submit_separates_from_any_existing_unsent_draft() {
+        // Regression: without the leading separator this landed mid-keystroke
+        // right after whatever the user had already typed but not sent,
+        // silently concatenating it with our own prompt into one message.
+        let payload = paste_and_submit_payload(b"do the thing\r", false);
+        assert_eq!(payload, b"\n\n---\n\ndo the thing\r");
+
+        // Bracketed: the separator is part of the pasted text, inside the
+        // paste markers, and the submit byte still lands after them.
+        let bracketed = paste_and_submit_payload(b"multi\nline\n", true);
+        assert_eq!(
+            bracketed,
+            b"\x1b[200~\n\n---\n\nmulti\nline\x1b[201~\n".to_vec()
+        );
+
+        // No submit suffix at all: still separated, nothing appended after.
+        let no_submit = paste_and_submit_payload(b"no newline here", false);
+        assert_eq!(no_submit, b"\n\n---\n\nno newline here");
     }
 
     #[test]

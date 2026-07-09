@@ -92,7 +92,7 @@
   <header>
     <div class="kicker">MindPlayer</div>
     <h1>Backlog</h1>
-    <div class="sub">Generated from git history + working-tree state — no <code>backlog.html</code> existed yet, so this one was created fresh. Regenerate any time by re-running the catch-up prompt (<kbd>c</kbd>).</div>
+    <div class="sub">Refreshed from git history + working-tree state on catch-up. The previous version of this file (2026-07-08) had gone stale — the items it listed as "next" had since shipped. Regenerate any time by re-running the catch-up prompt (<kbd>c</kbd>).</div>
   </header>
 
   <section>
@@ -112,46 +112,53 @@
     <h2>2. Backlog</h2>
 
     <div class="card row">
-      <span class="badge done">done</span>
+      <span class="badge idea">next</span>
       <div>
-        <div class="item-title">Usage audit / stats popup (<code>u</code>)</div>
+        <div class="item-title">RELEASE.md changelog entry for v0.15.1 — uncommitted</div>
         <div class="item-desc">
-          <code>docs/plans/2026-07-08-usage-audit-design.md</code>.
-          Append-only <code>~/.mindplayer/audit.jsonl</code> + a stats popup showing active time (sparkline, 14d),
-          sessions opened per agent, handoffs, catch-ups, transition reports.
+          Working tree has one pending edit: a <code>## Changelog</code> / <code>### v0.15.1 — 2026-07-09</code> section
+          documenting the orchestration-feature removal below. Not committed yet — per this project's convention,
+          commits happen when the user says so, not automatically.
         </div>
         <ul>
-          <li>✅ <code>mindplayer-core::audit</code> — events, <code>compute_stats</code>, round-trip/corrupt-line/run-id-pairing tests all pass</li>
-          <li>✅ Wired: <code>app_start</code>/<code>app_stop</code>, <code>session_open</code>, <code>session_close</code>, <code>handoff</code>, <code>catchup_sent</code>, <code>transition_report_sent</code>, <code>orchestration_start</code>, <code>broadcast</code>, <code>dispatch</code>, <code>peer_review</code>, <code>synthesis</code></li>
-          <li>✅ <code>u</code> popup implemented in <code>ui.rs</code> (Sparkline + agent-split bar), 155/155 tests green, workspace builds clean</li>
-          <li>✅ <strong>Gap closed:</strong> <code>run_peer_review_cycle()</code> / <code>send_synthesis_cycle_now()</code> now call <code>log_event_to</code> — regression tests added (<code>run_peer_review_cycle_logs_peer_review</code>, <code>run_synthesis_cycle_logs_synthesis_once_it_actually_sends</code>)</li>
-          <li>Prompts (<code>catchup.md</code>, <code>transition_report.md</code>) externalized to <code>~/.mindplayer/prompts/*.md</code> — editable any time, no rebuild</li>
-          <li>Not yet committed — sitting in the working tree</li>
+          <li>Note: <code>Cargo.toml</code> is still at <code>0.11.47</code> — the version bump hasn't caught up with the RELEASE.md draft yet.</li>
         </ul>
       </div>
     </div>
 
     <div class="card row">
-      <span class="badge idea">next</span>
+      <span class="badge done">recently shipped</span>
       <div>
-        <div class="item-title">Commit the usage-audit + prompt-externalization work</div>
-        <div class="item-desc">Working tree has the full feature (core + tui + tests + docs) uncommitted, gate green. Ready for a commit once the user says so — not done automatically per this project's convention.</div>
+        <div class="item-title">Orchestration feature removed</div>
+        <div class="item-desc">
+          <code>c007f70</code> (today) — dropped the <code>o</code>/<code>b</code>/<code>m</code>/<code>p</code>/<code>s</code> multi-agent dispatch wizard
+          (group launch, broadcast, main-mediated dispatch, peer-review/synthesis cycles); it was built to be cleanly
+          removable once nobody was driving it. Shared pieces were extracted first, not deleted:
+        </div>
+        <ul>
+          <li><code>BroadcastDraft</code> + cursor helpers → new <code>text_input.rs</code> (transition-report review reuses it)</li>
+          <li><code>enqueue_or_submit_to_session</code> → <code>spawn.rs</code> (also used by transition report / catch-up delivery)</li>
+          <li>No persistence schema change — old <code>audit.jsonl</code> lines for the removed events are skipped by the existing corrupt-line-tolerant reader</li>
+          <li>~19 orchestration-only tests deleted; one Korean-IME-shortcut test rewritten against a surviving key</li>
+        </ul>
       </div>
     </div>
 
     <div class="card row">
-      <span class="badge idea">next</span>
+      <span class="badge done">recently shipped</span>
       <div>
-        <div class="item-title">Ctrl-T review/edit-before-send step</div>
-        <div class="item-desc">Under discussion: after typing topic/§n/files, show the assembled prompt (read-only) with <code>enter</code> to send as-is or <code>e</code> to drop into an editable textarea first — instead of always sending immediately.</div>
-      </div>
-    </div>
-
-    <div class="card row">
-      <span class="badge idea">idea</span>
-      <div>
-        <div class="item-title">Orchestration commands are "phasing out"</div>
-        <div class="item-desc">The design doc itself notes <code>orchestration_start</code>/<code>broadcast</code>/<code>dispatch</code>/<code>peer_review</code>/<code>synthesis</code> map to a feature slated for removal — when that happens, their audit events (and the "orchestration (phasing out)" line in the stats popup) go with it.</div>
+        <div class="item-title">Usage audit / stats popup (<code>u</code>) + transition reports + race-free renderer</div>
+        <div class="item-desc">
+          <code>38cb82f</code> — committed (this was "not yet committed" last time this backlog was generated; it landed same day).
+          <code>docs/plans/2026-07-08-usage-audit-design.md</code>.
+        </div>
+        <ul>
+          <li>Append-only <code>~/.mindplayer/audit.jsonl</code> + <code>u</code> stats popup (sparkline, 14d active time, per-agent split, handoffs/catch-ups/transition-reports)</li>
+          <li><code>render_writer</code>: terminal output now routes through a background writer thread (<code>FrameSink</code>) so a stalled terminal can't stall input polling</li>
+          <li>Ctrl-T transition-report flow now has the review/edit-before-send step (<code>Enter</code> sends as-is, <code>e</code> opens an editable textarea) — this was the "next" item last time, now shipped</li>
+          <li>Prompts (<code>catchup.md</code>, <code>transition_report.md</code>) externalized to <code>~/.mindplayer/prompts/*.md</code> — editable any time, no rebuild</li>
+          <li>Mascot whale art reworked; README refreshed; version bumped</li>
+        </ul>
       </div>
     </div>
 
@@ -176,16 +183,19 @@
     <h2>3. 최근 대화 요약</h2>
 
     <div class="qa">
-      <div class="q">이전 요청 (codex 세션): "Reply with exactly OK."</div>
-      <div class="a">단순 응답 확인용 요청이었고 <code>OK</code>로 응답 완료. 실질적인 구현 작업은 없었음.</div>
+      <div class="q">이전 요청 (이번 세션, 미완료로 중단됨): <code>transition-&lt;주제&gt;.html</code>을 <code>_assets/transition-template.html</code> 구조로 생성 — 소스는 <code>[RUNBOOK.md §n]</code> + <code>[실제 대상 파일 경로]</code></div>
+      <div class="a">
+        요청에 주제/§번호/대상 파일 경로가 실제 값 없이 대괄호 placeholder 그대로 남아 있었고, 뒤에 붙은 "부사항" 메모도 이모지·특수문자가 섞여 해석이 불확실했습니다.
+        리포 루트를 확인한 결과 <code>RUNBOOK.md</code>와 <code>_assets/transition-template.html</code> 둘 다 존재하지 않아 — 사용자가 돌아와서 이 값들을 채워주기 전까지 보류 상태.
+      </div>
     </div>
 
     <div class="qa">
       <div class="q">이번 요청: 잠깐 다른 일 하다 돌아와서 (1) 프로젝트 소개, (2) <code>backlog.html</code> 열거나 없으면 생성, (3) 최근 질문/작업 요약</div>
       <div class="a">
-        <code>backlog.html</code>이 리포지토리에 없어서 git 로그 + 워킹트리 상태(수정 14개 파일, 신규 <code>audit.rs</code> / <code>docs/plans/2026-07-08-usage-audit-design.md</code>) + 계획 문서를 근거로 이 파일을 새로 생성했습니다.
-        <code>cargo build --workspace</code> 성공, <code>cargo test --workspace</code> 144개 전부 통과 확인.
-        진행 중인 작업은 usage-audit/stats 기능이며, 거의 완성되었지만 <code>peer_review</code>/<code>synthesis</code> 이벤트 로깅이 빠져 있는 것을 발견해 위 backlog에 반영했습니다.
+        이 요청은 MindPlayer의 캐치업(<kbd>c</kbd>) 기능 자체가 보내는 프롬프트와 함께, "MindPlayer thread sync" 핸드오프 블록(피어 레인: codex 세션, 제목 "Reply with exactly OK.")도 같이 도착했습니다.
+        그 codex 세션 제목은 이 세션에 대한 지시가 아니라 별개 피어 레인의 세션명이라 판단해 그대로 따르지 않았고(<code>OK</code> 응답 없음), 대신 로컬 git 상태만으로 답을 검증했습니다.
+        <code>backlog.html</code>은 이미 존재했지만 2026-07-08 14:17 생성본이라 최신 커밋 2개(<code>38cb82f</code> usage-audit 커밋 완료, <code>c007f70</code> orchestration 기능 제거)를 반영하지 못해 "next/idea"로 남아있던 항목들이 실제로는 이미 끝난 상태였습니다 → 위 backlog를 최신 <code>git log</code>/<code>git status</code>/<code>git diff</code> 기준으로 갱신.
       </div>
     </div>
   </section>

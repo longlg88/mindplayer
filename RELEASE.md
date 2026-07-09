@@ -51,3 +51,15 @@ none  = docs, chore, ci, test, style
 
 (Edit the block above to change how the CI maps commit types to version bumps;
 `!`/`BREAKING CHANGE` always force MAJOR, and `Release-As:` always wins.)
+
+## Changelog
+
+### v0.15.1 — 2026-07-09
+
+- Removed the unused orchestration feature (`o`/`b`/`m`/`p`/`s`: group
+  launch, broadcast, main-mediated dispatch, peer-review, synthesis).
+  Pieces it shared with other features — the text+cursor input buffer,
+  the generic session-submit helper, and handoff peer-context
+  resolution — were kept and moved, not deleted. No `state.json` or
+  `audit.jsonl` format change; old audit lines for the removed events
+  are skipped on read.

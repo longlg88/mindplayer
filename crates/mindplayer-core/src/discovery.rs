@@ -358,6 +358,14 @@ fn looks_like_subagent_title(t: &str) -> bool {
         || t.starts_with("Security review pass for")
         || t.starts_with("Devil's advocate review")
         || t.starts_with("Documentation architecture review")
+        || t.starts_with("Read-only")
+        // Fan-out prompt templates from the user's own multi-agent tooling
+        // (a batch of per-region/per-stack worker sessions, each titled with
+        // its own target rather than the shared task) — verified against
+        // real kiro sessions: a genuine top-level kiro request never opens
+        // with either literal label.
+        || t.starts_with("대상 스택:")
+        || t.starts_with("작업 디렉토리:")
 }
 
 /// Read just the leading lines to find the `session_meta` record (id, cwd,
@@ -854,10 +862,14 @@ fn parse_kiro_file(path: &Path, scope: &Scope) -> Option<Session> {
 
     // NOTE: kiro-cli writes `session_created_reason: "subagent"` even for normal
     // interactive `kiro-cli chat` sessions (verified against real session
-    // files), so that field is NOT a reliable sub-agent signal. Treat every
-    // kiro session as top-level so none are wrongly hidden by the sub-agent
-    // filter; if a real distinction surfaces later, key off that instead.
-    let is_subagent = false;
+    // files: every sampled session — including plainly top-level, casually
+    // typed ones — carries this same value), so that field is NOT a reliable
+    // sub-agent signal here. Fall back to the same title heuristic used for
+    // codex/claude instead — verified against a real fan-out (one kiro
+    // session per AWS region from an eks-module-upgrade task) whose titles
+    // all matched `looks_like_subagent_title`, with zero false positives
+    // across every other sampled kiro session title.
+    let is_subagent = looks_like_subagent_title(&title);
 
     // Kiro records no cumulative token counts (verified: the .jsonl has no token
     // fields and input/output_token_count stay 0), but it does report the
@@ -1025,6 +1037,24 @@ mod tests {
         assert!(looks_like_subagent_title("Security review pass for /x"));
         assert!(!looks_like_subagent_title("fix the failing test"));
         assert!(!looks_like_subagent_title("You said hello")); // not "You are "
+                                                               // Real per-region/per-stack fan-out worker titles from the user's
+                                                               // own multi-agent tooling (verified against an actual eks-module
+                                                               // upgrade fan-out, one kiro session per AWS region).
+        assert!(looks_like_subagent_title(
+            "대상 스택: /repo/data-nest/aws/data-prod/cac1/regional/airflow"
+        ));
+        assert!(looks_like_subagent_title("작업 디렉토리: /repo/soda-k8s"));
+        assert!(looks_like_subagent_title(
+            "Read-only investigation. In /repo, search for X"
+        ));
+        assert!(looks_like_subagent_title(
+            "Read-only. Read the file /repo/index.html"
+        ));
+        // Genuine casual top-level requests (Korean included) must not match.
+        assert!(!looks_like_subagent_title("kiro mcp없나?"));
+        assert!(!looks_like_subagent_title(
+            "local disk full 나고 있대 삭제할 만한거 찾아봐줘"
+        ));
     }
 
     #[test]

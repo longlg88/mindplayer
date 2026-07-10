@@ -103,7 +103,6 @@ fn scope_select(f: &mut Frame, app: &App) {
         ])
         .split(f.area());
     title_bar(chunks[0], f);
-    draw_mascot(f, chunks[1], app.spinner);
 
     let options = [
         format!("working dir   {}", app.cwd.display()),
@@ -129,6 +128,13 @@ fn scope_select(f: &mut Frame, app: &App) {
         .title(" Where should MindPlayer collect sessions? ")
         .border_style(Style::default().fg(ACCENT));
     let inner = centered(chunks[1], 70, 8);
+    // The mascot is top-anchored and fixed-size while this popup is vertically
+    // centered in the same region — on a small terminal that centers the
+    // popup right through the sprite instead of shrinking it. Only draw the
+    // mascot when it fully fits above the popup with no overlap.
+    if inner.y >= chunks[1].y + mascot::HEIGHT {
+        draw_mascot(f, chunks[1], app.spinner);
+    }
     f.render_widget(List::new(items).block(block), inner);
 
     footer(chunks[2], f, "↑↓ choose   enter scan   q quit");
@@ -145,9 +151,13 @@ fn scanning(f: &mut Frame, app: &App) {
         .split(f.area());
     title_bar(chunks[0], f);
 
-    draw_mascot(f, chunks[1], app.spinner);
     let spin = SPINNER[app.spinner % SPINNER.len()];
     let area = centered(chunks[1], 60, 5);
+    // See the matching guard in scope_select: skip the fixed-size mascot on a
+    // terminal too small to fit it above this centered box without overlap.
+    if area.y >= chunks[1].y + mascot::HEIGHT {
+        draw_mascot(f, chunks[1], app.spinner);
+    }
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(ACCENT))

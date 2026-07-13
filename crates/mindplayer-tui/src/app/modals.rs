@@ -67,6 +67,18 @@ impl App {
         self.rebuild_visible();
     }
 
+    /// Enter from an active search: resume the matched session and close the
+    /// search modal. Must clear `search_query` before handing off to
+    /// `request_resume` — otherwise it survives the switch to `Focus::Terminal`
+    /// and the search-modal key branch (checked ahead of `Focus::Terminal` in
+    /// `handle_main_key`) keeps swallowing every later key: Tab falls to its
+    /// `_ => {}` arm instead of cycling panes, and typed characters get pushed
+    /// into the now-invisible search buffer instead of reaching the pty.
+    pub fn confirm_search(&mut self) {
+        self.search_query = None;
+        self.request_resume();
+    }
+
     /// Open the label-input modal for the currently-selected session so an
     /// existing session (one created outside MindPlayer, or without a label)
     /// can be tagged. Pre-fills the current label so it can be edited or

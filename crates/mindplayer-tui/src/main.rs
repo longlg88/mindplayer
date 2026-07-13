@@ -672,7 +672,7 @@ fn handle_main_key(app: &mut App, key: KeyEvent) {
     if app.search_query.is_some() {
         match key.code {
             KeyCode::Backspace => app.search_backspace(),
-            KeyCode::Enter => app.request_resume(),
+            KeyCode::Enter => app.confirm_search(),
             KeyCode::Esc => app.cancel_search(),
             KeyCode::Up => app.move_selection(-1),
             KeyCode::Down => app.move_selection(1),
@@ -1020,6 +1020,42 @@ mod tests {
 
         handle_main_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
         assert!(app.transition_report_input.is_none());
+    }
+
+    #[test]
+    fn search_then_enter_clears_search_query_so_tab_still_cycles_panes() {
+        let mut app = main_app_with_session("s1");
+
+        app.begin_search();
+        for c in "s1".chars() {
+            app.search_push(c);
+        }
+        assert_eq!(app.visible, vec![0], "search must still match session s1");
+
+        handle_main_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(
+            app.focus,
+            Focus::Terminal,
+            "enter must resume into the live pane"
+        );
+        assert!(
+            app.search_query.is_none(),
+            "search state must not survive the resume — otherwise every later key \
+             (Tab, typed characters) keeps hitting the search-modal branch instead \
+             of Focus::Terminal, since that branch is checked ahead of it"
+        );
+
+        // Regression for the reported freeze: with search_query still set, Tab
+        // never reaches the Focus::Terminal chord handling and is silently
+        // dropped even with 2+ live panes open.
+        app.focus_or_add_pane("s2");
+        assert_eq!(app.panes.len(), 2);
+        let before = app.focused;
+        handle_main_key(&mut app, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        assert_ne!(
+            app.focused, before,
+            "Tab must cycle pane focus, not be swallowed by a stale search buffer"
+        );
     }
 
     #[test]

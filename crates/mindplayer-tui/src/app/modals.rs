@@ -45,6 +45,7 @@ impl App {
 
     pub fn begin_search(&mut self) {
         self.search_query = Some(String::new());
+        mindplayer_core::log_event_to(&self.audit_path, mindplayer_core::AuditEvent::SearchBegin);
         self.rebuild_visible();
     }
 
@@ -64,6 +65,7 @@ impl App {
 
     pub fn cancel_search(&mut self) {
         self.search_query = None;
+        mindplayer_core::log_event_to(&self.audit_path, mindplayer_core::AuditEvent::SearchCancel);
         self.rebuild_visible();
     }
 
@@ -77,6 +79,17 @@ impl App {
     pub fn confirm_search(&mut self) {
         self.search_query = None;
         self.request_resume();
+        // Logged after the resume so the `focus` field reflects where the app
+        // actually landed ("terminal" when a match resumed). Together with the
+        // preceding `SessionResume`, this is what makes a "search active →
+        // resume → focus terminal" setup — the shape behind the swallowed-Tab
+        // bug — visible in the log without any source.
+        mindplayer_core::log_event_to(
+            &self.audit_path,
+            mindplayer_core::AuditEvent::SearchConfirm {
+                focus: focus_label(self.focus).to_string(),
+            },
+        );
     }
 
     /// Open the label-input modal for the currently-selected session so an
@@ -93,6 +106,10 @@ impl App {
         }
         let id = s.id.clone();
         let existing = self.state.label_for(&id).unwrap_or_default().to_string();
+        mindplayer_core::log_event_to(
+            &self.audit_path,
+            mindplayer_core::AuditEvent::LabelEditBegin { id: id.clone() },
+        );
         self.label_target = Some(id);
         self.new_label = Some(existing);
     }
@@ -108,6 +125,13 @@ impl App {
         let label = buf.trim();
         self.state.set_label(&id, label);
         let _ = self.state.save();
+        mindplayer_core::log_event_to(
+            &self.audit_path,
+            mindplayer_core::AuditEvent::LabelEditConfirm {
+                id: id.clone(),
+                label: label.to_string(),
+            },
+        );
         if label.is_empty() {
             self.status = format!("label cleared for {}", short(&id));
             // Re-extract the original title from disk shortly.
@@ -126,6 +150,10 @@ impl App {
     /// can be edited or replaced.
     pub fn begin_dir_input(&mut self) {
         self.dir_input = Some(self.cwd.display().to_string());
+        mindplayer_core::log_event_to(
+            &self.audit_path,
+            mindplayer_core::AuditEvent::WorkingDirBegin,
+        );
     }
 
     pub fn dir_input_push(&mut self, c: char) {
@@ -142,6 +170,10 @@ impl App {
 
     pub fn cancel_dir_input(&mut self) {
         self.dir_input = None;
+        mindplayer_core::log_event_to(
+            &self.audit_path,
+            mindplayer_core::AuditEvent::WorkingDirCancel,
+        );
     }
 
     /// Confirm the working-dir modal: validate the path, re-point the scope at
@@ -156,6 +188,12 @@ impl App {
             self.dir_input = None;
             self.state.last_scope = Some(self.scope.label());
             let _ = self.state.save();
+            mindplayer_core::log_event_to(
+                &self.audit_path,
+                mindplayer_core::AuditEvent::WorkingDirConfirm {
+                    scope: self.scope.label(),
+                },
+            );
             self.status = "scope → global".to_string();
             self.start_bg_rescan();
             return;
@@ -173,6 +211,12 @@ impl App {
         self.dir_input = None;
         self.state.last_scope = Some(self.scope.label());
         let _ = self.state.save();
+        mindplayer_core::log_event_to(
+            &self.audit_path,
+            mindplayer_core::AuditEvent::WorkingDirConfirm {
+                scope: self.scope.label(),
+            },
+        );
         self.status = format!("working dir → {}", resolved.display());
         self.start_bg_rescan();
     }

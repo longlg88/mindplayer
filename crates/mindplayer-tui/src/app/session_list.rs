@@ -349,12 +349,26 @@ impl App {
     pub fn toggle_archived_view(&mut self) {
         self.show_archived = !self.show_archived;
         self.selected = 0;
+        mindplayer_core::log_event_to(
+            &self.audit_path,
+            mindplayer_core::AuditEvent::ViewToggle {
+                view: "archived".to_string(),
+                on: self.show_archived,
+            },
+        );
         self.rebuild_visible();
     }
 
     pub fn toggle_subagents(&mut self) {
         self.show_subagents = !self.show_subagents;
         self.selected = 0;
+        mindplayer_core::log_event_to(
+            &self.audit_path,
+            mindplayer_core::AuditEvent::ViewToggle {
+                view: "subagents".to_string(),
+                on: self.show_subagents,
+            },
+        );
         self.rebuild_visible();
     }
 
@@ -370,6 +384,13 @@ impl App {
         let now_in_progress = !self.state.is_in_progress(&id);
         self.state.set_in_progress(&id, now_in_progress);
         let _ = self.state.save();
+        mindplayer_core::log_event_to(
+            &self.audit_path,
+            mindplayer_core::AuditEvent::InProgressToggle {
+                id,
+                in_progress: now_in_progress,
+            },
+        );
         self.status = if now_in_progress {
             "marked in progress".to_string()
         } else {
@@ -388,8 +409,24 @@ impl App {
         };
         let id = session.id.clone();
         match self.session_status(&id) {
-            SessionStatus::Idle => self.send_catchup(&id),
+            SessionStatus::Idle => {
+                mindplayer_core::log_event_to(
+                    &self.audit_path,
+                    mindplayer_core::AuditEvent::CatchupBegin {
+                        id: id.clone(),
+                        awaiting_confirm: false,
+                    },
+                );
+                self.send_catchup(&id);
+            }
             SessionStatus::Working | SessionStatus::Blocked => {
+                mindplayer_core::log_event_to(
+                    &self.audit_path,
+                    mindplayer_core::AuditEvent::CatchupBegin {
+                        id: id.clone(),
+                        awaiting_confirm: true,
+                    },
+                );
                 self.catchup_confirm = Some(id);
                 self.status = "catch-up: session is busy — send anyway? (enter/esc)".to_string();
             }
@@ -406,7 +443,12 @@ impl App {
     }
 
     pub fn cancel_catchup(&mut self) {
-        self.catchup_confirm = None;
+        if self.catchup_confirm.take().is_some() {
+            mindplayer_core::log_event_to(
+                &self.audit_path,
+                mindplayer_core::AuditEvent::CatchupCancel,
+            );
+        }
     }
 
     fn send_catchup(&mut self, id: &str) {
@@ -428,6 +470,7 @@ impl App {
     }
 
     pub fn rescan(&mut self) {
+        mindplayer_core::log_event_to(&self.audit_path, mindplayer_core::AuditEvent::Rescan);
         self.start_scan();
     }
 
@@ -440,11 +483,21 @@ impl App {
             std::process::id(),
         ));
         self.usage_popup = true;
+        // Logged after the stats are computed above, so the numbers the popup
+        // shows reflect the log as it was *before* this open event.
+        mindplayer_core::log_event_to(
+            &self.audit_path,
+            mindplayer_core::AuditEvent::UsagePopup { open: true },
+        );
     }
 
     pub fn close_usage_popup(&mut self) {
         self.usage_popup = false;
         self.usage_stats = None;
+        mindplayer_core::log_event_to(
+            &self.audit_path,
+            mindplayer_core::AuditEvent::UsagePopup { open: false },
+        );
     }
 
     /// Kick off a background usage refresh (no-op if one is already running).

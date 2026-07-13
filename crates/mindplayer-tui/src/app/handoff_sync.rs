@@ -17,11 +17,17 @@ impl App {
             return;
         }
         self.handoff_picker = Some(0);
+        mindplayer_core::log_event_to(&self.audit_path, mindplayer_core::AuditEvent::HandoffBegin);
         self.status = "handoff: choose target agent".to_string();
     }
 
     pub fn cancel_handoff(&mut self) {
-        self.handoff_picker = None;
+        if self.handoff_picker.take().is_some() {
+            mindplayer_core::log_event_to(
+                &self.audit_path,
+                mindplayer_core::AuditEvent::HandoffCancel,
+            );
+        }
     }
 
     pub fn confirm_handoff(&mut self, target: Agent) {

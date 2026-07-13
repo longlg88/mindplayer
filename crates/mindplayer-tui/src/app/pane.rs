@@ -64,6 +64,7 @@ impl App {
         self.selection = None;
         self.focused = (self.focused + 1) % self.panes.len();
         self.sync_active();
+        self.log_pane_focus_cycle();
         self.status = format!("focused pane {}/{}", self.focused + 1, self.panes.len());
     }
 
@@ -75,7 +76,18 @@ impl App {
         self.selection = None;
         self.focused = (self.focused + self.panes.len() - 1) % self.panes.len();
         self.sync_active();
+        self.log_pane_focus_cycle();
         self.status = format!("focused pane {}/{}", self.focused + 1, self.panes.len());
+    }
+
+    fn log_pane_focus_cycle(&self) {
+        mindplayer_core::log_event_to(
+            &self.audit_path,
+            mindplayer_core::AuditEvent::PaneFocusCycle {
+                focused: self.focused + 1,
+                count: self.panes.len(),
+            },
+        );
     }
 
     pub fn cycle_layout(&mut self) {
@@ -83,6 +95,12 @@ impl App {
             PaneLayout::Single | PaneLayout::Vertical => PaneLayout::Horizontal,
             PaneLayout::Horizontal => PaneLayout::Vertical,
         };
+        mindplayer_core::log_event_to(
+            &self.audit_path,
+            mindplayer_core::AuditEvent::LayoutCycle {
+                layout: layout_label(self.layout).to_string(),
+            },
+        );
         self.status = match self.layout {
             PaneLayout::Horizontal => "live panes split horizontally".to_string(),
             PaneLayout::Vertical => "live panes split vertically".to_string(),
@@ -107,6 +125,10 @@ impl App {
             return;
         }
         self.zoomed = !self.zoomed;
+        mindplayer_core::log_event_to(
+            &self.audit_path,
+            mindplayer_core::AuditEvent::ZoomToggle { on: self.zoomed },
+        );
         self.status = if self.zoomed {
             "zoomed — tab/ctrl-w to browse panes, ctrl-z for the split view".to_string()
         } else {
@@ -120,6 +142,13 @@ impl App {
             return;
         };
         self.remove_pane(&sid);
+        mindplayer_core::log_event_to(
+            &self.audit_path,
+            mindplayer_core::AuditEvent::PaneClose {
+                id: sid.clone(),
+                remaining: self.panes.len(),
+            },
+        );
         if self.panes.is_empty() {
             self.focus = Focus::List;
             self.status = "closed live pane".to_string();
@@ -203,6 +232,49 @@ impl App {
         }
     }
 
+    /// Log a `SessionStatusChange` for every live session whose computed
+    /// status changed since the last poll — idle/working/blocked flips, and the
+    /// transition to `ended` when a child exits. Only actual changes are logged
+    /// (never every poll), and the first sighting of a session is recorded
+    /// silently since its birth is already captured by `SessionOpen`. History
+    /// rows (no PTY) are always `Inactive` and uninteresting, so they're
+    /// skipped. Returns true if any transition was logged.
+    ///
+    /// This is the audit counterpart to the badge/sort classification in
+    /// [`Self::session_status`]: it turns the app's own live read of each
+    /// session into a durable trail, so an incident like "it says it's been
+    /// working for ages but nothing's happening" can be reconstructed from the
+    /// log after the fact.
+    pub fn poll_status_transitions(&mut self) -> bool {
+        // `ended` ids stay in `ptys` until the pane is closed, so iterating the
+        // pty map alone covers both live and just-ended sessions.
+        let ids: Vec<String> = self.ptys.keys().cloned().collect();
+        let mut logged = false;
+        for id in ids {
+            let status = self.session_status(&id);
+            let prev = self.last_status.get(&id).copied();
+            if let Some((from, to)) = status_transition(prev, status) {
+                mindplayer_core::log_event_to(
+                    &self.audit_path,
+                    mindplayer_core::AuditEvent::SessionStatusChange {
+                        id: id.clone(),
+                        from: status_label(from).to_string(),
+                        to: status_label(to).to_string(),
+                    },
+                );
+                logged = true;
+            }
+            // Record the current status either way — a first sighting seeds it
+            // silently (`SessionOpen` already marks the birth), a real change
+            // updates it after logging above.
+            self.last_status.insert(id, status);
+        }
+        // Forget sessions that are entirely gone (closed/removed) so a later
+        // reuse of the same id starts fresh instead of diffing a stale status.
+        self.last_status.retain(|id, _| self.ptys.contains_key(id));
+        logged
+    }
+
     /// Bubble only *blocked* panes to the front of the grid — a rare, stable
     /// event that genuinely needs you now. Working/idle panes are drawn with
     /// their own glow/color (see `ui::render_pane`) but never reordered:
@@ -237,6 +309,12 @@ impl App {
         let Some(session) = self.selected_session().cloned() else {
             return;
         };
+        mindplayer_core::log_event_to(
+            &self.audit_path,
+            mindplayer_core::AuditEvent::SessionResume {
+                id: session.id.clone(),
+            },
+        );
         self.focus = Focus::Terminal;
         if self.is_running(&session.id) {
             // Already live in the background — just bring it to the
@@ -429,10 +507,21 @@ impl App {
         let Some(id) = self.selected_session().map(|s| s.id.clone()) else {
             return;
         };
-        if !self.marked.remove(&id) {
-            self.marked.insert(id);
-        }
+        let now_marked = if self.marked.remove(&id) {
+            false
+        } else {
+            self.marked.insert(id.clone());
+            true
+        };
         let marked = self.marked.len();
+        mindplayer_core::log_event_to(
+            &self.audit_path,
+            mindplayer_core::AuditEvent::MarkToggle {
+                id,
+                marked: now_marked,
+                total: marked,
+            },
+        );
         self.status = if marked == 0 {
             "selection cleared".to_string()
         } else {
@@ -446,6 +535,12 @@ impl App {
     pub fn toggle_multi_select(&mut self) {
         self.multi_select = !self.multi_select;
         self.marked.clear();
+        mindplayer_core::log_event_to(
+            &self.audit_path,
+            mindplayer_core::AuditEvent::MultiSelect {
+                on: self.multi_select,
+            },
+        );
         self.status = if self.multi_select {
             "multi-select: space marks · enter launches all · esc cancels".to_string()
         } else {
@@ -460,6 +555,10 @@ impl App {
         }
         self.multi_select = false;
         self.marked.clear();
+        mindplayer_core::log_event_to(
+            &self.audit_path,
+            mindplayer_core::AuditEvent::MultiSelect { on: false },
+        );
         self.status = "multi-select cancelled".to_string();
     }
 
@@ -477,6 +576,12 @@ impl App {
         // side — a leftover zoom (single pane fullscreen) from earlier would
         // otherwise silently hide every pane but the focused one, making a
         // multi-launch look like it only opened one session.
+        //
+        // Capture that leftover-zoom state *before* clearing it: logging it on
+        // the launch event is what lets a reader later see "a bulk launch fired
+        // while zoom was stuck on" — the shape of the "only one session opened"
+        // bug — straight off the log, without needing the source.
+        let zoom_was_on = self.zoomed;
         self.zoomed = false;
         let ids: Vec<String> = self
             .visible
@@ -487,6 +592,14 @@ impl App {
             .take(MAX_PANES)
             .collect();
         let total = ids.len();
+        mindplayer_core::log_event_to(
+            &self.audit_path,
+            mindplayer_core::AuditEvent::LaunchMarked {
+                ids: ids.clone(),
+                count: total,
+                zoom_was_on,
+            },
+        );
         self.focus = Focus::Terminal;
         for id in &ids {
             let Some(session) = self.all_sessions.iter().find(|s| &s.id == id).cloned() else {
@@ -546,6 +659,12 @@ impl App {
     pub fn detach_terminal(&mut self) {
         self.selection = None;
         self.focus = Focus::List;
+        mindplayer_core::log_event_to(
+            &self.audit_path,
+            mindplayer_core::AuditEvent::FocusChange {
+                focus: focus_label(self.focus).to_string(),
+            },
+        );
     }
 
     /// Re-enter the live view left behind by `detach_terminal` (ctrl-x toggle).
@@ -559,6 +678,12 @@ impl App {
         }
         self.focus = Focus::Terminal;
         self.sync_active();
+        mindplayer_core::log_event_to(
+            &self.audit_path,
+            mindplayer_core::AuditEvent::FocusChange {
+                focus: focus_label(self.focus).to_string(),
+            },
+        );
         self.status = if self.panes.len() > 1 {
             format!("back to {} live panes", self.panes.len())
         } else {

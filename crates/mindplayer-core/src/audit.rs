@@ -23,16 +23,169 @@ const SPARKLINE_DAYS: i64 = 14;
 /// matching `discovery::touched_recently`'s definition, not a calendar day.
 const TODAY_WINDOW: Duration = Duration::hours(24);
 
+/// A single line in the audit log. Two families of events share this enum:
+///
+/// * **Usage-stats events** (`AppStart`/`AppStop`, `SessionOpen`,
+///   `SessionClose`, `Handoff`, `CatchupSent`, `TransitionReportSent`) —
+///   aggregated by [`compute_stats`] and surfaced in the `u` usage popup.
+///   These predate the incident-reconstruction events and are the only ones
+///   `compute_stats` looks at.
+/// * **Action + status-transition events** (everything below the first group)
+///   — a chronological breadcrumb trail added so that when a user reports an
+///   in-the-moment misbehavior ("it froze", "only one session opened") the log
+///   can be read after the fact to reconstruct *what the user did, in what
+///   order, and what the app thought was happening*. They are deliberately
+///   NOT counted by `compute_stats` (they'd distort nothing user-visible in
+///   the popup); they exist purely for post-hoc debugging.
+///
+/// Action events group related keybindings rather than minting one variant per
+/// key: a modal flow is a `*Begin` / `*Confirm` / `*Cancel` triplet, and a
+/// toggle carries its resulting state (`on: bool`) instead of separate
+/// on/off variants. Each carries enough context (session id, old/new state,
+/// batch counts/ids) to stand alone without source access.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum AuditEvent {
-    AppStart { run_id: u32 },
-    AppStop { run_id: u32 },
-    SessionOpen { agent: String },
+    // --- usage-stats events (the only ones `compute_stats` aggregates) ------
+    AppStart {
+        run_id: u32,
+    },
+    AppStop {
+        run_id: u32,
+    },
+    SessionOpen {
+        agent: String,
+    },
     SessionClose,
     Handoff,
     CatchupSent,
     TransitionReportSent,
+
+    // --- user-action events (reconstruct "what the user did, in what order") -
+    /// A session was brought to the foreground as a live pane (Enter / l / →,
+    /// or confirming a search) — whether freshly resumed or an already-running
+    /// background pane switched to.
+    SessionResume {
+        id: String,
+    },
+    /// Multi-select launch: every marked session opened as a live pane at once.
+    /// `zoom_was_on` is the full-screen-zoom state captured *before* the launch
+    /// clears it — the exact condition behind the "only one session opened"
+    /// bug, so a reader can see a bulk launch that happened while zoom was
+    /// still stuck on.
+    LaunchMarked {
+        ids: Vec<String>,
+        count: usize,
+        zoom_was_on: bool,
+    },
+    /// A single live pane was closed (ctrl-q); `remaining` panes stay open.
+    PaneClose {
+        id: String,
+        remaining: usize,
+    },
+    /// A new Codex/Claude/Kiro session was requested (its real `SessionOpen`
+    /// lands once the PTY actually spawns).
+    NewSession {
+        agent: String,
+    },
+    /// Multi-select mode entered/left (`v` / esc).
+    MultiSelect {
+        on: bool,
+    },
+    /// A row's multi-select mark toggled (space); `total` is the resulting
+    /// number of marked rows.
+    MarkToggle {
+        id: String,
+        marked: bool,
+        total: usize,
+    },
+    /// Full-screen zoom of the focused pane toggled (ctrl-z).
+    ZoomToggle {
+        on: bool,
+    },
+    /// Pane grid layout cycled (ctrl-o); `layout` is the new layout.
+    LayoutCycle {
+        layout: String,
+    },
+    /// Focused pane cycled (Tab / Shift-Tab / ctrl-w); `focused` is the new
+    /// 1-based pane index out of `count` open panes.
+    PaneFocusCycle {
+        focused: usize,
+        count: usize,
+    },
+    /// Left the live view for the list, or re-entered it (ctrl-x); `focus` is
+    /// where focus landed ("list" / "terminal").
+    FocusChange {
+        focus: String,
+    },
+    /// The manual "in progress" mark toggled on a session (`i`).
+    InProgressToggle {
+        id: String,
+        in_progress: bool,
+    },
+    /// A list view filter toggled: `view` is "archived" (`a`) or "subagents"
+    /// (`g`).
+    ViewToggle {
+        view: String,
+        on: bool,
+    },
+    /// Manual full rescan of the current scope (`r`).
+    Rescan,
+    /// Usage-stats popup opened/closed (`u`).
+    UsagePopup {
+        open: bool,
+    },
+    /// Session-list search opened (`/`).
+    SearchBegin,
+    /// Search confirmed (Enter) — `focus` is where the app landed afterward
+    /// ("terminal" once it resumed the match). Logged after the resume, so a
+    /// "search active → resume → focus terminal" setup reads straight off the
+    /// log.
+    SearchConfirm {
+        focus: String,
+    },
+    /// Search dismissed (esc) without resuming.
+    SearchCancel,
+    /// Cross-agent handoff picker opened (`h`); the handoff itself is `Handoff`.
+    HandoffBegin,
+    /// Handoff picker dismissed (esc) without handing off.
+    HandoffCancel,
+    /// Catch-up initiated on a session (`c`); `awaiting_confirm` is true when
+    /// the session was busy and a "send anyway?" confirm was shown (the send
+    /// itself is `CatchupSent`).
+    CatchupBegin {
+        id: String,
+        awaiting_confirm: bool,
+    },
+    /// Catch-up "send anyway?" confirm dismissed (esc).
+    CatchupCancel,
+    /// Label-edit modal opened for a session (`e`).
+    LabelEditBegin {
+        id: String,
+    },
+    /// Label edit confirmed; `label` is the new label ("" = cleared).
+    LabelEditConfirm {
+        id: String,
+        label: String,
+    },
+    /// Working-dir / scope-change modal opened (`d`).
+    WorkingDirBegin,
+    /// Working-dir change confirmed; `scope` is the new scope label.
+    WorkingDirConfirm {
+        scope: String,
+    },
+    /// Working-dir modal dismissed (esc).
+    WorkingDirCancel,
+
+    // --- app-computed status transitions ("what the app thought") -----------
+    /// A session's computed live status changed since the last poll
+    /// (idle/working/blocked, and → ended when its child exits). Logged only on
+    /// an actual change, never every poll.
+    SessionStatusChange {
+        id: String,
+        from: String,
+        to: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -200,6 +353,10 @@ pub fn compute_stats(
             AuditEvent::CatchupSent => stats.catchups_all_time += 1,
             AuditEvent::TransitionReportSent => stats.transition_reports_all_time += 1,
             AuditEvent::AppStart { .. } | AuditEvent::AppStop { .. } => {}
+            // Action + status-transition events are breadcrumbs for post-hoc
+            // incident reconstruction, not usage metrics — they contribute
+            // nothing to what the usage popup shows.
+            _ => {}
         }
     }
 
@@ -234,6 +391,75 @@ mod tests {
         );
         assert_eq!(events[1].event, AuditEvent::Handoff);
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn action_and_transition_events_round_trip_through_jsonl() {
+        let path = tmp_path("actions");
+        let events = vec![
+            AuditEvent::ZoomToggle { on: true },
+            AuditEvent::MarkToggle {
+                id: "s1".to_string(),
+                marked: true,
+                total: 2,
+            },
+            AuditEvent::LaunchMarked {
+                ids: vec!["s1".to_string(), "s2".to_string()],
+                count: 2,
+                zoom_was_on: true,
+            },
+            AuditEvent::SessionStatusChange {
+                id: "s1".to_string(),
+                from: "idle".to_string(),
+                to: "working".to_string(),
+            },
+        ];
+        for e in &events {
+            log_event_to(&path, e.clone());
+        }
+        let read = read_events(&path);
+        assert_eq!(read.len(), events.len());
+        for (want, got) in events.iter().zip(read.iter()) {
+            assert_eq!(*want, got.event);
+        }
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn action_events_do_not_perturb_usage_stats() {
+        // The breadcrumb events must be invisible to the usage popup: a log
+        // full of them, with one real SessionOpen, still reports exactly one
+        // opened session and nothing else.
+        let now = Utc::now();
+        let events = vec![
+            rec(now, AuditEvent::ZoomToggle { on: true }),
+            rec(
+                now,
+                AuditEvent::LaunchMarked {
+                    ids: vec!["s1".to_string()],
+                    count: 1,
+                    zoom_was_on: true,
+                },
+            ),
+            rec(
+                now,
+                AuditEvent::SessionOpen {
+                    agent: "codex".to_string(),
+                },
+            ),
+            rec(
+                now,
+                AuditEvent::SessionStatusChange {
+                    id: "s1".to_string(),
+                    from: "idle".to_string(),
+                    to: "working".to_string(),
+                },
+            ),
+        ];
+        let stats = compute_stats(&events, now, 0);
+        assert_eq!(stats.sessions_opened_all_time.total(), 1);
+        assert_eq!(stats.sessions_closed_all_time, 0);
+        assert_eq!(stats.handoffs_all_time, 0);
     }
 
     #[test]

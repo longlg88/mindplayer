@@ -8,6 +8,12 @@ impl App {
             Scope::WorkingDir(p) => p.clone(),
             Scope::Global => self.cwd.clone(),
         };
+        mindplayer_core::log_event_to(
+            &self.audit_path,
+            mindplayer_core::AuditEvent::NewSession {
+                agent: agent.as_str().to_string(),
+            },
+        );
         let command = mindplayer_core::new_session(agent, dir.clone());
         // Synthetic, unique id so it never collides with a real session or a
         // previous new session of the same agent.

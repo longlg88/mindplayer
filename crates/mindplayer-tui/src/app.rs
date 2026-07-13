@@ -162,6 +162,23 @@ fn classify_live_session_status(
     }
 }
 
+/// Decide what to audit for a session's status this poll, given its previous
+/// computed status (`None` = first sighting) and its current one. Returns
+/// `Some((from, to))` to log a transition, or `None` to stay silent. A first
+/// sighting is silent on purpose — the session's birth is already captured by
+/// `SessionOpen`, so only genuine tick-to-tick changes reach the log. Pulled
+/// out of [`App::poll_status_transitions`] so the change-only rule can be
+/// tested without a real `PtySession`.
+fn status_transition(
+    prev: Option<SessionStatus>,
+    now: SessionStatus,
+) -> Option<(SessionStatus, SessionStatus)> {
+    match prev {
+        Some(prev) if prev != now => Some((prev, now)),
+        _ => None,
+    }
+}
+
 fn should_send_initial_input(looks_idle: bool, output_seq: u64, queued_for: Duration) -> bool {
     looks_idle
         || (output_seq > 0 && queued_for >= INITIAL_INPUT_OUTPUT_TIMEOUT)
@@ -249,6 +266,12 @@ pub struct App {
     /// to show a "working" badge for sessions actively producing output.
     out_seq: HashMap<String, u64>,
     out_at: HashMap<String, Instant>,
+    /// Last computed [`SessionStatus`] per live session, so
+    /// [`Self::poll_status_transitions`] can log an `AuditEvent::SessionStatusChange`
+    /// only when the status actually changes tick-to-tick (never every poll).
+    /// First sighting of a session is seeded silently — its birth is already
+    /// captured by `SessionOpen`.
+    last_status: HashMap<String, SessionStatus>,
     /// Sessions where the user (or a handoff bootstrap) has submitted a turn.
     /// Initial TUI paint after opening a session is output too, but it should
     /// not make the row look like active work.
@@ -417,6 +440,7 @@ impl App {
             ended: HashSet::new(),
             out_seq: HashMap::new(),
             out_at: HashMap::new(),
+            last_status: HashMap::new(),
             turn_submitted: HashSet::new(),
             thread_sync_at: HashMap::new(),
             pending_initial_inputs: HashMap::new(),
@@ -534,6 +558,34 @@ impl App {
 
 fn short(id: &str) -> String {
     id.chars().take(8).collect()
+}
+
+/// Snake-case label for an audit event's `focus` field.
+fn focus_label(focus: Focus) -> &'static str {
+    match focus {
+        Focus::List => "list",
+        Focus::Terminal => "terminal",
+    }
+}
+
+/// Snake-case label for an audit event's `layout` field.
+fn layout_label(layout: PaneLayout) -> &'static str {
+    match layout {
+        PaneLayout::Single => "single",
+        PaneLayout::Horizontal => "horizontal",
+        PaneLayout::Vertical => "vertical",
+    }
+}
+
+/// Snake-case label for an audit event's status `from`/`to` fields.
+fn status_label(status: SessionStatus) -> &'static str {
+    match status {
+        SessionStatus::Blocked => "blocked",
+        SessionStatus::Working => "working",
+        SessionStatus::Idle => "idle",
+        SessionStatus::Ended => "ended",
+        SessionStatus::Inactive => "inactive",
+    }
 }
 
 /// The audit-log path an `App` logs to. In a real build this is always

@@ -473,6 +473,11 @@ impl App {
             self.request_resume();
             return;
         }
+        // The whole point of marking several sessions is to see them side by
+        // side — a leftover zoom (single pane fullscreen) from earlier would
+        // otherwise silently hide every pane but the focused one, making a
+        // multi-launch look like it only opened one session.
+        self.zoomed = false;
         let ids: Vec<String> = self
             .visible
             .iter()

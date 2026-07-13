@@ -448,6 +448,34 @@ fn launch_marked_opens_all_marked_sessions_as_panes() {
 }
 
 #[test]
+fn launch_marked_clears_a_leftover_zoom_so_all_panes_are_actually_visible() {
+    let now = chrono::Utc::now();
+    let mut sessions = Vec::new();
+    for id in ["a", "b"] {
+        let mut s = session(id, Agent::Codex, false);
+        s.last_active = Some(now);
+        sessions.push(s);
+    }
+    let mut app = app_with(sessions);
+    // Simulate a zoom left on from earlier in the session — with it still
+    // set, a multi-launch would silently render only the focused pane full
+    // screen, making it look like just one session opened.
+    app.zoomed = true;
+
+    app.selected = 0;
+    app.toggle_mark();
+    app.selected = 1;
+    app.toggle_mark();
+    app.launch_marked();
+
+    assert_eq!(app.panes.len(), 2);
+    assert!(
+        !app.zoomed,
+        "a multi-session launch must show the split view"
+    );
+}
+
+#[test]
 fn launch_marked_falls_back_to_single_resume_when_nothing_marked() {
     let now = chrono::Utc::now();
     let mut s = session("solo", Agent::Codex, false);

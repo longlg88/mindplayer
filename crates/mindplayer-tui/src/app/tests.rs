@@ -1918,3 +1918,223 @@ fn close_usage_popup_clears_the_cached_stats() {
 
     let _ = std::fs::remove_file(&audit_tmp);
 }
+
+// --- action + status-transition instrumentation ----------------------------
+
+#[test]
+fn status_transition_logs_only_real_changes() {
+    use super::status_transition;
+    use SessionStatus::*;
+    // First sighting is silent — SessionOpen already marks the birth.
+    assert_eq!(status_transition(None, Idle), None);
+    // No change tick-to-tick logs nothing.
+    assert_eq!(status_transition(Some(Working), Working), None);
+    // A genuine change reports (from, to) in order.
+    assert_eq!(
+        status_transition(Some(Idle), Working),
+        Some((Idle, Working))
+    );
+    assert_eq!(
+        status_transition(Some(Working), Ended),
+        Some((Working, Ended))
+    );
+}
+
+#[test]
+fn multi_select_mark_then_launch_logs_the_events_in_order() {
+    let audit_tmp = audit_tmp_path("multi-launch");
+    let mut app = app_with(vec![
+        session("s1", Agent::Codex, false),
+        session("s2", Agent::Codex, false),
+    ]);
+    app.audit_path = audit_tmp.clone();
+
+    app.toggle_multi_select();
+    app.selected = 0;
+    app.toggle_mark();
+    app.selected = 1;
+    app.toggle_mark();
+    app.launch_marked();
+
+    let events: Vec<_> = mindplayer_core::read_events(&audit_tmp)
+        .into_iter()
+        .map(|r| r.event)
+        .collect();
+    assert_eq!(
+        events.len(),
+        4,
+        "expected multi-select on + two marks + launch, got {events:?}"
+    );
+    assert_eq!(
+        events[0],
+        mindplayer_core::AuditEvent::MultiSelect { on: true }
+    );
+
+    // The two marks name both sessions and count up 1 → 2, in the order they
+    // were marked (never moving the cursor themselves).
+    let mut marked_ids = Vec::new();
+    for (i, ev) in events[1..=2].iter().enumerate() {
+        match ev {
+            mindplayer_core::AuditEvent::MarkToggle { id, marked, total } => {
+                assert!(*marked, "mark {i} should turn the mark on");
+                assert_eq!(*total, i + 1, "running marked count");
+                marked_ids.push(id.clone());
+            }
+            other => panic!("expected a MarkToggle, got {other:?}"),
+        }
+    }
+    marked_ids.sort();
+    assert_eq!(marked_ids, vec!["s1".to_string(), "s2".to_string()]);
+
+    // The launch carries the whole batch and its ids, so a reader sees exactly
+    // which sessions opened together.
+    match &events[3] {
+        mindplayer_core::AuditEvent::LaunchMarked {
+            ids,
+            count,
+            zoom_was_on,
+        } => {
+            assert_eq!(*count, 2);
+            assert_eq!(ids.len(), 2);
+            assert!(ids.contains(&"s1".to_string()) && ids.contains(&"s2".to_string()));
+            assert!(!*zoom_was_on, "no zoom was set in this scenario");
+        }
+        other => panic!("expected LaunchMarked, got {other:?}"),
+    }
+
+    let _ = std::fs::remove_file(&audit_tmp);
+}
+
+#[test]
+fn zoom_toggle_then_multi_launch_is_reconstructable_from_the_log() {
+    // The exact shape of the "only one session opened" bug (v0.15.6): zoom was
+    // left on, then several sessions were launched together. The log must make
+    // that correlation visible on its own — a ZoomToggle{on:true} with no
+    // later off, and a LaunchMarked that records zoom_was_on:true.
+    let audit_tmp = audit_tmp_path("zoom-launch");
+    let mut app = app_with(vec![
+        session("s1", Agent::Codex, false),
+        session("s2", Agent::Codex, false),
+    ]);
+    app.audit_path = audit_tmp.clone();
+
+    app.focus_or_add_pane("s1"); // a live pane so zoom is meaningful
+    app.toggle_zoom();
+    assert!(app.zoomed);
+    app.toggle_multi_select();
+    app.selected = 0;
+    app.toggle_mark();
+    app.selected = 1;
+    app.toggle_mark();
+    app.launch_marked();
+    assert!(!app.zoomed, "launch must clear the leftover zoom");
+
+    let events: Vec<_> = mindplayer_core::read_events(&audit_tmp)
+        .into_iter()
+        .map(|r| r.event)
+        .collect();
+
+    let zoom_on_at = events
+        .iter()
+        .position(|e| matches!(e, mindplayer_core::AuditEvent::ZoomToggle { on: true }));
+    let launch_at = events.iter().position(|e| {
+        matches!(
+            e,
+            mindplayer_core::AuditEvent::LaunchMarked {
+                zoom_was_on: true,
+                ..
+            }
+        )
+    });
+    let zoom_on_at = zoom_on_at.expect("a ZoomToggle{on:true} must be logged");
+    let launch_at = launch_at.expect("a LaunchMarked{zoom_was_on:true} must be logged");
+    assert!(
+        zoom_on_at < launch_at,
+        "zoom-on must precede the launch that happened while it was still on"
+    );
+    // No zoom-off between the two — the whole point is the reader can see zoom
+    // was never cleared before the multi-launch.
+    assert!(
+        !events[zoom_on_at..launch_at]
+            .iter()
+            .any(|e| matches!(e, mindplayer_core::AuditEvent::ZoomToggle { on: false })),
+        "no ZoomToggle{{on:false}} should sit between zoom-on and the launch"
+    );
+
+    let _ = std::fs::remove_file(&audit_tmp);
+}
+
+#[test]
+fn search_begin_confirm_records_the_resulting_terminal_focus() {
+    // The shape behind the swallowed-Tab bug (v0.15.5): search active, then a
+    // resume that flips focus to the terminal. Action-level logging can't see
+    // the individual dropped keystrokes, but it can record this setup.
+    let audit_tmp = audit_tmp_path("search-confirm");
+    let mut app = app_with(vec![session("s1", Agent::Codex, false)]);
+    app.audit_path = audit_tmp.clone();
+
+    app.begin_search();
+    app.search_push('s');
+    app.search_push('1');
+    assert_eq!(app.visible, vec![0], "search still matches s1");
+    app.confirm_search();
+    assert_eq!(app.focus, Focus::Terminal);
+
+    let events: Vec<_> = mindplayer_core::read_events(&audit_tmp)
+        .into_iter()
+        .map(|r| r.event)
+        .collect();
+    assert_eq!(
+        events,
+        vec![
+            mindplayer_core::AuditEvent::SearchBegin,
+            mindplayer_core::AuditEvent::SessionResume {
+                id: "s1".to_string()
+            },
+            mindplayer_core::AuditEvent::SearchConfirm {
+                focus: "terminal".to_string()
+            },
+        ]
+    );
+
+    let _ = std::fs::remove_file(&audit_tmp);
+}
+
+#[test]
+fn zoom_layout_and_view_toggles_log_their_resulting_state() {
+    let audit_tmp = audit_tmp_path("toggles");
+    let mut app = app_with(vec![session("s1", Agent::Codex, false)]);
+    app.audit_path = audit_tmp.clone();
+
+    app.focus_or_add_pane("s1");
+    app.toggle_zoom(); // on
+    app.toggle_zoom(); // off
+    app.cycle_layout(); // Horizontal -> Vertical
+    app.toggle_archived_view(); // on
+    app.toggle_subagents(); // on
+
+    let events: Vec<_> = mindplayer_core::read_events(&audit_tmp)
+        .into_iter()
+        .map(|r| r.event)
+        .collect();
+    assert_eq!(
+        events,
+        vec![
+            mindplayer_core::AuditEvent::ZoomToggle { on: true },
+            mindplayer_core::AuditEvent::ZoomToggle { on: false },
+            mindplayer_core::AuditEvent::LayoutCycle {
+                layout: "vertical".to_string()
+            },
+            mindplayer_core::AuditEvent::ViewToggle {
+                view: "archived".to_string(),
+                on: true
+            },
+            mindplayer_core::AuditEvent::ViewToggle {
+                view: "subagents".to_string(),
+                on: true
+            },
+        ]
+    );
+
+    let _ = std::fs::remove_file(&audit_tmp);
+}

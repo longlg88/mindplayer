@@ -209,6 +209,10 @@ fn run(terminal: &mut Terminal<CrosstermBackend<FrameSink>>, app: &mut App) -> R
             if app.reorder_panes_by_status() {
                 needs_draw = true;
             }
+            // Record any idle/working/blocked/ended transition to the audit log
+            // (change-only). Purely a side effect — status is already reflected
+            // on screen, so this never forces a redraw.
+            app.poll_status_transitions();
             if app.flush_initial_inputs() {
                 needs_draw = true;
             }

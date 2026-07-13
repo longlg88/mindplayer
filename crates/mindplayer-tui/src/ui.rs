@@ -27,6 +27,10 @@ const IDLE: Color = Color::Rgb(111, 154, 149);
 // mistaken for a live-status color (blocked/working/idle/done all sit in the
 // amber/green/teal/rose range).
 const IN_PROGRESS: Color = Color::Rgb(201, 166, 255);
+// A distinct gold, close to but not the same as the Blocked status amber
+// (245, 180, 90) — zoom is a view mode, not a session status, and the two can
+// legitimately show on the same pane at once (a zoomed, blocked session).
+const ZOOM: Color = Color::Rgb(235, 160, 70);
 const SPINNER: [&str; 8] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧"];
 
 fn agent_tag(agent: Agent) -> (&'static str, Color) {
@@ -1224,7 +1228,19 @@ fn render_pane(
             Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
         ),
         if zoomed {
-            Span::styled("🔍 ", Style::default().fg(ACCENT))
+            let hidden = total.saturating_sub(1);
+            let label = if hidden > 0 {
+                format!(" 🔍 ZOOMED · {hidden} hidden ")
+            } else {
+                " 🔍 ZOOMED ".to_string()
+            };
+            Span::styled(
+                label,
+                Style::default()
+                    .fg(Color::Rgb(15, 17, 22))
+                    .bg(ZOOM)
+                    .add_modifier(Modifier::BOLD),
+            )
         } else {
             Span::raw("")
         },
@@ -1235,7 +1251,9 @@ fn render_pane(
         },
     ]);
     // A thick border on the focused pane makes it unmistakable which one Tab
-    // will act on next when several panes are open side by side.
+    // will act on next when several panes are open side by side. Zoom always
+    // tints the border gold too, so "am I zoomed" reads at a glance even
+    // without stopping to parse the title text.
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(if pane_focused {
@@ -1244,7 +1262,9 @@ fn render_pane(
             BorderType::Plain
         })
         .title(title)
-        .border_style(if pane_focused {
+        .border_style(if zoomed {
+            Style::default().fg(ZOOM).add_modifier(Modifier::BOLD)
+        } else if pane_focused {
             Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)
         } else {
             Style::default().fg(DIM)

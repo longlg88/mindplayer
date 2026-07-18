@@ -6,6 +6,25 @@ impl App {
         self.active.as_ref().and_then(|id| self.ptys.get(id))
     }
 
+    /// The PTY currently DISPLAYED for `id`: its backgrounded carbonyl preview
+    /// when the pane is showing a preview, otherwise its agent PTY. This is the
+    /// one that should be rendered, resized, and fed input for that pane.
+    pub fn displayed_pty(&self, id: &str) -> Option<&PtySession> {
+        if self.previewing.contains(id) {
+            self.preview_ptys.get(id)
+        } else {
+            self.ptys.get(id)
+        }
+    }
+
+    pub(crate) fn displayed_pty_mut(&mut self, id: &str) -> Option<&mut PtySession> {
+        if self.previewing.contains(id) {
+            self.preview_ptys.get_mut(id)
+        } else {
+            self.ptys.get_mut(id)
+        }
+    }
+
     pub fn focused_pane(&self) -> Option<&str> {
         self.panes.get(self.focused).map(String::as_str)
     }
@@ -41,6 +60,14 @@ impl App {
     }
 
     pub(crate) fn remove_pane(&mut self, sid: &str) {
+        // A preview (carbonyl) process must never outlive its pane: kill and
+        // forget it whenever the pane is actually removed. Toggling back to the
+        // agent view does NOT go through here (it only drops the id from
+        // `previewing`), so a mere toggle never kills the process.
+        if let Some(mut preview) = self.preview_ptys.remove(sid) {
+            preview.kill();
+        }
+        self.previewing.remove(sid);
         if let Some(pos) = self.panes.iter().position(|id| id == sid) {
             self.panes.remove(pos);
             self.pane_sizes.remove(sid);
@@ -643,14 +670,19 @@ impl App {
             .collect();
         if targets.is_empty() {
             if let Some(id) = self.active.clone() {
-                if let Some(pty) = self.ptys.get_mut(&id) {
-                    pty.resize(self.pty_rows, self.pty_cols);
+                let (r, c) = (self.pty_rows, self.pty_cols);
+                if let Some(pty) = self.displayed_pty_mut(&id) {
+                    pty.resize(r, c);
                 }
             }
             return;
         }
+        // Resize whichever PTY (agent or preview) is currently displayed for
+        // each pane, so a preview pane tracks pane-grid changes exactly like an
+        // agent pane. A backgrounded (hidden) preview or agent is intentionally
+        // left at its current size until it's shown again.
         for (id, (rows, cols)) in targets {
-            if let Some(pty) = self.ptys.get_mut(&id) {
+            if let Some(pty) = self.displayed_pty_mut(&id) {
                 pty.resize(rows, cols);
             }
         }
@@ -731,7 +763,7 @@ impl App {
         }
         self.panes
             .iter()
-            .filter_map(|id| self.ptys.get(id))
+            .filter_map(|id| self.displayed_pty(id))
             .any(|p| p.take_dirty())
     }
 
@@ -739,6 +771,16 @@ impl App {
     pub fn send_to_pty(&mut self, bytes: &[u8]) {
         // Typing dismisses any drag-copy highlight, like a normal terminal.
         self.selection = None;
+        // While previewing, keystrokes drive carbonyl (the browser), not the
+        // agent — so its own turn/hold bookkeeping is skipped entirely.
+        if let Some(id) = self.focused_pane().map(str::to_string) {
+            if self.previewing.contains(&id) {
+                if let Some(pty) = self.preview_ptys.get_mut(&id) {
+                    pty.send(bytes);
+                }
+                return;
+            }
+        }
         if self.hold_for_pending_initial_input(bytes) {
             return;
         }
@@ -757,6 +799,16 @@ impl App {
     pub fn paste_to_pty(&mut self, text: &str) -> bool {
         if self.focus != Focus::Terminal {
             return false;
+        }
+        // A preview pane pastes into carbonyl, bypassing the agent's hold/turn
+        // bookkeeping (same reasoning as `send_to_pty`).
+        if let Some(id) = self.focused_pane().map(str::to_string) {
+            if self.previewing.contains(&id) {
+                return self
+                    .preview_ptys
+                    .get_mut(&id)
+                    .is_some_and(|pty| pty.paste(text));
+            }
         }
         if self.hold_for_pending_initial_input(text.as_bytes()) {
             return true;

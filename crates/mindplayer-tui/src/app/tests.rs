@@ -811,6 +811,117 @@ fn cancel_catchup_clears_the_confirm_without_sending() {
 }
 
 #[test]
+fn toggle_html_preview_without_a_pane_is_a_noop() {
+    // No focused pane → nothing to preview into; the popup must not open.
+    let mut app = App::new();
+    app.toggle_html_preview();
+    assert!(app.html_preview_input.is_none());
+    assert!(app.previewing.is_empty());
+}
+
+#[test]
+fn toggle_html_preview_opens_popup_when_no_preview_exists() {
+    let mut app = App::new();
+    app.focus_or_add_pane("s1");
+    app.focus = Focus::Terminal;
+    app.toggle_html_preview();
+    assert_eq!(
+        app.html_preview_input.as_deref(),
+        Some(""),
+        "first Ctrl-P with no live preview opens the path popup"
+    );
+    assert!(app.html_preview_error.is_none());
+    assert!(!app.previewing.contains("s1"));
+}
+
+#[test]
+fn toggle_html_preview_hides_a_shown_preview_without_a_popup() {
+    // A pane already showing its preview toggles back to the agent view with no
+    // popup and without killing (dropping) the carbonyl process entry.
+    let mut app = App::new();
+    app.focus_or_add_pane("s1");
+    app.focus = Focus::Terminal;
+    app.previewing.insert("s1".to_string());
+
+    app.toggle_html_preview();
+    assert!(
+        !app.previewing.contains("s1"),
+        "toggling a shown preview switches back to the agent view"
+    );
+    assert!(
+        app.html_preview_input.is_none(),
+        "hiding a preview must not open the popup"
+    );
+}
+
+#[test]
+fn confirm_html_preview_with_a_bad_path_sets_error_and_keeps_popup_open() {
+    // A nonexistent path must set the inline error, leave the popup open, and
+    // spawn no process — the whole point of the in-popup validation.
+    let mut app = App::new();
+    app.focus_or_add_pane("s1");
+    app.focus = Focus::Terminal;
+    app.html_preview_input = Some("/definitely/not/a/real/file.html".to_string());
+
+    app.confirm_html_preview();
+
+    assert!(
+        app.html_preview_error.is_some(),
+        "a bad path must surface an inline error"
+    );
+    assert!(
+        app.html_preview_input.is_some(),
+        "the popup stays open so the path can be corrected"
+    );
+    assert!(
+        app.preview_ptys.is_empty(),
+        "no carbonyl spawned on a bad path"
+    );
+    assert!(!app.previewing.contains("s1"));
+}
+
+#[test]
+fn confirm_html_preview_with_a_blank_path_sets_error() {
+    let mut app = App::new();
+    app.focus_or_add_pane("s1");
+    app.focus = Focus::Terminal;
+    app.html_preview_input = Some("   ".to_string());
+    app.confirm_html_preview();
+    assert!(app.html_preview_error.is_some());
+    assert!(app.html_preview_input.is_some());
+    assert!(app.preview_ptys.is_empty());
+}
+
+#[test]
+fn editing_the_preview_path_clears_a_stale_error() {
+    let mut app = App::new();
+    app.html_preview_input = Some("/bad".to_string());
+    app.html_preview_error = Some("not a file: /bad".to_string());
+    app.html_preview_input_push('x');
+    assert!(app.html_preview_error.is_none(), "typing clears the error");
+
+    app.html_preview_error = Some("again".to_string());
+    app.html_preview_input_backspace();
+    assert!(
+        app.html_preview_error.is_none(),
+        "backspace clears the error too"
+    );
+}
+
+#[test]
+fn cancel_html_preview_clears_input_and_error_without_side_effects() {
+    let mut app = App::new();
+    app.focus_or_add_pane("s1");
+    app.html_preview_input = Some("/some/path".to_string());
+    app.html_preview_error = Some("boom".to_string());
+    app.cancel_html_preview();
+    assert!(app.html_preview_input.is_none());
+    assert!(app.html_preview_error.is_none());
+    assert!(app.preview_ptys.is_empty());
+    assert!(app.previewing.is_empty());
+}
+
+#[test]
 fn merge_extras_ignores_preexisting_session() {
     // Regression for the HIGH bug: a new session must never be reconciled
     // onto a session that already existed when it was created (e.g. one the

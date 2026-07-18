@@ -123,7 +123,14 @@ impl App {
 
     /// Whether the displayed child has xterm mouse reporting on — if so, mouse
     /// events are forwarded to it instead of scrolling MindPlayer's scrollback.
+    /// A preview pane always wants the mouse: carbonyl is a full browser that
+    /// handles its own scrolling and clicking.
     pub fn active_wants_mouse(&self) -> bool {
+        if let Some(id) = self.active.as_deref() {
+            if self.previewing.contains(id) {
+                return true;
+            }
+        }
         self.active_pty().is_some_and(|p| p.mouse_wanted())
     }
 
@@ -152,7 +159,7 @@ impl App {
         row: u16,
     ) -> bool {
         if let Some(id) = self.focused_pane().map(str::to_string) {
-            if let Some(pty) = self.ptys.get_mut(&id) {
+            if let Some(pty) = self.displayed_pty_mut(&id) {
                 return pty.forward_mouse(cb, release, motion, col, row);
             }
         }

@@ -47,6 +47,16 @@ const TITLE_B: &str = "MPTESTBRVO";
 /// any static UI chrome, so seeing it proves the keystrokes reached the child.
 const TYPED_TOKEN: &str = "zqxj";
 
+/// Printed by the fake `carbonyl` (HTML preview) stub when it starts, so a
+/// spawned preview can be waited on by content. It then `exec cat`s, so typed
+/// input is echoed back — exactly as the real carbonyl PTY would render.
+const CARBONYL_RENDERED: &str = "FAKE-CARBONYL-RENDERED";
+
+/// Distinctive tokens typed into the agent pane vs. the preview pane, so the
+/// scenario-3 assertions can tell which one is currently displayed.
+const AGENT_TOKEN: &str = "agenttok";
+const PREVIEW_TOKEN: &str = "previewtok";
+
 // Per-scenario overall bounds. A genuine hang trips these and fails the test
 // instead of hanging CI forever.
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(15);
@@ -101,6 +111,9 @@ struct Mp {
     child: Box<dyn portable_pty::Child + Send + Sync>,
     _master: Box<dyn MasterPty + Send>,
     _tmp: PathBuf,
+    /// Absolute path to a real `.html` fixture the preview scenario can type
+    /// into the Ctrl-P popup.
+    html_fixture: PathBuf,
 }
 
 impl Mp {
@@ -142,6 +155,21 @@ impl Mp {
             &bindir.join("codex"),
             "#!/bin/sh\nprintf 'PANE-READY\\n'\nexec cat\n",
         );
+
+        // Fake `carbonyl`: print a distinctive banner (so the spawned preview
+        // can be waited on), then become `cat` so typed input is echoed back —
+        // letting the preview scenario assert that keystrokes reach the preview
+        // process. It ignores its path argument, like the fake `codex`.
+        write_script(
+            &bindir.join("carbonyl"),
+            "#!/bin/sh\nprintf 'FAKE-CARBONYL-RENDERED'\nexec cat\n",
+        );
+
+        // A real .html file to preview (contents don't matter — the stub never
+        // reads it; only its existence must pass `is_file()` validation).
+        let html_fixture = scope.join("preview.html");
+        std::fs::write(&html_fixture, "<html><body>hi</body></html>\n")
+            .expect("write html fixture");
 
         seed_codex_session(&codex_dir, &scope, "codex-alfa-0001", TITLE_A);
         seed_codex_session(&codex_dir, &scope, "codex-brvo-0002", TITLE_B);
@@ -200,6 +228,7 @@ impl Mp {
             child,
             _master: pair.master,
             _tmp: tmp,
+            html_fixture,
         }
     }
 
@@ -359,5 +388,87 @@ fn zoom_left_on_does_not_hide_a_multi_launch() {
         screen.contains(TITLE_A) && screen.contains(TITLE_B),
         "both session titles must show in the split view.\n\
          ---- screen ----\n{screen}\n----------------",
+    );
+}
+
+/// Scenario 3 — the full HTML-preview (Ctrl-P) lifecycle against a fake
+/// `carbonyl`.
+///
+/// Resume a session, type an agent token, then:
+///   1. Ctrl-P → path popup → type the fixture path → Enter spawns the fake
+///      carbonyl and its banner renders in the pane.
+///   2. Type a preview token — echoed back by the preview process, proving the
+///      pane now forwards input to carbonyl, not the agent.
+///   3. Ctrl-P → back to the agent view (the agent's own earlier token is
+///      visible again).
+///   4. Ctrl-P → the SAME preview is redisplayed instantly (no popup, no
+///      re-spawn): the preview token typed in step 2 is still there, which
+///      would be impossible if a fresh carbonyl had been started or a popup had
+///      swallowed the toggle.
+#[test]
+fn ctrl_p_previews_html_then_toggles_between_preview_and_agent() {
+    let mut mp = Mp::launch();
+    mp.start_into_main_list();
+
+    // Resume a session into a live pane, then type a token the agent echoes.
+    mp.send(b"\r");
+    mp.expect(PANE_READY, STEP_TIMEOUT, "agent pane came up");
+    mp.send(AGENT_TOKEN.as_bytes());
+    mp.expect(AGENT_TOKEN, STEP_TIMEOUT, "agent echoed its token");
+
+    // Ctrl-P opens the preview path popup.
+    mp.send(b"\x10");
+    mp.expect(
+        "Preview HTML in browser",
+        STEP_TIMEOUT,
+        "Ctrl-P opened the preview popup",
+    );
+
+    // Type the fixture path and confirm — the fake carbonyl spawns and renders.
+    let path = mp.html_fixture.display().to_string();
+    mp.send(path.as_bytes());
+    mp.send(b"\r");
+    mp.expect(
+        CARBONYL_RENDERED,
+        STEP_TIMEOUT,
+        "carbonyl preview rendered in the pane",
+    );
+
+    // Input now drives the preview process; its echo proves that.
+    mp.send(PREVIEW_TOKEN.as_bytes());
+    mp.expect(
+        PREVIEW_TOKEN,
+        STEP_TIMEOUT,
+        "preview process received and echoed typed input",
+    );
+
+    // Ctrl-P toggles back to the agent view: the agent's own token is visible.
+    mp.send(b"\x10");
+    mp.expect(
+        AGENT_TOKEN,
+        STEP_TIMEOUT,
+        "toggling back shows the agent view (its prior output is visible)",
+    );
+
+    // Ctrl-P again redisplays the SAME preview instantly — no popup, no
+    // re-spawn. The preview token from before is still on screen, which is only
+    // possible if the original carbonyl process was kept alive in the
+    // background (a re-spawn would show only the banner).
+    mp.send(b"\x10");
+    assert!(
+        mp.wait_until(STEP_TIMEOUT, |s| s.contains(PREVIEW_TOKEN)
+            && s.contains(CARBONYL_RENDERED)),
+        "re-showing the preview must reuse the live process (its earlier state \
+         preserved) with no popup or re-spawn — expected both {CARBONYL_RENDERED:?} \
+         and {PREVIEW_TOKEN:?}.\n---- screen ----\n{}\n----------------",
+        mp.screen()
+    );
+    // A re-spawn or a popup would both prevent the preview popup from being
+    // absent here; confirm the popup chrome is not on screen.
+    assert!(
+        !mp.screen().contains("Preview HTML in browser"),
+        "re-showing an existing preview must not re-open the path popup.\n\
+         ---- screen ----\n{}\n----------------",
+        mp.screen()
     );
 }

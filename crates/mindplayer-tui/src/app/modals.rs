@@ -221,6 +221,125 @@ impl App {
         self.start_bg_rescan();
     }
 
+    // --- HTML preview (carbonyl) ------------------------------------------
+
+    /// `Ctrl-P` from a live pane. Three behaviors, keyed off the focused pane:
+    /// - already showing its preview → switch back to the agent view (the
+    ///   carbonyl process is left running in the background, not killed);
+    /// - a live preview process exists but is hidden → re-show it instantly
+    ///   (no re-spawn, no popup);
+    /// - otherwise → open the path-input popup to spawn a fresh carbonyl.
+    pub fn toggle_html_preview(&mut self) {
+        let Some(id) = self.focused_pane().map(str::to_string) else {
+            self.status = "html preview needs a live pane".to_string();
+            return;
+        };
+        if self.previewing.remove(&id) {
+            // Hide the preview; the carbonyl process keeps running.
+            self.selection = None;
+            self.status = format!("preview hidden — agent view restored for {}", short(&id));
+            return;
+        }
+        // Re-show an existing preview only if its carbonyl is still alive; a
+        // dead one is dropped so the popup opens to spawn a fresh process.
+        let alive = self
+            .preview_ptys
+            .get_mut(&id)
+            .map(|p| p.is_alive())
+            .unwrap_or(false);
+        if alive {
+            self.previewing.insert(id.clone());
+            self.selection = None;
+            self.status = format!("preview shown for {}", short(&id));
+            return;
+        }
+        if let Some(mut dead) = self.preview_ptys.remove(&id) {
+            dead.kill();
+        }
+        self.html_preview_input = Some(String::new());
+        self.html_preview_error = None;
+        self.status = "html preview: type a path to a local .html file".to_string();
+    }
+
+    pub fn html_preview_input_push(&mut self, c: char) {
+        if let Some(buf) = self.html_preview_input.as_mut() {
+            buf.push(c);
+        }
+        // Any edit invalidates a stale "bad path" error.
+        self.html_preview_error = None;
+    }
+
+    pub fn html_preview_input_backspace(&mut self) {
+        if let Some(buf) = self.html_preview_input.as_mut() {
+            buf.pop();
+        }
+        self.html_preview_error = None;
+    }
+
+    pub fn cancel_html_preview(&mut self) {
+        self.html_preview_input = None;
+        self.html_preview_error = None;
+    }
+
+    /// Confirm the preview popup: resolve + validate the path, spawn `carbonyl`
+    /// as the focused pane's preview child, and start showing it. On any
+    /// failure (blank/nonexistent path, or carbonyl not on PATH) the popup is
+    /// left open with `html_preview_error` set so the user can correct it — no
+    /// process is spawned and the agent's own PTY is never touched.
+    ///
+    /// The carbonyl child runs in the resolved file's parent directory, so a
+    /// page's relative asset references (`./style.css`, images) resolve the way
+    /// they would if opened from that folder.
+    pub fn confirm_html_preview(&mut self) {
+        let Some(raw) = self.html_preview_input.clone() else {
+            return;
+        };
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            self.html_preview_error = Some("enter a path to an .html file".to_string());
+            return;
+        }
+        let path = expand_tilde(trimmed);
+        let resolved = path.canonicalize().unwrap_or(path);
+        if !resolved.is_file() {
+            self.html_preview_error = Some(format!("not a file: {}", resolved.display()));
+            return;
+        }
+        let Some(id) = self.focused_pane().map(str::to_string) else {
+            self.html_preview_error = Some("no focused pane to preview into".to_string());
+            return;
+        };
+        let (rows, cols) = self
+            .pane_sizes
+            .get(&id)
+            .copied()
+            .unwrap_or((self.pty_rows, self.pty_cols));
+        let cwd = resolved
+            .parent()
+            .map(std::path::Path::to_path_buf)
+            .unwrap_or_default();
+        let command = mindplayer_core::Command {
+            program: "carbonyl".to_string(),
+            args: vec![resolved.display().to_string()],
+            cwd,
+        };
+        // A `preview:`-prefixed id keeps carbonyl's stderr log distinct from the
+        // agent's own log for the same session id.
+        match PtySession::spawn(&command, &format!("preview:{id}"), rows, cols) {
+            Ok(pty) => {
+                self.preview_ptys.insert(id.clone(), pty);
+                self.previewing.insert(id.clone());
+                self.html_preview_input = None;
+                self.html_preview_error = None;
+                self.selection = None;
+                self.status = format!("previewing {} in {}", resolved.display(), short(&id));
+            }
+            Err(e) => {
+                self.html_preview_error = Some(format!("failed to start carbonyl: {e}"));
+            }
+        }
+    }
+
     // --- scope + scanning -------------------------------------------------
 }
 

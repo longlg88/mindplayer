@@ -239,6 +239,22 @@ pub struct App {
     /// All concurrently-running (or recently-ended) sessions, keyed by id, so
     /// switching between sessions keeps the others running in the background.
     pub ptys: HashMap<String, PtySession>,
+    /// One `carbonyl` (HTML-preview) child per session id that has an active —
+    /// possibly backgrounded — preview. An entry can outlive being *shown*: a
+    /// session is in here while its carbonyl process is alive even after the
+    /// user toggles back to the agent view (so re-showing needs no re-spawn).
+    pub preview_ptys: HashMap<String, PtySession>,
+    /// Session ids whose pane should currently RENDER AND RECEIVE INPUT from
+    /// `preview_ptys` instead of `ptys`. Membership here — not mere presence in
+    /// `preview_ptys` — is what "currently showing the preview" means.
+    pub previewing: HashSet<String>,
+    /// When `Some`, the HTML-preview path-input popup is open and holds the
+    /// path typed so far (mirrors `dir_input`).
+    pub html_preview_input: Option<String>,
+    /// Inline error shown inside the still-open preview popup when the last
+    /// submitted path didn't resolve to a file (or carbonyl failed to spawn);
+    /// cleared whenever the popup is freshly opened or the input changes.
+    pub html_preview_error: Option<String>,
     /// The focused live pane id. Multi-pane state lives in `panes`/`focused`;
     /// this keeps legacy single-pane routing paths small.
     pub active: Option<String>,
@@ -428,6 +444,10 @@ impl App {
             multi_select: false,
             marked: HashSet::new(),
             ptys: HashMap::new(),
+            preview_ptys: HashMap::new(),
+            previewing: HashSet::new(),
+            html_preview_input: None,
+            html_preview_error: None,
             active: None,
             panes: Vec::new(),
             focused: 0,
@@ -529,6 +549,11 @@ impl App {
         for (_, mut pty) in self.ptys.drain() {
             pty.kill();
         }
+        // Preview (carbonyl) children must never outlive the app either.
+        for (_, mut pty) in self.preview_ptys.drain() {
+            pty.kill();
+        }
+        self.previewing.clear();
         self.should_quit = true;
     }
 

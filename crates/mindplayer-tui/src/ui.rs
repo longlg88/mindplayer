@@ -31,6 +31,11 @@ const IN_PROGRESS: Color = Color::Rgb(201, 166, 255);
 // (245, 180, 90) — zoom is a view mode, not a session status, and the two can
 // legitimately show on the same pane at once (a zoomed, blocked session).
 const ZOOM: Color = Color::Rgb(235, 160, 70);
+// A bright cyan for the HTML-preview badge, distinct from ACCENT (soft blue),
+// ZOOM (gold), DIM (gray), and every status color (amber/green/teal/rose).
+const PREVIEW: Color = Color::Rgb(82, 196, 214);
+// Rose used for the inline error line inside the preview popup.
+const ERROR: Color = Color::Rgb(245, 130, 120);
 const SPINNER: [&str; 8] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧"];
 
 fn agent_tag(agent: Agent) -> (&'static str, Color) {
@@ -372,6 +377,8 @@ fn main_view(f: &mut Frame, app: &mut App) {
         }
     } else if let Some(path) = &app.dir_input {
         dir_input_popup(f, path);
+    } else if let Some(path) = &app.html_preview_input {
+        html_preview_popup(f, path, app.html_preview_error.as_deref());
     } else if let Some(id) = &app.catchup_confirm {
         let title = app
             .all_sessions
@@ -693,6 +700,44 @@ fn dir_input_popup(f: &mut Frame, path: &str) {
             Style::default().fg(DIM),
         )),
     ];
+    f.render_widget(Paragraph::new(lines).block(block), area);
+}
+
+/// Path-input popup for spawning an HTML preview (`carbonyl`). Mirrors
+/// `dir_input_popup`, but shows an inline error line inside the SAME still-open
+/// popup when the last-submitted path didn't resolve — so the user can correct
+/// it in place instead of losing the popup to a bottom-bar status message.
+fn html_preview_popup(f: &mut Frame, path: &str, error: Option<&str>) {
+    let area = centered(f.area(), 70, 8);
+    f.render_widget(Clear, area);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(PREVIEW))
+        .title(" Preview HTML in browser ");
+    let mut lines = vec![
+        Line::from(Span::styled(
+            "Path to a local .html file (~ allowed):",
+            Style::default().fg(DIM),
+        )),
+        Line::from(vec![
+            Span::raw(path.to_string()),
+            Span::styled("▏", Style::default().fg(PREVIEW)),
+        ]),
+    ];
+    // Third row: the inline error when present, otherwise a blank spacer so the
+    // popup's height and the hint's position stay stable.
+    if let Some(err) = error {
+        lines.push(Line::from(Span::styled(
+            format!("⚠ {err}"),
+            Style::default().fg(ERROR),
+        )));
+    } else {
+        lines.push(Line::from(""));
+    }
+    lines.push(Line::from(Span::styled(
+        "enter preview   esc cancel",
+        Style::default().fg(DIM),
+    )));
     f.render_widget(Paragraph::new(lines).block(block), area);
 }
 
@@ -1244,6 +1289,20 @@ fn render_pane(
         } else {
             Span::raw("")
         },
+        // Preview badge — shown alongside (not instead of) the zoom badge when a
+        // pane is both zoomed and previewing. The border stays zoom-gold in that
+        // case (below); this badge always shows regardless of border color.
+        if app.previewing.contains(sid) {
+            Span::styled(
+                " 🌐 PREVIEW ",
+                Style::default()
+                    .fg(Color::Rgb(15, 17, 22))
+                    .bg(PREVIEW)
+                    .add_modifier(Modifier::BOLD),
+            )
+        } else {
+            Span::raw("")
+        },
         if ended {
             Span::styled("(ended) ", Style::default().fg(DIM))
         } else {
@@ -1286,11 +1345,16 @@ fn render_pane(
     }
 
     let selection = app.selection_for_pane(sid);
-    if let Some(pty) = app.ptys.get(sid) {
+    // While previewing, the pane's contents come from the carbonyl process, not
+    // the (still-running, untouched) agent PTY. `ended` tracks the agent, so a
+    // live preview shows its cursor even if the backgrounded agent has ended.
+    let previewing = app.previewing.contains(sid);
+    let content_ended = ended && !previewing;
+    if let Some(pty) = app.displayed_pty(sid) {
         if let Ok(parser) = pty.parser().lock() {
             let screen = parser.screen();
             f.render_widget(TerminalView::new(screen).with_selection(selection), inner);
-            if pane_focused && !ended && !screen.hide_cursor() {
+            if pane_focused && !content_ended && !screen.hide_cursor() {
                 let (row, col) = screen.cursor_position();
                 let cx = inner.x + col.min(inner.width.saturating_sub(1));
                 let cy = inner.y + row.min(inner.height.saturating_sub(1));
@@ -1454,6 +1518,10 @@ fn help_popup(f: &mut Frame) {
         item(
             "ctrl-t",
             "transition report: topic/RUNBOOK/files -> review the assembled prompt -> enter sends, e edits first",
+        ),
+        item(
+            "ctrl-p",
+            "preview a local .html file in the pane (carbonyl); press again to toggle between the preview and the agent",
         ),
         item("ctrl-j", "insert newline in text modals"),
         item("shift/alt-enter", "insert newline in text modals"),

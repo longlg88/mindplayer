@@ -606,6 +606,23 @@ fn handle_main_key(app: &mut App, key: KeyEvent) {
         return;
     }
 
+    // HTML-preview path input: opened by Ctrl-P from a live pane. Checked here,
+    // before `match app.focus`, so its keystrokes don't fall through to the raw
+    // pty-forwarding path. Enter validates + spawns carbonyl (or re-shows the
+    // inline error); Esc cancels.
+    if app.html_preview_input.is_some() {
+        match key.code {
+            KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                app.html_preview_input_push(c)
+            }
+            KeyCode::Backspace => app.html_preview_input_backspace(),
+            KeyCode::Enter => app.confirm_html_preview(),
+            KeyCode::Esc => app.cancel_html_preview(),
+            _ => {}
+        }
+        return;
+    }
+
     // Transition-report input: opened by Ctrl-T from a live pane (see the
     // Focus::Terminal chord handling below) — checked here, before that
     // match, so its keystrokes never fall through to the raw pty-forwarding
@@ -728,6 +745,10 @@ fn handle_main_key(app: &mut App, key: KeyEvent) {
                     }
                     KeyCode::Char('t') | KeyCode::Char('ㅅ') => {
                         app.begin_transition_report();
+                        return;
+                    }
+                    KeyCode::Char('p') | KeyCode::Char('ㅔ') => {
+                        app.toggle_html_preview();
                         return;
                     }
                     _ => {}
@@ -1024,6 +1045,34 @@ mod tests {
 
         handle_main_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
         assert!(app.transition_report_input.is_none());
+    }
+
+    #[test]
+    fn ctrl_p_opens_html_preview_popup_and_typing_fills_it_then_esc_cancels() {
+        let mut app = main_app_with_session("s1");
+        app.focus_or_add_pane("s1");
+        app.focus = Focus::Terminal;
+
+        handle_main_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('p'), KeyModifiers::CONTROL),
+        );
+        assert_eq!(
+            app.html_preview_input,
+            Some(String::new()),
+            "Ctrl-P opens the preview path popup"
+        );
+
+        // While the popup is open plain typing fills the path buffer instead of
+        // falling through to the raw pty-forwarding path.
+        handle_main_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE),
+        );
+        assert_eq!(app.html_preview_input.as_deref(), Some("a"));
+
+        handle_main_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(app.html_preview_input.is_none());
     }
 
     #[test]

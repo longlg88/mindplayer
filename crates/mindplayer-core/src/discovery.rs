@@ -864,12 +864,24 @@ fn parse_kiro_file(path: &Path, scope: &Scope) -> Option<Session> {
     // interactive `kiro-cli chat` sessions (verified against real session
     // files: every sampled session — including plainly top-level, casually
     // typed ones — carries this same value), so that field is NOT a reliable
-    // sub-agent signal here. Fall back to the same title heuristic used for
-    // codex/claude instead — verified against a real fan-out (one kiro
-    // session per AWS region from an eks-module-upgrade task) whose titles
-    // all matched `looks_like_subagent_title`, with zero false positives
-    // across every other sampled kiro session title.
-    let is_subagent = looks_like_subagent_title(&title);
+    // sub-agent signal here.
+    //
+    // The title-prefix heuristic below (`looks_like_subagent_title`) was the
+    // original fallback, but it only catches prompt templates already seen —
+    // a fan-out task with new, previously-unseen phrasing slipped straight
+    // through it a second time (verified against a real fan-out batch). kiro-cli
+    // actually does record the real parent-child link:
+    // every sampled fan-out worker's sidecar carries a non-empty
+    // `parent_session_id` pointing at the session that spawned it, while every
+    // sampled genuine top-level session (including ones using the *same* verbs
+    // as a fan-out prompt) has it null. That's the structural, template-proof
+    // signal — check it first; the title heuristic stays only as a fallback
+    // for older kiro-cli versions/sidecars that predate this field.
+    let has_parent_session = v
+        .get("parent_session_id")
+        .and_then(Value::as_str)
+        .is_some_and(|s| !s.trim().is_empty());
+    let is_subagent = has_parent_session || looks_like_subagent_title(&title);
 
     // Kiro records no cumulative token counts (verified: the .jsonl has no token
     // fields and input/output_token_count stay 0), but it does report the

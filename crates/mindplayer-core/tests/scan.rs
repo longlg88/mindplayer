@@ -79,6 +79,19 @@ fn fixture() -> (tempfile::TempDir, ScanConfig) {
             r#"{"session_id":"aaaa1111-0000-0000-0000-000000000000","cwd":"/other","created_at":"2026-01-04T07:00:00Z","updated_at":"2026-01-04T07:01:00Z","title":null,"session_created_reason":"subagent"}"#,
         ],
     );
+    // A third kiro session: a fan-out worker whose title matches no known
+    // prompt-prefix heuristic (a made-up template, not "You are "/"Read-only"/
+    // etc.) — only `parent_session_id` marks it. Proves the structural signal
+    // catches fan-outs the text heuristic has never seen, instead of needing a
+    // new prefix added every time a new workflow's phrasing shows up.
+    write(
+        &kiro_dir
+            .join("cli")
+            .join("bbbb2222-0000-0000-0000-000000000000.json"),
+        &[
+            r#"{"session_id":"bbbb2222-0000-0000-0000-000000000000","cwd":"/other","created_at":"2026-01-04T07:10:00Z","updated_at":"2026-01-04T07:11:00Z","title":"summarize the notes in /work/scratch","session_created_reason":"subagent","parent_session_id":"aaaa1111-0000-0000-0000-000000000000"}"#,
+        ],
+    );
 
     (
         dir,
@@ -94,7 +107,7 @@ fn fixture() -> (tempfile::TempDir, ScanConfig) {
 fn global_scope_finds_all_three() {
     let (_d, cfg) = fixture();
     let sessions = scan(&Scope::Global, &cfg);
-    assert_eq!(sessions.len(), 5, "expected 2 codex + 1 claude + 2 kiro");
+    assert_eq!(sessions.len(), 6, "expected 2 codex + 1 claude + 3 kiro");
 }
 
 #[test]
@@ -124,6 +137,21 @@ fn kiro_sessions_parsed_from_sidecar() {
     );
     assert_eq!(other.title, "(kiro session)");
     assert_eq!(other.context_pct, None, "no context % when not reported");
+}
+
+#[test]
+fn kiro_fan_out_worker_is_hidden_by_parent_session_id_even_with_a_novel_title() {
+    let (_d, cfg) = fixture();
+    let sessions = scan(&Scope::Global, &cfg);
+    let worker = sessions
+        .iter()
+        .find(|s| s.id == "bbbb2222-0000-0000-0000-000000000000")
+        .expect("fan-out worker session discovered");
+    assert!(
+        worker.is_subagent,
+        "a non-empty parent_session_id must mark a session as a sub-agent \
+         even when its title matches no known prompt-prefix heuristic"
+    );
 }
 
 #[test]

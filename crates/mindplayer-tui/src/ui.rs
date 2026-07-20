@@ -15,7 +15,7 @@ use ratatui::widgets::{
     Block, BorderType, Borders, Clear, Gauge, List, ListItem, ListState, Paragraph, Sparkline, Wrap,
 };
 use ratatui::Frame;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 const ACCENT: Color = Color::Rgb(126, 162, 247);
 const DIM: Color = Color::Rgb(140, 146, 158);
@@ -377,6 +377,8 @@ fn main_view(f: &mut Frame, app: &mut App) {
         }
     } else if let Some(path) = &app.dir_input {
         dir_input_popup(f, path);
+    } else if let Some(choice) = app.html_preview_picker {
+        html_preview_picker_popup(f, choice, app.html_candidates_for_focused());
     } else if let Some(path) = &app.html_preview_input {
         html_preview_popup(f, path, app.html_preview_error.as_deref());
     } else if let Some(id) = &app.catchup_confirm {
@@ -736,6 +738,61 @@ fn html_preview_popup(f: &mut Frame, path: &str, error: Option<&str>) {
     }
     lines.push(Line::from(Span::styled(
         "enter preview   esc cancel",
+        Style::default().fg(DIM),
+    )));
+    f.render_widget(Paragraph::new(lines).block(block), area);
+}
+
+/// Ranked picker of detected `.html` candidates (most-recent-first) for the
+/// focused pane — what Ctrl-P opens instead of the blank path popup when the
+/// passive poll has found files. Styled like `new_session_popup`/`dir_input_popup`
+/// (centered box, PREVIEW-cyan border, the selected row marked with `▶` and
+/// highlighted). Each row shows the filename plus its parent directory so
+/// same-named files in different subdirs stay distinguishable. The hint line
+/// documents `tab` as the escape hatch to the free-text path popup.
+fn html_preview_picker_popup(f: &mut Frame, choice: usize, candidates: &[PathBuf]) {
+    const MAX_ROWS: usize = 10;
+    let shown = candidates.len().min(MAX_ROWS);
+    // header + rows (+ overflow line) + blank + hint, all inside the borders.
+    let overflow = usize::from(candidates.len() > MAX_ROWS);
+    let height = (shown + overflow + 4).max(5) as u16;
+    let area = centered(f.area(), 84, height);
+    f.render_widget(Clear, area);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(PREVIEW))
+        .title(" Preview a detected .html file ");
+    let mut lines = vec![Line::from(Span::styled(
+        "Recently edited .html files in this session's directory:",
+        Style::default().fg(DIM),
+    ))];
+    for (i, path) in candidates.iter().take(MAX_ROWS).enumerate() {
+        let selected = i == choice;
+        let marker = if selected { "▶ " } else { "  " };
+        let name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("(unnamed)");
+        let parent = path.parent().and_then(Path::to_str).unwrap_or("");
+        let name_style = if selected {
+            Style::default().fg(PREVIEW).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default()
+        };
+        lines.push(Line::from(vec![
+            Span::styled(format!("{marker}{name}"), name_style),
+            Span::styled(format!("  {parent}"), Style::default().fg(DIM)),
+        ]));
+    }
+    if overflow == 1 {
+        lines.push(Line::from(Span::styled(
+            format!("  … +{} more", candidates.len() - MAX_ROWS),
+            Style::default().fg(DIM),
+        )));
+    }
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "enter preview   ↑↓ choose   tab type a path   esc cancel",
         Style::default().fg(DIM),
     )));
     f.render_widget(Paragraph::new(lines).block(block), area);
@@ -1303,6 +1360,22 @@ fn render_pane(
         } else {
             Span::raw("")
         },
+        // Passive "N new" badge: shown only when this pane has detected,
+        // not-yet-previewed `.html` candidates AND isn't currently previewing
+        // (the solid PREVIEW chip already covers that state). Rendered as
+        // PREVIEW-cyan text (not a filled chip) so it reads as a quieter,
+        // lower-emphasis hint than the PREVIEW badge above.
+        if !app.previewing.contains(sid) {
+            match app.html_candidates.get(sid).map(Vec::len) {
+                Some(n) if n > 0 => Span::styled(
+                    format!(" 🌐 {n} new "),
+                    Style::default().fg(PREVIEW).add_modifier(Modifier::BOLD),
+                ),
+                _ => Span::raw(""),
+            }
+        } else {
+            Span::raw("")
+        },
         if ended {
             Span::styled("(ended) ", Style::default().fg(DIM))
         } else {
@@ -1521,7 +1594,7 @@ fn help_popup(f: &mut Frame) {
         ),
         item(
             "ctrl-p",
-            "preview a local .html file in the pane (carbonyl); press again to toggle between the preview and the agent",
+            "preview a local .html file in the pane (carbonyl): pick from detected files (badge shows the count), or tab to type a path; press again to toggle between the preview and the agent",
         ),
         item("ctrl-j", "insert newline in text modals"),
         item("shift/alt-enter", "insert newline in text modals"),

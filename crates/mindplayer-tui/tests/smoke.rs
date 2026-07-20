@@ -416,12 +416,23 @@ fn ctrl_p_previews_html_then_toggles_between_preview_and_agent() {
     mp.send(AGENT_TOKEN.as_bytes());
     mp.expect(AGENT_TOKEN, STEP_TIMEOUT, "agent echoed its token");
 
-    // Ctrl-P opens the preview path popup.
+    // The session's cwd holds a real `.html` fixture, so the periodic candidate
+    // poll surfaces a "N new" badge and Ctrl-P now opens the detected-file
+    // PICKER, not the blank path popup. Wait for the badge so the next Ctrl-P is
+    // deterministic, then Tab into the free-text popup this scenario drives by a
+    // typed path.
+    mp.expect("1 new", STEP_TIMEOUT, "pane shows the detected-html badge");
     mp.send(b"\x10");
+    mp.expect(
+        "Preview a detected",
+        STEP_TIMEOUT,
+        "Ctrl-P opened the candidate picker",
+    );
+    mp.send(b"\t"); // Tab: escape hatch to the free-text path popup.
     mp.expect(
         "Preview HTML in browser",
         STEP_TIMEOUT,
-        "Ctrl-P opened the preview popup",
+        "Tab switched to the free-text path popup",
     );
 
     // Type the fixture path and confirm — the fake carbonyl spawns and renders.
@@ -470,5 +481,68 @@ fn ctrl_p_previews_html_then_toggles_between_preview_and_agent() {
         "re-showing an existing preview must not re-open the path popup.\n\
          ---- screen ----\n{}\n----------------",
         mp.screen()
+    );
+}
+
+/// Scenario 4 — the passive HTML-candidate badge + Ctrl-P picker (no typing).
+///
+/// The seeded session's cwd contains a real `.html` fixture. Once the periodic
+/// candidate poll runs, the live pane shows a "N new" badge; Ctrl-P then opens
+/// the ranked PICKER of detected files (NOT the blank path popup). Selecting the
+/// candidate with Enter spawns the fake carbonyl against that exact file, whose
+/// banner renders in the pane — the whole point of the feature: preview a file
+/// the agent just wrote without typing a path.
+#[test]
+fn ctrl_p_opens_candidate_picker_and_previews_the_selected_file() {
+    let mut mp = Mp::launch();
+    mp.start_into_main_list();
+
+    // Resume a session into a live pane.
+    mp.send(b"\r");
+    mp.expect(PANE_READY, STEP_TIMEOUT, "agent pane came up");
+
+    // The candidate poll detects scope/preview.html and the pane grows a badge.
+    mp.expect(
+        "1 new",
+        STEP_TIMEOUT,
+        "pane shows the '1 new' detected-html badge",
+    );
+
+    // Ctrl-P opens the detected-file PICKER, not the blank path popup.
+    mp.send(b"\x10");
+    mp.expect(
+        "Preview a detected",
+        STEP_TIMEOUT,
+        "Ctrl-P opened the candidate picker",
+    );
+    assert!(
+        !mp.screen().contains("Preview HTML in browser"),
+        "with candidates present Ctrl-P must open the picker, not the blank path popup.\n\
+         ---- screen ----\n{}\n----------------",
+        mp.screen()
+    );
+    // The fixture's filename is listed as a selectable candidate.
+    mp.expect(
+        "preview.html",
+        STEP_TIMEOUT,
+        "the detected fixture is listed in the picker",
+    );
+
+    // Enter previews the selected candidate — the fake carbonyl spawns against
+    // that exact path and its banner renders in the pane.
+    mp.send(b"\r");
+    mp.expect(
+        CARBONYL_RENDERED,
+        STEP_TIMEOUT,
+        "selecting the candidate spawned carbonyl and it rendered in the pane",
+    );
+
+    // Input now drives the preview process; its echo proves the pane forwards to
+    // carbonyl (spawned with the picked path), not the agent.
+    mp.send(PREVIEW_TOKEN.as_bytes());
+    mp.expect(
+        PREVIEW_TOKEN,
+        STEP_TIMEOUT,
+        "the previewed process received and echoed typed input",
     );
 }

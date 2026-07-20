@@ -1,4 +1,5 @@
 use super::*;
+use std::path::Path;
 
 impl App {
     /// Picker -> label input: remember the agent, start an empty label buffer.
@@ -223,12 +224,15 @@ impl App {
 
     // --- HTML preview (carbonyl) ------------------------------------------
 
-    /// `Ctrl-P` from a live pane. Three behaviors, keyed off the focused pane:
+    /// `Ctrl-P` from a live pane. Four behaviors, keyed off the focused pane:
     /// - already showing its preview → switch back to the agent view (the
     ///   carbonyl process is left running in the background, not killed);
     /// - a live preview process exists but is hidden → re-show it instantly
     ///   (no re-spawn, no popup);
-    /// - otherwise → open the path-input popup to spawn a fresh carbonyl.
+    /// - detected `.html` candidates exist for this pane → open the ranked
+    ///   picker (most-recent-first) instead of a blank field;
+    /// - otherwise → open the free-text path-input popup to spawn a fresh
+    ///   carbonyl.
     pub fn toggle_html_preview(&mut self) {
         let Some(id) = self.focused_pane().map(str::to_string) else {
             self.status = "html preview needs a live pane".to_string();
@@ -255,6 +259,16 @@ impl App {
         }
         if let Some(mut dead) = self.preview_ptys.remove(&id) {
             dead.kill();
+        }
+        // Prefer the ranked picker when the passive poll has detected candidates
+        // for this pane; the blank free-text popup is the fallback (and stays
+        // reachable from the picker via its escape-hatch key).
+        if self.html_candidates.get(&id).is_some_and(|c| !c.is_empty()) {
+            self.html_preview_picker = Some(0);
+            self.html_preview_error = None;
+            self.status =
+                "html preview: pick a detected .html file (tab to type a path)".to_string();
+            return;
         }
         self.html_preview_input = Some(String::new());
         self.html_preview_error = None;
@@ -309,15 +323,91 @@ impl App {
             self.html_preview_error = Some("no focused pane to preview into".to_string());
             return;
         };
+        match self.start_html_preview(&id, &resolved) {
+            Ok(()) => {
+                self.mark_html_seen(&id, &resolved);
+                self.html_preview_input = None;
+                self.html_preview_error = None;
+            }
+            Err(e) => {
+                self.html_preview_error = Some(e);
+            }
+        }
+    }
+
+    /// Confirm the Ctrl-P candidate picker: spawn `carbonyl` for the selected
+    /// detected `.html` file exactly as a manually-typed path would (shared
+    /// [`Self::start_html_preview`]), and mark it seen so it drops out of the
+    /// candidate list until it's edited again. If the file vanished since it was
+    /// detected, or the spawn fails, fall back to the free-text popup with an
+    /// inline error rather than silently doing nothing.
+    pub fn confirm_html_preview_pick(&mut self) {
+        let Some(choice) = self.html_preview_picker.take() else {
+            return;
+        };
+        let Some(id) = self.focused_pane().map(str::to_string) else {
+            return;
+        };
+        let Some(path) = self
+            .html_candidates
+            .get(&id)
+            .and_then(|c| c.get(choice))
+            .cloned()
+        else {
+            self.status = "html preview: that candidate is gone".to_string();
+            return;
+        };
+        // The file may have been deleted since detection — validate before spawn.
+        let resolved = path.canonicalize().unwrap_or_else(|_| path.clone());
+        if !resolved.is_file() {
+            self.mark_html_seen(&id, &path);
+            self.html_preview_input = Some(String::new());
+            self.html_preview_error = Some(format!("not a file: {}", resolved.display()));
+            return;
+        }
+        match self.start_html_preview(&id, &resolved) {
+            Ok(()) => {
+                // Suppress by BOTH the candidate path (what a future scan yields)
+                // and the resolved path, so it can't reappear until re-edited.
+                self.mark_html_seen(&id, &path);
+                self.mark_html_seen(&id, &resolved);
+            }
+            Err(e) => {
+                self.html_preview_input = Some(String::new());
+                self.html_preview_error = Some(e);
+            }
+        }
+    }
+
+    /// Leave the candidate picker without spawning anything.
+    pub fn cancel_html_preview_picker(&mut self) {
+        self.html_preview_picker = None;
+    }
+
+    /// Escape hatch from the picker to the free-text path popup, for previewing
+    /// a file outside what was detected.
+    pub fn html_preview_picker_to_input(&mut self) {
+        self.html_preview_picker = None;
+        self.html_preview_input = Some(String::new());
+        self.html_preview_error = None;
+        self.status = "html preview: type a path to a local .html file".to_string();
+    }
+
+    /// Spawn `carbonyl` for `resolved` as pane `id`'s preview child and start
+    /// showing it. Shared by the manual-path confirm and the candidate-picker
+    /// confirm so the spawn/show logic lives in one place. Returns `Err(message)`
+    /// if the spawn failed; on failure no preview state is touched.
+    ///
+    /// The carbonyl child runs in the resolved file's parent directory, so a
+    /// page's relative asset references (`./style.css`, images) resolve the way
+    /// they would if opened from that folder.
+    fn start_html_preview(&mut self, id: &str, resolved: &Path) -> Result<(), String> {
         let (rows, cols) = self
             .pane_sizes
-            .get(&id)
+            .get(id)
             .copied()
             .unwrap_or((self.pty_rows, self.pty_cols));
-        let cwd = resolved
-            .parent()
-            .map(std::path::Path::to_path_buf)
-            .unwrap_or_default();
+        let cwd = resolved.parent().map(Path::to_path_buf).unwrap_or_default();
         let command = mindplayer_core::Command {
             program: "carbonyl".to_string(),
             args: vec![resolved.display().to_string()],
@@ -327,15 +417,30 @@ impl App {
         // agent's own log for the same session id.
         match PtySession::spawn(&command, &format!("preview:{id}"), rows, cols) {
             Ok(pty) => {
-                self.preview_ptys.insert(id.clone(), pty);
-                self.previewing.insert(id.clone());
-                self.html_preview_input = None;
-                self.html_preview_error = None;
+                self.preview_ptys.insert(id.to_string(), pty);
+                self.previewing.insert(id.to_string());
                 self.selection = None;
-                self.status = format!("previewing {} in {}", resolved.display(), short(&id));
+                self.status = format!("previewing {} in {}", resolved.display(), short(id));
+                Ok(())
             }
-            Err(e) => {
-                self.html_preview_error = Some(format!("failed to start carbonyl: {e}"));
+            Err(e) => Err(format!("failed to start carbonyl: {e}")),
+        }
+    }
+
+    /// Record `path`'s current mtime under pane `id` in [`Self::html_seen`] so it
+    /// stays out of future candidate lists until it's edited again, and drop it
+    /// from the current list right away.
+    fn mark_html_seen(&mut self, id: &str, path: &Path) {
+        if let Ok(mtime) = std::fs::metadata(path).and_then(|m| m.modified()) {
+            self.html_seen
+                .entry(id.to_string())
+                .or_default()
+                .insert(path.to_path_buf(), mtime);
+        }
+        if let Some(list) = self.html_candidates.get_mut(id) {
+            list.retain(|p| p != path);
+            if list.is_empty() {
+                self.html_candidates.remove(id);
             }
         }
     }

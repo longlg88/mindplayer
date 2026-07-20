@@ -11,7 +11,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 /// Background refresh result for one already-discovered session.
 struct ActivityUpdate {
@@ -255,6 +255,27 @@ pub struct App {
     /// submitted path didn't resolve to a file (or carbonyl failed to spawn);
     /// cleared whenever the popup is freshly opened or the input changes.
     pub html_preview_error: Option<String>,
+    /// Per-session id, the currently-known unpreviewed `.html` candidates found
+    /// in that session's cwd, ranked most-recently-modified first. Refreshed by
+    /// [`Self::poll_html_candidates`]; an absent/empty entry means no candidates.
+    /// Drives both the passive per-pane "🌐 N new" badge and the Ctrl-P picker.
+    pub html_candidates: HashMap<String, Vec<PathBuf>>,
+    /// Per-session id, paths already offered/previewed together with the mtime
+    /// they had when last seen. A candidate is suppressed while its current
+    /// mtime is `<=` the seen mtime, so a file re-edited after being
+    /// dismissed/previewed (its mtime advancing) reappears as a fresh candidate.
+    /// A plain set can't express "seen at time T", which the reappear-on-edit
+    /// rule (and its unit test) require — hence the nested mtime map.
+    pub html_seen: HashMap<String, HashMap<PathBuf, SystemTime>>,
+    /// When the next `.html`-candidate poll is due. Gates
+    /// [`Self::poll_html_candidates`] to an interval (a few seconds) instead of
+    /// every `run()` tick, so the periodic directory walk stays cheap. `None`
+    /// means "run on the next poll".
+    pub html_candidates_due: Option<Instant>,
+    /// When `Some`, the Ctrl-P candidate picker is open; the value is the
+    /// selected index into the focused pane's `html_candidates` list. Mirrors
+    /// `new_picker`/`handoff_picker`.
+    pub html_preview_picker: Option<usize>,
     /// The focused live pane id. Multi-pane state lives in `panes`/`focused`;
     /// this keeps legacy single-pane routing paths small.
     pub active: Option<String>,
@@ -448,6 +469,10 @@ impl App {
             previewing: HashSet::new(),
             html_preview_input: None,
             html_preview_error: None,
+            html_candidates: HashMap::new(),
+            html_seen: HashMap::new(),
+            html_candidates_due: None,
+            html_preview_picker: None,
             active: None,
             panes: Vec::new(),
             focused: 0,

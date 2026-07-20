@@ -50,6 +50,9 @@ const TYPED_TOKEN: &str = "zqxj";
 /// Distinctive token typed into the agent pane, so the open-in-browser
 /// scenarios can assert the pane still shows the agent (never a preview) after
 /// Ctrl-P fires — the browser opens in a separate window, never in the pane.
+/// Only used by those macOS-only scenarios (see their cfg note) — dead code
+/// on any other target.
+#[cfg(target_os = "macos")]
 const AGENT_TOKEN: &str = "agenttok";
 
 // Per-scenario overall bounds. A genuine hang trips these and fails the test
@@ -107,10 +110,15 @@ struct Mp {
     _master: Box<dyn MasterPty + Send>,
     _tmp: PathBuf,
     /// Absolute path to a real `.html` fixture the open-in-browser scenarios can
-    /// type into the Ctrl-P popup / select from the picker.
+    /// type into the Ctrl-P popup / select from the picker. Only read by the
+    /// macOS-only open-in-browser tests (`open_in_browser` itself is
+    /// `#[cfg(target_os = "macos")]`), so this is too — otherwise it's dead code
+    /// on any other target.
+    #[cfg(target_os = "macos")]
     html_fixture: PathBuf,
     /// File the fake `open` on PATH appends its argv to, so a test can assert
-    /// which path the browser launch was invoked with.
+    /// which path the browser launch was invoked with. See the cfg note above.
+    #[cfg(target_os = "macos")]
     open_marker: PathBuf,
 }
 
@@ -158,7 +166,10 @@ impl Mp {
         // argv to a marker file so a test can assert exactly what path it was
         // invoked with, instead of actually opening a real browser. Exits at
         // once — it's a fire-and-forget one-shot, exactly like the real thing.
+        // Only meaningful on macOS (see the field-level cfg note above).
+        #[cfg(target_os = "macos")]
         let open_marker = tmp.join("open-marker.txt");
+        #[cfg(target_os = "macos")]
         write_script(
             &bindir.join("open"),
             &format!(
@@ -168,8 +179,11 @@ impl Mp {
         );
 
         // A real .html file to open (contents don't matter — only its existence
-        // must pass `is_file()` validation before the launch).
+        // must pass `is_file()` validation before the launch). Only meaningful
+        // on macOS (see the field-level cfg note above).
+        #[cfg(target_os = "macos")]
         let html_fixture = scope.join("preview.html");
+        #[cfg(target_os = "macos")]
         std::fs::write(&html_fixture, "<html><body>hi</body></html>\n")
             .expect("write html fixture");
 
@@ -230,18 +244,22 @@ impl Mp {
             child,
             _master: pair.master,
             _tmp: tmp,
+            #[cfg(target_os = "macos")]
             html_fixture,
+            #[cfg(target_os = "macos")]
             open_marker,
         }
     }
 
     /// Read the fake-`open` marker file (empty string if it hasn't been written
     /// yet), so a test can assert what path the browser launch received.
+    #[cfg(target_os = "macos")]
     fn open_marker_contents(&self) -> String {
         std::fs::read_to_string(&self.open_marker).unwrap_or_default()
     }
 
     /// Poll until the fake `open` marker contains `needle` or `within` elapses.
+    #[cfg(target_os = "macos")]
     fn wait_for_open(&self, needle: &str, within: Duration) -> bool {
         let deadline = Instant::now() + within;
         loop {
@@ -424,7 +442,14 @@ fn zoom_left_on_does_not_hide_a_multi_launch() {
 /// fake `open` marker — the whole point of the feature: open a file the agent
 /// just wrote without typing a path. The pane keeps showing the agent the whole
 /// time (the browser opens in a separate window, never in the pane).
+// `open_in_browser` is `#[cfg(target_os = "macos")]`-only (see modals.rs) — on
+// any other OS it returns an error without ever invoking a command, so a fake
+// `open` on PATH would never be called and this test would hang/fail waiting
+// for a marker that's never written. CI's fmt/clippy/test gate runs on
+// ubuntu-latest, so this genuinely never executes there — that's correct for
+// a macOS-only feature, not a gap.
 #[test]
+#[cfg(target_os = "macos")]
 fn ctrl_p_picker_opens_selected_file_in_the_browser() {
     let mut mp = Mp::launch();
     mp.start_into_main_list();
@@ -495,7 +520,10 @@ fn ctrl_p_picker_opens_selected_file_in_the_browser() {
 /// fixture's absolute path, and confirms with Enter. `open` is then invoked with
 /// the resolved path — asserted via the fake `open` marker. Exercises the same
 /// confirm path a no-candidates blank popup would take.
+// See the cfg comment on `ctrl_p_picker_opens_selected_file_in_the_browser`
+// above — `open_in_browser` is macOS-only, so this is too.
 #[test]
+#[cfg(target_os = "macos")]
 fn ctrl_p_typed_path_opens_in_the_browser() {
     let mut mp = Mp::launch();
     mp.start_into_main_list();

@@ -222,44 +222,19 @@ impl App {
         self.start_bg_rescan();
     }
 
-    // --- HTML preview (carbonyl) ------------------------------------------
+    // --- open .html in the browser ----------------------------------------
 
-    /// `Ctrl-P` from a live pane. Four behaviors, keyed off the focused pane:
-    /// - already showing its preview → switch back to the agent view (the
-    ///   carbonyl process is left running in the background, not killed);
-    /// - a live preview process exists but is hidden → re-show it instantly
-    ///   (no re-spawn, no popup);
+    /// `Ctrl-P` from a live pane: help the user find an `.html` file and open it
+    /// in the real browser (a separate app window — the agent's own pane is
+    /// never disturbed). Two behaviors, keyed off the focused pane:
     /// - detected `.html` candidates exist for this pane → open the ranked
     ///   picker (most-recent-first) instead of a blank field;
-    /// - otherwise → open the free-text path-input popup to spawn a fresh
-    ///   carbonyl.
+    /// - otherwise → open the free-text path-input popup to type a path.
     pub fn toggle_html_preview(&mut self) {
         let Some(id) = self.focused_pane().map(str::to_string) else {
-            self.status = "html preview needs a live pane".to_string();
+            self.status = "open in browser needs a live pane".to_string();
             return;
         };
-        if self.previewing.remove(&id) {
-            // Hide the preview; the carbonyl process keeps running.
-            self.selection = None;
-            self.status = format!("preview hidden — agent view restored for {}", short(&id));
-            return;
-        }
-        // Re-show an existing preview only if its carbonyl is still alive; a
-        // dead one is dropped so the popup opens to spawn a fresh process.
-        let alive = self
-            .preview_ptys
-            .get_mut(&id)
-            .map(|p| p.is_alive())
-            .unwrap_or(false);
-        if alive {
-            self.previewing.insert(id.clone());
-            self.selection = None;
-            self.status = format!("preview shown for {}", short(&id));
-            return;
-        }
-        if let Some(mut dead) = self.preview_ptys.remove(&id) {
-            dead.kill();
-        }
         // Prefer the ranked picker when the passive poll has detected candidates
         // for this pane; the blank free-text popup is the fallback (and stays
         // reachable from the picker via its escape-hatch key).
@@ -267,12 +242,12 @@ impl App {
             self.html_preview_picker = Some(0);
             self.html_preview_error = None;
             self.status =
-                "html preview: pick a detected .html file (tab to type a path)".to_string();
+                "open in browser: pick a detected .html file (tab to type a path)".to_string();
             return;
         }
         self.html_preview_input = Some(String::new());
         self.html_preview_error = None;
-        self.status = "html preview: type a path to a local .html file".to_string();
+        self.status = "open in browser: type a path to a local .html file".to_string();
     }
 
     pub fn html_preview_input_push(&mut self, c: char) {
@@ -295,15 +270,11 @@ impl App {
         self.html_preview_error = None;
     }
 
-    /// Confirm the preview popup: resolve + validate the path, spawn `carbonyl`
-    /// as the focused pane's preview child, and start showing it. On any
-    /// failure (blank/nonexistent path, or carbonyl not on PATH) the popup is
-    /// left open with `html_preview_error` set so the user can correct it — no
-    /// process is spawned and the agent's own PTY is never touched.
-    ///
-    /// The carbonyl child runs in the resolved file's parent directory, so a
-    /// page's relative asset references (`./style.css`, images) resolve the way
-    /// they would if opened from that folder.
+    /// Confirm the path popup: resolve + validate the path and hand it to the
+    /// real browser (a separate app window). On any failure (blank/nonexistent
+    /// path, or the browser failing to launch) the popup is left open with
+    /// `html_preview_error` set so the user can correct it in place. The pane's
+    /// own agent view is never disturbed.
     pub fn confirm_html_preview(&mut self) {
         let Some(raw) = self.html_preview_input.clone() else {
             return;
@@ -320,14 +291,15 @@ impl App {
             return;
         }
         let Some(id) = self.focused_pane().map(str::to_string) else {
-            self.html_preview_error = Some("no focused pane to preview into".to_string());
+            self.html_preview_error = Some("no focused pane".to_string());
             return;
         };
-        match self.start_html_preview(&id, &resolved) {
+        match open_in_browser(&resolved) {
             Ok(()) => {
                 self.mark_html_seen(&id, &resolved);
                 self.html_preview_input = None;
                 self.html_preview_error = None;
+                self.status = format!("opened {} in the browser", resolved.display());
             }
             Err(e) => {
                 self.html_preview_error = Some(e);
@@ -335,12 +307,11 @@ impl App {
         }
     }
 
-    /// Confirm the Ctrl-P candidate picker: spawn `carbonyl` for the selected
-    /// detected `.html` file exactly as a manually-typed path would (shared
-    /// [`Self::start_html_preview`]), and mark it seen so it drops out of the
-    /// candidate list until it's edited again. If the file vanished since it was
-    /// detected, or the spawn fails, fall back to the free-text popup with an
-    /// inline error rather than silently doing nothing.
+    /// Confirm the Ctrl-P candidate picker: open the selected detected `.html`
+    /// file in the browser exactly as a manually-typed path would, and mark it
+    /// seen so it drops out of the candidate list until it's edited again. If the
+    /// file vanished since it was detected, or the launch fails, fall back to the
+    /// free-text popup with an inline error rather than silently doing nothing.
     pub fn confirm_html_preview_pick(&mut self) {
         let Some(choice) = self.html_preview_picker.take() else {
             return;
@@ -354,10 +325,10 @@ impl App {
             .and_then(|c| c.get(choice))
             .cloned()
         else {
-            self.status = "html preview: that candidate is gone".to_string();
+            self.status = "open in browser: that candidate is gone".to_string();
             return;
         };
-        // The file may have been deleted since detection — validate before spawn.
+        // The file may have been deleted since detection — validate before launch.
         let resolved = path.canonicalize().unwrap_or_else(|_| path.clone());
         if !resolved.is_file() {
             self.mark_html_seen(&id, &path);
@@ -365,12 +336,13 @@ impl App {
             self.html_preview_error = Some(format!("not a file: {}", resolved.display()));
             return;
         }
-        match self.start_html_preview(&id, &resolved) {
+        match open_in_browser(&resolved) {
             Ok(()) => {
                 // Suppress by BOTH the candidate path (what a future scan yields)
                 // and the resolved path, so it can't reappear until re-edited.
                 self.mark_html_seen(&id, &path);
                 self.mark_html_seen(&id, &resolved);
+                self.status = format!("opened {} in the browser", resolved.display());
             }
             Err(e) => {
                 self.html_preview_input = Some(String::new());
@@ -379,52 +351,18 @@ impl App {
         }
     }
 
-    /// Leave the candidate picker without spawning anything.
+    /// Leave the candidate picker without opening anything.
     pub fn cancel_html_preview_picker(&mut self) {
         self.html_preview_picker = None;
     }
 
-    /// Escape hatch from the picker to the free-text path popup, for previewing
-    /// a file outside what was detected.
+    /// Escape hatch from the picker to the free-text path popup, for opening a
+    /// file outside what was detected.
     pub fn html_preview_picker_to_input(&mut self) {
         self.html_preview_picker = None;
         self.html_preview_input = Some(String::new());
         self.html_preview_error = None;
-        self.status = "html preview: type a path to a local .html file".to_string();
-    }
-
-    /// Spawn `carbonyl` for `resolved` as pane `id`'s preview child and start
-    /// showing it. Shared by the manual-path confirm and the candidate-picker
-    /// confirm so the spawn/show logic lives in one place. Returns `Err(message)`
-    /// if the spawn failed; on failure no preview state is touched.
-    ///
-    /// The carbonyl child runs in the resolved file's parent directory, so a
-    /// page's relative asset references (`./style.css`, images) resolve the way
-    /// they would if opened from that folder.
-    fn start_html_preview(&mut self, id: &str, resolved: &Path) -> Result<(), String> {
-        let (rows, cols) = self
-            .pane_sizes
-            .get(id)
-            .copied()
-            .unwrap_or((self.pty_rows, self.pty_cols));
-        let cwd = resolved.parent().map(Path::to_path_buf).unwrap_or_default();
-        let command = mindplayer_core::Command {
-            program: "carbonyl".to_string(),
-            args: vec![resolved.display().to_string()],
-            cwd,
-        };
-        // A `preview:`-prefixed id keeps carbonyl's stderr log distinct from the
-        // agent's own log for the same session id.
-        match PtySession::spawn(&command, &format!("preview:{id}"), rows, cols) {
-            Ok(pty) => {
-                self.preview_ptys.insert(id.to_string(), pty);
-                self.previewing.insert(id.to_string());
-                self.selection = None;
-                self.status = format!("previewing {} in {}", resolved.display(), short(id));
-                Ok(())
-            }
-            Err(e) => Err(format!("failed to start carbonyl: {e}")),
-        }
+        self.status = "open in browser: type a path to a local .html file".to_string();
     }
 
     /// Record `path`'s current mtime under pane `id` in [`Self::html_seen`] so it
@@ -446,6 +384,26 @@ impl App {
     }
 
     // --- scope + scanning -------------------------------------------------
+}
+
+/// Open `path` in the user's browser as a fire-and-forget separate app window,
+/// mapping a spawn failure to a message string. Nothing is waited on or tracked
+/// — the pane's own agent view is never touched.
+///
+/// macOS-only (`open`), consistent with the rest of this feature's scope; a
+/// cross-platform launcher (`xdg-open`/`start`) is deliberately out of scope.
+#[cfg(target_os = "macos")]
+fn open_in_browser(path: &Path) -> Result<(), String> {
+    std::process::Command::new("open")
+        .arg(path)
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| format!("failed to open browser: {e}"))
+}
+
+#[cfg(not(target_os = "macos"))]
+fn open_in_browser(_path: &Path) -> Result<(), String> {
+    Err("opening in the browser is only supported on macOS".to_string())
 }
 
 /// Expand a leading `~` / `~/` to the user's home directory. Other paths are

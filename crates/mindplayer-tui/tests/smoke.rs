@@ -47,15 +47,10 @@ const TITLE_B: &str = "MPTESTBRVO";
 /// any static UI chrome, so seeing it proves the keystrokes reached the child.
 const TYPED_TOKEN: &str = "zqxj";
 
-/// Printed by the fake `carbonyl` (HTML preview) stub when it starts, so a
-/// spawned preview can be waited on by content. It then `exec cat`s, so typed
-/// input is echoed back — exactly as the real carbonyl PTY would render.
-const CARBONYL_RENDERED: &str = "FAKE-CARBONYL-RENDERED";
-
-/// Distinctive tokens typed into the agent pane vs. the preview pane, so the
-/// scenario-3 assertions can tell which one is currently displayed.
+/// Distinctive token typed into the agent pane, so the open-in-browser
+/// scenarios can assert the pane still shows the agent (never a preview) after
+/// Ctrl-P fires — the browser opens in a separate window, never in the pane.
 const AGENT_TOKEN: &str = "agenttok";
-const PREVIEW_TOKEN: &str = "previewtok";
 
 // Per-scenario overall bounds. A genuine hang trips these and fails the test
 // instead of hanging CI forever.
@@ -111,9 +106,12 @@ struct Mp {
     child: Box<dyn portable_pty::Child + Send + Sync>,
     _master: Box<dyn MasterPty + Send>,
     _tmp: PathBuf,
-    /// Absolute path to a real `.html` fixture the preview scenario can type
-    /// into the Ctrl-P popup.
+    /// Absolute path to a real `.html` fixture the open-in-browser scenarios can
+    /// type into the Ctrl-P popup / select from the picker.
     html_fixture: PathBuf,
+    /// File the fake `open` on PATH appends its argv to, so a test can assert
+    /// which path the browser launch was invoked with.
+    open_marker: PathBuf,
 }
 
 impl Mp {
@@ -156,17 +154,21 @@ impl Mp {
             "#!/bin/sh\nprintf 'PANE-READY\\n'\nexec cat\n",
         );
 
-        // Fake `carbonyl`: print a distinctive banner (so the spawned preview
-        // can be waited on), then become `cat` so typed input is echoed back —
-        // letting the preview scenario assert that keystrokes reach the preview
-        // process. It ignores its path argument, like the fake `codex`.
+        // Fake `open` (the macOS launcher MindPlayer shells out to): append its
+        // argv to a marker file so a test can assert exactly what path it was
+        // invoked with, instead of actually opening a real browser. Exits at
+        // once — it's a fire-and-forget one-shot, exactly like the real thing.
+        let open_marker = tmp.join("open-marker.txt");
         write_script(
-            &bindir.join("carbonyl"),
-            "#!/bin/sh\nprintf 'FAKE-CARBONYL-RENDERED'\nexec cat\n",
+            &bindir.join("open"),
+            &format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$@\" >> '{}'\n",
+                open_marker.display()
+            ),
         );
 
-        // A real .html file to preview (contents don't matter — the stub never
-        // reads it; only its existence must pass `is_file()` validation).
+        // A real .html file to open (contents don't matter — only its existence
+        // must pass `is_file()` validation before the launch).
         let html_fixture = scope.join("preview.html");
         std::fs::write(&html_fixture, "<html><body>hi</body></html>\n")
             .expect("write html fixture");
@@ -229,6 +231,27 @@ impl Mp {
             _master: pair.master,
             _tmp: tmp,
             html_fixture,
+            open_marker,
+        }
+    }
+
+    /// Read the fake-`open` marker file (empty string if it hasn't been written
+    /// yet), so a test can assert what path the browser launch received.
+    fn open_marker_contents(&self) -> String {
+        std::fs::read_to_string(&self.open_marker).unwrap_or_default()
+    }
+
+    /// Poll until the fake `open` marker contains `needle` or `within` elapses.
+    fn wait_for_open(&self, needle: &str, within: Duration) -> bool {
+        let deadline = Instant::now() + within;
+        loop {
+            if self.open_marker_contents().contains(needle) {
+                return true;
+            }
+            if Instant::now() >= deadline {
+                return false;
+            }
+            std::thread::sleep(Duration::from_millis(20));
         }
     }
 
@@ -391,115 +414,27 @@ fn zoom_left_on_does_not_hide_a_multi_launch() {
     );
 }
 
-/// Scenario 3 — the full HTML-preview (Ctrl-P) lifecycle against a fake
-/// `carbonyl`.
-///
-/// Resume a session, type an agent token, then:
-///   1. Ctrl-P → path popup → type the fixture path → Enter spawns the fake
-///      carbonyl and its banner renders in the pane.
-///   2. Type a preview token — echoed back by the preview process, proving the
-///      pane now forwards input to carbonyl, not the agent.
-///   3. Ctrl-P → back to the agent view (the agent's own earlier token is
-///      visible again).
-///   4. Ctrl-P → the SAME preview is redisplayed instantly (no popup, no
-///      re-spawn): the preview token typed in step 2 is still there, which
-///      would be impossible if a fresh carbonyl had been started or a popup had
-///      swallowed the toggle.
-#[test]
-fn ctrl_p_previews_html_then_toggles_between_preview_and_agent() {
-    let mut mp = Mp::launch();
-    mp.start_into_main_list();
-
-    // Resume a session into a live pane, then type a token the agent echoes.
-    mp.send(b"\r");
-    mp.expect(PANE_READY, STEP_TIMEOUT, "agent pane came up");
-    mp.send(AGENT_TOKEN.as_bytes());
-    mp.expect(AGENT_TOKEN, STEP_TIMEOUT, "agent echoed its token");
-
-    // The session's cwd holds a real `.html` fixture, so the periodic candidate
-    // poll surfaces a "N new" badge and Ctrl-P now opens the detected-file
-    // PICKER, not the blank path popup. Wait for the badge so the next Ctrl-P is
-    // deterministic, then Tab into the free-text popup this scenario drives by a
-    // typed path.
-    mp.expect("1 new", STEP_TIMEOUT, "pane shows the detected-html badge");
-    mp.send(b"\x10");
-    mp.expect(
-        "Preview a detected",
-        STEP_TIMEOUT,
-        "Ctrl-P opened the candidate picker",
-    );
-    mp.send(b"\t"); // Tab: escape hatch to the free-text path popup.
-    mp.expect(
-        "Preview HTML in browser",
-        STEP_TIMEOUT,
-        "Tab switched to the free-text path popup",
-    );
-
-    // Type the fixture path and confirm — the fake carbonyl spawns and renders.
-    let path = mp.html_fixture.display().to_string();
-    mp.send(path.as_bytes());
-    mp.send(b"\r");
-    mp.expect(
-        CARBONYL_RENDERED,
-        STEP_TIMEOUT,
-        "carbonyl preview rendered in the pane",
-    );
-
-    // Input now drives the preview process; its echo proves that.
-    mp.send(PREVIEW_TOKEN.as_bytes());
-    mp.expect(
-        PREVIEW_TOKEN,
-        STEP_TIMEOUT,
-        "preview process received and echoed typed input",
-    );
-
-    // Ctrl-P toggles back to the agent view: the agent's own token is visible.
-    mp.send(b"\x10");
-    mp.expect(
-        AGENT_TOKEN,
-        STEP_TIMEOUT,
-        "toggling back shows the agent view (its prior output is visible)",
-    );
-
-    // Ctrl-P again redisplays the SAME preview instantly — no popup, no
-    // re-spawn. The preview token from before is still on screen, which is only
-    // possible if the original carbonyl process was kept alive in the
-    // background (a re-spawn would show only the banner).
-    mp.send(b"\x10");
-    assert!(
-        mp.wait_until(STEP_TIMEOUT, |s| s.contains(PREVIEW_TOKEN)
-            && s.contains(CARBONYL_RENDERED)),
-        "re-showing the preview must reuse the live process (its earlier state \
-         preserved) with no popup or re-spawn — expected both {CARBONYL_RENDERED:?} \
-         and {PREVIEW_TOKEN:?}.\n---- screen ----\n{}\n----------------",
-        mp.screen()
-    );
-    // A re-spawn or a popup would both prevent the preview popup from being
-    // absent here; confirm the popup chrome is not on screen.
-    assert!(
-        !mp.screen().contains("Preview HTML in browser"),
-        "re-showing an existing preview must not re-open the path popup.\n\
-         ---- screen ----\n{}\n----------------",
-        mp.screen()
-    );
-}
-
-/// Scenario 4 — the passive HTML-candidate badge + Ctrl-P picker (no typing).
+/// Scenario 3 — the Ctrl-P candidate picker opens the selected file in the
+/// browser (no typing).
 ///
 /// The seeded session's cwd contains a real `.html` fixture. Once the periodic
 /// candidate poll runs, the live pane shows a "N new" badge; Ctrl-P then opens
 /// the ranked PICKER of detected files (NOT the blank path popup). Selecting the
-/// candidate with Enter spawns the fake carbonyl against that exact file, whose
-/// banner renders in the pane — the whole point of the feature: preview a file
-/// the agent just wrote without typing a path.
+/// candidate with Enter shells out to `open <resolved-path>` — asserted via the
+/// fake `open` marker — the whole point of the feature: open a file the agent
+/// just wrote without typing a path. The pane keeps showing the agent the whole
+/// time (the browser opens in a separate window, never in the pane).
 #[test]
-fn ctrl_p_opens_candidate_picker_and_previews_the_selected_file() {
+fn ctrl_p_picker_opens_selected_file_in_the_browser() {
     let mut mp = Mp::launch();
     mp.start_into_main_list();
 
-    // Resume a session into a live pane.
+    // Resume a session into a live pane, then type a token the agent echoes so
+    // we can prove the pane still shows the agent after Ctrl-P.
     mp.send(b"\r");
     mp.expect(PANE_READY, STEP_TIMEOUT, "agent pane came up");
+    mp.send(AGENT_TOKEN.as_bytes());
+    mp.expect(AGENT_TOKEN, STEP_TIMEOUT, "agent echoed its token");
 
     // The candidate poll detects scope/preview.html and the pane grows a badge.
     mp.expect(
@@ -511,12 +446,12 @@ fn ctrl_p_opens_candidate_picker_and_previews_the_selected_file() {
     // Ctrl-P opens the detected-file PICKER, not the blank path popup.
     mp.send(b"\x10");
     mp.expect(
-        "Preview a detected",
+        "Open a detected",
         STEP_TIMEOUT,
         "Ctrl-P opened the candidate picker",
     );
     assert!(
-        !mp.screen().contains("Preview HTML in browser"),
+        !mp.screen().contains("Open HTML in browser"),
         "with candidates present Ctrl-P must open the picker, not the blank path popup.\n\
          ---- screen ----\n{}\n----------------",
         mp.screen()
@@ -528,21 +463,83 @@ fn ctrl_p_opens_candidate_picker_and_previews_the_selected_file() {
         "the detected fixture is listed in the picker",
     );
 
-    // Enter previews the selected candidate — the fake carbonyl spawns against
-    // that exact path and its banner renders in the pane.
+    // Enter opens the selected candidate: `open` is invoked with the resolved
+    // (canonicalized) fixture path.
     mp.send(b"\r");
-    mp.expect(
-        CARBONYL_RENDERED,
-        STEP_TIMEOUT,
-        "selecting the candidate spawned carbonyl and it rendered in the pane",
+    let want = mp
+        .html_fixture
+        .canonicalize()
+        .expect("canonicalize fixture");
+    let want = want.display().to_string();
+    assert!(
+        mp.wait_for_open(&want, STEP_TIMEOUT),
+        "selecting the candidate must invoke `open` with the resolved path {want:?}.\n\
+         ---- open marker ----\n{}\n----------------",
+        mp.open_marker_contents()
     );
 
-    // Input now drives the preview process; its echo proves the pane forwards to
-    // carbonyl (spawned with the picked path), not the agent.
-    mp.send(PREVIEW_TOKEN.as_bytes());
+    // The pane was never disturbed: the agent's own token is still on screen and
+    // no preview ever rendered inside the pane.
+    assert!(
+        mp.screen().contains(AGENT_TOKEN),
+        "the agent pane must stay put — opening the browser never touches it.\n\
+         ---- screen ----\n{}\n----------------",
+        mp.screen()
+    );
+}
+
+/// Scenario 4 — the free-text path popup opens a typed path in the browser.
+///
+/// Reaches the free-text popup via the picker's Tab escape hatch (the seeded
+/// cwd always holds the fixture, so Ctrl-P opens the picker first), types the
+/// fixture's absolute path, and confirms with Enter. `open` is then invoked with
+/// the resolved path — asserted via the fake `open` marker. Exercises the same
+/// confirm path a no-candidates blank popup would take.
+#[test]
+fn ctrl_p_typed_path_opens_in_the_browser() {
+    let mut mp = Mp::launch();
+    mp.start_into_main_list();
+
+    mp.send(b"\r");
+    mp.expect(PANE_READY, STEP_TIMEOUT, "agent pane came up");
+
+    // Wait for the detected-html badge so the next Ctrl-P deterministically opens
+    // the picker, then Tab into the free-text path popup.
+    mp.expect("1 new", STEP_TIMEOUT, "pane shows the detected-html badge");
+    mp.send(b"\x10");
     mp.expect(
-        PREVIEW_TOKEN,
+        "Open a detected",
         STEP_TIMEOUT,
-        "the previewed process received and echoed typed input",
+        "Ctrl-P opened the candidate picker",
+    );
+    mp.send(b"\t"); // Tab: escape hatch to the free-text path popup.
+    mp.expect(
+        "Open HTML in browser",
+        STEP_TIMEOUT,
+        "Tab switched to the free-text path popup",
+    );
+
+    // Type the fixture path and confirm — `open` fires with the resolved path.
+    let path = mp.html_fixture.display().to_string();
+    mp.send(path.as_bytes());
+    mp.send(b"\r");
+    let want = mp
+        .html_fixture
+        .canonicalize()
+        .expect("canonicalize fixture");
+    let want = want.display().to_string();
+    assert!(
+        mp.wait_for_open(&want, STEP_TIMEOUT),
+        "confirming a typed path must invoke `open` with the resolved path {want:?}.\n\
+         ---- open marker ----\n{}\n----------------",
+        mp.open_marker_contents()
+    );
+
+    // The popup closes on success and the pane shows the agent again.
+    assert!(
+        mp.wait_until(STEP_TIMEOUT, |s| !s.contains("Open HTML in browser")),
+        "the popup must close after a successful open.\n\
+         ---- screen ----\n{}\n----------------",
+        mp.screen()
     );
 }

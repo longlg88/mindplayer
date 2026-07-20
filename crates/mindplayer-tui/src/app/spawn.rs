@@ -213,14 +213,6 @@ impl App {
                     if let Some(pty) = self.ptys.remove(&extra.id) {
                         self.ptys.insert(real_id.clone(), pty);
                     }
-                    // A preview could (rarely) be open on a synthetic new
-                    // session; carry it over so it isn't orphaned or leaked.
-                    if let Some(preview) = self.preview_ptys.remove(&extra.id) {
-                        self.preview_ptys.insert(real_id.clone(), preview);
-                    }
-                    if self.previewing.remove(&extra.id) {
-                        self.previewing.insert(real_id.clone());
-                    }
                     if let Some(input) = self.pending_initial_inputs.remove(&extra.id) {
                         self.pending_initial_inputs.insert(real_id.clone(), input);
                     }

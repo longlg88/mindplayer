@@ -213,6 +213,11 @@ fn run(terminal: &mut Terminal<CrosstermBackend<FrameSink>>, app: &mut App) -> R
             // (change-only). Purely a side effect — status is already reflected
             // on screen, so this never forces a redraw.
             app.poll_status_transitions();
+            // Interval-gated walk of each live pane's cwd for newly-written
+            // `.html` files (drives the "🌐 N new" badge and the Ctrl-P picker).
+            if app.poll_html_candidates() {
+                needs_draw = true;
+            }
             if app.flush_initial_inputs() {
                 needs_draw = true;
             }
@@ -601,6 +606,29 @@ fn handle_main_key(app: &mut App, key: KeyEvent) {
             KeyCode::Backspace => app.dir_input_backspace(),
             KeyCode::Enter => app.confirm_dir_input(),
             KeyCode::Esc => app.cancel_dir_input(),
+            _ => {}
+        }
+        return;
+    }
+
+    // HTML-preview candidate picker: opened by Ctrl-P from a live pane when the
+    // passive poll has detected `.html` files. Checked before the free-text
+    // popup (and before `match app.focus`) so its keys don't fall through to the
+    // pty. Up/Down move the selection (clamped, mirroring new_picker/
+    // handoff_picker), Enter previews the selected file, Tab is the escape hatch
+    // to the free-text path popup, Esc cancels.
+    if let Some(choice) = app.html_preview_picker {
+        let last = app.html_candidates_for_focused().len().saturating_sub(1);
+        match key.code {
+            KeyCode::Up | KeyCode::Char('k') => {
+                app.html_preview_picker = Some(choice.saturating_sub(1))
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                app.html_preview_picker = Some((choice + 1).min(last))
+            }
+            KeyCode::Enter => app.confirm_html_preview_pick(),
+            KeyCode::Tab => app.html_preview_picker_to_input(),
+            KeyCode::Esc => app.cancel_html_preview_picker(),
             _ => {}
         }
         return;
@@ -1073,6 +1101,59 @@ mod tests {
 
         handle_main_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
         assert!(app.html_preview_input.is_none());
+    }
+
+    #[test]
+    fn ctrl_p_opens_candidate_picker_when_candidates_exist_and_nav_tab_esc_behave() {
+        let mut app = main_app_with_session("s1");
+        app.focus_or_add_pane("s1");
+        app.focus = Focus::Terminal;
+        // Two detected candidates for the focused pane → Ctrl-P opens the picker,
+        // not the blank path popup.
+        app.html_candidates.insert(
+            "s1".to_string(),
+            vec![PathBuf::from("/tmp/a.html"), PathBuf::from("/tmp/b.html")],
+        );
+
+        handle_main_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('p'), KeyModifiers::CONTROL),
+        );
+        assert_eq!(app.html_preview_picker, Some(0));
+        assert!(
+            app.html_preview_input.is_none(),
+            "the picker opens instead of the blank path popup"
+        );
+
+        // Down moves the selection and clamps at the last row (like new_picker).
+        handle_main_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        assert_eq!(app.html_preview_picker, Some(1));
+        handle_main_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        assert_eq!(app.html_preview_picker, Some(1), "clamps at the last row");
+        // Up moves back.
+        handle_main_key(&mut app, KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+        assert_eq!(app.html_preview_picker, Some(0));
+
+        // Tab is the escape hatch to the free-text path popup.
+        handle_main_key(&mut app, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        assert!(app.html_preview_picker.is_none());
+        assert_eq!(
+            app.html_preview_input.as_deref(),
+            Some(""),
+            "Tab falls through to the free-text path popup"
+        );
+
+        // Re-open the picker and confirm Esc cancels it without side effects.
+        handle_main_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(app.html_preview_input.is_none());
+        handle_main_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('p'), KeyModifiers::CONTROL),
+        );
+        assert_eq!(app.html_preview_picker, Some(0));
+        handle_main_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(app.html_preview_picker.is_none());
+        assert!(app.previewing.is_empty(), "cancel spawns nothing");
     }
 
     #[test]

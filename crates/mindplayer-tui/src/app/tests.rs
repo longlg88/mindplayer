@@ -921,6 +921,143 @@ fn cancel_html_preview_clears_input_and_error_without_side_effects() {
     assert!(app.previewing.is_empty());
 }
 
+fn temp_html_dir(name: &str) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!("mindplayer-html-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+#[test]
+fn poll_html_candidates_finds_html_and_skips_vendor_dirs_at_any_depth() {
+    let dir = temp_html_dir("scan");
+    std::fs::write(dir.join("page.html"), "<html></html>").unwrap();
+    std::fs::create_dir_all(dir.join("sub")).unwrap();
+    std::fs::write(dir.join("sub").join("nested.html"), "<html></html>").unwrap();
+    // node_modules directly under the cwd AND nested one level deeper — the walk
+    // must never descend into either, at any depth.
+    std::fs::create_dir_all(dir.join("node_modules")).unwrap();
+    std::fs::write(dir.join("node_modules").join("dep.html"), "x").unwrap();
+    std::fs::create_dir_all(dir.join("sub").join("node_modules")).unwrap();
+    std::fs::write(dir.join("sub").join("node_modules").join("deep.html"), "x").unwrap();
+
+    let mut app = app_with(vec![session_in(
+        "s1",
+        Agent::Codex,
+        &dir.display().to_string(),
+        "t",
+    )]);
+    app.focus_or_add_pane("s1");
+
+    assert!(
+        app.poll_html_candidates(),
+        "detecting a new .html changes state"
+    );
+    let cands = app.html_candidates.get("s1").expect("candidates detected");
+    let names: Vec<String> = cands
+        .iter()
+        .map(|p| p.file_name().unwrap().to_str().unwrap().to_string())
+        .collect();
+    assert!(names.contains(&"page.html".to_string()), "{names:?}");
+    assert!(names.contains(&"nested.html".to_string()), "{names:?}");
+    assert!(
+        !names.iter().any(|n| n == "dep.html" || n == "deep.html"),
+        "node_modules contents must be skipped at any depth: {names:?}"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn html_seen_suppresses_candidate_until_its_mtime_advances() {
+    let dir = temp_html_dir("seen");
+    let file = dir.join("report.html");
+    std::fs::write(&file, "<html></html>").unwrap();
+
+    let mut app = app_with(vec![session_in(
+        "s1",
+        Agent::Codex,
+        &dir.display().to_string(),
+        "t",
+    )]);
+    app.focus_or_add_pane("s1");
+
+    // First poll: the file is a fresh candidate.
+    app.poll_html_candidates();
+    assert!(app
+        .html_candidates
+        .get("s1")
+        .is_some_and(|c| c.contains(&file)));
+
+    // Seen at a FUTURE mtime → the file's real mtime is older than "seen", so it
+    // stays suppressed. (Re-arm the interval gate so the next poll actually runs.)
+    app.html_seen
+        .entry("s1".into())
+        .or_default()
+        .insert(file.clone(), SystemTime::now() + Duration::from_secs(3600));
+    app.html_candidates_due = None;
+    app.poll_html_candidates();
+    assert!(
+        app.html_candidates
+            .get("s1")
+            .is_none_or(|c| !c.contains(&file)),
+        "a file already seen must not reappear while its mtime hasn't advanced"
+    );
+
+    // Seen at a PAST mtime → the file's later mtime has advanced past it → it
+    // reappears as a fresh candidate (the "edited after being dismissed" case).
+    app.html_seen
+        .entry("s1".into())
+        .or_default()
+        .insert(file.clone(), SystemTime::now() - Duration::from_secs(3600));
+    app.html_candidates_due = None;
+    app.poll_html_candidates();
+    assert!(
+        app.html_candidates
+            .get("s1")
+            .is_some_and(|c| c.contains(&file)),
+        "a file edited after being seen (mtime advanced) reappears as a candidate"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn toggle_html_preview_opens_picker_when_candidates_exist_else_blank_popup() {
+    let mut app = App::new();
+    app.focus_or_add_pane("s1");
+    app.focus = Focus::Terminal;
+
+    // No candidates → today's fallback: the blank free-text popup.
+    app.toggle_html_preview();
+    assert_eq!(app.html_preview_input.as_deref(), Some(""));
+    assert!(app.html_preview_picker.is_none());
+
+    // With candidates registered, Ctrl-P opens the ranked picker instead.
+    app.html_preview_input = None;
+    app.html_candidates
+        .insert("s1".into(), vec![PathBuf::from("/tmp/a.html")]);
+    app.toggle_html_preview();
+    assert_eq!(app.html_preview_picker, Some(0));
+    assert!(app.html_preview_input.is_none());
+}
+
+#[test]
+fn remove_pane_clears_html_candidate_state() {
+    let mut app = App::new();
+    app.focus_or_add_pane("s1");
+    app.html_candidates
+        .insert("s1".into(), vec![PathBuf::from("/tmp/a.html")]);
+    app.html_seen
+        .entry("s1".into())
+        .or_default()
+        .insert(PathBuf::from("/tmp/a.html"), SystemTime::now());
+
+    app.remove_pane("s1");
+    assert!(!app.html_candidates.contains_key("s1"));
+    assert!(!app.html_seen.contains_key("s1"));
+}
+
 #[test]
 fn merge_extras_ignores_preexisting_session() {
     // Regression for the HIGH bug: a new session must never be reconciled

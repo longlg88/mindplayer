@@ -1,4 +1,28 @@
 use super::*;
+use std::path::Path;
+use std::time::SystemTime;
+use walkdir::WalkDir;
+
+/// How often the per-pane `.html`-candidate directory walk runs. A few seconds
+/// is responsive enough to notice a file the agent just wrote without turning
+/// into a hot loop of filesystem walks while a pane sits open.
+const HTML_CANDIDATE_POLL_INTERVAL: Duration = Duration::from_secs(3);
+/// Keep the candidate walk shallow: it's meant to catch a file the agent just
+/// wrote *near* where it's working, not to index an entire repo.
+const HTML_WALK_MAX_DEPTH: usize = 3;
+/// Directory names never descended into during the candidate walk — heavy
+/// vendor/build/VCS trees that can hold thousands of files and would make a
+/// periodic recursive scan a real performance/battery problem.
+const HTML_SKIP_DIRS: &[&str] = &[
+    "node_modules",
+    ".git",
+    "target",
+    "dist",
+    "build",
+    "vendor",
+    ".venv",
+    "__pycache__",
+];
 
 impl App {
     /// The session id currently shown in the right pane, if it has a PTY.
@@ -68,6 +92,11 @@ impl App {
             preview.kill();
         }
         self.previewing.remove(sid);
+        // Per-pane HTML-candidate detection state must not outlive the pane
+        // (mirrors the preview cleanup above); the interval gate is global, so
+        // there's nothing pane-scoped to clear for it.
+        self.html_candidates.remove(sid);
+        self.html_seen.remove(sid);
         if let Some(pos) = self.panes.iter().position(|id| id == sid) {
             self.panes.remove(pos);
             self.pane_sizes.remove(sid);
@@ -826,6 +855,130 @@ impl App {
         }
         false
     }
+
+    /// The detected `.html` candidates for the focused pane, most-recent-first
+    /// (empty when there are none). Used by the Ctrl-P picker's key handling and
+    /// its renderer so both read the same list.
+    pub fn html_candidates_for_focused(&self) -> &[PathBuf] {
+        self.focused_pane()
+            .and_then(|id| self.html_candidates.get(id))
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
+    }
+
+    /// Periodically walk each live pane's cwd for newly-written `.html` files and
+    /// refresh [`Self::html_candidates`]. Interval-gated (see
+    /// [`HTML_CANDIDATE_POLL_INTERVAL`]) so it never runs every `run()` tick.
+    /// Only panes that still exist AND aren't already previewing are scanned —
+    /// there's nothing to "notice" for a pane already showing a preview. A file
+    /// already in [`Self::html_seen`] stays suppressed until its mtime advances
+    /// past when it was seen. Returns true if any pane's candidate list changed
+    /// (needs a redraw to update the badge).
+    pub fn poll_html_candidates(&mut self) -> bool {
+        match self.html_candidates_due {
+            Some(at) if Instant::now() < at => return false,
+            _ => {}
+        }
+        self.html_candidates_due = Some(Instant::now() + HTML_CANDIDATE_POLL_INTERVAL);
+
+        let mut changed = false;
+        let ids: Vec<String> = self
+            .panes
+            .iter()
+            .filter(|id| !self.previewing.contains(*id))
+            .cloned()
+            .collect();
+        for id in ids {
+            let Some(cwd) = self
+                .all_sessions
+                .iter()
+                .find(|s| s.id == id)
+                .map(|s| s.cwd.clone())
+            else {
+                continue;
+            };
+            let found = scan_html_candidates(&cwd);
+            let candidates: Vec<PathBuf> = {
+                let seen = self.html_seen.get(&id);
+                found
+                    .into_iter()
+                    .filter(|(path, mtime)| {
+                        seen.and_then(|m| m.get(path))
+                            .is_none_or(|seen_mtime| mtime > seen_mtime)
+                    })
+                    .map(|(path, _)| path)
+                    .collect()
+            };
+            let new_val = if candidates.is_empty() {
+                None
+            } else {
+                Some(candidates)
+            };
+            if self.html_candidates.get(&id).map(Vec::as_slice) != new_val.as_deref() {
+                changed = true;
+                match new_val {
+                    Some(v) => {
+                        self.html_candidates.insert(id.clone(), v);
+                    }
+                    None => {
+                        self.html_candidates.remove(&id);
+                    }
+                }
+            }
+        }
+        // Drop candidate lists for panes that no longer exist or have since
+        // started previewing (owned set, so `self` isn't double-borrowed).
+        let valid: HashSet<String> = self
+            .panes
+            .iter()
+            .filter(|id| !self.previewing.contains(*id))
+            .cloned()
+            .collect();
+        let before = self.html_candidates.len();
+        self.html_candidates.retain(|id, _| valid.contains(id));
+        if self.html_candidates.len() != before {
+            changed = true;
+        }
+        changed
+    }
+}
+
+/// Walk `cwd` (shallowly, skipping heavy vendor/build/VCS dirs) for `.html`
+/// files, returning `(path, mtime)` sorted most-recently-modified first. Pulled
+/// out of `App` so the scan itself can be unit-tested against a real temp dir
+/// without constructing panes/PTYs.
+pub(crate) fn scan_html_candidates(cwd: &Path) -> Vec<(PathBuf, SystemTime)> {
+    let mut out: Vec<(PathBuf, SystemTime)> = Vec::new();
+    let walker = WalkDir::new(cwd)
+        .max_depth(HTML_WALK_MAX_DEPTH)
+        .into_iter()
+        .filter_entry(|entry| {
+            // Always descend the root; below it, never enter a skip-listed
+            // directory (by name, at any depth). Non-directories always pass so
+            // their `.html`-ness is judged below.
+            if entry.depth() == 0 || !entry.file_type().is_dir() {
+                return true;
+            }
+            entry
+                .file_name()
+                .to_str()
+                .is_none_or(|name| !HTML_SKIP_DIRS.contains(&name))
+        });
+    for entry in walker.filter_map(Result::ok) {
+        if !entry.file_type().is_file() {
+            continue;
+        }
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("html") {
+            continue;
+        }
+        if let Some(mtime) = entry.metadata().ok().and_then(|m| m.modified().ok()) {
+            out.push((path.to_path_buf(), mtime));
+        }
+    }
+    // Most-recently-modified first.
+    out.sort_by(|a, b| b.1.cmp(&a.1));
+    out
 }
 
 /// Default content for `~/.mindplayer/prompts/transition_report.md` —

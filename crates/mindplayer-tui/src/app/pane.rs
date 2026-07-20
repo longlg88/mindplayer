@@ -30,25 +30,6 @@ impl App {
         self.active.as_ref().and_then(|id| self.ptys.get(id))
     }
 
-    /// The PTY currently DISPLAYED for `id`: its backgrounded carbonyl preview
-    /// when the pane is showing a preview, otherwise its agent PTY. This is the
-    /// one that should be rendered, resized, and fed input for that pane.
-    pub fn displayed_pty(&self, id: &str) -> Option<&PtySession> {
-        if self.previewing.contains(id) {
-            self.preview_ptys.get(id)
-        } else {
-            self.ptys.get(id)
-        }
-    }
-
-    pub(crate) fn displayed_pty_mut(&mut self, id: &str) -> Option<&mut PtySession> {
-        if self.previewing.contains(id) {
-            self.preview_ptys.get_mut(id)
-        } else {
-            self.ptys.get_mut(id)
-        }
-    }
-
     pub fn focused_pane(&self) -> Option<&str> {
         self.panes.get(self.focused).map(String::as_str)
     }
@@ -84,17 +65,8 @@ impl App {
     }
 
     pub(crate) fn remove_pane(&mut self, sid: &str) {
-        // A preview (carbonyl) process must never outlive its pane: kill and
-        // forget it whenever the pane is actually removed. Toggling back to the
-        // agent view does NOT go through here (it only drops the id from
-        // `previewing`), so a mere toggle never kills the process.
-        if let Some(mut preview) = self.preview_ptys.remove(sid) {
-            preview.kill();
-        }
-        self.previewing.remove(sid);
-        // Per-pane HTML-candidate detection state must not outlive the pane
-        // (mirrors the preview cleanup above); the interval gate is global, so
-        // there's nothing pane-scoped to clear for it.
+        // Per-pane HTML-candidate detection state must not outlive the pane; the
+        // interval gate is global, so there's nothing pane-scoped to clear for it.
         self.html_candidates.remove(sid);
         self.html_seen.remove(sid);
         if let Some(pos) = self.panes.iter().position(|id| id == sid) {
@@ -700,18 +672,14 @@ impl App {
         if targets.is_empty() {
             if let Some(id) = self.active.clone() {
                 let (r, c) = (self.pty_rows, self.pty_cols);
-                if let Some(pty) = self.displayed_pty_mut(&id) {
+                if let Some(pty) = self.ptys.get_mut(&id) {
                     pty.resize(r, c);
                 }
             }
             return;
         }
-        // Resize whichever PTY (agent or preview) is currently displayed for
-        // each pane, so a preview pane tracks pane-grid changes exactly like an
-        // agent pane. A backgrounded (hidden) preview or agent is intentionally
-        // left at its current size until it's shown again.
         for (id, (rows, cols)) in targets {
-            if let Some(pty) = self.displayed_pty_mut(&id) {
+            if let Some(pty) = self.ptys.get_mut(&id) {
                 pty.resize(rows, cols);
             }
         }
@@ -792,24 +760,14 @@ impl App {
         }
         self.panes
             .iter()
-            .filter_map(|id| self.displayed_pty(id))
+            .filter_map(|id| self.ptys.get(id))
             .any(|p| p.take_dirty())
     }
 
-    /// Forward encoded keystrokes to the displayed PTY.
+    /// Forward encoded keystrokes to the focused pane's PTY.
     pub fn send_to_pty(&mut self, bytes: &[u8]) {
         // Typing dismisses any drag-copy highlight, like a normal terminal.
         self.selection = None;
-        // While previewing, keystrokes drive carbonyl (the browser), not the
-        // agent — so its own turn/hold bookkeeping is skipped entirely.
-        if let Some(id) = self.focused_pane().map(str::to_string) {
-            if self.previewing.contains(&id) {
-                if let Some(pty) = self.preview_ptys.get_mut(&id) {
-                    pty.send(bytes);
-                }
-                return;
-            }
-        }
         if self.hold_for_pending_initial_input(bytes) {
             return;
         }
@@ -828,16 +786,6 @@ impl App {
     pub fn paste_to_pty(&mut self, text: &str) -> bool {
         if self.focus != Focus::Terminal {
             return false;
-        }
-        // A preview pane pastes into carbonyl, bypassing the agent's hold/turn
-        // bookkeeping (same reasoning as `send_to_pty`).
-        if let Some(id) = self.focused_pane().map(str::to_string) {
-            if self.previewing.contains(&id) {
-                return self
-                    .preview_ptys
-                    .get_mut(&id)
-                    .is_some_and(|pty| pty.paste(text));
-            }
         }
         if self.hold_for_pending_initial_input(text.as_bytes()) {
             return true;
@@ -869,11 +817,9 @@ impl App {
     /// Periodically walk each live pane's cwd for newly-written `.html` files and
     /// refresh [`Self::html_candidates`]. Interval-gated (see
     /// [`HTML_CANDIDATE_POLL_INTERVAL`]) so it never runs every `run()` tick.
-    /// Only panes that still exist AND aren't already previewing are scanned —
-    /// there's nothing to "notice" for a pane already showing a preview. A file
-    /// already in [`Self::html_seen`] stays suppressed until its mtime advances
-    /// past when it was seen. Returns true if any pane's candidate list changed
-    /// (needs a redraw to update the badge).
+    /// A file already in [`Self::html_seen`] stays suppressed until its mtime
+    /// advances past when it was seen. Returns true if any pane's candidate list
+    /// changed (needs a redraw to update the badge).
     pub fn poll_html_candidates(&mut self) -> bool {
         match self.html_candidates_due {
             Some(at) if Instant::now() < at => return false,
@@ -882,12 +828,7 @@ impl App {
         self.html_candidates_due = Some(Instant::now() + HTML_CANDIDATE_POLL_INTERVAL);
 
         let mut changed = false;
-        let ids: Vec<String> = self
-            .panes
-            .iter()
-            .filter(|id| !self.previewing.contains(*id))
-            .cloned()
-            .collect();
+        let ids: Vec<String> = self.panes.to_vec();
         for id in ids {
             let Some(cwd) = self
                 .all_sessions
@@ -926,14 +867,9 @@ impl App {
                 }
             }
         }
-        // Drop candidate lists for panes that no longer exist or have since
-        // started previewing (owned set, so `self` isn't double-borrowed).
-        let valid: HashSet<String> = self
-            .panes
-            .iter()
-            .filter(|id| !self.previewing.contains(*id))
-            .cloned()
-            .collect();
+        // Drop candidate lists for panes that no longer exist (owned set, so
+        // `self` isn't double-borrowed).
+        let valid: HashSet<String> = self.panes.iter().cloned().collect();
         let before = self.html_candidates.len();
         self.html_candidates.retain(|id, _| valid.contains(id));
         if self.html_candidates.len() != before {

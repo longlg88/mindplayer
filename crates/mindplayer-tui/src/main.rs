@@ -611,12 +611,12 @@ fn handle_main_key(app: &mut App, key: KeyEvent) {
         return;
     }
 
-    // HTML-preview candidate picker: opened by Ctrl-P from a live pane when the
-    // passive poll has detected `.html` files. Checked before the free-text
-    // popup (and before `match app.focus`) so its keys don't fall through to the
-    // pty. Up/Down move the selection (clamped, mirroring new_picker/
-    // handoff_picker), Enter previews the selected file, Tab is the escape hatch
-    // to the free-text path popup, Esc cancels.
+    // HTML candidate picker: opened by Ctrl-P from a live pane when the passive
+    // poll has detected `.html` files. Checked before the free-text popup (and
+    // before `match app.focus`) so its keys don't fall through to the pty.
+    // Up/Down move the selection (clamped, mirroring new_picker/handoff_picker),
+    // Enter opens the selected file in the browser, Tab is the escape hatch to
+    // the free-text path popup, Esc cancels.
     if let Some(choice) = app.html_preview_picker {
         let last = app.html_candidates_for_focused().len().saturating_sub(1);
         match key.code {
@@ -634,10 +634,10 @@ fn handle_main_key(app: &mut App, key: KeyEvent) {
         return;
     }
 
-    // HTML-preview path input: opened by Ctrl-P from a live pane. Checked here,
-    // before `match app.focus`, so its keystrokes don't fall through to the raw
-    // pty-forwarding path. Enter validates + spawns carbonyl (or re-shows the
-    // inline error); Esc cancels.
+    // HTML path input: opened by Ctrl-P from a live pane. Checked here, before
+    // `match app.focus`, so its keystrokes don't fall through to the raw
+    // pty-forwarding path. Enter validates + opens the file in the browser (or
+    // re-shows the inline error); Esc cancels.
     if app.html_preview_input.is_some() {
         match key.code {
             KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -1153,7 +1153,7 @@ mod tests {
         assert_eq!(app.html_preview_picker, Some(0));
         handle_main_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
         assert!(app.html_preview_picker.is_none());
-        assert!(app.previewing.is_empty(), "cancel spawns nothing");
+        assert!(app.html_preview_input.is_none(), "cancel opens nothing");
     }
 
     #[test]

@@ -705,7 +705,7 @@ fn dir_input_popup(f: &mut Frame, path: &str) {
     f.render_widget(Paragraph::new(lines).block(block), area);
 }
 
-/// Path-input popup for spawning an HTML preview (`carbonyl`). Mirrors
+/// Path-input popup for opening a local `.html` file in the browser. Mirrors
 /// `dir_input_popup`, but shows an inline error line inside the SAME still-open
 /// popup when the last-submitted path didn't resolve — so the user can correct
 /// it in place instead of losing the popup to a bottom-bar status message.
@@ -715,7 +715,7 @@ fn html_preview_popup(f: &mut Frame, path: &str, error: Option<&str>) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(PREVIEW))
-        .title(" Preview HTML in browser ");
+        .title(" Open HTML in browser ");
     let mut lines = vec![
         Line::from(Span::styled(
             "Path to a local .html file (~ allowed):",
@@ -737,7 +737,7 @@ fn html_preview_popup(f: &mut Frame, path: &str, error: Option<&str>) {
         lines.push(Line::from(""));
     }
     lines.push(Line::from(Span::styled(
-        "enter preview   esc cancel",
+        "enter open   esc cancel",
         Style::default().fg(DIM),
     )));
     f.render_widget(Paragraph::new(lines).block(block), area);
@@ -761,7 +761,7 @@ fn html_preview_picker_popup(f: &mut Frame, choice: usize, candidates: &[PathBuf
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(PREVIEW))
-        .title(" Preview a detected .html file ");
+        .title(" Open a detected .html file ");
     let mut lines = vec![Line::from(Span::styled(
         "Recently edited .html files in this session's directory:",
         Style::default().fg(DIM),
@@ -792,7 +792,7 @@ fn html_preview_picker_popup(f: &mut Frame, choice: usize, candidates: &[PathBuf
     }
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
-        "enter preview   ↑↓ choose   tab type a path   esc cancel",
+        "enter open   ↑↓ choose   tab type a path   esc cancel",
         Style::default().fg(DIM),
     )));
     f.render_widget(Paragraph::new(lines).block(block), area);
@@ -1346,35 +1346,15 @@ fn render_pane(
         } else {
             Span::raw("")
         },
-        // Preview badge — shown alongside (not instead of) the zoom badge when a
-        // pane is both zoomed and previewing. The border stays zoom-gold in that
-        // case (below); this badge always shows regardless of border color.
-        if app.previewing.contains(sid) {
-            Span::styled(
-                " 🌐 PREVIEW ",
-                Style::default()
-                    .fg(Color::Rgb(15, 17, 22))
-                    .bg(PREVIEW)
-                    .add_modifier(Modifier::BOLD),
-            )
-        } else {
-            Span::raw("")
-        },
-        // Passive "N new" badge: shown only when this pane has detected,
-        // not-yet-previewed `.html` candidates AND isn't currently previewing
-        // (the solid PREVIEW chip already covers that state). Rendered as
-        // PREVIEW-cyan text (not a filled chip) so it reads as a quieter,
-        // lower-emphasis hint than the PREVIEW badge above.
-        if !app.previewing.contains(sid) {
-            match app.html_candidates.get(sid).map(Vec::len) {
-                Some(n) if n > 0 => Span::styled(
-                    format!(" 🌐 {n} new "),
-                    Style::default().fg(PREVIEW).add_modifier(Modifier::BOLD),
-                ),
-                _ => Span::raw(""),
-            }
-        } else {
-            Span::raw("")
+        // Passive "N new" badge: shown when this pane has detected, not-yet-
+        // opened `.html` candidates. Rendered as PREVIEW-cyan text (not a filled
+        // chip) so it reads as a quiet, lower-emphasis hint.
+        match app.html_candidates.get(sid).map(Vec::len) {
+            Some(n) if n > 0 => Span::styled(
+                format!(" 🌐 {n} new "),
+                Style::default().fg(PREVIEW).add_modifier(Modifier::BOLD),
+            ),
+            _ => Span::raw(""),
         },
         if ended {
             Span::styled("(ended) ", Style::default().fg(DIM))
@@ -1418,16 +1398,11 @@ fn render_pane(
     }
 
     let selection = app.selection_for_pane(sid);
-    // While previewing, the pane's contents come from the carbonyl process, not
-    // the (still-running, untouched) agent PTY. `ended` tracks the agent, so a
-    // live preview shows its cursor even if the backgrounded agent has ended.
-    let previewing = app.previewing.contains(sid);
-    let content_ended = ended && !previewing;
-    if let Some(pty) = app.displayed_pty(sid) {
+    if let Some(pty) = app.ptys.get(sid) {
         if let Ok(parser) = pty.parser().lock() {
             let screen = parser.screen();
             f.render_widget(TerminalView::new(screen).with_selection(selection), inner);
-            if pane_focused && !content_ended && !screen.hide_cursor() {
+            if pane_focused && !ended && !screen.hide_cursor() {
                 let (row, col) = screen.cursor_position();
                 let cx = inner.x + col.min(inner.width.saturating_sub(1));
                 let cy = inner.y + row.min(inner.height.saturating_sub(1));
@@ -1594,7 +1569,7 @@ fn help_popup(f: &mut Frame) {
         ),
         item(
             "ctrl-p",
-            "preview a local .html file in the pane (carbonyl): pick from detected files (badge shows the count), or tab to type a path; press again to toggle between the preview and the agent",
+            "open a local .html file in the browser: pick from detected files (badge shows the count), or tab to type a path",
         ),
         item("ctrl-j", "insert newline in text modals"),
         item("shift/alt-enter", "insert newline in text modals"),

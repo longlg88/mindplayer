@@ -812,15 +812,15 @@ fn cancel_catchup_clears_the_confirm_without_sending() {
 
 #[test]
 fn toggle_html_preview_without_a_pane_is_a_noop() {
-    // No focused pane → nothing to preview into; the popup must not open.
+    // No focused pane → nothing to act on; the popup must not open.
     let mut app = App::new();
     app.toggle_html_preview();
     assert!(app.html_preview_input.is_none());
-    assert!(app.previewing.is_empty());
+    assert!(app.html_preview_picker.is_none());
 }
 
 #[test]
-fn toggle_html_preview_opens_popup_when_no_preview_exists() {
+fn toggle_html_preview_opens_popup_when_no_candidates_exist() {
     let mut app = App::new();
     app.focus_or_add_pane("s1");
     app.focus = Focus::Terminal;
@@ -828,36 +828,16 @@ fn toggle_html_preview_opens_popup_when_no_preview_exists() {
     assert_eq!(
         app.html_preview_input.as_deref(),
         Some(""),
-        "first Ctrl-P with no live preview opens the path popup"
+        "Ctrl-P with no detected candidates opens the path popup"
     );
     assert!(app.html_preview_error.is_none());
-    assert!(!app.previewing.contains("s1"));
-}
-
-#[test]
-fn toggle_html_preview_hides_a_shown_preview_without_a_popup() {
-    // A pane already showing its preview toggles back to the agent view with no
-    // popup and without killing (dropping) the carbonyl process entry.
-    let mut app = App::new();
-    app.focus_or_add_pane("s1");
-    app.focus = Focus::Terminal;
-    app.previewing.insert("s1".to_string());
-
-    app.toggle_html_preview();
-    assert!(
-        !app.previewing.contains("s1"),
-        "toggling a shown preview switches back to the agent view"
-    );
-    assert!(
-        app.html_preview_input.is_none(),
-        "hiding a preview must not open the popup"
-    );
+    assert!(app.html_preview_picker.is_none());
 }
 
 #[test]
 fn confirm_html_preview_with_a_bad_path_sets_error_and_keeps_popup_open() {
     // A nonexistent path must set the inline error, leave the popup open, and
-    // spawn no process — the whole point of the in-popup validation.
+    // launch nothing — the whole point of the in-popup validation.
     let mut app = App::new();
     app.focus_or_add_pane("s1");
     app.focus = Focus::Terminal;
@@ -873,11 +853,8 @@ fn confirm_html_preview_with_a_bad_path_sets_error_and_keeps_popup_open() {
         app.html_preview_input.is_some(),
         "the popup stays open so the path can be corrected"
     );
-    assert!(
-        app.preview_ptys.is_empty(),
-        "no carbonyl spawned on a bad path"
-    );
-    assert!(!app.previewing.contains("s1"));
+    // A bad path returns before any launch, so nothing is marked seen.
+    assert!(!app.html_seen.contains_key("s1"));
 }
 
 #[test]
@@ -889,7 +866,6 @@ fn confirm_html_preview_with_a_blank_path_sets_error() {
     app.confirm_html_preview();
     assert!(app.html_preview_error.is_some());
     assert!(app.html_preview_input.is_some());
-    assert!(app.preview_ptys.is_empty());
 }
 
 #[test]
@@ -917,8 +893,6 @@ fn cancel_html_preview_clears_input_and_error_without_side_effects() {
     app.cancel_html_preview();
     assert!(app.html_preview_input.is_none());
     assert!(app.html_preview_error.is_none());
-    assert!(app.preview_ptys.is_empty());
-    assert!(app.previewing.is_empty());
 }
 
 fn temp_html_dir(name: &str) -> PathBuf {

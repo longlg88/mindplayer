@@ -977,7 +977,7 @@ pub(crate) fn scan_html_candidates(cwd: &Path) -> Vec<(PathBuf, SystemTime)> {
         }
     }
     // Most-recently-modified first.
-    out.sort_by(|a, b| b.1.cmp(&a.1));
+    out.sort_by_key(|(_, mtime)| std::cmp::Reverse(*mtime));
     out
 }
 

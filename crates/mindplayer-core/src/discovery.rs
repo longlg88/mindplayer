@@ -612,6 +612,7 @@ fn parse_claude_file(path: &Path, cwd_override: Option<&Path>) -> Option<Session
     let mut title: Option<String> = None;
     let mut title_fallback: Option<String> = None;
     let mut is_sidechain = false;
+    let mut has_agent_name = false;
 
     for line in reader.lines().map_while(Result::ok) {
         let line = line.trim();
@@ -642,6 +643,12 @@ fn parse_claude_file(path: &Path, cwd_override: Option<&Path>) -> Option<Session
         }
         if v.get("isSidechain").and_then(Value::as_bool) == Some(true) {
             is_sidechain = true;
+        }
+        if v.get("agentName")
+            .and_then(Value::as_str)
+            .is_some_and(|s| !s.trim().is_empty())
+        {
+            has_agent_name = true;
         }
         match v.get("type").and_then(Value::as_str).unwrap_or("") {
             "user" => {
@@ -679,7 +686,21 @@ fn parse_claude_file(path: &Path, cwd_override: Option<&Path>) -> Option<Session
     let title = title
         .or(title_fallback)
         .unwrap_or_else(|| "(empty)".to_string());
-    let is_subagent = is_sidechain || looks_like_subagent_title(&title);
+    // `isSidechain` only marks an inline subagent call embedded in its parent's
+    // OWN transcript — a subagent spawned by an external multi-agent
+    // orchestrator (this project's own OMC layer, headlessly invoking `claude`
+    // as its own process per subagent) gets a completely separate, top-level-
+    // looking session file with isSidechain=false throughout. The real
+    // structural signal there is `agentName` (and its companion `teamName`,
+    // pointing back at the spawning session): every sampled orchestrated
+    // subagent carries a non-empty agentName, every sampled genuine top-level
+    // session (typed by hand, in the same project, same time period) has it
+    // null — including a fresh fan-out batch whose title matched none of the
+    // prefixes below, slipping through the title heuristic a second time (the
+    // same failure mode already fixed once for kiro in a prior commit). Check
+    // the structural field first; the title heuristic stays only as a fallback
+    // for transcripts that predate this field.
+    let is_subagent = is_sidechain || has_agent_name || looks_like_subagent_title(&title);
     let stem_id = path
         .file_stem()
         .and_then(|s| s.to_str())

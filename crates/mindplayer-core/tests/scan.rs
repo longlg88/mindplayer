@@ -389,3 +389,44 @@ fn claude_subagent_transcript_gets_its_own_id_not_the_parents() {
     );
     assert!(sub.is_subagent);
 }
+
+#[test]
+fn claude_agent_name_marks_an_externally_orchestrated_subagent_with_a_novel_title() {
+    // A subagent spawned by an external multi-agent orchestrator (headlessly
+    // invoking `claude` as its own process, not via Claude Code's own Task
+    // tool) gets a completely separate, top-level-looking session file:
+    // isSidechain is false throughout, and it has its own real sessionId — the
+    // parent/subagent nesting the test above covers doesn't apply here. The
+    // only structural signal is a non-empty `agentName` (kiro's equivalent is
+    // `parent_session_id` — see the kiro regression test). Title deliberately
+    // matches none of `looks_like_subagent_title`'s prefixes, to prove the
+    // structural field — not another hardcoded string — is what catches it.
+    let dir = tempdir().unwrap();
+    let claude_dir = dir.path().join("claude");
+    const ORCHESTRATED_ID: &str = "33333333-4444-5555-6666-777788889999";
+
+    write(
+        &claude_dir
+            .join("-work")
+            .join(format!("{ORCHESTRATED_ID}.jsonl")),
+        &[&format!(
+            r#"{{"type":"user","timestamp":"2026-02-02T09:00:00Z","cwd":"/work","sessionId":"{ORCHESTRATED_ID}","isSidechain":false,"agentName":"worker-a","teamName":"session-parent0001","message":{{"role":"user","content":"summarize the notes in /work/scratch"}}}}"#
+        )],
+    );
+
+    let cfg = ScanConfig {
+        codex_dir: dir.path().join("codex"),
+        claude_dir,
+        kiro_dir: dir.path().join("kiro"),
+    };
+    let sessions = scan(&Scope::Global, &cfg);
+    let worker = sessions
+        .iter()
+        .find(|s| s.id == ORCHESTRATED_ID)
+        .expect("orchestrated subagent session discovered");
+    assert!(
+        worker.is_subagent,
+        "a non-empty agentName must mark a session as a sub-agent even when \
+         isSidechain is false and its title matches no known prompt-prefix heuristic"
+    );
+}

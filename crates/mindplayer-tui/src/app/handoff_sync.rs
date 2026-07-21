@@ -181,7 +181,14 @@ impl App {
         // instead would keep re-triggering forever, since the source session
         // the user handed off from keeps advancing while they keep working in
         // it — which is exactly the repeated re-summary bug this guards against.
-        !self.thread_sync_at.contains_key(id)
+        //
+        // Checked against BOTH the in-memory `thread_sync_at` (covers a reopen
+        // within this same run) and the persisted `state.thread_synced` (covers
+        // a reopen after quitting and restarting MindPlayer entirely) — the
+        // in-memory map alone is wiped on every restart, so without the
+        // persisted half the very next resume after a restart looked like a
+        // fresh reopen and handed off the same content again.
+        !self.thread_sync_at.contains_key(id) && !self.state.thread_synced.contains(id)
     }
 
     /// Non-blocking read of a session's peer-lane thread-sync context (see
@@ -215,7 +222,11 @@ impl App {
         self.thread_sync_rx = Some(rx);
         // Mark it needed-and-in-flight immediately so a second reopen before
         // this one resolves doesn't queue a duplicate read for the same id.
-        self.thread_sync_at.insert(id, Utc::now());
+        self.thread_sync_at.insert(id.clone(), Utc::now());
+        // Persist the same marker so it survives a MindPlayer restart (see the
+        // doc comment on `thread_sync_needed` and on `State::thread_synced`).
+        self.state.thread_synced.insert(id);
+        let _ = self.state.save();
         true
     }
 

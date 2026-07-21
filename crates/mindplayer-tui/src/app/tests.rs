@@ -1712,6 +1712,29 @@ fn thread_sync_needed_fires_once_then_stays_quiet_even_as_peer_keeps_working() {
 }
 
 #[test]
+fn thread_sync_needed_stays_quiet_across_a_mindplayer_restart() {
+    // Regression: `thread_sync_at` alone is in-memory only, so it's wiped every
+    // time MindPlayer restarts — a fresh `App` after quitting and reopening
+    // looked identical to "never synced before" and fired the sync again. This
+    // is the exact bug the user reported: leaving MindPlayer and coming back
+    // into an in-progress handoff session re-triggers the handoff content.
+    // A restart is simulated here by a brand-new `App` (empty `thread_sync_at`,
+    // like right after startup) whose loaded `state.thread_synced` already
+    // carries the id from before the restart.
+    let mut app = App::new();
+    app.state.thread_synced.insert("handoff-target".to_string());
+    let mut peer = session("main-session", Agent::Claude, false);
+    peer.last_active = Some(chrono::Utc::now());
+    let peers = vec![peer];
+
+    assert!(
+        !app.thread_sync_needed("handoff-target", &peers),
+        "a session already marked synced in persisted state must not re-fire \
+         just because this process's in-memory thread_sync_at is fresh"
+    );
+}
+
+#[test]
 fn status_rank_orders_by_urgency() {
     // herdr-style rollup: most urgent (blocked) first, finished (done) last.
     use SessionStatus::*;

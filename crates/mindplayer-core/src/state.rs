@@ -66,6 +66,16 @@ pub struct State {
     /// child session id -> parent/root session id.
     #[serde(default)]
     pub handoff_links: BTreeMap<String, HandoffLink>,
+    /// Session ids whose peer-lane thread-sync (see MindPlayer's
+    /// `thread_sync_needed`/`spawn_thread_sync_for`) has already run once.
+    /// Persisted rather than tracked only in memory: an in-memory-only marker
+    /// is wiped every time MindPlayer restarts, so the very next resume after a
+    /// restart looked like a fresh reopen and re-triggered the sync — the
+    /// "keeps trying to hand off the same content again" bug reported after
+    /// leaving and reopening MindPlayer. Once a session id is in here, it stays
+    /// synced for good; nothing currently removes an entry.
+    #[serde(default)]
+    pub thread_synced: BTreeSet<String>,
     #[serde(default)]
     pub last_scope: Option<String>,
 }
@@ -84,6 +94,7 @@ impl Default for State {
             pending_labels: Vec::new(),
             pending_handoffs: Vec::new(),
             handoff_links: BTreeMap::new(),
+            thread_synced: BTreeSet::new(),
             last_scope: None,
         }
     }

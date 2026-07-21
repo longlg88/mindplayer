@@ -902,6 +902,34 @@ fn temp_html_dir(name: &str) -> PathBuf {
     dir
 }
 
+/// Block (bounded) until an in-flight background `.html` sweep lands and its
+/// batch is consumed by `apply_html_scan`. The receiver is cleared exactly when
+/// a batch has been applied, so that — not the `changed` return value — is the
+/// completion signal (a sweep that finds nothing new still consumes its batch).
+fn finish_html_scan(app: &mut App) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        app.apply_html_scan();
+        if app.html_scan_rx.is_none() {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "background html scan did not complete within 5s"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+/// Force the interval gate open, kick off a background sweep, and drive it to
+/// completion — so candidate assertions are deterministic without depending on
+/// the poll interval or a fixed sleep.
+fn run_html_scan(app: &mut App) {
+    app.html_candidates_due = None;
+    assert!(app.spawn_html_scan(), "a sweep should start");
+    finish_html_scan(app);
+}
+
 #[test]
 fn poll_html_candidates_finds_html_and_skips_vendor_dirs_at_any_depth() {
     let dir = temp_html_dir("scan");
@@ -923,10 +951,17 @@ fn poll_html_candidates_finds_html_and_skips_vendor_dirs_at_any_depth() {
     )]);
     app.focus_or_add_pane("s1");
 
+    // The walk runs on a background thread: kicking off the sweep must not
+    // populate candidates synchronously on the spawning (input/render) thread.
+    app.html_candidates_due = None;
+    assert!(app.spawn_html_scan(), "a sweep starts");
     assert!(
-        app.poll_html_candidates(),
-        "detecting a new .html changes state"
+        !app.html_candidates.contains_key("s1"),
+        "the background walk must not block-populate on the spawning thread"
     );
+    // Once the background walk lands, applying its finished batch surfaces the
+    // detected files.
+    finish_html_scan(&mut app);
     let cands = app.html_candidates.get("s1").expect("candidates detected");
     let names: Vec<String> = cands
         .iter()
@@ -956,21 +991,20 @@ fn html_seen_suppresses_candidate_until_its_mtime_advances() {
     )]);
     app.focus_or_add_pane("s1");
 
-    // First poll: the file is a fresh candidate.
-    app.poll_html_candidates();
+    // First sweep: the file is a fresh candidate.
+    run_html_scan(&mut app);
     assert!(app
         .html_candidates
         .get("s1")
         .is_some_and(|c| c.contains(&file)));
 
     // Seen at a FUTURE mtime → the file's real mtime is older than "seen", so it
-    // stays suppressed. (Re-arm the interval gate so the next poll actually runs.)
+    // stays suppressed.
     app.html_seen
         .entry("s1".into())
         .or_default()
         .insert(file.clone(), SystemTime::now() + Duration::from_secs(3600));
-    app.html_candidates_due = None;
-    app.poll_html_candidates();
+    run_html_scan(&mut app);
     assert!(
         app.html_candidates
             .get("s1")
@@ -984,13 +1018,57 @@ fn html_seen_suppresses_candidate_until_its_mtime_advances() {
         .entry("s1".into())
         .or_default()
         .insert(file.clone(), SystemTime::now() - Duration::from_secs(3600));
-    app.html_candidates_due = None;
-    app.poll_html_candidates();
+    run_html_scan(&mut app);
     assert!(
         app.html_candidates
             .get("s1")
             .is_some_and(|c| c.contains(&file)),
         "a file edited after being seen (mtime advanced) reappears as a candidate"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn recency_floor_keeps_fresh_html_and_drops_stale() {
+    use std::fs::OpenOptions;
+
+    let dir = temp_html_dir("recency");
+    let fresh = dir.join("fresh.html");
+    let stale = dir.join("stale.html");
+    std::fs::write(&fresh, "<html></html>").unwrap();
+    std::fs::write(&stale, "<html></html>").unwrap();
+    // Backdate the stale file well past HTML_CANDIDATE_MAX_AGE (2h): a large
+    // monorepo root's dated-report dump is exactly this — old .html files that
+    // must NOT compete for the picker's slots with something written just now.
+    let old = SystemTime::now() - Duration::from_secs(6 * 60 * 60);
+    OpenOptions::new()
+        .write(true)
+        .open(&stale)
+        .unwrap()
+        .set_modified(old)
+        .unwrap();
+
+    let mut app = app_with(vec![session_in(
+        "s1",
+        Agent::Codex,
+        &dir.display().to_string(),
+        "t",
+    )]);
+    app.focus_or_add_pane("s1");
+
+    run_html_scan(&mut app);
+    let cands = app
+        .html_candidates
+        .get("s1")
+        .expect("the fresh file is a candidate");
+    assert!(
+        cands.contains(&fresh),
+        "a file written just now must be a candidate: {cands:?}"
+    );
+    assert!(
+        !cands.contains(&stale),
+        "a file older than the recency floor must be dropped: {cands:?}"
     );
 
     let _ = std::fs::remove_dir_all(&dir);

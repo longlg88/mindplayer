@@ -7,6 +7,17 @@ use walkdir::WalkDir;
 /// is responsive enough to notice a file the agent just wrote without turning
 /// into a hot loop of filesystem walks while a pane sits open.
 const HTML_CANDIDATE_POLL_INTERVAL: Duration = Duration::from_secs(3);
+/// Only `.html` files modified within this window of "now" count as candidates.
+/// A session cwd that happens to be a large monorepo root can hold hundreds of
+/// stale `.html` files — e.g. a dated-report dump with one file generated per
+/// day over months — none of which relate to what the agent is doing right now.
+/// With no recency floor they sort in by mtime alongside a file written seconds
+/// ago and drown it out of the picker's visible rows (the reported bug). Two
+/// hours is deliberately generous: long enough to still surface something the
+/// user wrote earlier in the same working session (after a break, a meeting,
+/// etc.), while anything from a previous day ages out. It's orthogonal to the
+/// `html_seen` already-offered suppression — both filters apply.
+const HTML_CANDIDATE_MAX_AGE: Duration = Duration::from_secs(2 * 60 * 60);
 /// Keep the candidate walk shallow: it's meant to catch a file the agent just
 /// wrote *near* where it's working, not to index an entire repo.
 const HTML_WALK_MAX_DEPTH: usize = 3;
@@ -814,35 +825,111 @@ impl App {
             .unwrap_or(&[])
     }
 
-    /// Periodically walk each live pane's cwd for newly-written `.html` files and
-    /// refresh [`Self::html_candidates`]. Interval-gated (see
-    /// [`HTML_CANDIDATE_POLL_INTERVAL`]) so it never runs every `run()` tick.
-    /// A file already in [`Self::html_seen`] stays suppressed until its mtime
-    /// advances past when it was seen. Returns true if any pane's candidate list
-    /// changed (needs a redraw to update the badge).
+    /// Passive `.html`-candidate detection, called every `run()` tick. The
+    /// directory walk is a blocking filesystem operation, so it must never run
+    /// on this (input + render) thread: instead this interval-gates *when* to
+    /// kick off a sweep ([`Self::spawn_html_scan`], which snapshots each live
+    /// pane's cwd and does the walking on a background thread) and, in the same
+    /// call, picks up a finished sweep non-blocking ([`Self::apply_html_scan`]).
+    /// Only the latter can change [`Self::html_candidates`], so only its result
+    /// is returned as "needs a redraw to update the badge".
+    ///
+    /// See [`super::handoff_sync`]'s `spawn_thread_sync_for`/`poll_thread_sync`
+    /// for the same off-main-thread pattern applied to peer-lane transcript
+    /// reads — this mirrors it so a session cwd rooted at a large monorepo can
+    /// never freeze typing the way a synchronous walk did.
     pub fn poll_html_candidates(&mut self) -> bool {
+        self.spawn_html_scan();
+        self.apply_html_scan()
+    }
+
+    /// Kick off a background `.html`-candidate sweep if the interval gate is due
+    /// and no sweep is already in flight. Snapshots the `(id, cwd)` pairs for
+    /// every live pane (a cheap in-memory read on the main thread — no I/O),
+    /// then spawns one thread that runs the blocking [`scan_html_candidates`]
+    /// walk for each and sends the whole batch back over a channel. Returns
+    /// immediately without blocking; returns true if a sweep was actually
+    /// started (used by tests to drive the flow deterministically). The
+    /// `html_seen`/recency filtering of the result happens later in
+    /// [`Self::apply_html_scan`], on the main thread, since it's all in-memory.
+    pub(crate) fn spawn_html_scan(&mut self) -> bool {
         match self.html_candidates_due {
             Some(at) if Instant::now() < at => return false,
             _ => {}
         }
+        if self.html_scan_rx.is_some() {
+            // A previous sweep is still walking; don't stack a second one. Leave
+            // the (now-due) timer alone so the next tick retries promptly once
+            // this one lands and `apply_html_scan` clears the receiver.
+            return false;
+        }
+        // Interval measured start-to-start: re-arm before returning so an empty
+        // pane set still backs off instead of spinning every tick.
         self.html_candidates_due = Some(Instant::now() + HTML_CANDIDATE_POLL_INTERVAL);
+        // Snapshot which panes to scan and where — cheap, in-memory, on the main
+        // thread — so the spawned closure owns plain data and never touches
+        // `self` (a thread closure can't safely capture `&mut App`).
+        let targets: Vec<(String, PathBuf)> = self
+            .panes
+            .iter()
+            .filter_map(|id| {
+                self.all_sessions
+                    .iter()
+                    .find(|s| &s.id == id)
+                    .map(|s| (id.clone(), s.cwd.clone()))
+            })
+            .collect();
+        if targets.is_empty() {
+            return false;
+        }
+        let (tx, rx) = mpsc::channel();
+        thread::spawn(move || {
+            let batch: HtmlScanBatch = targets
+                .into_iter()
+                .map(|(id, cwd)| (id, scan_html_candidates(&cwd)))
+                .collect();
+            let _ = tx.send(batch);
+        });
+        self.html_scan_rx = Some(rx);
+        true
+    }
 
+    /// Non-blocking pickup of a finished background sweep (see
+    /// [`Self::spawn_html_scan`]). If a batch is ready, applies the recency
+    /// floor ([`HTML_CANDIDATE_MAX_AGE`]) and the existing `html_seen`
+    /// already-offered suppression — both cheap in-memory comparisons — to each
+    /// pane's raw results and refreshes [`Self::html_candidates`]. Returns true
+    /// if any pane's candidate list changed (needs a redraw to update the
+    /// badge); false if nothing was ready yet or nothing changed.
+    pub(crate) fn apply_html_scan(&mut self) -> bool {
+        let Some(rx) = &self.html_scan_rx else {
+            return false;
+        };
+        let Ok(batch) = rx.try_recv() else {
+            return false;
+        };
+        self.html_scan_rx = None;
+
+        let now = SystemTime::now();
+        // Panes still open now — a pane closed between kicking off the sweep and
+        // its result landing must not have candidate state resurrected for it.
+        let valid: HashSet<String> = self.panes.iter().cloned().collect();
         let mut changed = false;
-        let ids: Vec<String> = self.panes.to_vec();
-        for id in ids {
-            let Some(cwd) = self
-                .all_sessions
-                .iter()
-                .find(|s| s.id == id)
-                .map(|s| s.cwd.clone())
-            else {
+        for (id, found) in batch {
+            if !valid.contains(&id) {
                 continue;
-            };
-            let found = scan_html_candidates(&cwd);
+            }
             let candidates: Vec<PathBuf> = {
                 let seen = self.html_seen.get(&id);
                 found
                     .into_iter()
+                    // Recency floor: only genuinely fresh files count, so a large
+                    // monorepo root's pile of old dated `.html` files ages out
+                    // instead of crowding the picker.
+                    .filter(|(_, mtime)| within_max_age(*mtime, now, HTML_CANDIDATE_MAX_AGE))
+                    // Already-offered/previewed suppression (orthogonal to the
+                    // recency floor above): a file stays hidden until its mtime
+                    // advances past when it was last seen.
                     .filter(|(path, mtime)| {
                         seen.and_then(|m| m.get(path))
                             .is_none_or(|seen_mtime| mtime > seen_mtime)
@@ -869,13 +956,24 @@ impl App {
         }
         // Drop candidate lists for panes that no longer exist (owned set, so
         // `self` isn't double-borrowed).
-        let valid: HashSet<String> = self.panes.iter().cloned().collect();
         let before = self.html_candidates.len();
         self.html_candidates.retain(|id, _| valid.contains(id));
         if self.html_candidates.len() != before {
             changed = true;
         }
         changed
+    }
+}
+
+/// Whether `mtime` is recent enough (within `max_age` of `now`) to count as a
+/// candidate. A file whose mtime is in the future (clock skew, or a fixture
+/// deliberately post-dating it) trivially passes rather than being treated as
+/// "infinitely old". Pulled out so the recency rule is unit-testable without a
+/// real walk or clock.
+fn within_max_age(mtime: SystemTime, now: SystemTime, max_age: Duration) -> bool {
+    match now.duration_since(mtime) {
+        Ok(age) => age <= max_age,
+        Err(_) => true,
     }
 }
 
@@ -964,7 +1062,27 @@ fn bubble_urgent_to_front(ids: &[String], mut is_urgent: impl FnMut(&str) -> boo
 
 #[cfg(test)]
 mod tests {
-    use super::bubble_urgent_to_front;
+    use super::{bubble_urgent_to_front, within_max_age};
+    use std::time::{Duration, SystemTime};
+
+    #[test]
+    fn within_max_age_keeps_fresh_and_drops_stale() {
+        let now = SystemTime::now();
+        let max = Duration::from_secs(2 * 60 * 60);
+        // Just now, and just inside the window → kept.
+        assert!(within_max_age(now, now, max));
+        assert!(within_max_age(now - Duration::from_secs(60 * 60), now, max));
+        // Exactly at the boundary is inclusive.
+        assert!(within_max_age(now - max, now, max));
+        // Past the window → dropped.
+        assert!(!within_max_age(
+            now - Duration::from_secs(3 * 60 * 60),
+            now,
+            max
+        ));
+        // A future mtime (clock skew) counts as fresh rather than infinitely old.
+        assert!(within_max_age(now + Duration::from_secs(3600), now, max));
+    }
 
     #[test]
     fn bubble_urgent_to_front_preserves_relative_order_within_each_group() {

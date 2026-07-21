@@ -13,6 +13,12 @@ use std::sync::mpsc::{self, Receiver};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 
+/// One background `.html`-candidate sweep's results: per scanned pane id, that
+/// pane's raw [`pane::scan_html_candidates`] output (`(path, mtime)` pairs).
+/// Named so [`App::html_scan_rx`] and the sweep thread share one non-trivial
+/// channel type without tripping `clippy::type_complexity`.
+type HtmlScanBatch = Vec<(String, Vec<(PathBuf, SystemTime)>)>;
+
 /// Background refresh result for one already-discovered session.
 struct ActivityUpdate {
     id: String,
@@ -402,6 +408,15 @@ pub struct App {
     /// the read finished. Keyed by the target session id so a stale result
     /// can never land on a pane the user has since switched away from.
     thread_sync_rx: Option<Receiver<(String, Result<handoff::PreparedHandoff, String>)>>,
+    /// In-flight background `.html`-candidate scan sweep (see
+    /// `spawn_html_scan`/`apply_html_scan`). Walking each live pane's cwd
+    /// (`scan_html_candidates`) is a blocking filesystem walk that takes long
+    /// enough to visibly stall input/rendering when a session's cwd is the root
+    /// of a large monorepo — so, exactly like `thread_sync_rx`, the walk runs on
+    /// a background thread and the finished batch is picked up non-blocking on
+    /// the main thread. Each entry is `(pane_id, raw scan_html_candidates
+    /// results for that pane)`; `None` means no sweep is in flight.
+    html_scan_rx: Option<Receiver<HtmlScanBatch>>,
     pub spinner: usize,
     pub status: String,
     pub should_quit: bool,
@@ -508,6 +523,7 @@ impl App {
             bg_rescan_rx: None,
             rescan_due: None,
             thread_sync_rx: None,
+            html_scan_rx: None,
             spinner: 0,
             status: String::new(),
             should_quit: false,

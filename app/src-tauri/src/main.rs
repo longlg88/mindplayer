@@ -156,6 +156,7 @@ fn pty_start(
         file: PathBuf::new(),
         started_at: None,
         last_active: None,
+        last_prompt_at: None,
         tokens: Default::default(),
         title: String::new(),
         archived: false,

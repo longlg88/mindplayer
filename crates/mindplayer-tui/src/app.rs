@@ -23,6 +23,7 @@ type HtmlScanBatch = Vec<(String, Vec<(PathBuf, SystemTime)>)>;
 struct ActivityUpdate {
     id: String,
     last_active: Option<DateTime<Utc>>,
+    last_prompt_at: Option<DateTime<Utc>>,
     tokens: TokenUsage,
     context_pct: Option<f64>,
 }

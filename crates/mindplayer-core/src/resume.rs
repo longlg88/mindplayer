@@ -70,6 +70,7 @@ mod tests {
             file: PathBuf::new(),
             started_at: None,
             last_active: None,
+            last_prompt_at: None,
             tokens: TokenUsage::default(),
             title: String::new(),
             archived: false,

@@ -979,8 +979,19 @@ fn session_list(f: &mut Frame, app: &mut App, area: Rect, now: DateTime<Utc>) {
             // root with a running/active-today lane) reads "now" / its lane's
             // recent time rather than its own possibly-stale transcript mtime.
             let (live_now, eff_active) = app.row_activity(s, child_count);
+            // A running session's file mtime is always "just now" (the agent
+            // keeps writing), so showing that here would say nothing useful —
+            // time since the last genuine prompt (how long it's been working
+            // solo, or how long it's been sitting idle since you last typed)
+            // is the actually informative number for a live row. Kiro can't
+            // derive this at all, and a session with no scan yet won't have it
+            // either — fall back to the old plain "now" rather than a bare "—"
+            // for what's still very much a live, just-created row.
             let when = if live_now {
-                "now".to_string()
+                match app.row_last_prompt(s, child_count) {
+                    Some(t) => relative_time(Some(t), now),
+                    None => "now".to_string(),
+                }
             } else {
                 relative_time(eff_active, now)
             };

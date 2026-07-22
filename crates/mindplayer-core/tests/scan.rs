@@ -200,6 +200,7 @@ fn refresh_activity_populates_mtime_and_sorts() {
                 file,
                 started_at: None,
                 last_active: None,
+                last_prompt_at: None,
                 tokens: Default::default(),
                 title: String::new(),
                 archived: false,
@@ -286,6 +287,7 @@ fn refresh_activity_updates_usage_for_existing_rows() {
             file: codex,
             started_at: None,
             last_active: None,
+            last_prompt_at: None,
             tokens: TokenUsage::default(),
             title: "codex".into(),
             archived: false,
@@ -299,6 +301,7 @@ fn refresh_activity_updates_usage_for_existing_rows() {
             file: claude,
             started_at: None,
             last_active: None,
+            last_prompt_at: None,
             tokens: TokenUsage::default(),
             title: "claude".into(),
             archived: false,
@@ -428,5 +431,78 @@ fn claude_agent_name_marks_an_externally_orchestrated_subagent_with_a_novel_titl
         worker.is_subagent,
         "a non-empty agentName must mark a session as a sub-agent even when \
          isSidechain is false and its title matches no known prompt-prefix heuristic"
+    );
+}
+
+#[test]
+fn codex_last_prompt_at_ignores_the_tool_round_trip_that_follows_it() {
+    let dir = tempdir().unwrap();
+    let codex_dir = dir.path().join("codex");
+    const ID: &str = "aaaaaaaa-1111-7222-8333-444455556666";
+    write(
+        &codex_dir
+            .join("2026/03/01")
+            .join(format!("rollout-2026-03-01T09-00-00-{ID}.jsonl")),
+        &[
+            &format!(
+                r#"{{"timestamp":"2026-03-01T09:00:00Z","type":"session_meta","payload":{{"id":"{ID}","timestamp":"2026-03-01T09:00:00Z","cwd":"/work"}}}}"#
+            ),
+            r#"{"timestamp":"2026-03-01T09:01:00Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"add a health check endpoint"}]}}"#,
+            // A tool call/output round-trip after the prompt must never look
+            // like a fresher prompt — codex keeps these as their own
+            // `function_call`/`function_call_output` item types, never a
+            // `message`/`role":"user"` record.
+            r#"{"timestamp":"2026-03-01T09:02:00Z","type":"response_item","payload":{"type":"function_call","name":"shell","arguments":"{}"}}"#,
+            r#"{"timestamp":"2026-03-01T09:02:05Z","type":"response_item","payload":{"type":"function_call_output","output":"ok"}}"#,
+            r#"{"timestamp":"2026-03-01T09:02:10Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":1,"cached_input_tokens":0,"output_tokens":1,"total_tokens":2}}}}"#,
+        ],
+    );
+    let cfg = ScanConfig {
+        codex_dir,
+        claude_dir: dir.path().join("claude"),
+        kiro_dir: dir.path().join("kiro"),
+    };
+    let sessions = scan(&Scope::WorkingDir("/work".into()), &cfg);
+    let s = sessions.iter().find(|s| s.id == ID).expect("session found");
+    assert_eq!(
+        s.last_prompt_at.map(|t| t.to_rfc3339()),
+        Some("2026-03-01T09:01:00+00:00".to_string()),
+        "last_prompt_at must be the user message's own timestamp, not the later tool round-trip"
+    );
+}
+
+#[test]
+fn claude_last_prompt_at_ignores_tool_result_feedback() {
+    let dir = tempdir().unwrap();
+    let claude_dir = dir.path().join("claude");
+    const ID: &str = "bbbbbbbb-2222-7333-8444-555566667777";
+    write(
+        &claude_dir.join("-work").join(format!("{ID}.jsonl")),
+        &[
+            &format!(
+                r#"{{"type":"user","timestamp":"2026-03-02T10:00:00Z","cwd":"/work","sessionId":"{ID}","message":{{"role":"user","content":"fix the failing deploy"}}}}"#
+            ),
+            &format!(
+                r#"{{"type":"assistant","timestamp":"2026-03-02T10:00:05Z","sessionId":"{ID}","message":{{"role":"assistant","content":[{{"type":"tool_use","id":"tu_1","name":"Bash","input":{{}}}}]}}}}"#
+            ),
+            // The tool's own result comes back as its own `type: "user"`
+            // record — same shape a real prompt would have — and is later
+            // than the genuine prompt above. It must not win.
+            &format!(
+                r#"{{"type":"user","timestamp":"2026-03-02T10:00:10Z","cwd":"/work","sessionId":"{ID}","message":{{"role":"user","content":[{{"type":"tool_result","tool_use_id":"tu_1","content":"deploy log tail"}}]}}}}"#
+            ),
+        ],
+    );
+    let cfg = ScanConfig {
+        codex_dir: dir.path().join("codex"),
+        claude_dir,
+        kiro_dir: dir.path().join("kiro"),
+    };
+    let sessions = scan(&Scope::WorkingDir("/work".into()), &cfg);
+    let s = sessions.iter().find(|s| s.id == ID).expect("session found");
+    assert_eq!(
+        s.last_prompt_at.map(|t| t.to_rfc3339()),
+        Some("2026-03-02T10:00:00+00:00".to_string()),
+        "last_prompt_at must be the genuine prompt's timestamp, not the later tool_result feedback"
     );
 }

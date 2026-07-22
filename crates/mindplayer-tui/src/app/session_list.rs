@@ -346,6 +346,26 @@ impl App {
         (false, latest)
     }
 
+    /// The freshest `last_prompt_at` across a row's whole thread (root, a
+    /// handoff link, or a leaf lane) — mirrors [`Self::row_activity`]'s
+    /// same-thread rollup, but for "when did a human last actually type
+    /// something" rather than raw file activity. `None` when no lane in the
+    /// thread has one (e.g. an all-kiro thread, which can't derive it at all).
+    pub fn row_last_prompt(&self, s: &Session, child_count: usize) -> Option<DateTime<Utc>> {
+        let root = self.state.thread_root(&s.id);
+        if child_count == 0 && root == s.id.as_str() {
+            return s.last_prompt_at;
+        }
+        let mut latest = s.last_prompt_at;
+        for other in &self.all_sessions {
+            if other.id == s.id || self.state.thread_root(&other.id) != root {
+                continue;
+            }
+            latest = latest.max(other.last_prompt_at);
+        }
+        latest
+    }
+
     pub fn toggle_archived_view(&mut self) {
         self.show_archived = !self.show_archived;
         self.selected = 0;
@@ -516,6 +536,7 @@ impl App {
                 .map(|s| ActivityUpdate {
                     id: s.id,
                     last_active: s.last_active,
+                    last_prompt_at: s.last_prompt_at,
                     tokens: s.tokens,
                     context_pct: s.context_pct,
                 })
@@ -556,6 +577,13 @@ impl App {
         for s in self.all_sessions.iter_mut() {
             if let Some(update) = updates.get(&s.id) {
                 s.last_active = update.last_active;
+                // A refresh pass only re-derives this from whatever tail
+                // window it happened to scan; a `None` here means "no new
+                // prompt observed this pass", not "there never was one" — so
+                // it must never regress an already-known timestamp.
+                if update.last_prompt_at.is_some() {
+                    s.last_prompt_at = update.last_prompt_at;
+                }
                 s.tokens = update.tokens;
                 s.context_pct = update.context_pct;
             }

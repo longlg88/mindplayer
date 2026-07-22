@@ -57,6 +57,7 @@ impl App {
             file: PathBuf::new(),
             started_at: Some(now),
             last_active: Some(now),
+            last_prompt_at: None,
             tokens: Default::default(),
             title,
             archived: false,

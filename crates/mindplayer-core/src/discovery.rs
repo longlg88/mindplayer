@@ -186,15 +186,21 @@ pub fn refresh_activity_and_usage(sessions: &mut [Session]) {
 
         match s.agent {
             Agent::Codex => {
-                let (tokens, _) = codex_tail_scan(&s.file);
+                let (tokens, _, last_prompt_at) = codex_tail_scan(&s.file);
                 if tokens.total > 0 || s.tokens.total == 0 {
                     s.tokens = tokens;
                 }
+                if last_prompt_at.is_some() {
+                    s.last_prompt_at = last_prompt_at;
+                }
             }
             Agent::Claude => {
-                let tokens = claude_usage_scan(&s.file);
+                let (tokens, last_prompt_at) = claude_usage_scan(&s.file);
                 if tokens.total > 0 || s.tokens.total == 0 {
                     s.tokens = tokens;
+                }
+                if last_prompt_at.is_some() {
+                    s.last_prompt_at = last_prompt_at;
                 }
             }
             Agent::Kiro => {
@@ -331,7 +337,7 @@ fn parse_codex_file(path: &Path, scope: &Scope) -> Option<Session> {
         return None;
     }
     let id = meta.id.or_else(|| codex_uuid_from_filename(path))?;
-    let (tokens, last_active) = codex_tail_scan(path);
+    let (tokens, last_active, last_prompt_at) = codex_tail_scan(path);
     let title = codex_head_title(path).unwrap_or_else(|| "(empty)".to_string());
     let is_subagent = meta.is_subagent || looks_like_subagent_title(&title);
     Some(Session {
@@ -341,6 +347,7 @@ fn parse_codex_file(path: &Path, scope: &Scope) -> Option<Session> {
         file: path.to_path_buf(),
         started_at: meta.started,
         last_active,
+        last_prompt_at,
         tokens,
         title,
         archived: false,
@@ -417,20 +424,22 @@ fn codex_meta(path: &Path) -> CodexMeta {
     meta
 }
 
-/// Read a bounded window from EOF and take the last `token_count` (cumulative)
-/// plus the last timestamp. Grows the window if no `token_count` is in range.
-fn codex_tail_scan(path: &Path) -> (TokenUsage, Option<DateTime<Utc>>) {
+/// Read a bounded window from EOF and take the last `token_count` (cumulative),
+/// the last timestamp, and the last genuine user prompt. Grows the window if no
+/// `token_count` is in range.
+fn codex_tail_scan(path: &Path) -> (TokenUsage, Option<DateTime<Utc>>, Option<DateTime<Utc>>) {
     let mut tokens = TokenUsage::default();
     let mut last_active = None;
+    let mut last_prompt_at = None;
     let Ok(mut file) = File::open(path) else {
-        return (tokens, last_active);
+        return (tokens, last_active, last_prompt_at);
     };
     let len = match file.metadata() {
         Ok(m) => m.len(),
-        Err(_) => return (tokens, last_active),
+        Err(_) => return (tokens, last_active, last_prompt_at),
     };
     if len == 0 {
-        return (tokens, last_active);
+        return (tokens, last_active, last_prompt_at);
     }
 
     let mut window = INITIAL_TAIL_BYTES;
@@ -478,7 +487,8 @@ fn codex_tail_scan(path: &Path) -> (TokenUsage, Option<DateTime<Utc>>) {
                 last_active = Some(last_active.map_or(ts, |prev: DateTime<Utc>| prev.max(ts)));
             }
             let payload = v.get("payload");
-            if payload.and_then(|p| p.get("type")).and_then(Value::as_str) == Some("token_count") {
+            let payload_type = payload.and_then(|p| p.get("type")).and_then(Value::as_str);
+            if payload_type == Some("token_count") {
                 if let Some(info) = payload
                     .and_then(|p| p.get("info"))
                     .and_then(|i| i.get("total_token_usage"))
@@ -487,13 +497,29 @@ fn codex_tail_scan(path: &Path) -> (TokenUsage, Option<DateTime<Utc>>) {
                     found_token = true;
                 }
             }
+            // codex keeps tool round-trips out of `message`/`role` entirely
+            // (they're their own `function_call`/`function_call_output` item
+            // types), so unlike claude, a plain `role == "user"` message here
+            // is never a disguised tool result — no extra filtering needed.
+            if payload_type == Some("message")
+                && payload.and_then(|p| p.get("role")).and_then(Value::as_str) == Some("user")
+            {
+                if let Some(ts) = v
+                    .get("timestamp")
+                    .and_then(Value::as_str)
+                    .and_then(parse_ts)
+                {
+                    last_prompt_at =
+                        Some(last_prompt_at.map_or(ts, |prev: DateTime<Utc>| prev.max(ts)));
+                }
+            }
         }
         if found_token || start == 0 || window >= MAX_TAIL_BYTES {
             break;
         }
         window = (window * 4).min(MAX_TAIL_BYTES);
     }
-    (tokens, last_active)
+    (tokens, last_active, last_prompt_at)
 }
 
 /// Read the leading lines to find the first *real* user prompt for the title.
@@ -608,6 +634,7 @@ fn parse_claude_file(path: &Path, cwd_override: Option<&Path>) -> Option<Session
     let mut cwd: Option<PathBuf> = None;
     let mut started_at: Option<DateTime<Utc>> = None;
     let mut last_active: Option<DateTime<Utc>> = None;
+    let mut last_prompt_at: Option<DateTime<Utc>> = None;
     let mut tokens = TokenUsage::default();
     let mut title: Option<String> = None;
     let mut title_fallback: Option<String> = None;
@@ -652,8 +679,9 @@ fn parse_claude_file(path: &Path, cwd_override: Option<&Path>) -> Option<Session
         }
         match v.get("type").and_then(Value::as_str).unwrap_or("") {
             "user" => {
+                let message = v.get("message");
                 if title.is_none() {
-                    if let Some(text) = v.get("message").and_then(extract_claude_text) {
+                    if let Some(text) = message.and_then(extract_claude_text) {
                         let cleaned = extract_intent(&text);
                         // Skip injected preamble (system reminders, AGENTS/CLAUDE
                         // boilerplate); keep the first genuine request.
@@ -662,6 +690,20 @@ fn parse_claude_file(path: &Path, cwd_override: Option<&Path>) -> Option<Session
                         } else {
                             title = Some(cleaned);
                         }
+                    }
+                }
+                // Claude represents a tool's result as its own `type: "user"`
+                // record (content is an array of `tool_result` blocks) — the
+                // same shape a real human turn would have. Only a record
+                // without any tool_result block reflects something a person
+                // actually typed.
+                if !claude_message_is_tool_result(message) {
+                    if let Some(ts) = v
+                        .get("timestamp")
+                        .and_then(Value::as_str)
+                        .and_then(parse_ts)
+                    {
+                        last_prompt_at = Some(ts);
                     }
                 }
             }
@@ -726,12 +768,30 @@ fn parse_claude_file(path: &Path, cwd_override: Option<&Path>) -> Option<Session
         file: path.to_path_buf(),
         started_at,
         last_active,
+        last_prompt_at,
         tokens,
         title,
         archived: false,
         is_subagent,
         context_pct: None,
     })
+}
+
+/// True when a claude `type: "user"` record is actually a tool's result being
+/// fed back into the conversation, not something a person typed — its
+/// `message.content` is an array containing at least one `tool_result` block.
+/// A genuine prompt's content is either a plain string or an array with no
+/// such block (e.g. text plus an image attachment).
+fn claude_message_is_tool_result(message: Option<&Value>) -> bool {
+    let Some(content) = message.and_then(|m| m.get("content")) else {
+        return false;
+    };
+    let Some(blocks) = content.as_array() else {
+        return false;
+    };
+    blocks
+        .iter()
+        .any(|b| b.get("type").and_then(Value::as_str) == Some("tool_result"))
 }
 
 fn extract_claude_text(message: &Value) -> Option<String> {
@@ -774,12 +834,13 @@ fn add_claude_usage(tokens: &mut TokenUsage, usage: &Value) {
         .saturating_add(cache_read);
 }
 
-fn claude_usage_scan(path: &Path) -> TokenUsage {
+fn claude_usage_scan(path: &Path) -> (TokenUsage, Option<DateTime<Utc>>) {
     let Ok(file) = File::open(path) else {
-        return TokenUsage::default();
+        return (TokenUsage::default(), None);
     };
     let reader = BufReader::new(file.take(MAX_CLAUDE_BYTES));
     let mut tokens = TokenUsage::default();
+    let mut last_prompt_at: Option<DateTime<Utc>> = None;
     for line in reader.lines().map_while(Result::ok) {
         let line = line.trim();
         if line.is_empty() {
@@ -788,14 +849,25 @@ fn claude_usage_scan(path: &Path) -> TokenUsage {
         let Ok(v) = serde_json::from_str::<Value>(line) else {
             continue;
         };
-        if v.get("type").and_then(Value::as_str) != Some("assistant") {
-            continue;
-        }
-        if let Some(usage) = v.get("message").and_then(|m| m.get("usage")) {
-            add_claude_usage(&mut tokens, usage);
+        match v.get("type").and_then(Value::as_str) {
+            Some("assistant") => {
+                if let Some(usage) = v.get("message").and_then(|m| m.get("usage")) {
+                    add_claude_usage(&mut tokens, usage);
+                }
+            }
+            Some("user") if !claude_message_is_tool_result(v.get("message")) => {
+                if let Some(ts) = v
+                    .get("timestamp")
+                    .and_then(Value::as_str)
+                    .and_then(parse_ts)
+                {
+                    last_prompt_at = Some(ts);
+                }
+            }
+            _ => {}
         }
     }
-    tokens
+    (tokens, last_prompt_at)
 }
 
 fn kiro_context_pct(path: &Path) -> Option<f64> {
@@ -922,6 +994,8 @@ fn parse_kiro_file(path: &Path, scope: &Scope) -> Option<Session> {
         file: path.to_path_buf(),
         started_at,
         last_active,
+        // No per-turn role breakdown in the sidecar to derive this from.
+        last_prompt_at: None,
         tokens: TokenUsage::default(),
         title,
         archived: false,
@@ -1110,6 +1184,7 @@ mod tests {
             // Just past the 24h window — must sort below every recent session
             // regardless of calendar day (no midnight cliff).
             last_active: Some(now - chrono::Duration::hours(25)),
+            last_prompt_at: None,
             tokens: TokenUsage::default(),
             title: "old".into(),
             archived: false,
@@ -1141,6 +1216,7 @@ mod tests {
             file: PathBuf::new(),
             started_at: None,
             last_active: Some(now - chrono::Duration::hours(23)),
+            last_prompt_at: None,
             tokens: TokenUsage::default(),
             title: String::new(),
             archived: false,

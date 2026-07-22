@@ -45,6 +45,14 @@ jobs:
         # Hermetic: no codex/claude/kiro CLIs are invoked — tests run against
         # fixtures and an isolated state file. MINDPLAYER_STATE keeps any stray
         # state write off the runner's HOME.
-        run: cargo test --all
+        #
+        # --test-threads=1: many tests mutate the process-global MINDPLAYER_STATE
+        # env var (guarded pairwise by a same-file mutex, but std::env::set_var
+        # is documented as unsound to call concurrently with ANY other thread's
+        # env::var read — including this job's own default MINDPLAYER_STATE,
+        # which every test that never overrides it reads unguarded). Verified:
+        # this exact race is what intermittently broke
+        # `toggle_in_progress_marks_persists_and_unmarks` on this runner.
+        run: cargo test --all -- --test-threads=1
         env:
           MINDPLAYER_STATE: ${{ runner.temp }}/mindplayer-ci-state.json

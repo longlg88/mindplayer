@@ -114,6 +114,27 @@
     <div class="card row">
       <span class="badge idea">next</span>
       <div>
+        <div class="item-title">Ctrl+P: skip the picker when exactly 1 fresh candidate</div>
+        <div class="item-desc">
+          Today <code>toggle_html_preview</code> (<code>crates/mindplayer-tui/src/app/modals.rs</code>) always opens the
+          ranked picker whenever <code>html_candidates</code> is non-empty, even with a single entry. For the
+          generate → glance in Chrome → feedback → regenerate loop, the common case is exactly one fresh file, and
+          the extra picker step (select the only row, press Enter) is pure friction.
+        </div>
+        <ul>
+          <li>0 candidates → manual path-input popup (unchanged)</li>
+          <li>exactly 1 candidate → open it directly in the browser, no popup/picker at all (new)</li>
+          <li>2+ candidates → ranked picker, most-recent first (unchanged)</li>
+        </ul>
+        <div class="meta">Known limitation carried over, not addressed by this item: sessions sharing the same
+          cwd (common when every session is launched from the workspace root) get an identical candidate list —
+          the scan can't attribute a file to "the session that actually wrote it," only "near this cwd."</div>
+      </div>
+    </div>
+
+    <div class="card row">
+      <span class="badge idea">next</span>
+      <div>
         <div class="item-title">RELEASE.md changelog entry for v0.15.1 — uncommitted</div>
         <div class="item-desc">
           Working tree has one pending edit: a <code>## Changelog</code> / <code>### v0.15.1 — 2026-07-09</code> section

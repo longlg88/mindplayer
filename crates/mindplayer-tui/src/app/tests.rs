@@ -16,6 +16,7 @@ fn session(id: &str, agent: Agent, archived: bool) -> Session {
         file: PathBuf::new(),
         started_at: None,
         last_active: None,
+        last_prompt_at: None,
         tokens: TokenUsage::default(),
         title: id.into(),
         archived,
@@ -39,6 +40,7 @@ fn session_in(id: &str, agent: Agent, cwd: &str, title: &str) -> Session {
         file: PathBuf::new(),
         started_at: Some(chrono::Utc::now()),
         last_active: Some(chrono::Utc::now()),
+        last_prompt_at: None,
         tokens: TokenUsage::default(),
         title: title.into(),
         archived: false,
@@ -134,6 +136,7 @@ fn new_session_persists_then_reconciles() {
         file: PathBuf::new(),
         started_at: Some(chrono::Utc::now()),
         last_active: Some(chrono::Utc::now()),
+        last_prompt_at: None,
         tokens: TokenUsage::default(),
         title: "deploy check".into(),
         archived: false,
@@ -163,6 +166,7 @@ fn refresh_applies_token_updates_to_existing_row() {
     tx.send(vec![ActivityUpdate {
         id: "s1".into(),
         last_active: Some(chrono::Utc::now()),
+        last_prompt_at: None,
         tokens: TokenUsage {
             input: 7,
             cached: 2,
@@ -573,6 +577,45 @@ fn thread_root_time_reflects_freshest_lane_activity() {
         .clone();
     let (_, eff_c) = app.row_activity(&c, app.thread_child_count("c"));
     assert_eq!(eff_c, Some(now));
+}
+
+#[test]
+fn thread_root_last_prompt_reflects_freshest_lane_prompt() {
+    let now = chrono::Utc::now();
+    // Root's own last prompt is old…
+    let mut parent = session("p2", Agent::Claude, false);
+    parent.last_prompt_at = Some(now - chrono::Duration::weeks(2));
+    // …but a lane was prompted today.
+    let mut lane = session("c2", Agent::Claude, false);
+    lane.last_prompt_at = Some(now);
+    let mut app = app_with(vec![parent, lane]);
+    app.state
+        .set_handoff_link("c2", "p2", PathBuf::from("/tmp/h2.md"), now);
+    app.rebuild_visible();
+
+    let p = app
+        .all_sessions
+        .iter()
+        .find(|s| s.id == "p2")
+        .unwrap()
+        .clone();
+    assert_eq!(
+        app.row_last_prompt(&p, app.thread_child_count("p2")),
+        Some(now),
+        "root's last-prompt time reflects the lane's fresher prompt, not its own 2w-old one"
+    );
+
+    // A standalone session with no thread still uses its own value.
+    let c = app
+        .all_sessions
+        .iter()
+        .find(|s| s.id == "c2")
+        .unwrap()
+        .clone();
+    assert_eq!(
+        app.row_last_prompt(&c, app.thread_child_count("c2")),
+        Some(now)
+    );
 }
 
 #[test]
@@ -1128,6 +1171,7 @@ fn merge_extras_ignores_preexisting_session() {
         file: PathBuf::new(),
         started_at: Some(now),
         last_active: Some(now),
+        last_prompt_at: None,
         tokens: TokenUsage::default(),
         title: "already running".into(),
         archived: false,

@@ -75,6 +75,7 @@ mod tests {
             file: PathBuf::new(),
             started_at: None,
             last_active: None,
+            last_prompt_at: None,
             tokens: TokenUsage {
                 input: total,
                 output: 0,

@@ -71,6 +71,14 @@ pub struct Session {
     pub file: PathBuf,
     pub started_at: Option<DateTime<Utc>>,
     pub last_active: Option<DateTime<Utc>>,
+    /// Timestamp of the last genuine user-authored prompt — excludes
+    /// automated tool-result round-trips (claude turns whose content is a
+    /// `tool_result` block) and codex's own `function_call_output` events, so
+    /// it reflects when a human last actually typed something, not merely
+    /// when the transcript file was last appended to. `None` for kiro, whose
+    /// sidecar only records a whole-session `updated_at` with no per-turn
+    /// role breakdown to derive this from.
+    pub last_prompt_at: Option<DateTime<Utc>>,
     pub tokens: TokenUsage,
     /// First user prompt, cleaned and truncated for the list. `(empty)` if none.
     pub title: String,

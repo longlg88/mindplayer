@@ -270,6 +270,15 @@ pub struct App {
     /// every `run()` tick, so the periodic directory walk stays cheap. `None`
     /// means "run on the next poll".
     pub html_candidates_due: Option<Instant>,
+    /// Latest hook-derived status per pane id (Claude/Codex only — see
+    /// `agent_hooks`), refreshed on the same interval gate as
+    /// `hook_status_due`. Read by [`Self::session_status`] in place of the
+    /// screen-text heuristic whenever an entry exists here.
+    pub hook_status: HashMap<String, crate::agent_hooks::HookReading>,
+    /// When the next hook-state-file poll is due. Same purpose as
+    /// `html_candidates_due` — bounds the per-tick filesystem reads to an
+    /// interval instead of every frame.
+    pub hook_status_due: Option<Instant>,
     /// When `Some`, the Ctrl-P candidate picker is open; the value is the
     /// selected index into the focused pane's `html_candidates` list. Mirrors
     /// `new_picker`/`handoff_picker`.
@@ -477,6 +486,8 @@ impl App {
             html_candidates: HashMap::new(),
             html_seen: HashMap::new(),
             html_candidates_due: None,
+            hook_status: HashMap::new(),
+            hook_status_due: None,
             html_preview_picker: None,
             active: None,
             panes: Vec::new(),

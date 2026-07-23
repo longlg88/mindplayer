@@ -7,6 +7,11 @@ use walkdir::WalkDir;
 /// is responsive enough to notice a file the agent just wrote without turning
 /// into a hot loop of filesystem walks while a pane sits open.
 const HTML_CANDIDATE_POLL_INTERVAL: Duration = Duration::from_secs(3);
+/// How often each Claude/Codex pane's hook-state file is re-read. The files
+/// are tiny (one small JSON object) so this is a direct synchronous read on
+/// the main thread, not a background sweep like the `.html` candidate walk —
+/// a short interval is cheap here.
+const HOOK_STATUS_POLL_INTERVAL: Duration = Duration::from_millis(500);
 /// Only `.html` files modified within this window of "now" count as candidates.
 /// A session cwd that happens to be a large monorepo root can hold hundreds of
 /// stale `.html` files — e.g. a dated-report dump with one file generated per
@@ -254,21 +259,71 @@ impl App {
             .any(|(id, t)| !self.ended.contains(id) && t.elapsed() < WORKING_HOLD)
     }
 
-    /// Status of session `id` for the list badge.
+    /// Status of session `id` for the list badge. A Claude/Codex pane with a
+    /// live hook reading (see `agent_hooks`) uses that directly instead of
+    /// guessing from screen text — it's the agent itself reporting its state,
+    /// not a heuristic. Kiro, and any Claude/Codex pane with no hook data yet
+    /// (hooks not installed, or no event has fired for this pane), falls back
+    /// to the existing screen-text classifier unchanged.
     pub fn session_status(&self, id: &str) -> SessionStatus {
         if self.ended.contains(id) {
-            SessionStatus::Ended
-        } else if let Some(pty) = self.ptys.get(id) {
-            classify_live_session_status(
-                pty.looks_blocked(),
-                pty.looks_idle(),
-                pty.looks_busy(),
-                self.out_at.get(id).copied(),
-                Instant::now(),
-            )
-        } else {
-            SessionStatus::Inactive
+            return SessionStatus::Ended;
         }
+        let Some(pty) = self.ptys.get(id) else {
+            return SessionStatus::Inactive;
+        };
+        if let Some(reading) = self.hook_status.get(id) {
+            return reading.status;
+        }
+        classify_live_session_status(
+            pty.looks_blocked(),
+            pty.looks_idle(),
+            pty.looks_busy(),
+            self.out_at.get(id).copied(),
+            Instant::now(),
+        )
+    }
+
+    /// Refresh `hook_status` for every live Claude/Codex pane from its
+    /// hook-state file. Interval-gated like [`Self::poll_html_candidates`];
+    /// returns true if any pane's cached reading changed (needs redraw since
+    /// it can flip the list badge/urgency sort without any new PTY output).
+    pub fn poll_hook_status(&mut self) -> bool {
+        match self.hook_status_due {
+            Some(at) if Instant::now() < at => return false,
+            _ => {}
+        }
+        self.hook_status_due = Some(Instant::now() + HOOK_STATUS_POLL_INTERVAL);
+
+        let mut changed = false;
+        let live_ids: Vec<String> = self.ptys.keys().cloned().collect();
+        for id in &live_ids {
+            let supports = self
+                .all_sessions
+                .iter()
+                .find(|s| &s.id == id)
+                .is_some_and(|s| crate::agent_hooks::supports_hooks(s.agent));
+            if !supports {
+                continue;
+            }
+            let reading = crate::agent_hooks::read_hook_status(id);
+            match (reading, self.hook_status.get(id).copied()) {
+                (Some(r), Some(prev)) if r == prev => {}
+                (None, None) => {}
+                _ => changed = true,
+            }
+            match reading {
+                Some(r) => {
+                    self.hook_status.insert(id.clone(), r);
+                }
+                None => {
+                    self.hook_status.remove(id);
+                }
+            }
+        }
+        // Drop cached readings for panes that no longer exist (closed/ended).
+        self.hook_status.retain(|id, _| self.ptys.contains_key(id));
+        changed
     }
 
     /// Log a `SessionStatusChange` for every live session whose computed

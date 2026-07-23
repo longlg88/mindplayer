@@ -134,6 +134,12 @@ impl PtySession {
             builder.cwd(&cmd.cwd);
         }
         builder.env("TERM", "xterm-256color");
+        // Correlation key for an installed Claude Code/Codex lifecycle hook
+        // (see `agent_hooks.rs`) to report this pane's live status back to
+        // mindplayer instead of it having to guess from screen text. Harmless
+        // to set unconditionally: an agent with no such hook installed just
+        // never reads it.
+        builder.env("MINDPLAYER_PANE_ID", session_id);
 
         let child = pair.slave.spawn_command(builder)?;
         // Slave handle no longer needed in the parent; closing it lets the

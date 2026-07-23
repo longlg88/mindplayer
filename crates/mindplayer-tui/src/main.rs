@@ -1,5 +1,6 @@
 //! MindPlayer TUI entry point: terminal setup, the event loop, and key routing.
 
+mod agent_hooks;
 mod app;
 mod handoff;
 mod mascot;
@@ -41,8 +42,15 @@ ARGS:
                mindplayer ~/code/my-project
 
 OPTIONS:
-    -h, --help           Print this help
-    -v, -V, --version    Print version
+    -h, --help                Print this help
+    -v, -V, --version         Print version
+    --install-agent-hooks     Show what registering mindplayer's Claude
+                              Code/Codex lifecycle hooks would change in
+                              ~/.claude/settings.json and ~/.codex/hooks.json
+                              (dry run — prints the plan, changes nothing)
+    --install-agent-hooks --apply
+                              Actually write those two files (additive —
+                              never removes or reorders your existing hooks)
 
 On the first screen choose 'working dir' (this DIR) or 'global' (all sessions).";
 
@@ -95,6 +103,11 @@ fn explicit_dir_from_args() -> Option<PathBuf> {
                 println!("mindplayer {}", env!("MINDPLAYER_VERSION"));
                 std::process::exit(0);
             }
+            "--install-agent-hooks" => {
+                let apply = std::env::args().any(|a| a == "--apply");
+                run_install_agent_hooks(apply);
+                std::process::exit(0);
+            }
             s if !s.starts_with('-') => {
                 // Resolve to an absolute path so the scope matches the cwd the
                 // CLIs record in their session files; fall back to the raw path.
@@ -105,6 +118,65 @@ fn explicit_dir_from_args() -> Option<PathBuf> {
         }
     }
     None
+}
+
+/// `--install-agent-hooks` (dry run, prints the plan) / `--install-agent-hooks
+/// --apply` (writes it). Registers mindplayer's lifecycle-hook script for
+/// Claude Code and Codex additively — existing hooks for the same events are
+/// left exactly as they are; only a new matcher-group entry is appended, and
+/// only for events that don't already reference our script.
+fn run_install_agent_hooks(apply: bool) {
+    let (claude, codex) = agent_hooks::plan_install();
+    let script_path = agent_hooks::hook_script_path();
+
+    println!(
+        "mindplayer agent-hook installer{}",
+        if apply {
+            " (applying)"
+        } else {
+            " (dry run — nothing written yet)"
+        }
+    );
+    println!();
+    println!("hook script: {}", script_path.display());
+    println!();
+    for (name, path, merged) in [
+        ("Claude Code", agent_hooks::claude_settings_path(), &claude),
+        ("Codex", agent_hooks::codex_hooks_path(), &codex),
+    ] {
+        println!("{name}: {}", path.display());
+        if merged.added.is_empty() {
+            println!("  (already fully registered, nothing to add)");
+        } else {
+            println!("  would add for: {}", merged.added.join(", "));
+        }
+        if !merged.already_present.is_empty() {
+            println!(
+                "  already registered for: {}",
+                merged.already_present.join(", ")
+            );
+        }
+    }
+    println!();
+
+    if !apply {
+        println!("Nothing was written. Re-run with --apply to write these two files.");
+        println!("Both merges are additive — your existing hooks for these events are kept as-is.");
+        return;
+    }
+
+    match agent_hooks::apply_install(&claude, &codex) {
+        Ok(()) => {
+            println!("Done.");
+            println!(
+                "Codex may still require trusting the new hook once: run `codex`, then `/hooks`."
+            );
+        }
+        Err(e) => {
+            eprintln!("Failed to install: {e}");
+            std::process::exit(1);
+        }
+    }
 }
 
 /// Best-effort: undo every terminal mode `setup()` turned on. Writes directly to
@@ -202,6 +274,12 @@ fn run(terminal: &mut Terminal<CrosstermBackend<FrameSink>>, app: &mut App) -> R
             }
             // Track which sessions are actively producing output (status badge).
             if app.poll_activity() {
+                needs_draw = true;
+            }
+            // Refresh Claude/Codex hook-derived status (see `agent_hooks`) —
+            // takes over the badge from the screen-text heuristic whenever a
+            // pane has one.
+            if app.poll_hook_status() {
                 needs_draw = true;
             }
             // Keep panes that need attention (blocked, then working) at the

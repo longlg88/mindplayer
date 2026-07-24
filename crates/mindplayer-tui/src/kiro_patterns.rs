@@ -32,17 +32,22 @@ pub struct BlockedRule {
 pub struct KiroPatterns {
     #[serde(default)]
     pub blocked: Vec<BlockedRule>,
-    /// A bare-cursor-adjacent idle placeholder unique to kiro-cli's own input
-    /// box (e.g. "Ask Kiro anything…") — checked case-insensitively against
-    /// each already-lowercased tail line, alongside the shared prompt-cursor
-    /// and codex/claude placeholder checks in `pty.rs::text_looks_idle`.
+    /// kiro-cli's own input-box placeholder text — checked case-insensitively
+    /// against each already-lowercased tail line, alongside the shared
+    /// prompt-cursor and codex/claude placeholder checks in
+    /// `pty.rs::text_looks_idle`.
     #[serde(default)]
     pub idle_contains_any: Vec<String>,
 }
 
 impl Default for KiroPatterns {
-    /// Reproduces today's hardcoded behavior exactly — this is the fallback
-    /// when no override file exists, not a stripped-down default.
+    /// The blocked rules reproduce the old hardcoded function exactly. The
+    /// idle placeholder does NOT — live-verified against a real kiro-cli
+    /// 2.14.1 `chat` session (tmux capture): the actual idle-screen text is
+    /// "ask a question or describe a task", not "ask kiro" (which the
+    /// pre-refactor hardcoded check *also* had as a separate, apparently
+    /// stale literal — it never matched real 2.14.1 output either; this
+    /// fixes that in the same move as making it data-driven).
     fn default() -> Self {
         Self {
             blocked: vec![
@@ -63,7 +68,7 @@ impl Default for KiroPatterns {
                     ],
                 },
             ],
-            idle_contains_any: vec!["ask kiro".into()],
+            idle_contains_any: vec!["ask a question or describe a task".into()],
         }
     }
 }
@@ -153,12 +158,34 @@ mod tests {
     }
 
     #[test]
-    fn default_idle_matches_kiro_placeholder() {
-        let patterns = KiroPatterns::default();
-        assert!(patterns
+    fn default_idle_matches_a_real_captured_kiro_screen() {
+        // Verbatim (lowercased) footer line from a real `kiro-cli chat`
+        // v2.14.1 session, tmux-captured — not a guessed/synthetic fixture.
+        let real_idle_line = " ask a question or describe a task ↵".to_lowercase();
+        assert!(matches_idle_against(
+            &KiroPatterns::default(),
+            &real_idle_line
+        ));
+    }
+
+    #[test]
+    fn default_blocked_matches_a_real_captured_kiro_screen() {
+        // Verbatim (lowercased) approval-prompt block from the same real
+        // session, triggered by asking kiro to run a shell command.
+        let real_approval_tail = tail(&[
+            "shell requires approval",
+            "❯ Yes, single permission",
+            "Trust, always allow in this session",
+            "No (Tab to edit)",
+        ]);
+        assert!(matches_blocked(&real_approval_tail));
+    }
+
+    fn matches_idle_against(patterns: &KiroPatterns, line: &str) -> bool {
+        patterns
             .idle_contains_any
             .iter()
-            .any(|n| "ask kiro anything...".contains(n.as_str())));
+            .any(|needle| line.contains(needle.as_str()))
     }
 
     #[test]

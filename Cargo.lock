@@ -492,6 +492,7 @@ dependencies = [
  "mindplayer-core",
  "portable-pty",
  "ratatui",
+ "serde",
  "serde_json",
  "vt100",
  "walkdir",

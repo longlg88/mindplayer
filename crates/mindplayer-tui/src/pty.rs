@@ -751,7 +751,6 @@ fn text_looks_idle(screen: &str) -> bool {
             || l.contains("type your message")
             || l.contains("enter your message")
             || crate::kiro_patterns::matches_idle(l)
-            || l.contains("ask a question or describe a task")
             || l.contains("? for shortcuts")
             || l.trim() == "│ >"
             || l.trim() == "┃ >"

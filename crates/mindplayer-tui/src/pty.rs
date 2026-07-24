@@ -592,14 +592,13 @@ fn tail_looks_like_interactive_prompt(tail: &[String]) -> bool {
         .any(|l| l.contains("to navigate") && (l.contains("to select") || l.contains("to cancel")))
 }
 
+/// Delegates to `kiro_patterns` — a data file, not hardcoded Rust, so a new
+/// kiro-cli approval-prompt wording can be added without recompiling
+/// mindplayer (see that module's docs for why kiro specifically needed this
+/// and codex/claude didn't: they get a confirmed status from an installed
+/// hook now, kiro-cli has no approval-wait hook to switch to).
 fn tail_looks_like_kiro_approval(tail: &[String]) -> bool {
-    let has_approval = tail
-        .iter()
-        .any(|l| l.contains("requires approval") || l.contains("always allow in this session"));
-    let has_choice = tail.iter().any(|l| {
-        l.contains("❯ yes") || l.contains("trust, always allow") || l.contains("no (tab to edit)")
-    });
-    has_approval && has_choice
+    crate::kiro_patterns::matches_blocked(tail)
 }
 
 fn line_looks_limit_blocked(line: &str) -> bool {
@@ -751,7 +750,7 @@ fn text_looks_idle(screen: &str) -> bool {
         is_prompt_cursor_line(l.trim_start())
             || l.contains("type your message")
             || l.contains("enter your message")
-            || l.contains("ask kiro")
+            || crate::kiro_patterns::matches_idle(l)
             || l.contains("ask a question or describe a task")
             || l.contains("? for shortcuts")
             || l.trim() == "│ >"

@@ -3,6 +3,7 @@
 mod agent_hooks;
 mod app;
 mod handoff;
+mod kiro_patterns;
 mod mascot;
 mod pty;
 mod render_writer;

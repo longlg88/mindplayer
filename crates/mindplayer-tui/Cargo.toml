@@ -20,5 +20,6 @@ vt100 = { path = "../vt100-mp" }
 libc = "0.2"
 anyhow.workspace = true
 chrono.workspace = true
+serde.workspace = true
 serde_json.workspace = true
 walkdir.workspace = true

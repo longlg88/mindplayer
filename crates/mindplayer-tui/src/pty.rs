@@ -587,9 +587,31 @@ fn text_looks_blocked(screen: &str) -> bool {
 /// session would mis-classify as idle (the cursor glyph used by the picker is
 /// the same "›"/"❯" that means "prompt ready" elsewhere). This footer is the
 /// reliable, language-independent signal that the turn is waiting on the user.
+///
+/// A slash-command autocomplete list (kiro-cli's own `/` palette) renders the
+/// exact same footer wording — live-verified via tmux capture against real
+/// kiro-cli 2.14.2: typing bare `/` opens a command list with the footer
+/// "esc to cancel · ↑↓ to navigate · ↵ to select" — but it's never an
+/// approval prompt, just autocomplete. Without excluding it, a session sits
+/// mid-keystroke on `/` and gets misclassified Blocked, which (with 2+ live
+/// panes open) permanently bubbles it to the front of the grid — see
+/// `reorder_panes_by_status`.
 fn tail_looks_like_interactive_prompt(tail: &[String]) -> bool {
+    if tail_looks_like_slash_command_menu(tail) {
+        return false;
+    }
     tail.iter()
         .any(|l| l.contains("to navigate") && (l.contains("to select") || l.contains("to cancel")))
+}
+
+/// Structural signal that the picker on screen is a slash-command palette,
+/// not an approval/permission menu: its entries are lines starting with `/`
+/// (e.g. "/help    show available commands"), which a real approval dialog's
+/// numbered/bulleted choices never are. Requiring 2+ such lines (not just 1)
+/// keeps a stray single "/some/path" line elsewhere in scrollback from
+/// suppressing a genuine block.
+fn tail_looks_like_slash_command_menu(tail: &[String]) -> bool {
+    tail.iter().filter(|l| l.starts_with('/')).count() >= 2
 }
 
 /// Delegates to `kiro_patterns` — a data file, not hardcoded Rust, so a new
@@ -1018,6 +1040,26 @@ mod tests {
         ));
         assert!(!text_looks_blocked(
             "You've hit the retry limit in that loop.\n›"
+        ));
+    }
+
+    #[test]
+    fn kiro_slash_command_menu_is_not_blocked() {
+        // Verbatim (tmux-captured) kiro-cli 2.14.2 screen after typing bare
+        // `/`: shares Claude's exact nav-footer wording with its own slash
+        // palette, which is autocomplete, not an approval prompt.
+        assert!(!text_looks_blocked(
+            "/agent\n/changelog\n/chat\n/clear\n/code\n/compact\n/context\n/copy\nesc to cancel · ↑↓ to navigate · ↵ to select"
+        ));
+        // Filtered down to 2 entries (typed "/h") — still not blocked.
+        assert!(!text_looks_blocked(
+            "/help     Show available commands\n/hooks    View configured hooks\nesc to cancel · ↑↓ to navigate · ↵ to select"
+        ));
+        // A real approval picker must still be detected even though its own
+        // choice lines never start with '/' — regression guard against the
+        // slash-menu exclusion swallowing genuine blocks.
+        assert!(text_looks_blocked(
+            "Do you want to make this edit?\n❯ 1. Yes\n  2. No\nEnter to select · Tab/Arrow keys to navigate · Esc to cancel"
         ));
     }
 

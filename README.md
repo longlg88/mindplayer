@@ -12,7 +12,6 @@ nothing stops in the background.
 
 ![License](https://img.shields.io/badge/license-MIT-7EA2F7)
 ![Rust](https://img.shields.io/badge/built%20with-Rust-orange?logo=rust&logoColor=white)
-![Tauri](https://img.shields.io/badge/macOS%20app-Tauri-24C8DB?logo=tauri&logoColor=white)
 ![Platforms](https://img.shields.io/badge/platforms-macOS%20%7C%20Linux-lightgrey)
 ![PRs welcome](https://img.shields.io/badge/PRs-welcome-brightgreen)
 
@@ -43,7 +42,17 @@ never modifies them — so it just works with the sessions you already have.
   together as live panes with one <kbd>Enter</kbd>.
 - 🚦 **Live status** — each row shows `● blocked` (paused at an approval
   prompt — needs you, sorted first), `● working` (producing output now),
-  `● idle` (running, waiting), or `○ done` (ended) at a glance.
+  `● idle` (running, waiting), or `○ done` (ended) at a glance. For Codex and
+  Claude Code this comes straight from the agent's own lifecycle hooks once
+  installed (see `--install-agent-hooks` below) — a confirmed state, not a
+  screen‑text guess. Kiro has no such hook to switch to, so its status still
+  comes from watching the pane's own text, via an editable
+  `~/.mindplayer/kiro-patterns.json` (see **How it works**).
+- ⏱️ **Time since last prompt** — a live session's time column shows how
+  long it's been since *you* last typed something, not just "now" (which a
+  running agent's own file mtime would otherwise always show) — so you can
+  tell a session that's been quietly working solo for 20 minutes from one
+  that's been sitting idle waiting on you for just as long.
 - 🟣 **In-progress mark** — flag a session with <kbd>i</kbd> as work you're not
   done with yet, independent of its live status; a thin rail keeps it visible
   even once it's buried in `older`.
@@ -84,32 +93,23 @@ never modifies them — so it just works with the sessions you already have.
 - 🌏 **Friendly input** — `Shift+Enter` soft newlines, full Korean/CJK (IME)
   support, and shortcuts that work on a Korean keyboard layout too.
 
-Two front‑ends, one Rust core:
-
-| | |
-|---|---|
-| 🖥️ **TUI** (`mindplayer`) | ratatui + an embedded PTY. Runs anywhere a terminal does. |
-| 🍎 **macOS app** (`app/`) | a Tauri wrapper with xterm.js for the live terminal. |
-
 ## 📦 Install
 
-> **TL;DR** — most people only need the **TUI**:
+> **TL;DR**:
 > ```bash
 > curl -fsSLO https://raw.githubusercontent.com/longlg88/mindplayer/main/install.sh
 > less install.sh
 > bash install.sh
 > ```
-> The macOS app is optional, and `npm` is only for *that* (run inside `app/`) —
-> **never in the repo root** (the root is a Rust workspace, it has no `package.json`).
 
 **Prerequisites**
 
 | For | You need |
 |-----|----------|
-| The TUI (everyone) | nothing — the installer downloads a prebuilt binary (`curl`/`wget`). Only `--build` needs **Rust**. |
+| MindPlayer itself | nothing — the installer downloads a prebuilt binary (`curl`/`wget`). Only `--build` needs **Rust**. |
 | Driving sessions | the agent CLIs you use, on `PATH`: [`codex`](https://github.com/openai/codex), [`claude`](https://docs.anthropic.com/claude-code), [`kiro-cli`](https://kiro.dev/docs/cli/) — browsing works without them; a CLI is only needed to *resume/start* that agent |
 
-**Install the TUI** — the installer downloads the latest **release binary** (no build).
+The installer downloads the latest **release binary** (no build).
 Download the script, inspect it, then run it:
 
 ```bash
@@ -143,16 +143,20 @@ mindplayer ~/code/my-project          # …or point it anywhere, no cd
 Press <kbd>n</kbd> for a new Codex / Claude / Kiro session. `mindplayer --help`
 lists the rest.
 
-**Optional — the macOS app.** Downloads the prebuilt `.app` from the latest
-release and installs it into `/Applications` (re-run to update):
+**Optional — confirmed live status for Codex & Claude.** Both expose official
+lifecycle hooks; registering a small bundled script lets MindPlayer read a
+session's real state (blocked on approval / working / idle) instead of
+guessing from on‑screen text. Dry‑run first, then apply if it looks right —
+it's purely additive and never touches your existing hooks:
 
 ```bash
-curl -fsSLO https://raw.githubusercontent.com/longlg88/mindplayer/main/install.sh
-less install.sh
-bash install.sh --app
-# or from a clone:  ./install.sh --app
-# no-sudo install location:  APP_DIR=~/Applications ./install.sh --app
+mindplayer --install-agent-hooks           # show the plan, changes nothing
+mindplayer --install-agent-hooks --apply   # write ~/.claude/settings.json and ~/.codex/hooks.json
 ```
+
+Kiro has no equivalent hook (checked against its own docs), so it keeps using
+a screen‑text fallback — see `~/.mindplayer/kiro-patterns.json` under **How it
+works** if you ever need to teach it new wording.
 
 **Develop MindPlayer itself** (from a clone): `make` shows all targets.
 
@@ -160,10 +164,6 @@ bash install.sh --app
 cargo run -p mindplayer-tui -- ~/code/my-project   # run against your project
 make test                                          # cargo test --all
 ```
-
-> ⚠️ Running `cargo run` (without a dir) or `npm` **at the repo root** is the
-> common mistake: the root is a Rust workspace (no `package.json`). Build the
-> TUI with `./install.sh` / `cargo`, and run `npm` only inside `app/`.
 
 ### ⌨️ Keys
 
@@ -229,18 +229,6 @@ Code, or Kiro:
 Opening an orchestration lane with <kbd>Enter</kbd> does not auto-submit thread
 sync prompts; explicit orchestration commands control when context is injected.
 
-## 🍎 macOS app (optional)
-
-Prefer a windowed app over the TUI? Build it with **`./install.sh --app`**, or
-work on it directly — all npm commands run **inside `app/`** (never the repo root):
-
-```bash
-cd app
-npm install      # xterm.js + Tauri CLI
-npm run dev      # dev window
-npm run build    # → .app / .dmg in app/src-tauri/target/release/bundle/
-```
-
 ## 🧠 How it works
 
 Read‑only data sources:
@@ -257,6 +245,18 @@ in-progress marks) at
 only — no session id, title, or cwd) at `~/.mindplayer/audit.jsonl` for the
 <kbd>u</kbd> stats popup, and per‑session stderr logs at
 `~/.mindplayer/logs/`.
+
+**Live status, in more detail.** Codex and Claude Code status comes from
+their own official lifecycle hooks (`UserPromptSubmit`, `PreToolUse`,
+`PostToolUse`, `PermissionRequest`, `Stop`) once installed via
+`--install-agent-hooks --apply` — each event writes a small JSON reading to
+`~/.mindplayer/hooks/<pane-id>.json`, which MindPlayer polls every 500ms; a
+stale `working` reading (nothing written for 5+ minutes) falls back to the
+screen‑text heuristic rather than reporting a status that's just an
+artifact of a crashed hook. Kiro-cli has no comparable hook, so it always
+uses the screen‑text heuristic, driven by `~/.mindplayer/kiro-patterns.json`
+(created with sensible defaults on first use) — edit it to add wording from a
+newer kiro-cli release without waiting on a MindPlayer update.
 
 Canned prompts (<kbd>c</kbd> catch-up, <kbd>Ctrl‑t</kbd> transition report)
 live as plain `.md` files under `~/.mindplayer/prompts/` — `catchup.md`,
@@ -284,10 +284,9 @@ the session's original directory.
 
 ```
 mindplayer/
-├─ crates/
-│  ├─ mindplayer-core/   # discovery, token aggregation, archive state, resume
-│  └─ mindplayer-tui/    # ratatui + portable-pty + vt100 → binary `mindplayer`
-└─ app/                  # Tauri macOS app (src-tauri = Rust backend, src = frontend)
+└─ crates/
+   ├─ mindplayer-core/   # discovery, token aggregation, archive state, resume
+   └─ mindplayer-tui/    # ratatui + portable-pty + vt100 → binary `mindplayer`
 ```
 
 ## 🛠️ Develop
@@ -296,7 +295,6 @@ mindplayer/
 cargo test --all
 cargo clippy --all-targets -- -D warnings
 cargo fmt --all --check
-cargo clippy --manifest-path app/src-tauri/Cargo.toml -- -D warnings   # Tauri backend
 ```
 
 Contributions welcome — open an issue or PR.
@@ -305,7 +303,4 @@ Contributions welcome — open an issue or PR.
 
 [MIT](LICENSE) © MindPlayer authors
 
-The macOS app vendors [xterm.js](https://github.com/xtermjs/xterm.js) (MIT) under
-`app/src/vendor/` — see [its notice](app/src/vendor/NOTICE.md).
-
-<div align="center"><sub>Built with 🦀 Rust · ratatui · Tauri · xterm.js</sub></div>
+<div align="center"><sub>Built with 🦀 Rust · ratatui</sub></div>

@@ -93,6 +93,10 @@ never modifies them — so it just works with the sessions you already have.
   finished sessions (originals untouched); hide sub‑agent/`/team` workers.
 - 🌏 **Friendly input** — `Shift+Enter` soft newlines, full Korean/CJK (IME)
   support, and shortcuts that work on a Korean keyboard layout too.
+- 🦆 **A walking buddy** — a small pixel character paces a strip above the
+  session list (and on the startup screens). Ships as a **rubber duck**;
+  press <kbd>c</kbd> on the first screen to swap in a bunny, chick, slime,
+  penguin, or octopus. Your pick is remembered.
 
 ## 📦 Install
 
@@ -140,6 +144,10 @@ asks **working dir** (this project) or **global** (everything):
 cd ~/code/my-project && mindplayer    # manage THIS project's sessions
 mindplayer ~/code/my-project          # …or point it anywhere, no cd
 ```
+
+On that first screen, <kbd>c</kbd> opens the character picker — the rubber
+duck walking above the prompt can become a bunny, chick, slime, penguin, or
+octopus, and the choice sticks for next time.
 
 Press <kbd>n</kbd> for a new Codex / Claude / Kiro session. `mindplayer --help`
 lists the rest.
@@ -241,7 +249,7 @@ Read‑only data sources:
   column shows its **context‑window occupancy** (e.g. `15%`) instead.
 
 MindPlayer keeps its own tiny sidecar state (archived ids, labels,
-in-progress marks) at
+in-progress marks, your walking-buddy pick) at
 `~/.mindplayer/state.json`, an append-only usage-audit log (counts/timestamps
 only — no session id, title, or cwd) at `~/.mindplayer/audit.jsonl` for the
 <kbd>u</kbd> stats popup, and per‑session stderr logs at

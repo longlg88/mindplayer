@@ -10,6 +10,7 @@ mod render_writer;
 mod terminal_view;
 mod text_input;
 mod ui;
+mod walker;
 
 use anyhow::Result;
 use app::{App, Focus, Screen};
@@ -582,13 +583,29 @@ fn encode_mouse_kind(kind: MouseEventKind) -> Option<(u16, bool, bool)> {
 
 fn handle_key(app: &mut App, key: KeyEvent) {
     match app.screen {
-        Screen::ScopeSelect => match key.code {
-            KeyCode::Up | KeyCode::Char('k') => app.scope_choice = 0,
-            KeyCode::Down | KeyCode::Char('j') => app.scope_choice = 1,
-            KeyCode::Enter => app.start_scan(),
-            KeyCode::Char('q') | KeyCode::Esc => app.quit(),
-            _ => {}
-        },
+        Screen::ScopeSelect => {
+            // The character picker owns every key while it's open, so enter
+            // commits the pick instead of starting the scan and q/esc closes
+            // the popup instead of quitting the app.
+            if app.walker_picker.is_some() {
+                match normalize_shortcut(key.code) {
+                    KeyCode::Up | KeyCode::Char('k') => app.move_walker_pick(-1),
+                    KeyCode::Down | KeyCode::Char('j') => app.move_walker_pick(1),
+                    KeyCode::Enter => app.confirm_walker_pick(),
+                    KeyCode::Esc | KeyCode::Char('q') => app.cancel_walker_picker(),
+                    _ => {}
+                }
+                return;
+            }
+            match normalize_shortcut(key.code) {
+                KeyCode::Up | KeyCode::Char('k') => app.scope_choice = 0,
+                KeyCode::Down | KeyCode::Char('j') => app.scope_choice = 1,
+                KeyCode::Enter => app.start_scan(),
+                KeyCode::Char('c') => app.open_walker_picker(),
+                KeyCode::Char('q') | KeyCode::Esc => app.quit(),
+                _ => {}
+            }
+        }
         Screen::Scanning => {
             if matches!(key.code, KeyCode::Char('q') | KeyCode::Esc) {
                 app.quit();

@@ -5,6 +5,7 @@ use crate::app::{App, Focus, PaneLayout, Screen, SessionStatus, MAX_PANES};
 use crate::mascot;
 use crate::terminal_view::TerminalView;
 use crate::text_input;
+use crate::walker;
 use chrono::{DateTime, Utc};
 use mindplayer_core::tokens::human_tokens;
 use mindplayer_core::{Agent, UsageStats};
@@ -102,6 +103,91 @@ fn draw_mascot(f: &mut Frame, area: Rect, tick: usize) {
     f.render_widget(Paragraph::new(mascot::lines(tick)), r);
 }
 
+/// Draw the walking-character strip across the full width of `area`, anchored
+/// at its top. Unlike the fixed-size mascot this uses whatever width it's
+/// given, so the character has the whole row to walk; `walker::lines` returns
+/// nothing when that width is too small and we simply skip the draw.
+fn draw_walker(f: &mut Frame, area: Rect, app: &App) {
+    if area.height < walker::HEIGHT {
+        return;
+    }
+    let lines = walker::lines(app.walker(), app.spinner, area.width);
+    if lines.is_empty() {
+        return;
+    }
+    f.render_widget(
+        Paragraph::new(lines),
+        Rect {
+            height: walker::HEIGHT,
+            ..area
+        },
+    );
+}
+
+/// The scope screen's character picker: every character shown as a live
+/// portrait next to its name, so you pick by looking rather than by guessing
+/// from a label.
+fn walker_picker(f: &mut Frame, area: Rect, app: &App, highlighted: usize) {
+    let rows_per = (walker::SPRITE_H / 2) as u16;
+    let h = walker::ALL.len() as u16 * rows_per + 2; // +2 for the border
+    let w = 34u16;
+    let popup = centered(area, w, h);
+    f.render_widget(Clear, popup);
+    f.render_widget(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(ACCENT))
+            .title(" Pick your walking buddy "),
+        popup,
+    );
+    let inner = Rect {
+        x: popup.x + 1,
+        y: popup.y + 1,
+        width: popup.width.saturating_sub(2),
+        height: popup.height.saturating_sub(2),
+    };
+    // Frame 0 vs 1 alternates on the same cadence the strip walks at, so the
+    // portraits are alive without drifting out of step with the character
+    // below them.
+    let frame = (app.spinner / 6) % 2;
+    for (i, ch) in walker::ALL.iter().enumerate() {
+        let top = inner.y + i as u16 * rows_per;
+        if top + rows_per > inner.y + inner.height {
+            break;
+        }
+        let selected = i == highlighted;
+        let portrait = walker::portrait(ch, frame);
+        f.render_widget(
+            Paragraph::new(portrait),
+            Rect {
+                x: inner.x + 2,
+                y: top,
+                width: walker::SPRITE_W as u16,
+                height: rows_per,
+            },
+        );
+        let label_style = if selected {
+            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(DIM)
+        };
+        let marker = if selected { "▶ " } else { "  " };
+        // Vertically center the label against the portrait block.
+        f.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                format!("{marker}{}", ch.name),
+                label_style,
+            ))),
+            Rect {
+                x: inner.x + 2 + walker::SPRITE_W as u16 + 1,
+                y: top + rows_per / 2,
+                width: inner.width.saturating_sub(walker::SPRITE_W as u16 + 5),
+                height: 1,
+            },
+        );
+    }
+}
+
 fn scope_select(f: &mut Frame, app: &App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -137,16 +223,25 @@ fn scope_select(f: &mut Frame, app: &App) {
         .title(" Where should MindPlayer collect sessions? ")
         .border_style(Style::default().fg(ACCENT));
     let inner = centered(chunks[1], 70, 8);
-    // The mascot is top-anchored and fixed-size while this popup is vertically
-    // centered in the same region — on a small terminal that centers the
-    // popup right through the sprite instead of shrinking it. Only draw the
-    // mascot when it fully fits above the popup with no overlap.
-    if inner.y >= chunks[1].y + mascot::HEIGHT {
-        draw_mascot(f, chunks[1], app.spinner);
+    // The strip is top-anchored while this popup is vertically centered in the
+    // same region — on a small terminal that would center the popup straight
+    // through the sprite. Only draw it when it fully fits above with no overlap.
+    if inner.y >= chunks[1].y + walker::HEIGHT {
+        draw_walker(f, chunks[1], app);
     }
     f.render_widget(List::new(items).block(block), inner);
 
-    footer(chunks[2], f, "↑↓ choose   enter scan   q quit");
+    footer(
+        chunks[2],
+        f,
+        "↑↓ choose   enter scan   c character   q quit",
+    );
+
+    // Drawn last so it sits above both the strip and the scope list.
+    if let Some(highlighted) = app.walker_picker {
+        walker_picker(f, chunks[1], app, highlighted);
+        footer(chunks[2], f, "↑↓ pick   enter select   esc cancel");
+    }
 }
 
 fn scanning(f: &mut Frame, app: &App) {
@@ -162,10 +257,10 @@ fn scanning(f: &mut Frame, app: &App) {
 
     let spin = SPINNER[app.spinner % SPINNER.len()];
     let area = centered(chunks[1], 60, 5);
-    // See the matching guard in scope_select: skip the fixed-size mascot on a
-    // terminal too small to fit it above this centered box without overlap.
-    if area.y >= chunks[1].y + mascot::HEIGHT {
-        draw_mascot(f, chunks[1], app.spinner);
+    // See the matching guard in scope_select: skip the strip on a terminal too
+    // small to fit it above this centered box without overlap.
+    if area.y >= chunks[1].y + walker::HEIGHT {
+        draw_walker(f, chunks[1], app);
     }
     let block = Block::default()
         .borders(Borders::ALL)
@@ -1083,7 +1178,7 @@ fn session_list(f: &mut Frame, app: &mut App, area: Rect, now: DateTime<Utc>) {
     let region_top = content_top + rendered_rows as u16;
     let region_h = bottom.saturating_sub(region_top);
     const GAP: u16 = 1;
-    let block_h = mascot::HEIGHT + GAP + 2; // mascot + gap + tagline + legend
+    let block_h = walker::HEIGHT + GAP + 2; // strip + gap + tagline + legend
                                             // Record whether the animated hero is actually on screen, so the event loop
                                             // only forces ~12fps redraws of the list when there's something to animate.
     app.hero_visible = region_h >= block_h + 2;
@@ -1091,15 +1186,15 @@ fn session_list(f: &mut Frame, app: &mut App, area: Rect, now: DateTime<Utc>) {
         let inner_x = area.x + 1;
         let inner_w = area.width.saturating_sub(2);
         let top = region_top + (region_h - block_h) / 2;
-        draw_mascot(
+        draw_walker(
             f,
             Rect {
                 x: inner_x,
                 y: top,
                 width: inner_w,
-                height: mascot::HEIGHT,
+                height: walker::HEIGHT,
             },
-            app.spinner,
+            app,
         );
         // A true first run (never collected a single session) has nothing for
         // the status legend below to describe — show a call to action instead
@@ -1137,7 +1232,7 @@ fn session_list(f: &mut Frame, app: &mut App, area: Rect, now: DateTime<Utc>) {
             Paragraph::new(line1).alignment(Alignment::Center),
             Rect {
                 x: inner_x,
-                y: top + mascot::HEIGHT + GAP,
+                y: top + walker::HEIGHT + GAP,
                 width: inner_w,
                 height: 1,
             },
@@ -1146,7 +1241,7 @@ fn session_list(f: &mut Frame, app: &mut App, area: Rect, now: DateTime<Utc>) {
             Paragraph::new(line2).alignment(Alignment::Center),
             Rect {
                 x: inner_x,
-                y: top + mascot::HEIGHT + GAP + 1,
+                y: top + walker::HEIGHT + GAP + 1,
                 width: inner_w,
                 height: 1,
             },

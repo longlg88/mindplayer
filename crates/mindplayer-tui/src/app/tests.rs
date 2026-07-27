@@ -1779,6 +1779,84 @@ fn thread_sync_needed_stays_quiet_across_a_mindplayer_restart() {
 }
 
 #[test]
+fn walker_defaults_to_the_rubber_duck_when_nothing_is_stored() {
+    let app = App::new();
+    assert_eq!(
+        app.walker().id,
+        "duck",
+        "a fresh install must start on the documented default"
+    );
+}
+
+#[test]
+fn walker_picker_only_commits_on_confirm_and_persists_the_choice() {
+    let _env = STATE_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let dir = std::env::temp_dir().join(format!("mp-walker-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("state.json");
+    let _ = std::fs::remove_file(&path);
+    std::env::set_var("MINDPLAYER_STATE", &path);
+
+    let mut app = App::new();
+    let start = app.walker_choice;
+
+    // Cancelling leaves the pick untouched and writes nothing.
+    app.open_walker_picker();
+    app.move_walker_pick(1);
+    app.cancel_walker_picker();
+    assert_eq!(app.walker_choice, start, "cancel must not change the pick");
+    assert!(app.walker_picker.is_none());
+
+    // Confirming commits and persists.
+    app.open_walker_picker();
+    app.move_walker_pick(1);
+    let wanted = app.walker_picker.unwrap();
+    app.confirm_walker_pick();
+    assert_eq!(app.walker_choice, wanted);
+    assert!(app.walker_picker.is_none(), "picker closes on confirm");
+    let expected_id = crate::walker::get(wanted).id.to_string();
+    assert_eq!(app.state.walker.as_deref(), Some(expected_id.as_str()));
+
+    // A fresh App reads it back from disk.
+    let reopened = App::new();
+    assert_eq!(reopened.walker().id, expected_id);
+
+    std::env::remove_var("MINDPLAYER_STATE");
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn walker_pick_wraps_at_both_ends() {
+    let mut app = App::new();
+    app.walker_choice = 0;
+    app.open_walker_picker();
+    app.move_walker_pick(-1);
+    assert_eq!(
+        app.walker_picker,
+        Some(crate::walker::ALL.len() - 1),
+        "up from the first entry wraps to the last"
+    );
+    app.move_walker_pick(1);
+    assert_eq!(app.walker_picker, Some(0), "and back down again");
+}
+
+#[test]
+fn a_corrupt_or_removed_character_id_falls_back_instead_of_breaking_startup() {
+    let _env = STATE_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let dir = std::env::temp_dir().join(format!("mp-walker-bad-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("state.json");
+    std::fs::write(&path, r#"{"version":1,"walker":"a-character-we-deleted"}"#).unwrap();
+    std::env::set_var("MINDPLAYER_STATE", &path);
+
+    let app = App::new();
+    assert_eq!(app.walker().id, crate::walker::DEFAULT_ID);
+
+    std::env::remove_var("MINDPLAYER_STATE");
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
 fn status_rank_orders_by_urgency() {
     // A just-finished session (Ended) is the single highest priority —
     // nothing left for the agent to do, everything left is on the user —

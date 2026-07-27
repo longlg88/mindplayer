@@ -93,8 +93,8 @@ never modifies them — so it just works with the sessions you already have.
   finished sessions (originals untouched); hide sub‑agent/`/team` workers.
 - 🌏 **Friendly input** — `Shift+Enter` soft newlines, full Korean/CJK (IME)
   support, and shortcuts that work on a Korean keyboard layout too.
-- 🦆 **A walking buddy** — a small pixel character paces a strip above the
-  session list (and on the startup screens). Ships as a **rubber duck**;
+- 🦆 **A walking buddy** — a small pixel character paces along the bottom of
+  the session list (and the startup screens). Ships as a **rubber duck**;
   press <kbd>c</kbd> on the first screen to swap in a bunny, chick, slime,
   penguin, or octopus. Your pick is remembered.
 
@@ -146,7 +146,7 @@ mindplayer ~/code/my-project          # …or point it anywhere, no cd
 ```
 
 On that first screen, <kbd>c</kbd> opens the character picker — the rubber
-duck walking above the prompt can become a bunny, chick, slime, penguin, or
+duck walking on the floor can become a bunny, chick, slime, penguin, or
 octopus, and the choice sticks for next time.
 
 Press <kbd>n</kbd> for a new Codex / Claude / Kiro session. `mindplayer --help`

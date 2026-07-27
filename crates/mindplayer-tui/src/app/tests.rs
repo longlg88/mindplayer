@@ -1460,7 +1460,10 @@ fn resuming_thread_lane_injects_peer_context() {
     let _handoff_env = handoff::TEST_ENV_LOCK
         .lock()
         .unwrap_or_else(|e| e.into_inner());
+    let _state_env = STATE_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let (dir, codex_transcript) = write_codex_fixture("sync", "codex fixed tests");
+    let state_path = dir.join("state.json");
+    std::env::set_var("MINDPLAYER_STATE", &state_path);
     std::env::set_var(handoff::HANDOFF_DIR_ENV, dir.join("handoffs"));
 
     let mut parent = session_in("claude-1", Agent::Claude, "/work/project", "msk cohome");
@@ -1509,6 +1512,7 @@ fn resuming_thread_lane_injects_peer_context() {
     assert!(input.ends_with('\r'));
 
     std::env::remove_var(handoff::HANDOFF_DIR_ENV);
+    std::env::remove_var("MINDPLAYER_STATE");
     let _ = std::fs::remove_dir_all(dir);
 }
 
@@ -1525,6 +1529,7 @@ fn resuming_a_session_with_large_peer_transcripts_does_not_block_the_caller() {
     let _handoff_env = handoff::TEST_ENV_LOCK
         .lock()
         .unwrap_or_else(|e| e.into_inner());
+    let _state_env = STATE_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
 
     const PEER_COUNT: usize = 6;
     // ~2MB per peer (4000 lines * ~500 bytes) — large enough that a
@@ -1545,6 +1550,8 @@ fn resuming_a_session_with_large_peer_transcripts_does_not_block_the_caller() {
         peers.push(peer);
     }
     let handoff_dir = dirs[0].join("handoffs");
+    let state_path = dirs[0].join("state.json");
+    std::env::set_var("MINDPLAYER_STATE", &state_path);
     std::env::set_var(handoff::HANDOFF_DIR_ENV, &handoff_dir);
 
     let mut root = session_in("claude-root", Agent::Claude, "/work/project", "root lane");
@@ -1599,6 +1606,7 @@ fn resuming_a_session_with_large_peer_transcripts_does_not_block_the_caller() {
     );
 
     std::env::remove_var(handoff::HANDOFF_DIR_ENV);
+    std::env::remove_var("MINDPLAYER_STATE");
     for dir in dirs {
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -1780,12 +1788,22 @@ fn thread_sync_needed_stays_quiet_across_a_mindplayer_restart() {
 
 #[test]
 fn walker_defaults_to_the_rubber_duck_when_nothing_is_stored() {
+    let _env = STATE_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let dir = std::env::temp_dir().join(format!("mp-walker-default-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("state.json");
+    let _ = std::fs::remove_file(&path);
+    std::env::set_var("MINDPLAYER_STATE", &path);
+
     let app = App::new();
     assert_eq!(
         app.walker().id,
         "duck",
         "a fresh install must start on the documented default"
     );
+
+    std::env::remove_var("MINDPLAYER_STATE");
+    let _ = std::fs::remove_file(&path);
 }
 
 #[test]

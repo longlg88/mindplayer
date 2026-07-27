@@ -209,6 +209,14 @@ pub struct App {
     pub screen: Screen,
     /// 0 = working dir, 1 = global.
     pub scope_choice: usize,
+    /// Index into [`crate::walker::ALL`] for the character walking the strip
+    /// on the browse screens. Resolved from `state.walker` at startup, so an
+    /// unknown/absent id lands on the default (rubber duck).
+    pub walker_choice: usize,
+    /// `Some(index)` while the scope screen's character picker is open — the
+    /// index is the highlighted row, only committed to `walker_choice` (and
+    /// persisted) on enter.
+    pub walker_picker: Option<usize>,
     pub cwd: PathBuf,
     pub scope: Scope,
     pub cfg: ScanConfig,
@@ -465,13 +473,20 @@ impl App {
     /// new sessions launch in). Lets `mindplayer <dir>` target any project
     /// without `cd`-ing there first.
     pub fn new_in(cwd: PathBuf) -> Self {
+        // Loaded before the literal so the stored character id can be resolved
+        // to an index up front (an unknown id falls back to the default).
+        let state = State::load();
+        let walker_choice =
+            crate::walker::index_of(state.walker.as_deref().unwrap_or(crate::walker::DEFAULT_ID));
         App {
             screen: Screen::ScopeSelect,
             scope_choice: 0,
+            walker_choice,
+            walker_picker: None,
             scope: Scope::WorkingDir(cwd.clone()),
             cwd,
             cfg: ScanConfig::from_env(),
-            state: State::load(),
+            state,
             all_sessions: Vec::new(),
             aggregate: Aggregate::default(),
             visible_aggregate: Aggregate::default(),
@@ -559,6 +574,46 @@ impl App {
                 Focus::Terminal => self.panes.is_empty() || self.active_pty().is_none(),
             },
         }
+    }
+
+    // --- walking character ------------------------------------------------
+
+    /// The character currently walking the browse-screen strip.
+    pub fn walker(&self) -> &'static crate::walker::Character {
+        crate::walker::get(self.walker_choice)
+    }
+
+    /// Open the scope screen's character picker, starting on the current pick.
+    pub fn open_walker_picker(&mut self) {
+        self.walker_picker = Some(self.walker_choice);
+    }
+
+    /// Close without committing — `walker_choice` keeps its previous value.
+    pub fn cancel_walker_picker(&mut self) {
+        self.walker_picker = None;
+    }
+
+    /// Move the picker highlight, wrapping at both ends like the session list.
+    pub fn move_walker_pick(&mut self, delta: isize) {
+        let Some(cur) = self.walker_picker else {
+            return;
+        };
+        let len = crate::walker::ALL.len() as isize;
+        let next = (cur as isize + delta).rem_euclid(len);
+        self.walker_picker = Some(next as usize);
+    }
+
+    /// Commit the highlighted character and persist it. A failed save is
+    /// non-fatal: the pick still applies for this run, it just won't be
+    /// remembered — same treatment the rest of the sidecar state gets.
+    pub fn confirm_walker_pick(&mut self) {
+        let Some(pick) = self.walker_picker.take() else {
+            return;
+        };
+        self.walker_choice = pick;
+        self.state.walker = Some(crate::walker::get(pick).id.to_string());
+        let _ = self.state.save();
+        self.status = format!("character: {}", crate::walker::get(pick).name);
     }
 
     /// Whether a deferred background re-scan is due, clearing the timer.

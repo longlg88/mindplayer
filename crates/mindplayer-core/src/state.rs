@@ -78,6 +78,12 @@ pub struct State {
     pub thread_synced: BTreeSet<String>,
     #[serde(default)]
     pub last_scope: Option<String>,
+    /// Id of the walking character shown on the browse screens (see the TUI's
+    /// `walker` module). `None` means "never picked one" and resolves to the
+    /// default at render time — an unknown id does too, so removing a
+    /// character in a later release can't break an existing state file.
+    #[serde(default)]
+    pub walker: Option<String>,
 }
 
 fn default_version() -> u32 {
@@ -96,6 +102,7 @@ impl Default for State {
             handoff_links: BTreeMap::new(),
             thread_synced: BTreeSet::new(),
             last_scope: None,
+            walker: None,
         }
     }
 }

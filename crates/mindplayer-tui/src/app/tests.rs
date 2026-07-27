@@ -1780,12 +1780,42 @@ fn thread_sync_needed_stays_quiet_across_a_mindplayer_restart() {
 
 #[test]
 fn status_rank_orders_by_urgency() {
-    // herdr-style rollup: most urgent (blocked) first, finished (done) last.
+    // A just-finished session (Ended) is the single highest priority —
+    // nothing left for the agent to do, everything left is on the user —
+    // which outranks even a live approval prompt. Historical Inactive
+    // sessions rank last.
     use SessionStatus::*;
+    assert!(status_rank(Ended) < status_rank(Blocked));
     assert!(status_rank(Blocked) < status_rank(Working));
     assert!(status_rank(Working) < status_rank(Idle));
     assert!(status_rank(Idle) < status_rank(Inactive));
-    assert!(status_rank(Inactive) < status_rank(Ended));
+}
+
+#[test]
+fn done_sessions_bubble_above_other_agent_types_in_the_recent_list() {
+    // A finished (Ended) session must sort above other agent types' groups
+    // in the recent list, not just within its own agent's section — status
+    // urgency is the group sort's secondary key, ahead of agent clustering.
+    let mut done = session("done-claude", Agent::Claude, false);
+    done.last_active = Some(chrono::Utc::now());
+    let mut codex_untouched = session("plain-codex", Agent::Codex, false);
+    codex_untouched.last_active = Some(chrono::Utc::now());
+
+    let mut app = app_with(vec![done, codex_untouched]);
+    app.ended.insert("done-claude".to_string());
+    app.rebuild_visible();
+
+    let ids: Vec<&str> = app
+        .visible
+        .iter()
+        .map(|&i| app.all_sessions[i].id.as_str())
+        .collect();
+    assert_eq!(
+        ids,
+        vec!["done-claude", "plain-codex"],
+        "codex's agent_rank would otherwise win the tie and sort first, even \
+         though the claude session already finished"
+    );
 }
 
 #[test]

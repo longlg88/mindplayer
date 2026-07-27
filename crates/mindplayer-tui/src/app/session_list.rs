@@ -178,9 +178,11 @@ impl App {
         }
         // Top-level list category: sessions touched within the last 24h (a
         // rolling window, not a calendar day) sort above everything older, so
-        // recent work is always at the top on startup. Agent grouping is
-        // preserved as the secondary key, so within each "Recent" / "Older"
-        // band rows still cluster by agent.
+        // recent work is always at the top on startup. Status urgency is the
+        // secondary key (see `status_rank` — a just-finished group outranks
+        // even a currently-blocked one), agent grouping breaks ties after
+        // that, so same-agent clustering still holds among groups that are
+        // otherwise equally urgent.
         let now = Utc::now();
         // A group counts as "recent" if any of its sessions was touched in the
         // last 24h OR is running live in MindPlayer right now — a session you
@@ -206,8 +208,8 @@ impl App {
                 .max();
             (
                 recent_rank,
-                agent_rank(section_agent),
                 best_status,
+                agent_rank(section_agent),
                 std::cmp::Reverse(latest),
             )
         });

@@ -86,27 +86,32 @@ impl PaneSelection {
 /// How a session in the list is doing right now, for the status badge.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SessionStatus {
-    /// Live PTY paused at a confirm/approval prompt — needs the user. Most urgent.
+    /// Live PTY paused at a confirm/approval prompt — needs the user.
     Blocked,
     /// Live PTY producing output right now.
     Working,
     /// Live PTY, but quiet (running, nothing happening).
     Idle,
-    /// Child has exited; final frame kept.
+    /// Child has exited; final frame kept. See [`status_rank`] — this is the
+    /// single highest-priority status, ahead of even Blocked.
     Ended,
     /// Not running inside MindPlayer (a history entry).
     Inactive,
 }
 
-/// Sort rank for the herdr-style rollup: most urgent (blocked/working) first,
-/// finished/historical last. Recency breaks ties within a rank.
+/// Sort rank for the herdr-style rollup: a session that just finished (Ended)
+/// is the single highest priority — there's nothing left for the agent to do,
+/// everything left is on the user, which outranks even an approval prompt or
+/// a still-working turn. Historical, never-live sessions (Inactive) rank
+/// last since there's no fresh event demanding attention. Recency breaks ties
+/// within a rank.
 fn status_rank(s: SessionStatus) -> u8 {
     match s {
-        SessionStatus::Blocked => 0,
-        SessionStatus::Working => 1,
-        SessionStatus::Idle => 2,
-        SessionStatus::Inactive => 3,
-        SessionStatus::Ended => 4,
+        SessionStatus::Ended => 0,
+        SessionStatus::Blocked => 1,
+        SessionStatus::Working => 2,
+        SessionStatus::Idle => 3,
+        SessionStatus::Inactive => 4,
     }
 }
 

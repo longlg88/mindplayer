@@ -40,14 +40,15 @@ never modifies them — so it just works with the sessions you already have.
 - 🪟 **Many sessions at once** — resume or start several; each keeps running in
   the background. **Mark several** in the list (<kbd>Space</kbd>) and launch them
   together as live panes with one <kbd>Enter</kbd>.
-- 🚦 **Live status** — each row shows `● blocked` (paused at an approval
-  prompt — needs you, sorted first), `● working` (producing output now),
-  `● idle` (running, waiting), or `○ done` (ended) at a glance. For Codex and
-  Claude Code this comes straight from the agent's own lifecycle hooks once
-  installed (see `--install-agent-hooks` below) — a confirmed state, not a
-  screen‑text guess. Kiro has no such hook to switch to, so its status still
-  comes from watching the pane's own text, via an editable
-  `~/.mindplayer/kiro-patterns.json` (see **How it works**).
+- 🚦 **Live status** — each row shows `○ done` (just finished — sorted
+  above everything else, since there's nothing left for the agent to do and
+  everything left is on you), `● blocked` (paused at an approval prompt —
+  needs you), `● working` (producing output now), or `● idle` (running,
+  waiting) at a glance. For Codex and Claude Code this comes straight from
+  the agent's own lifecycle hooks once installed (see `--install-agent-hooks`
+  below) — a confirmed state, not a screen‑text guess. Kiro has no such hook
+  to switch to, so its status still comes from watching the pane's own text,
+  via an editable `~/.mindplayer/kiro-patterns.json` (see **How it works**).
 - ⏱️ **Time since last prompt** — a live session's time column shows how
   long it's been since *you* last typed something, not just "now" (which a
   running agent's own file mtime would otherwise always show) — so you can

@@ -223,11 +223,21 @@ fn scope_select(f: &mut Frame, app: &App) {
         .title(" Where should MindPlayer collect sessions? ")
         .border_style(Style::default().fg(ACCENT));
     let inner = centered(chunks[1], 70, 8);
-    // The strip is top-anchored while this popup is vertically centered in the
-    // same region — on a small terminal that would center the popup straight
-    // through the sprite. Only draw it when it fully fits above with no overlap.
-    if inner.y >= chunks[1].y + walker::HEIGHT {
-        draw_walker(f, chunks[1], app);
+    // The character walks along the floor of this screen — the strip is pinned
+    // to the bottom of the region, just above the footer. The popup is centered
+    // in the same region, so only draw the strip when it clears the popup's
+    // bottom edge; on a short terminal it's dropped rather than overlapped.
+    let strip_y = chunks[1].y + chunks[1].height.saturating_sub(walker::HEIGHT);
+    if strip_y >= inner.y + inner.height {
+        draw_walker(
+            f,
+            Rect {
+                y: strip_y,
+                height: walker::HEIGHT,
+                ..chunks[1]
+            },
+            app,
+        );
     }
     f.render_widget(List::new(items).block(block), inner);
 
@@ -257,10 +267,19 @@ fn scanning(f: &mut Frame, app: &App) {
 
     let spin = SPINNER[app.spinner % SPINNER.len()];
     let area = centered(chunks[1], 60, 5);
-    // See the matching guard in scope_select: skip the strip on a terminal too
-    // small to fit it above this centered box without overlap.
-    if area.y >= chunks[1].y + walker::HEIGHT {
-        draw_walker(f, chunks[1], app);
+    // See the matching guard in scope_select: bottom-anchored, and skipped on a
+    // terminal too small to clear this centered box without overlap.
+    let strip_y = chunks[1].y + chunks[1].height.saturating_sub(walker::HEIGHT);
+    if strip_y >= area.y + area.height {
+        draw_walker(
+            f,
+            Rect {
+                y: strip_y,
+                height: walker::HEIGHT,
+                ..chunks[1]
+            },
+            app,
+        );
     }
     let block = Block::default()
         .borders(Borders::ALL)
@@ -1185,12 +1204,17 @@ fn session_list(f: &mut Frame, app: &mut App, area: Rect, now: DateTime<Utc>) {
     if app.hero_visible {
         let inner_x = area.x + 1;
         let inner_w = area.width.saturating_sub(2);
-        let top = region_top + (region_h - block_h) / 2;
+        // The character walks along the floor of the panel: the strip is pinned
+        // to the bottom so its ground line sits right above the border, and the
+        // tagline/legend stack above it rather than below.
+        let strip_y = bottom.saturating_sub(walker::HEIGHT);
+        let tagline_y = strip_y.saturating_sub(GAP + 2);
+        let legend_y = tagline_y + 1;
         draw_walker(
             f,
             Rect {
                 x: inner_x,
-                y: top,
+                y: strip_y,
                 width: inner_w,
                 height: walker::HEIGHT,
             },
@@ -1232,7 +1256,7 @@ fn session_list(f: &mut Frame, app: &mut App, area: Rect, now: DateTime<Utc>) {
             Paragraph::new(line1).alignment(Alignment::Center),
             Rect {
                 x: inner_x,
-                y: top + walker::HEIGHT + GAP,
+                y: tagline_y,
                 width: inner_w,
                 height: 1,
             },
@@ -1241,7 +1265,7 @@ fn session_list(f: &mut Frame, app: &mut App, area: Rect, now: DateTime<Utc>) {
             Paragraph::new(line2).alignment(Alignment::Center),
             Rect {
                 x: inner_x,
-                y: top + walker::HEIGHT + GAP + 1,
+                y: legend_y,
                 width: inner_w,
                 height: 1,
             },

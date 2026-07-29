@@ -27,10 +27,12 @@ const CANVAS_H: usize = SPRITE_H + HEADROOM;
 /// Canvas rows plus the ground line the character walks on.
 pub const HEIGHT: u16 = (CANVAS_H / 2) as u16 + 1;
 
-/// Ticks per cell of horizontal travel (larger = slower).
-const TICKS_PER_CELL: usize = 2;
-/// Ticks each walk frame is held.
-const TICKS_PER_FRAME: usize = 6;
+/// Ticks per cell of horizontal travel (larger = slower). At 1 this is one cell
+/// per tick, the fastest the tick loop can express.
+const TICKS_PER_CELL: usize = 1;
+/// Ticks each walk frame is held. Kept in step with `TICKS_PER_CELL` so the legs
+/// swap every few cells — a slow frame rate over fast travel reads as sliding.
+const TICKS_PER_FRAME: usize = 3;
 /// How high a hop lifts the sprite, in pixel rows. One terminal row.
 const HOP_LIFT: usize = 2;
 /// Ticks per hop (up then down), so a hop reads as a bounce, not a jitter.

@@ -1893,8 +1893,16 @@ fn help_popup(f: &mut Frame) {
             "c",
             "send a catch-up prompt to selected session (confirms if busy)",
         ),
+        item(
+            "t",
+            "put selected session in a topic category (all marked, in multi-select)",
+        ),
         Line::from(""),
         section("View"),
+        item(
+            "→ / ←",
+            "on a category: unfold / fold it. On a session: → opens it, ← folds its category",
+        ),
         item("/", "search visible sessions"),
         item("d", "change working directory scope"),
         item("a", "toggle archived sessions"),

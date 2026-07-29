@@ -115,6 +115,18 @@ fn status_rank(s: SessionStatus) -> u8 {
     }
 }
 
+/// Resolve a stored walker id to an index into [`crate::walker::ALL`]: `None`
+/// (never picked) and an unknown id both land on the default.
+///
+/// Pulled out of [`App::new_in`] so this can be tested without pointing
+/// `MINDPLAYER_STATE` at a temp file. That env mutation is what made the first
+/// version of the default-character test flaky: `std::env::set_var` races with
+/// any other thread reading the environment, and background threads other tests
+/// leave running do exactly that (the same hazard behind CI's `--test-threads=1`).
+fn resolve_walker(stored: Option<&str>) -> usize {
+    crate::walker::index_of(stored.unwrap_or(crate::walker::DEFAULT_ID))
+}
+
 fn agent_rank(agent: Agent) -> u8 {
     match agent {
         Agent::Codex => 0,
@@ -476,8 +488,7 @@ impl App {
         // Loaded before the literal so the stored character id can be resolved
         // to an index up front (an unknown id falls back to the default).
         let state = State::load();
-        let walker_choice =
-            crate::walker::index_of(state.walker.as_deref().unwrap_or(crate::walker::DEFAULT_ID));
+        let walker_choice = resolve_walker(state.walker.as_deref());
         App {
             screen: Screen::ScopeSelect,
             scope_choice: 0,

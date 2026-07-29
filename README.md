@@ -54,6 +54,12 @@ never modifies them — so it just works with the sessions you already have.
   running agent's own file mtime would otherwise always show) — so you can
   tell a session that's been quietly working solo for 20 minutes from one
   that's been sitting idle waiting on you for just as long.
+- 🗂️ **Topic categories** — group sessions on one subject under a named
+  category with <kbd>t</kbd>: start with a single session, add more as the work
+  splits, or select several (<kbd>v</kbd> + <kbd>Space</kbd>) and categorize
+  them all at once. The list groups by topic, handoff lanes stay nested inside,
+  and <kbd>←</kbd>/<kbd>→</kbd> fold a topic away. The `recent` / `older` split
+  is unchanged — a topic moves as one, so it never straddles the divider.
 - 🟣 **In-progress mark** — flag a session with <kbd>i</kbd> as work you're not
   done with yet, independent of its live status; a thin rail keeps it visible
   even once it's buried in `older`.
@@ -179,6 +185,7 @@ make test                                          # cargo test --all
 | Key | Action |
 | --- | --- |
 | <kbd>↑</kbd> <kbd>↓</kbd> / <kbd>j</kbd> <kbd>k</kbd> | move selection (`▶`) |
+| <kbd>→</kbd> / <kbd>←</kbd> | on a **category** header: unfold / fold it. On a session row: <kbd>→</kbd> opens it, <kbd>←</kbd> folds its category and steps out to the header |
 | <kbd>Enter</kbd> | open the selected session, **adding it to the live view** (resume, or focus if already shown); remove a pane with <kbd>Ctrl‑q</kbd>. In multi‑select mode, launch **all marked** at once |
 | <kbd>v</kbd> | toggle **multi‑select** mode — then <kbd>Space</kbd> marks sessions and <kbd>Enter</kbd> launches them all (<kbd>Esc</kbd> cancels) |
 | <kbd>Space</kbd> | mark / unmark the selected session (`✓`) — multi‑select mode only |
@@ -195,6 +202,7 @@ make test                                          # cargo test --all
 | <kbd>e</kbd> | label the selected session (tag an existing one, or edit/clear its label) |
 | <kbd>i</kbd> | toggle the **in-progress** mark on the selected session (see above) |
 | <kbd>c</kbd> | send a **catch-up prompt** to the selected session (confirms first if it's busy) |
+| <kbd>t</kbd> | put the selected session in a **topic category** — pick an existing one, create a new one, or remove it. In multi‑select, categorizes **all marked** at once |
 | <kbd>o</kbd> | start an orchestration group with a main lane and child lanes |
 | <kbd>b</kbd> | broadcast the same instruction to every child lane in an orchestration thread |
 | <kbd>m</kbd> | ask the orchestration main lane to route work to specific child lanes |

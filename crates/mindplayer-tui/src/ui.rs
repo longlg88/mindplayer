@@ -103,6 +103,42 @@ fn draw_mascot(f: &mut Frame, area: Rect, tick: usize) {
     f.render_widget(Paragraph::new(mascot::lines(tick)), r);
 }
 
+/// Block-letter "MINDPLAYER" for the startup screen. A terminal can't scale its
+/// font, so making the title bigger means drawing it out of block glyphs — this
+/// is a fixed wordmark rather than a general font, since it only ever spells the
+/// one word. 5 rows tall, [`WORDMARK_W`] columns wide.
+const WORDMARK: [&str; 5] = [
+    "█   █ ███ █   █ ███  ███  █     ███  █   █ ████ ███ ",
+    "██ ██  █  ██  █ █  █ █  █ █    █   █  █ █  █    █  █",
+    "█ █ █  █  █ █ █ █  █ ███  █    █████   █   ███  ███ ",
+    "█   █  █  █  ██ █  █ █    █    █   █   █   █    █ █ ",
+    "█   █ ███ █   █ ███  █    ████ █   █   █   ████ █  █",
+];
+const WORDMARK_W: u16 = 52;
+const WORDMARK_H: u16 = WORDMARK.len() as u16;
+
+/// Draw the wordmark horizontally centered in `area` at row `y`. Skipped when
+/// the area is too narrow to hold it, so a small terminal degrades to the plain
+/// title bar instead of a chopped-up logo.
+fn draw_wordmark(f: &mut Frame, area: Rect, y: u16) {
+    if area.width < WORDMARK_W {
+        return;
+    }
+    let lines: Vec<Line<'static>> = WORDMARK
+        .iter()
+        .map(|row| Line::from(Span::styled(*row, Style::default().fg(ACCENT))))
+        .collect();
+    f.render_widget(
+        Paragraph::new(lines),
+        Rect {
+            x: area.x + (area.width - WORDMARK_W) / 2,
+            y,
+            width: WORDMARK_W,
+            height: WORDMARK_H,
+        },
+    );
+}
+
 /// Draw the walking-character strip across the full width of `area`, anchored
 /// at its top. Unlike the fixed-size mascot this uses whatever width it's
 /// given, so the character has the whole row to walk; `walker::lines` returns
@@ -222,10 +258,35 @@ fn scope_select(f: &mut Frame, app: &App) {
         .borders(Borders::ALL)
         .title(" Where should MindPlayer collect sessions? ")
         .border_style(Style::default().fg(ACCENT));
-    let inner = centered(chunks[1], 70, 8);
+
+    // Box sized to its contents: two borders plus one row per option. The old
+    // fixed height of 8 left four dead rows inside, which read as a tiny box
+    // stranded in a big empty screen.
+    let box_h = options.len() as u16 + 2;
+    const GAP: u16 = 1;
+    // Wordmark + gap + box, centered as one block so the pair reads together.
+    let group_h = WORDMARK_H + GAP + box_h;
+    let (wordmark_y, inner) = if chunks[1].height >= group_h {
+        let top = chunks[1].y + (chunks[1].height - group_h) / 2;
+        (
+            Some(top),
+            Rect {
+                y: top + WORDMARK_H + GAP,
+                ..centered(chunks[1], 70, box_h)
+            },
+        )
+    } else {
+        // Too short for the wordmark — just center the box on its own.
+        (None, centered(chunks[1], 70, box_h))
+    };
+
+    if let Some(y) = wordmark_y {
+        draw_wordmark(f, chunks[1], y);
+    }
+
     // The character walks along the floor of this screen — the strip is pinned
-    // to the bottom of the region, just above the footer. The popup is centered
-    // in the same region, so only draw the strip when it clears the popup's
+    // to the bottom of the region, just above the footer. The box is centered
+    // in the same region, so only draw the strip when it clears the box's
     // bottom edge; on a short terminal it's dropped rather than overlapped.
     let strip_y = chunks[1].y + chunks[1].height.saturating_sub(walker::HEIGHT);
     if strip_y >= inner.y + inner.height {

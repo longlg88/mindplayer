@@ -1,7 +1,7 @@
 //! Rendering for every screen. `render` also records the right-pane size back
 //! into `App` so the PTY can be spawned/resized at the correct dimensions.
 
-use crate::app::{App, Focus, PaneLayout, Screen, SessionStatus, MAX_PANES};
+use crate::app::{App, Focus, PaneLayout, Row, Screen, SessionStatus, MAX_PANES};
 use crate::mascot;
 use crate::terminal_view::TerminalView;
 use crate::text_input;
@@ -24,6 +24,8 @@ const DIM: Color = Color::Rgb(140, 146, 158);
 // the focus border/selection highlight, so an idle+focused/selected session
 // had no color-based way to tell "this is idle" apart from "this is focused."
 const IDLE: Color = Color::Rgb(111, 154, 149);
+/// Category headers — distinct from ACCENT so a topic never reads as a status.
+const CATEGORY: Color = Color::Rgb(180, 142, 240);
 // Orchid — reserved for the manual "in progress" mark so it never gets
 // mistaken for a live-status color (blocked/working/idle/done all sit in the
 // amber/green/teal/rose range).
@@ -101,6 +103,94 @@ fn draw_mascot(f: &mut Frame, area: Rect, tick: usize) {
         height: mascot::HEIGHT,
     };
     f.render_widget(Paragraph::new(mascot::lines(tick)), r);
+}
+
+/// The `t` category picker: existing topics, then create/remove. Shows how many
+/// sessions the pick will apply to, since multi-select can target many at once.
+fn category_popup(f: &mut Frame, app: &App) {
+    let Some(picker) = app.category_picker.as_ref() else {
+        return;
+    };
+    let rows = app.category_picker_rows();
+    let title = if picker.targets.len() > 1 {
+        format!(" Category for {} sessions ", picker.targets.len())
+    } else {
+        " Category ".to_string()
+    };
+
+    // Typing a new name replaces the list — one thing to look at at a time.
+    if let Some(name) = &picker.new_name {
+        let area = centered(f.area(), 54, 5);
+        f.render_widget(Clear, area);
+        f.render_widget(
+            Paragraph::new(vec![
+                Line::from(Span::styled("New category name:", Style::default().fg(DIM))),
+                Line::from(Span::styled(
+                    format!("{name}▏"),
+                    Style::default().fg(CATEGORY).add_modifier(Modifier::BOLD),
+                )),
+            ])
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(CATEGORY))
+                    .title(title),
+            ),
+            area,
+        );
+        return;
+    }
+
+    let h = (rows.len() as u16 + 2).min(f.area().height);
+    let area = centered(f.area(), 54, h);
+    f.render_widget(Clear, area);
+    let items: Vec<ListItem> = rows
+        .iter()
+        .enumerate()
+        .map(|(i, (id, label))| {
+            let selected = i == picker.selected;
+            let marker = if selected { "▶ " } else { "  " };
+            // Mark where the target already sits, so re-opening reads as a state
+            // view rather than a blank choice.
+            let current = id.as_deref().is_some_and(|id| {
+                picker
+                    .targets
+                    .first()
+                    .and_then(|t| app.state.category_of(t))
+                    == Some(id)
+            });
+            let mut style = if selected {
+                Style::default().fg(CATEGORY).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(DIM)
+            };
+            if id.is_none() {
+                style = style.add_modifier(Modifier::ITALIC);
+            }
+            let count = id
+                .as_deref()
+                .map(|id| app.category_session_count(Some(id)))
+                .unwrap_or(0);
+            let suffix = match (id.is_some(), current) {
+                (true, true) => format!("  · {count}  (current)"),
+                (true, false) => format!("  · {count}"),
+                _ => String::new(),
+            };
+            ListItem::new(Line::from(vec![
+                Span::styled(format!("{marker}{label}"), style),
+                Span::styled(suffix, Style::default().fg(DIM)),
+            ]))
+        })
+        .collect();
+    f.render_widget(
+        List::new(items).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(CATEGORY))
+                .title(title),
+        ),
+        area,
+    );
 }
 
 /// Block-letter "MINDPLAYER" for the startup screen. A terminal can't scale its
@@ -530,7 +620,7 @@ fn main_view(f: &mut Frame, app: &mut App) {
     if show_more_keys {
         f.render_widget(
             Paragraph::new(Line::from(Span::styled(
-                "i in progress · c catch-up    +8 more · ? help",
+                "i in progress · c catch-up · t category · ←→ fold    +8 more · ? help",
                 Style::default().fg(Color::Rgb(90, 95, 108)),
             )))
             .alignment(Alignment::Right),
@@ -540,6 +630,8 @@ fn main_view(f: &mut Frame, app: &mut App) {
 
     if app.help_visible {
         help_popup(f);
+    } else if app.category_picker.is_some() {
+        category_popup(f, app);
     } else if let Some(choice) = app.handoff_picker {
         handoff_popup(f, choice, app.selected_session().map(|s| s.agent));
     } else if let Some(choice) = app.new_picker {
@@ -1075,22 +1167,29 @@ fn session_list(f: &mut Frame, app: &mut App, area: Rect, now: DateTime<Utc>) {
     // boundary in `recent_count`, so the split is position-based — the
     // headers always match the sort order and never recompute per row.
     let recent_count = app.recent_count.min(app.visible.len());
-    let older_count = app.visible.len().saturating_sub(recent_count);
+    // Rows now include category headers, so count sessions for the band labels
+    // rather than rows — otherwise "recent N sessions" would count headers too.
+    let recent_sessions = (0..recent_count)
+        .filter(|&r| app.session_at(r).is_some())
+        .count();
+    let older_sessions = (recent_count..app.visible.len())
+        .filter(|&r| app.session_at(r).is_some())
+        .count();
 
     let mut items: Vec<ListItem> = Vec::new();
     let mut selected_item = None;
     let mut current_recent: Option<bool> = None;
     for row in 0..app.visible.len() {
-        let Some(s) = app.session_at(row) else {
+        let Some(kind) = app.row_at(row).cloned() else {
             continue;
         };
         let is_recent = row < recent_count;
         if current_recent != Some(is_recent) {
             current_recent = Some(is_recent);
             let (label, count) = if is_recent {
-                ("recent", recent_count)
+                ("recent", recent_sessions)
             } else {
-                ("older", older_count)
+                ("older", older_sessions)
             };
             items.push(ListItem::new(Line::from(vec![
                 Span::styled("  ── ", Style::default().fg(DIM)),
@@ -1107,6 +1206,48 @@ fn session_list(f: &mut Frame, app: &mut App, area: Rect, now: DateTime<Utc>) {
         if row == app.selected {
             selected_item = Some(items.len());
         }
+        // Category header rows: the fold marker plus a session count. Rendered
+        // as a normal list item so the cursor can sit on it (that is what makes
+        // `←`/`→` able to fold without stealing `→` from session rows).
+        let cat: Option<Option<String>> = match &kind {
+            Row::Header(cat) => Some(cat.clone()),
+            Row::Session(_) => None,
+        };
+        if let Some(cat) = cat {
+            let count = app.category_session_count(cat.as_deref());
+            let (glyph, label) = match &cat {
+                Some(id) => (
+                    if app.state.is_collapsed(id) {
+                        "▸ "
+                    } else {
+                        "▾ "
+                    },
+                    app.category_label(id),
+                ),
+                None => ("· ", "uncategorized".to_string()),
+            };
+            let name_style = if cat.is_some() {
+                Style::default().fg(CATEGORY).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(DIM)
+            };
+            let mut spans = vec![
+                Span::styled(format!("  {glyph}"), Style::default().fg(CATEGORY)),
+                Span::styled(label, name_style),
+            ];
+            // A one-session topic reads as a label, not a group — no tally.
+            if count != 1 {
+                spans.push(Span::styled(
+                    format!("  · {count} {}", plural_session(count)),
+                    Style::default().fg(DIM),
+                ));
+            }
+            items.push(ListItem::new(Line::from(spans)));
+            continue;
+        }
+        let Some(s) = app.session_at(row) else {
+            continue;
+        };
         {
             let marked = app.marked.contains(&s.id);
             let depth = app.session_depth(&s.id);

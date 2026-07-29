@@ -71,11 +71,7 @@ impl App {
         // list. Keep the cursor on it by id so returning to the list and
         // pressing `x` can't archive+kill a different session.
         if let Some(id) = self.active.clone() {
-            if let Some(pos) = self
-                .visible
-                .iter()
-                .position(|&i| self.all_sessions[i].id == id)
-            {
+            if let Some(pos) = self.row_of_session(&id) {
                 self.selected = pos;
             }
         }
@@ -93,7 +89,7 @@ impl App {
                 now - chrono::Duration::seconds(5),
                 label,
             );
-            let _ = self.state.save();
+            let _ = self.save_state();
         }
         // Pick the new session up in the list shortly after it's created.
         self.rescan_due = Some(Instant::now() + Duration::from_secs(3));
@@ -255,7 +251,7 @@ impl App {
                                 && p.cwd == extra.cwd
                                 && p.parent_id == parent_id)
                         });
-                        let _ = self.state.save();
+                        let _ = self.save_state();
                     }
                     self.new_baselines.remove(&extra.id);
                     claimed.insert(real_id);

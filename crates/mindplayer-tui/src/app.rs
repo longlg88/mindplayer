@@ -83,6 +83,47 @@ impl PaneSelection {
     }
 }
 
+/// State of the `t` category picker. Targets are captured when it opens so a
+/// background rescan mid-pick can't retarget the assignment.
+#[derive(Debug, Clone)]
+pub struct CategoryPicker {
+    /// Session ids this pick will apply to — one row, or every marked row.
+    pub targets: Vec<String>,
+    /// Highlighted row: `0..n` existing categories, then new, then clear.
+    pub selected: usize,
+    /// `Some(buffer)` while typing a new category's name.
+    pub new_name: Option<String>,
+}
+
+/// One row of the session list. Category headers are rows rather than decoration
+/// so the cursor can land on them — that is what lets `←`/`→` fold a topic while
+/// `→` on a session still resumes it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Row {
+    /// A category header. `None` is the "no category" bucket, only emitted once
+    /// at least one real category exists (otherwise every row would sit under a
+    /// pointless header).
+    Header(Option<String>),
+    /// Index into `all_sessions`.
+    Session(usize),
+}
+
+impl Row {
+    pub fn session_index(&self) -> Option<usize> {
+        match self {
+            Row::Session(i) => Some(*i),
+            Row::Header(_) => None,
+        }
+    }
+
+    /// Only the tests need to ask outright — the render path matches on the
+    /// variant directly, and the list code goes through `session_index`.
+    #[cfg(test)]
+    pub fn is_header(&self) -> bool {
+        matches!(self, Row::Header(_))
+    }
+}
+
 /// How a session in the list is doing right now, for the status badge.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SessionStatus {
@@ -229,10 +270,18 @@ pub struct App {
     /// index is the highlighted row, only committed to `walker_choice` (and
     /// persisted) on enter.
     pub walker_picker: Option<usize>,
+    /// Open category picker (`t`). Rows are the existing categories plus a
+    /// "new category" entry and a "remove from category" entry.
+    pub category_picker: Option<CategoryPicker>,
     pub cwd: PathBuf,
     pub scope: Scope,
     pub cfg: ScanConfig,
     pub state: State,
+    /// Where `state` is written. Held explicitly rather than re-resolved from
+    /// `MINDPLAYER_STATE` on every save: tests can point it at a temp file with
+    /// no env mutation at all, which is what stops a test from ever writing to
+    /// the developer's real ~/.mindplayer/state.json (it has happened twice).
+    pub state_path: PathBuf,
 
     /// Full in-scope scan (drives the aggregate / scan numbers).
     pub all_sessions: Vec<Session>,
@@ -242,13 +291,19 @@ pub struct App {
     /// Totals over just the currently-visible rows (drives the status bar, so
     /// its count/tokens match the list the user is looking at).
     pub visible_aggregate: Aggregate,
-    /// Indices into `all_sessions` for the rows shown, after the archived /
-    /// sub-agent view filters. Indices (not clones) keep the refresh cheap.
-    pub visible: Vec<usize>,
+    /// The rows shown, after the archived / sub-agent view filters: category
+    /// headers interleaved with session rows. Sessions are held as indices into
+    /// `all_sessions` (not clones) to keep the refresh cheap.
+    pub visible: Vec<Row>,
     pub selected: usize,
-    /// Number of leading `visible` rows touched within the last 24h (the rest
-    /// are older). Computed in `rebuild_visible` so the list renderer draws
-    /// the section headers from one source of truth.
+    /// Sessions each category holds, keyed by category id (`None` = the
+    /// uncategorized bucket). Filled by `rebuild_visible` so a *folded* header
+    /// can still show its tally — counting visible rows would report zero.
+    pub category_counts: HashMap<Option<String>, usize>,
+    /// Number of leading `visible` rows (headers included) belonging to
+    /// categories touched within the last 24h; the rest are older. Computed in
+    /// `rebuild_visible` so the list renderer draws the section headers from one
+    /// source of truth.
     pub recent_count: usize,
     pub show_archived: bool,
     /// Show spawned helper/sub-agent sessions (hidden by default).
@@ -487,23 +542,27 @@ impl App {
     pub fn new_in(cwd: PathBuf) -> Self {
         // Loaded before the literal so the stored character id can be resolved
         // to an index up front (an unknown id falls back to the default).
-        let state = State::load();
+        let state_path = mindplayer_core::state::default_state_path();
+        let state = State::load_from(&state_path);
         let walker_choice = resolve_walker(state.walker.as_deref());
         App {
             screen: Screen::ScopeSelect,
             scope_choice: 0,
             walker_choice,
             walker_picker: None,
+            category_picker: None,
             scope: Scope::WorkingDir(cwd.clone()),
             cwd,
             cfg: ScanConfig::from_env(),
             state,
+            state_path,
             all_sessions: Vec::new(),
             aggregate: Aggregate::default(),
             visible_aggregate: Aggregate::default(),
             visible: Vec::new(),
             selected: 0,
             recent_count: 0,
+            category_counts: HashMap::new(),
             show_archived: false,
             show_subagents: false,
             hero_visible: false,
@@ -587,6 +646,13 @@ impl App {
         }
     }
 
+    /// Persist the sidecar state to [`Self::state_path`]. A failed write is
+    /// non-fatal everywhere it is called — the change still applies for this
+    /// run, it just is not remembered.
+    pub(crate) fn save_state(&self) -> anyhow::Result<()> {
+        self.state.save_to(&self.state_path)
+    }
+
     // --- walking character ------------------------------------------------
 
     /// The character currently walking the browse-screen strip.
@@ -623,7 +689,7 @@ impl App {
         };
         self.walker_choice = pick;
         self.state.walker = Some(crate::walker::get(pick).id.to_string());
-        let _ = self.state.save();
+        let _ = self.save_state();
         self.status = format!("character: {}", crate::walker::get(pick).name);
     }
 

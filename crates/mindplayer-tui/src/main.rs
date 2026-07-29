@@ -637,6 +637,34 @@ fn handle_main_key(app: &mut App, key: KeyEvent) {
         return;
     }
 
+    // Category picker (`t`). Owns every key while open — including `q`, which
+    // must not quit the app mid-pick — and while typing a new name the letters
+    // are text, not shortcuts.
+    if app.category_picker.is_some() {
+        let typing = app
+            .category_picker
+            .as_ref()
+            .is_some_and(|p| p.new_name.is_some());
+        if typing {
+            match key.code {
+                KeyCode::Enter => app.confirm_category_pick(),
+                KeyCode::Esc => app.cancel_category_pick(),
+                KeyCode::Backspace => app.category_name_backspace(),
+                KeyCode::Char(c) => app.category_name_push(c),
+                _ => {}
+            }
+        } else {
+            match normalize_shortcut(key.code) {
+                KeyCode::Up | KeyCode::Char('k') => app.move_category_pick(-1),
+                KeyCode::Down | KeyCode::Char('j') => app.move_category_pick(1),
+                KeyCode::Enter => app.confirm_category_pick(),
+                KeyCode::Esc | KeyCode::Char('q') => app.cancel_category_pick(),
+                _ => {}
+            }
+        }
+        return;
+    }
+
     // Cross-agent handoff picker.
     if let Some(choice) = app.handoff_picker {
         match key.code {
@@ -925,7 +953,21 @@ fn handle_main_key(app: &mut App, key: KeyEvent) {
                 KeyCode::PageUp => app.move_page(-1),
                 KeyCode::PageDown => app.move_page(1),
                 KeyCode::Enter if app.multi_select => app.launch_marked(),
+                // On a category header, enter/→ unfold instead of resuming —
+                // there is no session on that row to resume. `→` keeps its old
+                // meaning everywhere else, which is why this is checked first
+                // rather than rebinding the key outright.
+                KeyCode::Enter | KeyCode::Char('l') | KeyCode::Right
+                    if app.selected_category().is_some() =>
+                {
+                    app.toggle_selected_category();
+                }
                 KeyCode::Enter | KeyCode::Char('l') | KeyCode::Right => app.request_resume(),
+                // `←` folds the category the cursor is in and steps out to its
+                // header, the same gesture a file tree has. Unbound before this.
+                KeyCode::Left => {
+                    app.collapse_category_at_cursor();
+                }
                 KeyCode::Char('v') => app.toggle_multi_select(),
                 KeyCode::Char(' ') if app.multi_select => app.toggle_mark(),
                 KeyCode::Esc if app.multi_select => app.cancel_multi_select(),
@@ -933,10 +975,14 @@ fn handle_main_key(app: &mut App, key: KeyEvent) {
                 // meaningless (and, for 'x', destructive) while several rows
                 // are marked — block them instead of silently acting on
                 // whichever row happens to be highlighted.
+                // `t` is deliberately NOT in this block: assigning a category to
+                // every marked row at once is the whole point of multi-select
+                // here (that is how a topic gets several sessions in one go).
                 KeyCode::Char('n' | 'e' | 'h' | 'x' | 'i' | 'c') if app.multi_select => {
                     app.status =
                         "multi-select: finish (enter) or cancel (esc) before this".to_string();
                 }
+                KeyCode::Char('t') => app.begin_category_pick(),
                 KeyCode::Char('n') => app.new_picker = Some(0),
                 KeyCode::Char('i') => app.toggle_in_progress(),
                 KeyCode::Char('c') => app.begin_catchup(),
@@ -1115,7 +1161,7 @@ mod tests {
             is_subagent: false,
             context_pct: None,
         }];
-        app.visible = vec![0];
+        app.visible = vec![app::Row::Session(0)];
         app
     }
 
@@ -1261,7 +1307,11 @@ mod tests {
         for c in "s1".chars() {
             app.search_push(c);
         }
-        assert_eq!(app.visible, vec![0], "search must still match session s1");
+        assert_eq!(
+            app.visible,
+            vec![app::Row::Session(0)],
+            "search must still match session s1"
+        );
 
         handle_main_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         assert_eq!(
@@ -1441,7 +1491,7 @@ mod tests {
             is_subagent: false,
             context_pct: None,
         });
-        app.visible = vec![0, 1];
+        app.visible = vec![app::Row::Session(0), app::Row::Session(1)];
 
         // Outside multi-select, space must NOT mark (no accidental multi-launch).
         handle_main_key(

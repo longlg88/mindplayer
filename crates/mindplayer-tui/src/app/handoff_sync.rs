@@ -118,11 +118,7 @@ impl App {
         self.all_sessions.push(synthetic);
         self.rebuild_visible();
         if let Some(id) = self.active.clone() {
-            if let Some(pos) = self
-                .visible
-                .iter()
-                .position(|&i| self.all_sessions[i].id == id)
-            {
+            if let Some(pos) = self.row_of_session(&id) {
                 self.selected = pos;
             }
         }
@@ -146,7 +142,7 @@ impl App {
             now - chrono::Duration::seconds(5),
             prepared.artifact.clone(),
         );
-        let _ = self.state.save();
+        let _ = self.save_state();
         let delivery = if initial_input {
             "queued initial paste"
         } else {
@@ -227,7 +223,7 @@ impl App {
         // Persist the same marker so it survives a MindPlayer restart (see the
         // doc comment on `thread_sync_needed` and on `State::thread_synced`).
         self.state.thread_synced.insert(id);
-        let _ = self.state.save();
+        let _ = self.save_state();
         true
     }
 

@@ -125,7 +125,7 @@ impl App {
         let buf = self.new_label.take().unwrap_or_default();
         let label = buf.trim();
         self.state.set_label(&id, label);
-        let _ = self.state.save();
+        let _ = self.save_state();
         mindplayer_core::log_event_to(
             &self.audit_path,
             mindplayer_core::AuditEvent::LabelEditConfirm {
@@ -188,7 +188,7 @@ impl App {
             self.scope = Scope::Global;
             self.dir_input = None;
             self.state.last_scope = Some(self.scope.label());
-            let _ = self.state.save();
+            let _ = self.save_state();
             mindplayer_core::log_event_to(
                 &self.audit_path,
                 mindplayer_core::AuditEvent::WorkingDirConfirm {
@@ -211,7 +211,7 @@ impl App {
         self.scope = Scope::WorkingDir(resolved.clone());
         self.dir_input = None;
         self.state.last_scope = Some(self.scope.label());
-        let _ = self.state.save();
+        let _ = self.save_state();
         mindplayer_core::log_event_to(
             &self.audit_path,
             mindplayer_core::AuditEvent::WorkingDirConfirm {

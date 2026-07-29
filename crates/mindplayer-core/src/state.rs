@@ -84,6 +84,28 @@ pub struct State {
     /// character in a later release can't break an existing state file.
     #[serde(default)]
     pub walker: Option<String>,
+    /// Topic groups, keyed by a stable id. The id is what sessions point at, so
+    /// renaming a category keeps its membership — and an auto-prefixed label
+    /// like `(handoff)pulse` no longer splits a topic in two the way grouping on
+    /// the label text would.
+    #[serde(default)]
+    pub categories: BTreeMap<String, Category>,
+    /// session id -> category id. Exclusive: a session belongs to at most one
+    /// category, which is what lets the list render it exactly once.
+    #[serde(default)]
+    pub session_category: BTreeMap<String, String>,
+    /// Category ids whose rows are collapsed in the list. Persisted so a folded
+    /// topic stays folded across restarts.
+    #[serde(default)]
+    pub collapsed_categories: BTreeSet<String>,
+}
+
+/// A user-named topic. Sessions join by id, never by name — see
+/// [`State::categories`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Category {
+    pub name: String,
+    pub created_at: DateTime<Utc>,
 }
 
 fn default_version() -> u32 {
@@ -103,6 +125,9 @@ impl Default for State {
             thread_synced: BTreeSet::new(),
             last_scope: None,
             walker: None,
+            categories: BTreeMap::new(),
+            session_category: BTreeMap::new(),
+            collapsed_categories: BTreeSet::new(),
         }
     }
 }
@@ -158,6 +183,137 @@ impl State {
         }
         std::fs::rename(&tmp, path)?;
         Ok(())
+    }
+
+    // --- categories ---------------------------------------------------------
+
+    /// The category a session belongs to, if any.
+    pub fn category_of(&self, session_id: &str) -> Option<&str> {
+        self.session_category.get(session_id).map(String::as_str)
+    }
+
+    pub fn category_name(&self, cat_id: &str) -> Option<&str> {
+        self.categories.get(cat_id).map(|c| c.name.as_str())
+    }
+
+    /// Categories as `(id, name)`, ordered by name so the picker and the list
+    /// agree and neither depends on map iteration order.
+    pub fn categories_by_name(&self) -> Vec<(&str, &str)> {
+        let mut out: Vec<(&str, &str)> = self
+            .categories
+            .iter()
+            .map(|(id, c)| (id.as_str(), c.name.as_str()))
+            .collect();
+        out.sort_by(|a, b| {
+            a.1.to_lowercase()
+                .cmp(&b.1.to_lowercase())
+                .then(a.0.cmp(b.0))
+        });
+        out
+    }
+
+    /// Create a category and return its new id. A blank name is rejected
+    /// (`None`) rather than creating an unnameable group. Reuses an existing
+    /// category when the trimmed name already matches one, so typing the same
+    /// topic twice joins it instead of forking it.
+    pub fn create_category(&mut self, name: &str, now: DateTime<Utc>) -> Option<String> {
+        let name = name.trim();
+        if name.is_empty() {
+            return None;
+        }
+        if let Some((id, _)) = self
+            .categories
+            .iter()
+            .find(|(_, c)| c.name.eq_ignore_ascii_case(name))
+        {
+            return Some(id.clone());
+        }
+        // Ids are `cat_N` past the highest N in use, so they stay unique even
+        // after deletions and never collide with a hand-edited state file.
+        let next = self
+            .categories
+            .keys()
+            .filter_map(|k| k.strip_prefix("cat_"))
+            .filter_map(|n| n.parse::<u32>().ok())
+            .max()
+            .map_or(1, |n| n + 1);
+        let id = format!("cat_{next}");
+        self.categories.insert(
+            id.clone(),
+            Category {
+                name: name.to_string(),
+                created_at: now,
+            },
+        );
+        Some(id)
+    }
+
+    /// Put a session in a category, replacing any previous one (membership is
+    /// exclusive). Unknown category ids are ignored rather than creating a
+    /// dangling pointer the list would have to defend against.
+    pub fn assign_category(&mut self, session_id: &str, cat_id: &str) -> bool {
+        if !self.categories.contains_key(cat_id) {
+            return false;
+        }
+        self.session_category
+            .insert(session_id.to_string(), cat_id.to_string());
+        true
+    }
+
+    /// Take a session out of its category. The session itself is untouched.
+    pub fn clear_category(&mut self, session_id: &str) {
+        self.session_category.remove(session_id);
+    }
+
+    pub fn rename_category(&mut self, cat_id: &str, name: &str) -> bool {
+        let name = name.trim();
+        if name.is_empty() {
+            return false;
+        }
+        match self.categories.get_mut(cat_id) {
+            Some(c) => {
+                c.name = name.to_string();
+                true
+            }
+            None => false,
+        }
+    }
+
+    pub fn is_collapsed(&self, cat_id: &str) -> bool {
+        self.collapsed_categories.contains(cat_id)
+    }
+
+    pub fn set_collapsed(&mut self, cat_id: &str, collapsed: bool) {
+        if collapsed {
+            self.collapsed_categories.insert(cat_id.to_string());
+        } else {
+            self.collapsed_categories.remove(cat_id);
+        }
+    }
+
+    /// Drop categories nothing points at, and membership/collapse entries whose
+    /// category is gone. Returns true if anything changed, so the caller only
+    /// writes when it must. Called after a scan, where a session id that no
+    /// longer exists would otherwise keep an empty group on screen forever.
+    pub fn prune_categories(&mut self, known_sessions: &BTreeSet<String>) -> bool {
+        let before = (
+            self.categories.len(),
+            self.session_category.len(),
+            self.collapsed_categories.len(),
+        );
+        // Membership only for sessions that still exist and categories that do.
+        self.session_category
+            .retain(|sid, cid| known_sessions.contains(sid) && self.categories.contains_key(cid));
+        let in_use: BTreeSet<&String> = self.session_category.values().collect();
+        self.categories.retain(|id, _| in_use.contains(id));
+        self.collapsed_categories
+            .retain(|id| self.categories.contains_key(id));
+        before
+            != (
+                self.categories.len(),
+                self.session_category.len(),
+                self.collapsed_categories.len(),
+            )
     }
 
     pub fn is_archived(&self, id: &str) -> bool {

@@ -1786,24 +1786,22 @@ fn thread_sync_needed_stays_quiet_across_a_mindplayer_restart() {
     );
 }
 
+/// Exercises the exact resolution `App::new_in` uses, without touching
+/// `MINDPLAYER_STATE` — an earlier version of this test set that env var and
+/// went flaky under load, reading the developer's real state file instead of
+/// its temp one (see `resolve_walker`'s note).
 #[test]
 fn walker_defaults_to_the_rubber_duck_when_nothing_is_stored() {
-    let _env = STATE_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let dir = std::env::temp_dir().join(format!("mp-walker-default-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
-    let path = dir.join("state.json");
-    let _ = std::fs::remove_file(&path);
-    std::env::set_var("MINDPLAYER_STATE", &path);
-
-    let app = App::new();
     assert_eq!(
-        app.walker().id,
+        crate::walker::get(resolve_walker(None)).id,
         "duck",
         "a fresh install must start on the documented default"
     );
-
-    std::env::remove_var("MINDPLAYER_STATE");
-    let _ = std::fs::remove_file(&path);
+    assert_eq!(
+        crate::walker::get(resolve_walker(Some("octopus"))).id,
+        "octopus",
+        "a stored id must be honored"
+    );
 }
 
 #[test]
@@ -1814,9 +1812,21 @@ fn walker_picker_only_commits_on_confirm_and_persists_the_choice() {
     let path = dir.join("state.json");
     let _ = std::fs::remove_file(&path);
     std::env::set_var("MINDPLAYER_STATE", &path);
+    // `confirm_walker_pick` calls `State::save()`, which resolves the path from
+    // this env var. If the `set_var` above ever fails to take effect (it raced
+    // once and this test wrote to the developer's real ~/.mindplayer/state.json),
+    // fail loudly here instead of silently clobbering real user data.
+    assert_eq!(
+        mindplayer_core::state::default_state_path(),
+        path,
+        "MINDPLAYER_STATE did not take effect; refusing to run a test that saves state"
+    );
 
     let mut app = App::new();
-    let start = app.walker_choice;
+    // Pinned rather than read from whatever `App::new` resolved, so the
+    // expectations below don't depend on ambient state at all.
+    app.walker_choice = 0;
+    let start = 0;
 
     // Cancelling leaves the pick untouched and writes nothing.
     app.open_walker_picker();
@@ -1829,6 +1839,7 @@ fn walker_picker_only_commits_on_confirm_and_persists_the_choice() {
     app.open_walker_picker();
     app.move_walker_pick(1);
     let wanted = app.walker_picker.unwrap();
+    assert_eq!(wanted, 1, "one step down from the first entry");
     app.confirm_walker_pick();
     assert_eq!(app.walker_choice, wanted);
     assert!(app.walker_picker.is_none(), "picker closes on confirm");
@@ -1858,19 +1869,28 @@ fn walker_pick_wraps_at_both_ends() {
     assert_eq!(app.walker_picker, Some(0), "and back down again");
 }
 
+/// Reads a real state file through `load_from` (an explicit path, so no env
+/// mutation) to prove a character id removed in a later release still starts up
+/// on the default rather than panicking or rendering nothing.
 #[test]
 fn a_corrupt_or_removed_character_id_falls_back_instead_of_breaking_startup() {
-    let _env = STATE_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let dir = std::env::temp_dir().join(format!("mp-walker-bad-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("state.json");
     std::fs::write(&path, r#"{"version":1,"walker":"a-character-we-deleted"}"#).unwrap();
-    std::env::set_var("MINDPLAYER_STATE", &path);
 
-    let app = App::new();
-    assert_eq!(app.walker().id, crate::walker::DEFAULT_ID);
+    let state = mindplayer_core::State::load_from(&path);
+    assert_eq!(
+        state.walker.as_deref(),
+        Some("a-character-we-deleted"),
+        "the unknown id should round-trip into State untouched"
+    );
+    assert_eq!(
+        crate::walker::get(resolve_walker(state.walker.as_deref())).id,
+        crate::walker::DEFAULT_ID,
+        "and only be replaced at resolution time"
+    );
 
-    std::env::remove_var("MINDPLAYER_STATE");
     let _ = std::fs::remove_file(&path);
 }
 

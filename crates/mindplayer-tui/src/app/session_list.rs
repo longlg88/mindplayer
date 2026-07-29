@@ -39,7 +39,7 @@ impl App {
             Scope::Global
         };
         self.state.last_scope = Some(self.scope.label());
-        let _ = self.state.save();
+        let _ = self.save_state();
 
         self.scan_rx = Some(self.spawn_scan());
         self.screen = Screen::Scanning;
@@ -70,7 +70,7 @@ impl App {
         let selected_id = self.selected_session().map(|s| s.id.clone());
         // Resolve labels against the raw scan, persist, then stamp titles.
         if self.state.resolve_pending(&sessions) {
-            let _ = self.state.save();
+            let _ = self.save_state();
         }
         self.state.apply(&mut sessions);
         self.aggregate = Aggregate::of(&sessions);
@@ -78,11 +78,7 @@ impl App {
         self.merge_extras();
         self.rebuild_visible();
         if let Some(id) = selected_id {
-            if let Some(pos) = self
-                .visible
-                .iter()
-                .position(|&i| self.all_sessions[i].id == id)
-            {
+            if let Some(pos) = self.row_of_session(&id) {
                 self.selected = pos;
             }
         }
@@ -100,7 +96,7 @@ impl App {
             if let Ok(mut sessions) = rx.try_recv() {
                 // Resolve labels queued in a previous run before stamping titles.
                 if self.state.resolve_pending(&sessions) {
-                    let _ = self.state.save();
+                    let _ = self.save_state();
                 }
                 self.state.apply(&mut sessions);
                 self.aggregate = Aggregate::of(&sessions);
@@ -213,40 +209,297 @@ impl App {
                 std::cmp::Reverse(latest),
             )
         });
-        // The sort puts every "recent" group first, so the visible list is a
-        // [recent…][older…] split. Record the boundary so the renderer can draw
-        // the section headers from one source of truth — never recomputing per
-        // row (which could disagree with the sort order and emit duplicate
-        // headers).
-        let mut recent_count = 0usize;
-        self.visible = Vec::new();
-        for (_, indices) in &groups {
-            if group_is_recent(self, indices) {
-                recent_count += indices.len();
+        // Second tier: bucket the thread groups by category, preserving the
+        // order just established. A category inherits the best rank among its
+        // threads, so an urgent/recent topic still floats to the top and the
+        // whole topic moves together (same atomic rule threads already had —
+        // one recent lane pulls the group up, so a topic is never split across
+        // the recent/older divider).
+        // Categorized threads bucket by category; uncategorized ones stay loose.
+        // Bucketing the leftovers too would make them atomic as well, and with
+        // hundreds of uncategorized sessions a single recent one would drag the
+        // whole pile above the divider — the `older` split would vanish.
+        let mut buckets: Vec<(String, Vec<Vec<usize>>)> = Vec::new();
+        let mut loose: Vec<Vec<usize>> = Vec::new();
+        for (root, indices) in groups {
+            match self.category_for_thread(&root, &indices) {
+                Some(cat) => match buckets.iter_mut().find(|(c, _)| *c == cat) {
+                    Some((_, threads)) => threads.push(indices),
+                    None => buckets.push((cat, vec![indices])),
+                },
+                None => loose.push(indices),
             }
-            self.visible.extend(indices.iter().copied());
         }
-        self.recent_count = recent_count;
+        // Only label the leftovers when there is something to contrast them
+        // with; on a fresh install every row would otherwise sit under a
+        // pointless "no category" header.
+        let has_real_category = !buckets.is_empty();
+
+        // Within each band, named topics come first and loose sessions follow —
+        // a predictable rule that also keeps every category contiguous.
+        let (recent_buckets, older_buckets): (Vec<_>, Vec<_>) = buckets
+            .into_iter()
+            .partition(|(_, threads)| threads.iter().any(|t| group_is_recent(self, t)));
+        let (recent_loose, older_loose): (Vec<_>, Vec<_>) =
+            loose.into_iter().partition(|t| group_is_recent(self, t));
+
+        // Tally before emitting, so folded categories still report their size.
+        self.category_counts.clear();
+        for (cat, threads) in recent_buckets.iter().chain(older_buckets.iter()) {
+            let n: usize = threads.iter().map(|t| t.len()).sum();
+            *self.category_counts.entry(Some(cat.clone())).or_insert(0) += n;
+        }
+        let loose_total: usize = recent_loose
+            .iter()
+            .chain(older_loose.iter())
+            .map(|t| t.len())
+            .sum();
+        if loose_total > 0 {
+            self.category_counts.insert(None, loose_total);
+        }
+
+        self.visible = Vec::new();
+        for (cat, threads) in &recent_buckets {
+            self.push_category_rows(Some(cat), threads);
+        }
+        if has_real_category && !recent_loose.is_empty() {
+            self.visible.push(Row::Header(None));
+        }
+        for t in &recent_loose {
+            self.visible.extend(t.iter().copied().map(Row::Session));
+        }
+        // Everything emitted so far is the `recent` band; the renderer draws the
+        // divider at this boundary.
+        self.recent_count = self.visible.len();
+
+        for (cat, threads) in &older_buckets {
+            self.push_category_rows(Some(cat), threads);
+        }
+        if has_real_category && !older_loose.is_empty() {
+            self.visible.push(Row::Header(None));
+        }
+        for t in &older_loose {
+            self.visible.extend(t.iter().copied().map(Row::Session));
+        }
         if self.selected >= self.visible.len() {
             self.selected = self.visible.len().saturating_sub(1);
         }
-        // Keep the status-bar totals in sync with what's actually listed.
+        // Keep the status-bar totals in sync with what's actually listed. Rows
+        // hidden inside a collapsed category are deliberately excluded — the
+        // totals describe what you can see.
         self.visible_aggregate = Aggregate::of_refs(
             self.visible
                 .iter()
-                .filter_map(|&i| self.all_sessions.get(i)),
+                .filter_map(|r| r.session_index())
+                .filter_map(|i| self.all_sessions.get(i)),
         );
-        // Drop marks for rows no longer visible (filtered out / archived) so a
-        // bulk launch never targets a hidden session.
+        // Drop marks for rows no longer visible (filtered out / archived /
+        // folded away) so a bulk launch never targets a hidden session.
         if !self.marked.is_empty() {
             let visible_ids: HashSet<&str> = self
                 .visible
                 .iter()
-                .filter_map(|&i| self.all_sessions.get(i))
+                .filter_map(|r| r.session_index())
+                .filter_map(|i| self.all_sessions.get(i))
                 .map(|s| s.id.as_str())
                 .collect();
             self.marked.retain(|id| visible_ids.contains(id.as_str()));
         }
+    }
+
+    // --- category picker (`t`) ---------------------------------------------
+
+    /// Rows offered by the picker: existing categories, then "new", then
+    /// "clear". Indices line up with `CategoryPicker::selected`.
+    pub fn category_picker_rows(&self) -> Vec<(Option<String>, String)> {
+        let mut rows: Vec<(Option<String>, String)> = self
+            .state
+            .categories_by_name()
+            .into_iter()
+            .map(|(id, name)| (Some(id.to_string()), name.to_string()))
+            .collect();
+        rows.push((None, "+ new category…".to_string()));
+        rows.push((None, "− remove from category".to_string()));
+        rows
+    }
+
+    /// `t`: open the picker for the marked rows, or for the row under the cursor.
+    /// A header row has nothing to categorize, so it is refused rather than
+    /// silently doing nothing.
+    pub fn begin_category_pick(&mut self) {
+        let targets: Vec<String> = if self.multi_select && !self.marked.is_empty() {
+            self.marked.iter().cloned().collect()
+        } else {
+            match self.selected_session() {
+                Some(s) => vec![s.id.clone()],
+                None => {
+                    self.status = "category: pick a session row first".to_string();
+                    return;
+                }
+            }
+        };
+        // Start on the category the (first) target already has, so re-opening
+        // shows where it currently sits.
+        let current = self.state.category_of(&targets[0]).map(str::to_string);
+        let selected = current
+            .and_then(|id| {
+                self.category_picker_rows()
+                    .iter()
+                    .position(|(rid, _)| rid.as_deref() == Some(id.as_str()))
+            })
+            .unwrap_or(0);
+        let n = targets.len();
+        self.category_picker = Some(CategoryPicker {
+            targets,
+            selected,
+            new_name: None,
+        });
+        self.status = if n > 1 {
+            format!("category: {n} sessions")
+        } else {
+            "category: pick one, or + to create".to_string()
+        };
+    }
+
+    pub fn cancel_category_pick(&mut self) {
+        self.category_picker = None;
+    }
+
+    pub fn move_category_pick(&mut self, delta: isize) {
+        let len = self.category_picker_rows().len() as isize;
+        if let Some(p) = self.category_picker.as_mut() {
+            if p.new_name.is_some() {
+                return; // typing a name; arrows are for the text field
+            }
+            p.selected = (p.selected as isize + delta).rem_euclid(len) as usize;
+        }
+    }
+
+    pub fn category_name_push(&mut self, c: char) {
+        if let Some(name) = self
+            .category_picker
+            .as_mut()
+            .and_then(|p| p.new_name.as_mut())
+        {
+            name.push(c);
+        }
+    }
+
+    pub fn category_name_backspace(&mut self) {
+        if let Some(name) = self
+            .category_picker
+            .as_mut()
+            .and_then(|p| p.new_name.as_mut())
+        {
+            name.pop();
+        }
+    }
+
+    /// Enter in the picker. On an existing category this assigns and closes; on
+    /// "new" it opens the name field first; on "clear" it unassigns.
+    pub fn confirm_category_pick(&mut self) {
+        let Some(p) = self.category_picker.clone() else {
+            return;
+        };
+        let rows = self.category_picker_rows();
+
+        // Second enter, with a typed name: create and assign.
+        if let Some(name) = p.new_name.clone() {
+            let Some(id) = self.state.create_category(&name, Utc::now()) else {
+                self.status = "category: name cannot be blank".to_string();
+                return;
+            };
+            self.apply_category(&p.targets, Some(&id));
+            return;
+        }
+
+        let is_new = p.selected == rows.len().saturating_sub(2);
+        let is_clear = p.selected == rows.len().saturating_sub(1);
+        if is_new {
+            if let Some(picker) = self.category_picker.as_mut() {
+                picker.new_name = Some(String::new());
+            }
+            self.status = "category: type a name, enter to create".to_string();
+            return;
+        }
+        if is_clear {
+            self.apply_category(&p.targets, None);
+            return;
+        }
+        let Some((Some(id), _)) = rows.get(p.selected).cloned() else {
+            return;
+        };
+        self.apply_category(&p.targets, Some(&id));
+    }
+
+    /// Assign (or clear) the category for every target, persist, and rebuild.
+    fn apply_category(&mut self, targets: &[String], cat: Option<&str>) {
+        for id in targets {
+            match cat {
+                Some(cat) => {
+                    self.state.assign_category(id, cat);
+                }
+                None => self.state.clear_category(id),
+            }
+        }
+        // Clearing can empty a category; drop it rather than leaving a header
+        // with nothing under it.
+        let known: std::collections::BTreeSet<String> =
+            self.all_sessions.iter().map(|s| s.id.clone()).collect();
+        self.state.prune_categories(&known);
+        let _ = self.save_state();
+        self.category_picker = None;
+        // Keep the cursor on the session that was just categorized, which has
+        // usually moved to a different part of the list.
+        let follow = targets.first().cloned();
+        self.rebuild_visible();
+        if let Some(id) = follow {
+            if let Some(pos) = self.row_of_session(&id) {
+                self.selected = pos;
+            }
+        }
+        self.status = match cat {
+            Some(cat) => format!(
+                "{} → {}",
+                if targets.len() > 1 {
+                    format!("{} sessions", targets.len())
+                } else {
+                    "session".to_string()
+                },
+                self.category_label(cat)
+            ),
+            None => "removed from category".to_string(),
+        };
+        if self.multi_select {
+            self.cancel_multi_select();
+        }
+    }
+
+    /// Emit a category's header plus its sessions, skipping the sessions when it
+    /// is folded. The header is always emitted so a collapsed category still has
+    /// a row to put the cursor on — otherwise it could never be reopened.
+    fn push_category_rows(&mut self, cat: Option<&str>, threads: &[Vec<usize>]) {
+        self.visible.push(Row::Header(cat.map(str::to_string)));
+        if cat.is_some_and(|id| self.state.is_collapsed(id)) {
+            return;
+        }
+        for t in threads {
+            self.visible.extend(t.iter().copied().map(Row::Session));
+        }
+    }
+
+    /// The category a whole handoff thread belongs to: its root's, falling back
+    /// to the first lane that has one. Membership is per session, but a thread
+    /// must land in exactly one bucket to stay intact under its own header.
+    fn category_for_thread(&self, root: &str, indices: &[usize]) -> Option<String> {
+        if let Some(cat) = self.state.category_of(root) {
+            return Some(cat.to_string());
+        }
+        indices
+            .iter()
+            .filter_map(|&i| self.all_sessions.get(i))
+            .find_map(|s| self.state.category_of(&s.id))
+            .map(str::to_string)
     }
 
     pub fn move_selection(&mut self, delta: isize) {
@@ -270,17 +523,134 @@ impl App {
         self.selected = next as usize;
     }
 
+    /// The selected session, or `None` when the cursor sits on a category
+    /// header. Every single-session action returns early in that case, which is
+    /// what makes a header row inert for `x`/`e`/`h`/`i`/`c`.
     pub fn selected_session(&self) -> Option<&Session> {
         self.visible
             .get(self.selected)
-            .and_then(|&i| self.all_sessions.get(i))
+            .and_then(|r| r.session_index())
+            .and_then(|i| self.all_sessions.get(i))
     }
 
-    /// The session at a visible row (used by the renderer).
+    /// The session at a visible row (used by the renderer). `None` for headers.
     pub fn session_at(&self, row: usize) -> Option<&Session> {
         self.visible
             .get(row)
-            .and_then(|&i| self.all_sessions.get(i))
+            .and_then(|r| r.session_index())
+            .and_then(|i| self.all_sessions.get(i))
+    }
+
+    /// The row at a visible index, for the renderer to tell headers apart.
+    pub fn row_at(&self, row: usize) -> Option<&Row> {
+        self.visible.get(row)
+    }
+
+    /// Visible row index of a session, for restoring the cursor by id after a
+    /// rebuild. Header rows are skipped, so this never lands the cursor on one.
+    pub fn row_of_session(&self, id: &str) -> Option<usize> {
+        self.visible.iter().position(|r| {
+            r.session_index()
+                .and_then(|i| self.all_sessions.get(i))
+                .is_some_and(|s| s.id == id)
+        })
+    }
+
+    /// Every session currently listed, headers skipped and folded-away rows
+    /// excluded (they are not in `visible` at all).
+    pub fn visible_sessions(&self) -> impl Iterator<Item = &Session> + '_ {
+        self.visible
+            .iter()
+            .filter_map(|r| r.session_index())
+            .filter_map(|i| self.all_sessions.get(i))
+    }
+
+    /// The category id the cursor is on, when it sits on a real category's
+    /// header. `None` for session rows and for the "no category" header, neither
+    /// of which can be folded.
+    pub fn selected_category(&self) -> Option<&str> {
+        match self.visible.get(self.selected) {
+            Some(Row::Header(Some(id))) => Some(id.as_str()),
+            _ => None,
+        }
+    }
+
+    /// The category owning the cursor's row, whether the cursor is on the header
+    /// itself or on one of its sessions. Drives `←` from inside a group.
+    pub fn category_at_cursor(&self) -> Option<&str> {
+        if let Some(id) = self.selected_category() {
+            return Some(id);
+        }
+        let session = self.selected_session()?;
+        self.state.category_of(&session.id)
+    }
+
+    /// Visible index of a category's header row.
+    fn header_row_of(&self, cat_id: &str) -> Option<usize> {
+        self.visible
+            .iter()
+            .position(|r| matches!(r, Row::Header(Some(id)) if id == cat_id))
+    }
+
+    /// `→` on a category header: unfold it. Returns false when there is nothing
+    /// to unfold, so the caller can fall through to resuming a session.
+    pub fn expand_selected_category(&mut self) -> bool {
+        let Some(id) = self.selected_category().map(str::to_string) else {
+            return false;
+        };
+        if !self.state.is_collapsed(&id) {
+            return false;
+        }
+        self.state.set_collapsed(&id, false);
+        let _ = self.save_state();
+        self.rebuild_visible();
+        self.status = format!("expanded {}", self.category_label(&id));
+        true
+    }
+
+    /// `←`: fold the category the cursor is in, and park the cursor on its
+    /// header — the same "step out" gesture a file tree has.
+    pub fn collapse_category_at_cursor(&mut self) -> bool {
+        let Some(id) = self.category_at_cursor().map(str::to_string) else {
+            return false;
+        };
+        self.state.set_collapsed(&id, true);
+        let _ = self.save_state();
+        self.rebuild_visible();
+        if let Some(row) = self.header_row_of(&id) {
+            self.selected = row;
+        }
+        self.status = format!("collapsed {}", self.category_label(&id));
+        true
+    }
+
+    /// Fold/unfold from a single key (enter on a header). Returns false when the
+    /// cursor is not on a foldable header.
+    pub fn toggle_selected_category(&mut self) -> bool {
+        let Some(id) = self.selected_category().map(str::to_string) else {
+            return false;
+        };
+        if self.state.is_collapsed(&id) {
+            self.expand_selected_category()
+        } else {
+            self.collapse_category_at_cursor()
+        }
+    }
+
+    pub fn category_label(&self, cat_id: &str) -> String {
+        self.state
+            .category_name(cat_id)
+            .unwrap_or("(unnamed)")
+            .to_string()
+    }
+
+    /// How many sessions a category holds, folded or not — see
+    /// [`App::category_counts`].
+    pub fn category_session_count(&self, cat_id: Option<&str>) -> usize {
+        self.category_counts
+            .get(&cat_id.map(str::to_string))
+            .copied()
+            .unwrap_or(0)
     }
 
     pub fn session_display_name(&self, id: &str, max_chars: usize) -> String {
@@ -405,7 +775,7 @@ impl App {
         let id = session.id.clone();
         let now_in_progress = !self.state.is_in_progress(&id);
         self.state.set_in_progress(&id, now_in_progress);
-        let _ = self.state.save();
+        let _ = self.save_state();
         mindplayer_core::log_event_to(
             &self.audit_path,
             mindplayer_core::AuditEvent::InProgressToggle {
@@ -594,11 +964,7 @@ impl App {
         sort_by_recency(&mut self.all_sessions);
         self.rebuild_visible();
         if let Some(id) = selected_id {
-            if let Some(pos) = self
-                .visible
-                .iter()
-                .position(|&i| self.all_sessions[i].id == id)
-            {
+            if let Some(pos) = self.row_of_session(&id) {
                 self.selected = pos;
             }
         }
@@ -627,7 +993,8 @@ impl App {
                     .checked_sub(1)
                     .and_then(|i| self.visible.get(i))
             })
-            .and_then(|&i| self.all_sessions.get(i))
+            .and_then(|r| r.session_index())
+            .and_then(|i| self.all_sessions.get(i))
             .map(|s| s.id.clone());
         if let Some(mut pty) = self.ptys.remove(&session.id) {
             pty.kill();
@@ -649,7 +1016,7 @@ impl App {
             self.status = "closed new session".to_string();
         } else {
             self.state.set_archived(&session.id, true);
-            let _ = self.state.save();
+            let _ = self.save_state();
             if let Some(s) = self.all_sessions.iter_mut().find(|s| s.id == session.id) {
                 s.archived = true;
             }
@@ -658,11 +1025,7 @@ impl App {
         self.rebuild_visible();
         // Restore the cursor onto the remembered neighbor by id.
         if let Some(nid) = neighbor_id {
-            if let Some(pos) = self
-                .visible
-                .iter()
-                .position(|&i| self.all_sessions[i].id == nid)
-            {
+            if let Some(pos) = self.row_of_session(&nid) {
                 self.selected = pos;
             }
         }

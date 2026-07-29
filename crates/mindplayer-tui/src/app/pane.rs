@@ -678,9 +678,7 @@ impl App {
         let zoom_was_on = self.zoomed;
         self.zoomed = false;
         let ids: Vec<String> = self
-            .visible
-            .iter()
-            .filter_map(|&i| self.all_sessions.get(i))
+            .visible_sessions()
             .filter(|s| self.marked.contains(&s.id))
             .map(|s| s.id.clone())
             .take(MAX_PANES)

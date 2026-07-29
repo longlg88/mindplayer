@@ -25,8 +25,34 @@ fn session(id: &str, agent: Agent, archived: bool) -> Session {
     }
 }
 
-fn app_with(sessions: Vec<Session>) -> App {
+/// Every test App writes to a scratch path, never `~/.mindplayer/state.json`.
+/// Two separate bugs had tests persisting into the developer's real state file
+/// (a walker pick, then a category + collapse), so isolation lives in the shared
+/// helper rather than being remembered at each call site. No env mutation: the
+/// path is a plain field on `App` (see `App::state_path`).
+fn scratch_state_path(tag: &str) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!("mp-test-{}-{tag}", std::process::id()));
+    let _ = std::fs::create_dir_all(&dir);
+    dir.join("state.json")
+}
+
+fn isolated_app() -> App {
     let mut app = App::new();
+    // Tests that deliberately point MINDPLAYER_STATE at their own temp file (to
+    // assert what got persisted) keep working — `App::new` already resolved it.
+    // Everything else is redirected to a scratch path, so a test that simply
+    // forgets to isolate still cannot write to the real state file.
+    if std::env::var_os("MINDPLAYER_STATE").is_none() {
+        app.state_path = scratch_state_path("app");
+        // A previous run's scratch file must not leak into this one.
+        app.state = mindplayer_core::State::default();
+        app.walker_choice = crate::walker::index_of(crate::walker::DEFAULT_ID);
+    }
+    app
+}
+
+fn app_with(sessions: Vec<Session>) -> App {
+    let mut app = isolated_app();
     app.all_sessions = sessions;
     app.rebuild_visible();
     app
@@ -803,7 +829,7 @@ fn close_selected_archives_and_hides() {
             .unwrap()
             .archived
     );
-    assert!(app.visible.iter().all(|&i| app.all_sessions[i].id != "a"));
+    assert!(app.visible_sessions().all(|s| s.id != "a"));
 }
 
 #[test]
@@ -1227,7 +1253,10 @@ fn close_selected_keeps_cursor_on_neighbor() {
     app.selected = app
         .visible
         .iter()
-        .position(|&i| app.all_sessions[i].id == "c")
+        .position(|r| {
+            r.session_index()
+                .is_some_and(|i| app.all_sessions[i].id == "c")
+        })
         .unwrap();
     app.close_selected();
     assert_eq!(app.selected_session().unwrap().id, "a");
@@ -1924,7 +1953,8 @@ fn done_sessions_bubble_above_other_agent_types_in_the_recent_list() {
     let ids: Vec<&str> = app
         .visible
         .iter()
-        .map(|&i| app.all_sessions[i].id.as_str())
+        .filter_map(|r| r.session_index())
+        .map(|i| app.all_sessions[i].id.as_str())
         .collect();
     assert_eq!(
         ids,
@@ -2589,7 +2619,11 @@ fn search_begin_confirm_records_the_resulting_terminal_focus() {
     app.begin_search();
     app.search_push('s');
     app.search_push('1');
-    assert_eq!(app.visible, vec![0], "search still matches s1");
+    assert_eq!(
+        app.visible,
+        vec![Row::Session(0)],
+        "search still matches s1"
+    );
     app.confirm_search();
     assert_eq!(app.focus, Focus::Terminal);
 
@@ -2650,4 +2684,361 @@ fn zoom_layout_and_view_toggles_log_their_resulting_state() {
     );
 
     let _ = std::fs::remove_file(&audit_tmp);
+}
+
+// --- categorize -------------------------------------------------------------
+
+/// Assign helper: create-or-reuse a category and put `ids` in it.
+fn categorize(app: &mut App, name: &str, ids: &[&str]) -> String {
+    let cat = app
+        .state
+        .create_category(name, chrono::Utc::now())
+        .expect("non-blank name");
+    for id in ids {
+        assert!(app.state.assign_category(id, &cat), "assign {id}");
+    }
+    app.rebuild_visible();
+    cat
+}
+
+#[test]
+fn a_category_groups_its_sessions_under_one_header() {
+    let now = chrono::Utc::now();
+    let mut a = session("a", Agent::Codex, false);
+    a.last_active = Some(now);
+    let mut b = session("b", Agent::Claude, false);
+    b.last_active = Some(now);
+    let mut loose = session("loose", Agent::Codex, false);
+    loose.last_active = Some(now);
+    let mut app = app_with(vec![a, b, loose]);
+    categorize(&mut app, "mindplayer", &["a", "b"]);
+
+    let ids: Vec<String> = app
+        .visible
+        .iter()
+        .map(|r| match r {
+            Row::Header(Some(id)) => format!("H:{}", app.category_label(id)),
+            Row::Header(None) => "H:uncategorized".to_string(),
+            Row::Session(i) => app.all_sessions[*i].id.clone(),
+        })
+        .collect();
+    assert_eq!(
+        ids,
+        vec![
+            "H:mindplayer".to_string(),
+            "a".to_string(),
+            "b".to_string(),
+            "H:uncategorized".to_string(),
+            "loose".to_string()
+        ],
+        "the topic gets a header, the leftovers get their own"
+    );
+}
+
+#[test]
+fn no_headers_at_all_until_a_category_exists() {
+    let now = chrono::Utc::now();
+    let mut a = session("a", Agent::Codex, false);
+    a.last_active = Some(now);
+    let app = app_with(vec![a]);
+    assert!(
+        app.visible.iter().all(|r| !r.is_header()),
+        "a fresh install must not show an 'uncategorized' header over everything"
+    );
+}
+
+/// The bug that made the first cut of this wrong: bucketing the uncategorized
+/// pile atomically meant one recent session dragged all of them above the
+/// divider, and the `older` split disappeared.
+#[test]
+fn uncategorized_sessions_keep_their_own_recent_older_split() {
+    let now = chrono::Utc::now();
+    let mut fresh = session("fresh", Agent::Codex, false);
+    fresh.last_active = Some(now);
+    let mut stale = session("stale", Agent::Codex, false);
+    stale.last_active = Some(now - chrono::Duration::days(9));
+    let mut topic = session("topic", Agent::Claude, false);
+    topic.last_active = Some(now);
+    let mut app = app_with(vec![fresh, stale, topic]);
+    categorize(&mut app, "pulse", &["topic"]);
+
+    // recent band: pulse header + topic + uncategorized header + fresh = 4
+    assert_eq!(app.recent_count, 4, "stale must stay below the divider");
+    let older: Vec<String> = app.visible[app.recent_count..]
+        .iter()
+        .filter_map(|r| r.session_index())
+        .map(|i| app.all_sessions[i].id.clone())
+        .collect();
+    assert_eq!(older, vec!["stale".to_string()]);
+}
+
+#[test]
+fn a_recent_lane_pulls_its_whole_category_above_the_divider() {
+    let now = chrono::Utc::now();
+    let mut fresh = session("fresh", Agent::Codex, false);
+    fresh.last_active = Some(now);
+    let mut ancient = session("ancient", Agent::Codex, false);
+    ancient.last_active = Some(now - chrono::Duration::days(20));
+    let mut app = app_with(vec![fresh, ancient]);
+    categorize(&mut app, "one-topic", &["fresh", "ancient"]);
+
+    // Category is atomic, matching how handoff threads already behave.
+    assert_eq!(app.recent_count, app.visible.len());
+    assert!(
+        app.visible.iter().filter(|r| r.is_header()).count() == 1,
+        "a topic must not appear in both bands"
+    );
+}
+
+#[test]
+fn collapsing_hides_the_sessions_but_keeps_the_header_selectable() {
+    let now = chrono::Utc::now();
+    let mut a = session("a", Agent::Codex, false);
+    a.last_active = Some(now);
+    let mut b = session("b", Agent::Codex, false);
+    b.last_active = Some(now);
+    let mut app = app_with(vec![a, b]);
+    let cat = categorize(&mut app, "topic", &["a", "b"]);
+
+    app.selected = 0;
+    assert_eq!(app.selected_category(), Some(cat.as_str()));
+    assert!(
+        app.collapse_category_at_cursor(),
+        "collapse from the header"
+    );
+    assert!(app.state.is_collapsed(&cat));
+    assert_eq!(app.visible.len(), 1, "only the header is left");
+    assert!(app.visible[0].is_header());
+    // And it can be reopened, which needs the header to still be there.
+    app.selected = 0;
+    assert!(app.expand_selected_category());
+    assert_eq!(app.visible.len(), 3);
+}
+
+#[test]
+fn left_arrow_from_a_session_folds_its_category_and_steps_out_to_the_header() {
+    let now = chrono::Utc::now();
+    let mut a = session("a", Agent::Codex, false);
+    a.last_active = Some(now);
+    let mut app = app_with(vec![a]);
+    let cat = categorize(&mut app, "topic", &["a"]);
+
+    // Cursor on the session, not the header.
+    app.selected = app.row_of_session("a").expect("session row");
+    assert!(app.selected_category().is_none());
+    assert!(app.collapse_category_at_cursor());
+    assert!(app.state.is_collapsed(&cat));
+    assert_eq!(
+        app.selected, 0,
+        "cursor must land on the header it just folded, not dangle"
+    );
+    assert_eq!(app.selected_category(), Some(cat.as_str()));
+}
+
+#[test]
+fn uncategorized_rows_cannot_be_folded() {
+    let now = chrono::Utc::now();
+    let mut a = session("a", Agent::Codex, false);
+    a.last_active = Some(now);
+    let mut loose = session("loose", Agent::Codex, false);
+    loose.last_active = Some(now);
+    let mut app = app_with(vec![a, loose]);
+    categorize(&mut app, "topic", &["a"]);
+
+    let row = app
+        .visible
+        .iter()
+        .position(|r| matches!(r, Row::Header(None)))
+        .expect("uncategorized header");
+    app.selected = row;
+    assert!(app.selected_category().is_none(), "not a foldable category");
+    assert!(!app.collapse_category_at_cursor());
+    assert!(!app.toggle_selected_category());
+}
+
+#[test]
+fn a_header_row_has_no_session_so_single_row_actions_are_inert() {
+    let now = chrono::Utc::now();
+    let mut a = session("a", Agent::Codex, false);
+    a.last_active = Some(now);
+    let mut app = app_with(vec![a]);
+    categorize(&mut app, "topic", &["a"]);
+
+    app.selected = 0;
+    assert!(app.selected_session().is_none());
+    // `x` on a header must not archive whatever happens to be nearby.
+    let archived_before = app.state.archived.len();
+    app.close_selected();
+    assert_eq!(app.state.archived.len(), archived_before);
+}
+
+#[test]
+fn the_picker_assigns_every_marked_session_at_once() {
+    let _env = STATE_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let dir = std::env::temp_dir().join(format!("mp-cat-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("state.json");
+    let _ = std::fs::remove_file(&path);
+    std::env::set_var("MINDPLAYER_STATE", &path);
+    assert_eq!(mindplayer_core::state::default_state_path(), path);
+
+    let now = chrono::Utc::now();
+    let mut a = session("a", Agent::Codex, false);
+    a.last_active = Some(now);
+    let mut b = session("b", Agent::Codex, false);
+    b.last_active = Some(now);
+    let mut app = app_with(vec![a, b]);
+    app.toggle_multi_select();
+    app.selected = 0;
+    app.toggle_mark();
+    app.selected = 1;
+    app.toggle_mark();
+
+    app.begin_category_pick();
+    let picker = app.category_picker.clone().expect("picker open");
+    assert_eq!(picker.targets.len(), 2, "both marked rows are targets");
+    // "+ new category" is second from the end.
+    let rows = app.category_picker_rows();
+    app.category_picker.as_mut().unwrap().selected = rows.len() - 2;
+    app.confirm_category_pick();
+    // Now typing the name, then enter creates and assigns.
+    for c in "shared".chars() {
+        app.category_name_push(c);
+    }
+    app.confirm_category_pick();
+
+    assert!(app.category_picker.is_none(), "closes after assigning");
+    let ca = app.state.category_of("a").map(str::to_string);
+    let cb = app.state.category_of("b").map(str::to_string);
+    assert!(ca.is_some() && ca == cb, "both land in the same category");
+    assert_eq!(app.state.category_name(&ca.unwrap()), Some("shared"));
+
+    std::env::remove_var("MINDPLAYER_STATE");
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn creating_the_same_topic_name_twice_reuses_it_instead_of_forking() {
+    let mut state = mindplayer_core::State::default();
+    let now = chrono::Utc::now();
+    let a = state.create_category("pulse", now).unwrap();
+    let b = state.create_category("  PULSE ", now).unwrap();
+    assert_eq!(a, b, "same topic, case/space insensitive");
+    assert_eq!(state.categories.len(), 1);
+    assert!(
+        state.create_category("   ", now).is_none(),
+        "blank rejected"
+    );
+}
+
+#[test]
+fn renaming_a_category_keeps_its_membership() {
+    let mut state = mindplayer_core::State::default();
+    let now = chrono::Utc::now();
+    let cat = state.create_category("mindplayer", now).unwrap();
+    state.assign_category("s1", &cat);
+    assert!(state.rename_category(&cat, "mindplayer-tui"));
+    assert_eq!(state.category_of("s1"), Some(cat.as_str()));
+    assert_eq!(state.category_name(&cat), Some("mindplayer-tui"));
+    assert!(!state.rename_category(&cat, "  "), "blank rename refused");
+}
+
+#[test]
+fn pruning_drops_empty_categories_and_stale_membership() {
+    let mut state = mindplayer_core::State::default();
+    let now = chrono::Utc::now();
+    let keep = state.create_category("keep", now).unwrap();
+    let gone = state.create_category("gone", now).unwrap();
+    state.assign_category("alive", &keep);
+    state.assign_category("deleted", &gone);
+    state.set_collapsed(&gone, true);
+
+    let known: std::collections::BTreeSet<String> = ["alive".to_string()].into_iter().collect();
+    assert!(state.prune_categories(&known));
+    assert_eq!(state.categories.len(), 1, "empty category removed");
+    assert!(state.categories.contains_key(&keep));
+    assert!(!state.session_category.contains_key("deleted"));
+    assert!(
+        !state.is_collapsed(&gone),
+        "collapse entry for a removed category must go too"
+    );
+    // Idempotent.
+    assert!(!state.prune_categories(&known));
+}
+
+#[test]
+fn an_unknown_category_id_is_refused_rather_than_dangling() {
+    let mut state = mindplayer_core::State::default();
+    assert!(!state.assign_category("s1", "cat_does_not_exist"));
+    assert!(state.category_of("s1").is_none());
+}
+
+#[test]
+fn a_handoff_thread_stays_in_one_category_via_its_root() {
+    let _env = STATE_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let now = chrono::Utc::now();
+    let mut parent = session("p", Agent::Codex, false);
+    parent.last_active = Some(now);
+    let mut child = session("c", Agent::Claude, false);
+    child.last_active = Some(now);
+    let mut app = app_with(vec![parent, child]);
+    app.state
+        .set_handoff_link("c", "p", std::path::PathBuf::from("artifact.md"), now);
+    // Only the root is categorized; the lane must follow it.
+    categorize(&mut app, "topic", &["p"]);
+
+    let ids: Vec<String> = app
+        .visible
+        .iter()
+        .filter_map(|r| r.session_index())
+        .map(|i| app.all_sessions[i].id.clone())
+        .collect();
+    assert_eq!(ids, vec!["p".to_string(), "c".to_string()]);
+    assert!(
+        app.visible.iter().filter(|r| r.is_header()).count() == 1,
+        "the lane must not spawn a second, uncategorized group"
+    );
+}
+
+#[test]
+fn folding_drops_marks_for_rows_that_went_away() {
+    let now = chrono::Utc::now();
+    let mut a = session("a", Agent::Codex, false);
+    a.last_active = Some(now);
+    let mut app = app_with(vec![a]);
+    let cat = categorize(&mut app, "topic", &["a"]);
+    app.toggle_multi_select();
+    app.selected = app.row_of_session("a").unwrap();
+    app.toggle_mark();
+    assert!(app.marked.contains("a"));
+
+    app.state.set_collapsed(&cat, true);
+    app.rebuild_visible();
+    assert!(
+        !app.marked.contains("a"),
+        "a folded-away session must not stay marked for a bulk launch"
+    );
+}
+
+/// A folded topic must still say how many sessions it holds — counting visible
+/// rows reported zero, which read as "empty" rather than "closed".
+#[test]
+fn a_folded_category_still_reports_its_session_count() {
+    let now = chrono::Utc::now();
+    let mut a = session("a", Agent::Codex, false);
+    a.last_active = Some(now);
+    let mut b = session("b", Agent::Codex, false);
+    b.last_active = Some(now);
+    let mut app = app_with(vec![a, b]);
+    let cat = categorize(&mut app, "topic", &["a", "b"]);
+    assert_eq!(app.category_session_count(Some(&cat)), 2);
+
+    app.state.set_collapsed(&cat, true);
+    app.rebuild_visible();
+    assert_eq!(app.visible.len(), 1, "sessions are hidden");
+    assert_eq!(
+        app.category_session_count(Some(&cat)),
+        2,
+        "but the tally still describes what is inside"
+    );
 }

@@ -3440,3 +3440,23 @@ fn right_arrow_on_an_empty_or_folded_last_category_does_not_move_off_the_list() 
     assert!(!app.enter_selected_category());
     assert_eq!(app.selected, before, "no movement from a session row");
 }
+
+/// `→` walks the tree; it must not launch anything. Opening is `enter`'s job.
+#[test]
+fn right_arrow_on_a_session_row_does_not_open_it() {
+    let now = chrono::Utc::now();
+    let mut a = session("a", Agent::Codex, false);
+    a.last_active = Some(now);
+    let mut app = app_with(vec![a]);
+    categorize(&mut app, "topic", &["a"]);
+    app.selected = app.row_of_session("a").unwrap();
+
+    // What `→` routes to on a session row.
+    assert!(
+        !app.enter_selected_category(),
+        "a session row is not a category action"
+    );
+    assert_eq!(app.focus, Focus::List, "must not switch to the terminal");
+    assert!(app.pending.is_none(), "must not queue a resume");
+    assert!(app.panes.is_empty(), "must not add a pane");
+}

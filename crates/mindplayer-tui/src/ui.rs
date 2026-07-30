@@ -1999,7 +1999,7 @@ fn help_popup(f: &mut Frame) {
         section("View"),
         item(
             "→ / ←",
-            "on a category: unfold / fold it. On a session: → opens it, ← folds its category",
+            "move around the tree only: → unfolds a category then steps inside, ← folds it. Neither opens a session — that is enter",
         ),
         item("/", "search visible sessions"),
         item("d", "change working directory scope"),

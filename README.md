@@ -60,6 +60,12 @@ never modifies them — so it just works with the sessions you already have.
   them all at once. The list groups by topic, handoff lanes stay nested inside,
   and <kbd>←</kbd>/<kbd>→</kbd> fold a topic away. The `recent` / `older` split
   is unchanged — a topic moves as one, so it never straddles the divider.
+- ⇄ **Context sync across a topic** — sessions in a category keep each other
+  current: entering one pulls in **only what its peers did since the last sync**,
+  read straight from their transcripts (nothing to maintain by hand). A quiet
+  peer means nothing is injected at all, and a busy session is never interrupted
+  mid‑turn. Per‑category toggle in the header menu (<kbd>t</kbd>), shown as
+  `⇄ auto` / `⇄ off` on every category row.
 - 🟣 **In-progress mark** — flag a session with <kbd>i</kbd> as work you're not
   done with yet, independent of its live status; a thin rail keeps it visible
   even once it's buried in `older`.
@@ -202,7 +208,8 @@ make test                                          # cargo test --all
 | <kbd>e</kbd> | label the selected session (tag an existing one, or edit/clear its label) |
 | <kbd>i</kbd> | toggle the **in-progress** mark on the selected session (see above) |
 | <kbd>c</kbd> | send a **catch-up prompt** to the selected session (confirms first if it's busy) |
-| <kbd>t</kbd> | put the selected session in a **topic category** — pick an existing one, create a new one, or remove it. In multi‑select, categorizes **all marked** at once |
+| <kbd>t</kbd> | on a **session**: put it in a **topic category** — pick an existing one, create a new one, or remove it. In multi‑select, categorizes **all marked** at once |
+| <kbd>t</kbd> | on a **category header**: the category menu — auto‑sync on/off, sync now, rename, remove |
 | <kbd>o</kbd> | start an orchestration group with a main lane and child lanes |
 | <kbd>b</kbd> | broadcast the same instruction to every child lane in an orchestration thread |
 | <kbd>m</kbd> | ask the orchestration main lane to route work to specific child lanes |

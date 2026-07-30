@@ -1,6 +1,6 @@
 # Category context sync — design
 
-Status: approved, not yet implemented.
+Status: implemented.
 
 ## Why
 

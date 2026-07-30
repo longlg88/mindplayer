@@ -1,7 +1,7 @@
 //! Rendering for every screen. `render` also records the right-pane size back
 //! into `App` so the PTY can be spawned/resized at the correct dimensions.
 
-use crate::app::{App, Focus, PaneLayout, Row, Screen, SessionStatus, MAX_PANES};
+use crate::app::{App, CategoryMenu, Focus, PaneLayout, Row, Screen, SessionStatus, MAX_PANES};
 use crate::mascot;
 use crate::terminal_view::TerminalView;
 use crate::text_input;
@@ -103,6 +103,88 @@ fn draw_mascot(f: &mut Frame, area: Rect, tick: usize) {
         height: mascot::HEIGHT,
     };
     f.render_widget(Paragraph::new(mascot::lines(tick)), r);
+}
+
+/// The category menu (`t` on a header): auto-sync, sync now, rename, remove.
+fn category_menu_popup(f: &mut Frame, app: &App) {
+    let Some(menu) = app.category_menu.as_ref() else {
+        return;
+    };
+    let name = app.category_label(&menu.cat_id);
+    let title = format!(" {name} ");
+
+    // Renaming replaces the list — one thing on screen at a time.
+    if let Some(buf) = &menu.rename {
+        let area = centered(f.area(), 50, 5);
+        f.render_widget(Clear, area);
+        f.render_widget(
+            Paragraph::new(vec![
+                Line::from(Span::styled("Category name:", Style::default().fg(DIM))),
+                Line::from(Span::styled(
+                    format!("{buf}▏"),
+                    Style::default().fg(CATEGORY).add_modifier(Modifier::BOLD),
+                )),
+            ])
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(CATEGORY))
+                    .title(title),
+            ),
+            area,
+        );
+        return;
+    }
+
+    let on = app.state.category_auto_sync(&menu.cat_id);
+    let rows: [(&str, String); 4] = [
+        ("auto-sync", (if on { "on" } else { "off" }).to_string()),
+        ("sync now", String::new()),
+        ("rename…", String::new()),
+        (
+            if menu.confirm_remove {
+                "remove category — enter to confirm"
+            } else {
+                "remove category"
+            },
+            String::new(),
+        ),
+    ];
+    let area = centered(f.area(), 46, rows.len() as u16 + 2);
+    f.render_widget(Clear, area);
+    let items: Vec<ListItem> = rows
+        .iter()
+        .enumerate()
+        .map(|(i, (label, value))| {
+            let selected = i == menu.selected;
+            let marker = if selected { "▶ " } else { "  " };
+            let mut style = if selected {
+                Style::default().fg(CATEGORY).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(DIM)
+            };
+            if i == CategoryMenu::REMOVE && menu.confirm_remove {
+                style = style.fg(Color::Rgb(217, 112, 112));
+            }
+            let mut spans = vec![Span::styled(format!("{marker}{label}"), style)];
+            if !value.is_empty() {
+                spans.push(Span::styled(
+                    format!("        {value}"),
+                    Style::default().fg(if on { Color::Green } else { DIM }),
+                ));
+            }
+            ListItem::new(Line::from(spans))
+        })
+        .collect();
+    f.render_widget(
+        List::new(items).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(CATEGORY))
+                .title(title),
+        ),
+        area,
+    );
 }
 
 /// The `t` category picker: existing topics, then create/remove. Shows how many
@@ -630,6 +712,8 @@ fn main_view(f: &mut Frame, app: &mut App) {
 
     if app.help_visible {
         help_popup(f);
+    } else if app.category_menu.is_some() {
+        category_menu_popup(f, app);
     } else if app.category_picker.is_some() {
         category_popup(f, app);
     } else if let Some(choice) = app.handoff_picker {
@@ -1240,6 +1324,16 @@ fn session_list(f: &mut Frame, app: &mut App, area: Rect, now: DateTime<Utc>) {
                 spans.push(Span::styled(
                     format!("  · {count} {}", plural_session(count)),
                     Style::default().fg(DIM),
+                ));
+            }
+            // Auto-sync state, shown on every real category rather than only
+            // when enabled: not knowing a topic's sync is off is exactly how
+            // "why don't these sessions know about each other" happens.
+            if let Some(id) = cat.as_deref() {
+                let on = app.state.category_auto_sync(id);
+                spans.push(Span::styled(
+                    if on { "  ⇄ auto" } else { "  ⇄ off" },
+                    Style::default().fg(if on { Color::Green } else { DIM }),
                 ));
             }
             items.push(ListItem::new(Line::from(spans)));
@@ -1895,7 +1989,11 @@ fn help_popup(f: &mut Frame) {
         ),
         item(
             "t",
-            "put selected session in a topic category (all marked, in multi-select)",
+            "on a session: put it in a topic category (all marked, in multi-select)",
+        ),
+        item(
+            "t",
+            "on a category header: auto-sync on/off, sync now, rename, remove",
         ),
         Line::from(""),
         section("View"),

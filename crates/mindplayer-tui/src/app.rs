@@ -19,6 +19,14 @@ use std::time::{Duration, Instant, SystemTime};
 /// channel type without tripping `clippy::type_complexity`.
 type HtmlScanBatch = Vec<(String, Vec<(PathBuf, SystemTime)>)>;
 
+/// A finished category sync: the prompt to inject, plus the new watermark per
+/// peer. Named so the channel type stays readable and `clippy::type_complexity`
+/// stays quiet.
+type CategorySyncResult = (
+    String,
+    Result<(handoff::PreparedHandoff, Vec<(String, u64)>), String>,
+);
+
 /// Background refresh result for one already-discovered session.
 struct ActivityUpdate {
     id: String,
@@ -93,6 +101,26 @@ pub struct CategoryPicker {
     pub selected: usize,
     /// `Some(buffer)` while typing a new category's name.
     pub new_name: Option<String>,
+}
+
+/// State of the category menu (`t` on a category header). Rows are fixed:
+/// auto-sync, sync now, rename, remove.
+#[derive(Debug, Clone)]
+pub struct CategoryMenu {
+    pub cat_id: String,
+    pub selected: usize,
+    /// `Some(buffer)` while typing a new name.
+    pub rename: Option<String>,
+    /// Removing drops the whole grouping, so it asks first.
+    pub confirm_remove: bool,
+}
+
+impl CategoryMenu {
+    pub const ROWS: usize = 4;
+    pub const AUTO_SYNC: usize = 0;
+    pub const SYNC_NOW: usize = 1;
+    pub const RENAME: usize = 2;
+    pub const REMOVE: usize = 3;
 }
 
 /// One row of the session list. Category headers are rows rather than decoration
@@ -273,6 +301,12 @@ pub struct App {
     /// Open category picker (`t`). Rows are the existing categories plus a
     /// "new category" entry and a "remove from category" entry.
     pub category_picker: Option<CategoryPicker>,
+    /// In-flight category sync (see `spawn_category_sync_for`). Reading peer
+    /// transcripts happens off the main thread — doing it inline froze the UI
+    /// when thread-sync did the same thing.
+    pub(crate) category_sync_rx: Option<Receiver<CategorySyncResult>>,
+    /// Open category menu (`t` on a header).
+    pub category_menu: Option<CategoryMenu>,
     pub cwd: PathBuf,
     pub scope: Scope,
     pub cfg: ScanConfig,
@@ -551,6 +585,8 @@ impl App {
             walker_choice,
             walker_picker: None,
             category_picker: None,
+            category_sync_rx: None,
+            category_menu: None,
             scope: Scope::WorkingDir(cwd.clone()),
             cwd,
             cfg: ScanConfig::from_env(),

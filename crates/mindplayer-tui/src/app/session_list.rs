@@ -307,6 +307,161 @@ impl App {
         }
     }
 
+    // --- category menu (`t` on a header) -----------------------------------
+
+    /// `t` on a category header. Refused for the uncategorized header, which is
+    /// not a real category and has nothing to configure.
+    pub fn open_category_menu(&mut self) -> bool {
+        let Some(id) = self.selected_category().map(str::to_string) else {
+            return false;
+        };
+        self.category_menu = Some(CategoryMenu {
+            cat_id: id,
+            selected: 0,
+            rename: None,
+            confirm_remove: false,
+        });
+        true
+    }
+
+    pub fn cancel_category_menu(&mut self) {
+        self.category_menu = None;
+    }
+
+    pub fn move_category_menu(&mut self, delta: isize) {
+        if let Some(m) = self.category_menu.as_mut() {
+            if m.rename.is_some() {
+                return; // typing; arrows belong to the text field
+            }
+            m.confirm_remove = false; // moving away cancels a pending confirm
+            m.selected =
+                (m.selected as isize + delta).rem_euclid(CategoryMenu::ROWS as isize) as usize;
+        }
+    }
+
+    pub fn category_rename_push(&mut self, c: char) {
+        if let Some(buf) = self.category_menu.as_mut().and_then(|m| m.rename.as_mut()) {
+            buf.push(c);
+        }
+    }
+
+    pub fn category_rename_backspace(&mut self) {
+        if let Some(buf) = self.category_menu.as_mut().and_then(|m| m.rename.as_mut()) {
+            buf.pop();
+        }
+    }
+
+    /// Enter in the category menu.
+    pub fn confirm_category_menu(&mut self) {
+        let Some(menu) = self.category_menu.clone() else {
+            return;
+        };
+        let cat = menu.cat_id;
+
+        // Second enter on rename: commit the typed name.
+        if let Some(name) = menu.rename {
+            if self.state.rename_category(&cat, &name) {
+                let _ = self.save_state();
+                self.status = format!("renamed to {}", self.category_label(&cat));
+                self.category_menu = None;
+                self.rebuild_visible();
+            } else {
+                self.status = "category: name cannot be blank".to_string();
+            }
+            return;
+        }
+
+        match menu.selected {
+            CategoryMenu::AUTO_SYNC => {
+                let now_on = !self.state.category_auto_sync(&cat);
+                self.state.set_category_auto_sync(&cat, now_on);
+                let _ = self.save_state();
+                self.status = format!(
+                    "{}: auto-sync {}",
+                    self.category_label(&cat),
+                    if now_on { "on" } else { "off" }
+                );
+            }
+            CategoryMenu::SYNC_NOW => {
+                self.category_menu = None;
+                self.sync_category_now(&cat);
+            }
+            CategoryMenu::RENAME => {
+                let current = self.category_label(&cat);
+                if let Some(m) = self.category_menu.as_mut() {
+                    m.rename = Some(current);
+                }
+                self.status = "category: edit the name, enter to save".to_string();
+            }
+            CategoryMenu::REMOVE => {
+                if !menu.confirm_remove {
+                    if let Some(m) = self.category_menu.as_mut() {
+                        m.confirm_remove = true;
+                    }
+                    self.status =
+                        "remove category? enter again to confirm (sessions are kept)".to_string();
+                    return;
+                }
+                self.remove_category(&cat);
+            }
+            _ => {}
+        }
+    }
+
+    /// Force a sync for every live session in a category, ignoring the toggle.
+    /// Only one sync runs at a time, so this starts with the focused session
+    /// when it belongs to the category and otherwise takes the first live one —
+    /// the rest pick theirs up as they are entered.
+    pub fn sync_category_now(&mut self, cat: &str) {
+        let candidates: Vec<Session> = self
+            .all_sessions
+            .iter()
+            .filter(|s| self.category_of_session(&s.id).as_deref() == Some(cat))
+            .filter(|s| self.is_running(&s.id))
+            .cloned()
+            .collect();
+        if candidates.is_empty() {
+            self.status = "sync now: no live session in this category".to_string();
+            return;
+        }
+        let focused = self.active.clone();
+        let target = candidates
+            .iter()
+            .find(|s| Some(&s.id) == focused.as_ref())
+            .or_else(|| candidates.first())
+            .cloned();
+        if let Some(target) = target {
+            if self.spawn_category_sync_for(&target, true) {
+                self.status = format!("syncing {} …", short(&target.id));
+            } else {
+                self.status = "sync now: nothing new from peers".to_string();
+            }
+        }
+    }
+
+    /// Drop a category. Its sessions are untouched — only the grouping goes,
+    /// along with the watermarks, which would otherwise hide peer content from
+    /// those sessions if they were regrouped later.
+    fn remove_category(&mut self, cat: &str) {
+        let members: Vec<String> = self
+            .state
+            .session_category
+            .iter()
+            .filter(|(_, c)| c.as_str() == cat)
+            .map(|(s, _)| s.clone())
+            .collect();
+        for id in &members {
+            self.state.clear_category(id);
+            self.state.clear_sync_marks_for(id);
+        }
+        self.state.categories.remove(cat);
+        self.state.collapsed_categories.remove(cat);
+        let _ = self.save_state();
+        self.category_menu = None;
+        self.rebuild_visible();
+        self.status = format!("category removed ({} sessions kept)", members.len());
+    }
+
     // --- category picker (`t`) ---------------------------------------------
 
     /// Rows offered by the picker: existing categories, then "new", then
@@ -435,11 +590,18 @@ impl App {
     /// Assign (or clear) the category for every target, persist, and rebuild.
     fn apply_category(&mut self, targets: &[String], cat: Option<&str>) {
         for id in targets {
+            let moved = self.state.category_of(id).map(str::to_string) != cat.map(str::to_string);
             match cat {
                 Some(cat) => {
                     self.state.assign_category(id, cat);
                 }
                 None => self.state.clear_category(id),
+            }
+            // A session that changed group has different peers now. Watermarks
+            // from the old grouping would make the new peers' earlier work look
+            // already-seen, so it would never be shown.
+            if moved {
+                self.state.clear_sync_marks_for(id);
             }
         }
         // Clearing can empty a category; drop it rather than leaving a header
@@ -447,6 +609,7 @@ impl App {
         let known: std::collections::BTreeSet<String> =
             self.all_sessions.iter().map(|s| s.id.clone()).collect();
         self.state.prune_categories(&known);
+        self.state.prune_sync_marks(&known);
         let _ = self.save_state();
         self.category_picker = None;
         // Keep the cursor on the session that was just categorized, which has

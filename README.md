@@ -58,7 +58,7 @@ never modifies them — so it just works with the sessions you already have.
   category with <kbd>t</kbd>: start with a single session, add more as the work
   splits, or select several (<kbd>v</kbd> + <kbd>Space</kbd>) and categorize
   them all at once. The list groups by topic, handoff lanes stay nested inside,
-  and <kbd>←</kbd>/<kbd>→</kbd> fold a topic away. The `recent` / `older` split
+  and <kbd>→</kbd>/<kbd>←</kbd> walk into and out of a topic. The `recent` / `older` split
   is unchanged — a topic moves as one, so it never straddles the divider.
 - ⇄ **Context sync across a topic** — sessions in a category keep each other
   current: entering one pulls in **only what its peers did since the last sync**,
@@ -191,8 +191,8 @@ make test                                          # cargo test --all
 | Key | Action |
 | --- | --- |
 | <kbd>↑</kbd> <kbd>↓</kbd> / <kbd>j</kbd> <kbd>k</kbd> | move selection (`▶`) |
-| <kbd>→</kbd> / <kbd>←</kbd> | on a **category** header: unfold / fold it. On a session row: <kbd>→</kbd> opens it, <kbd>←</kbd> folds its category and steps out to the header |
-| <kbd>Enter</kbd> | open the selected session, **adding it to the live view** (resume, or focus if already shown); remove a pane with <kbd>Ctrl‑q</kbd>. In multi‑select mode, launch **all marked** at once |
+| <kbd>→</kbd> / <kbd>←</kbd> | move around the tree: <kbd>→</kbd> unfolds a **category** then steps inside it, <kbd>←</kbd> folds it and steps back out to the header. Neither opens a session — that's <kbd>Enter</kbd> |
+| <kbd>Enter</kbd> | open the selected session (on a **category** header, folds/unfolds it instead), **adding it to the live view** (resume, or focus if already shown); remove a pane with <kbd>Ctrl‑q</kbd>. In multi‑select mode, launch **all marked** at once |
 | <kbd>v</kbd> | toggle **multi‑select** mode — then <kbd>Space</kbd> marks sessions and <kbd>Enter</kbd> launches them all (<kbd>Esc</kbd> cancels) |
 | <kbd>Space</kbd> | mark / unmark the selected session (`✓`) — multi‑select mode only |
 | <kbd>Tab</kbd> / <kbd>Shift‑Tab</kbd> | inside live panes, cycle focus forward / back (only when 2+ panes are open; otherwise <kbd>Tab</kbd> goes to the session) |

@@ -983,19 +983,22 @@ fn handle_main_key(app: &mut App, key: KeyEvent) {
                 KeyCode::PageUp => app.move_page(-1),
                 KeyCode::PageDown => app.move_page(1),
                 KeyCode::Enter if app.multi_select => app.launch_marked(),
-                // On a category header there is no session to resume, so these
-                // keys act on the group instead. `enter` toggles it open/shut;
-                // `→` only ever goes deeper (unfold, then step inside) so that
-                // folding stays exclusively `←`'s job.
+                // Opening is `enter`'s job; the arrows only move around the
+                // tree. On a header `enter` toggles it open/shut, since there is
+                // no session on that row to open.
                 KeyCode::Enter if app.selected_category().is_some() => {
                     app.toggle_selected_category();
                 }
-                KeyCode::Char('l') | KeyCode::Right if app.selected_category().is_some() => {
+                KeyCode::Enter => app.request_resume(),
+                // `→`/`l` descend only: unfold a folded category, else step onto
+                // its first session. Deliberately does NOT open a session — a key
+                // that both walks the tree and launches things is why pressing it
+                // on a category used to end up inside a session.
+                KeyCode::Char('l') | KeyCode::Right => {
                     app.enter_selected_category();
                 }
-                KeyCode::Enter | KeyCode::Char('l') | KeyCode::Right => app.request_resume(),
                 // `←` folds the category the cursor is in and steps out to its
-                // header, the same gesture a file tree has. Unbound before this.
+                // header, the mirror of `→`.
                 KeyCode::Left => {
                     app.collapse_category_at_cursor();
                 }

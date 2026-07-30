@@ -111,6 +111,11 @@ that keypress becomes the category menu. No new key is taken.
 └────────────────────────────────────┘
 ```
 
+Arrow keys are structural only: `→` unfolds a category then steps inside, `←`
+folds it and steps back out, and neither opens a session — `enter` does that.
+An earlier cut had `→` toggling, and bound to resume on a session row; pressing it
+on a category then bounced open/shut and eventually opened a session.
+
 `rename` and `remove` are included because neither is reachable today —
 `State::rename_category` exists with no caller, and emptying a category means
 clearing each session one at a time.

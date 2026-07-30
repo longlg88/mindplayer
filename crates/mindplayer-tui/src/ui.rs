@@ -1416,20 +1416,24 @@ fn session_list(f: &mut Frame, app: &mut App, area: Rect, now: DateTime<Utc>) {
             // Sessions inside a category sit one step in from their header, so
             // the group reads as a group. Without this the rows line up with the
             // header and the nesting is invisible — the whole point of grouping.
-            let nest = if app.state.category_of(&s.id).is_some()
+            let in_category = app.state.category_of(&s.id).is_some()
                 || app
                     .state
                     .category_of(app.state.thread_root(&s.id))
-                    .is_some()
-            {
-                "  "
+                    .is_some();
+            // A coloured guide, not blank indentation: two spaces alone were not
+            // enough to tell a topic's rows apart from the loose ones below it.
+            // Loose rows keep no lead at all — the offset is half the signal, so
+            // padding them to match would throw the distinction away again.
+            let nest = if in_category {
+                Span::styled("│ ", Style::default().fg(CATEGORY))
             } else {
-                ""
+                Span::raw("")
             };
             let mut spans = vec![
                 Span::styled(mark_glyph, mark_style),
                 rail,
-                Span::raw(nest),
+                nest,
                 Span::styled(format!("{badge} "), badge_style),
                 Span::styled(
                     "▌",

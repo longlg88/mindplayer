@@ -144,9 +144,6 @@ impl Row {
         }
     }
 
-    /// Only the tests need to ask outright — the render path matches on the
-    /// variant directly, and the list code goes through `session_index`.
-    #[cfg(test)]
     pub fn is_header(&self) -> bool {
         matches!(self, Row::Header(_))
     }

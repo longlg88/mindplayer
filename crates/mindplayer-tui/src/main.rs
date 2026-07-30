@@ -309,6 +309,9 @@ fn run(terminal: &mut Terminal<CrosstermBackend<FrameSink>>, app: &mut App) -> R
             // `spawn_thread_sync_for`) — kept off this thread so reopening a
             // thread-synced session never freezes input/rendering while its
             // peers' transcripts are read.
+            if app.poll_category_sync() {
+                needs_draw = true;
+            }
             if app.poll_thread_sync() {
                 needs_draw = true;
             }
@@ -633,6 +636,33 @@ fn handle_main_key(app: &mut App, key: KeyEvent) {
         match key.code {
             KeyCode::Esc | KeyCode::Enter | KeyCode::Char('u') => app.close_usage_popup(),
             _ => {}
+        }
+        return;
+    }
+
+    // Category menu (`t` on a header). Owns every key while open, and while
+    // renaming the letters are text rather than shortcuts.
+    if app.category_menu.is_some() {
+        let renaming = app
+            .category_menu
+            .as_ref()
+            .is_some_and(|m| m.rename.is_some());
+        if renaming {
+            match key.code {
+                KeyCode::Enter => app.confirm_category_menu(),
+                KeyCode::Esc => app.cancel_category_menu(),
+                KeyCode::Backspace => app.category_rename_backspace(),
+                KeyCode::Char(c) => app.category_rename_push(c),
+                _ => {}
+            }
+        } else {
+            match normalize_shortcut(key.code) {
+                KeyCode::Up | KeyCode::Char('k') => app.move_category_menu(-1),
+                KeyCode::Down | KeyCode::Char('j') => app.move_category_menu(1),
+                KeyCode::Enter | KeyCode::Char(' ') => app.confirm_category_menu(),
+                KeyCode::Esc | KeyCode::Char('q') => app.cancel_category_menu(),
+                _ => {}
+            }
         }
         return;
     }
@@ -981,6 +1011,11 @@ fn handle_main_key(app: &mut App, key: KeyEvent) {
                 KeyCode::Char('n' | 'e' | 'h' | 'x' | 'i' | 'c') if app.multi_select => {
                     app.status =
                         "multi-select: finish (enter) or cancel (esc) before this".to_string();
+                }
+                // On a header `t` configures the category; on a session row it
+                // assigns one. Same key, resolved by what the cursor is on.
+                KeyCode::Char('t') if app.selected_category().is_some() => {
+                    app.open_category_menu();
                 }
                 KeyCode::Char('t') => app.begin_category_pick(),
                 KeyCode::Char('n') => app.new_picker = Some(0),

@@ -225,6 +225,135 @@ fn tail_chars(text: &str, max_chars: usize) -> String {
     )
 }
 
+/// Build the prompt for a category sync from per-peer deltas. Distinct from
+/// `prepare_thread_sync_input`, which always sends each peer's whole transcript:
+/// here the payload is only what changed, and the prompt says so explicitly.
+/// Without that instruction the agent re-writes a full briefing every time,
+/// which is the symptom the old sync-once-ever rule was working around.
+pub fn prepare_category_sync_input(
+    target: &Session,
+    category: &str,
+    deltas: &[PeerDelta],
+) -> Result<PreparedHandoff, String> {
+    if deltas.is_empty() {
+        return Err("no peer lane has anything new".to_string());
+    }
+    let sections = deltas
+        .iter()
+        .map(|d| {
+            let scope = if d.reset {
+                "full re-read (peer transcript was rewritten)"
+            } else {
+                "since last sync"
+            };
+            format!(
+                "## {} lane ({scope})\n\n- session id: {}\n- title: {}\n\n{}\n",
+                d.session.agent.as_str(),
+                d.session.id,
+                d.session.title,
+                d.text
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n---\n\n");
+
+    let peers: Vec<Session> = deltas.iter().map(|d| d.session.clone()).collect();
+    let artifact = write_thread_sync_artifact(target, &peers, &sections)?;
+    let transcript_chars = sections.chars().count();
+    let inline_truncated = transcript_chars > INLINE_CHAR_BUDGET;
+
+    let peer_list = deltas
+        .iter()
+        .map(|d| {
+            format!(
+                "- {}: {} ({})",
+                d.session.agent.as_str(),
+                d.session.id,
+                d.session.title
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let size_note = deltas
+        .iter()
+        .map(|d| {
+            format!(
+                "{} +{}",
+                d.session.agent.as_str(),
+                human_bytes(d.added_bytes)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    let transcript_block = if inline_truncated {
+        "\
+The new peer lane context is large, so it is not pasted into this prompt.
+Do not answer from a preview. Read the sync artifact before continuing.
+"
+        .to_string()
+    } else {
+        format!(
+            "\
+The new peer lane context is included below and also saved in the sync artifact.
+
+```text
+{sections}
+```
+"
+        )
+    };
+
+    let mut prompt = format!(
+        "\
+MindPlayer category sync for this {target_agent} session.
+
+This session is one lane in the \"{category}\" category. Other lanes have context that may not exist in this native {target_agent} session yet.
+
+Current lane:
+- agent: {target_agent}
+- session id: {target_id}
+- working directory: {cwd}
+- title: {title}
+
+Peer lanes:
+{peer_list}
+
+This is an incremental update: only what the peer lanes did since the last sync is included. Treat it as continuing prior conversation state, not a fresh briefing — do not re-summarize or redo what you already know.
+
+Full peer context artifact: {artifact}
+Transcript mode: delta ({size_note})
+
+{transcript_block}
+",
+        target_agent = target.agent.as_str(),
+        category = category,
+        target_id = target.id,
+        cwd = target.cwd.display(),
+        title = target.title,
+        peer_list = peer_list,
+        artifact = artifact.display(),
+        size_note = size_note,
+        transcript_block = transcript_block,
+    );
+    prompt.push('\r');
+    Ok(PreparedHandoff {
+        input: prompt.into_bytes(),
+        artifact,
+        transcript_chars,
+        inline_truncated,
+    })
+}
+
+fn human_bytes(n: u64) -> String {
+    if n >= 1024 * 1024 {
+        format!("{:.1}MB", n as f64 / (1024.0 * 1024.0))
+    } else if n >= 1024 {
+        format!("{:.1}KB", n as f64 / 1024.0)
+    } else {
+        format!("{n}B")
+    }
+}
+
 fn thread_sync_prompt_for(
     target: &Session,
     peers: &[Session],
@@ -305,6 +434,74 @@ fn extract_transcript(source: &Session) -> Result<String, String> {
         Agent::Codex => extract_jsonl_transcript(source, parse_codex_turn),
         Agent::Kiro => extract_kiro_transcript(source),
     }
+}
+
+/// One peer's contribution to a category sync: only the transcript bytes past
+/// the caller's watermark, plus the length to store as the new watermark.
+pub struct PeerDelta {
+    pub session: Session,
+    pub text: String,
+    /// Peer transcript length after this read — the next watermark.
+    pub new_len: u64,
+    /// Bytes newly included. 0 means nothing to say.
+    pub added_bytes: u64,
+    /// The peer's file shrank below the watermark (rewritten/rotated), so this
+    /// is a full re-read rather than an increment.
+    pub reset: bool,
+}
+
+/// Read a peer transcript from `mark` onward. Returns `None` when there is
+/// nothing new, which is what lets a sync with no peer activity do nothing at
+/// all instead of re-sending content the target already has.
+pub fn extract_transcript_delta(source: &Session, mark: u64) -> Option<PeerDelta> {
+    if source.file.as_os_str().is_empty() {
+        return None;
+    }
+    let len = std::fs::metadata(&source.file).ok()?.len();
+    if len == 0 {
+        return None;
+    }
+    // Shrunk below the mark: the file was rewritten or rotated, so the mark is
+    // meaningless. Fall back to a full read rather than guessing an offset.
+    let reset = len < mark;
+    let from = if reset { 0 } else { mark };
+    if !reset && len <= mark {
+        return None; // nothing appended since last time
+    }
+
+    let text = if from == 0 {
+        extract_transcript(source).ok()?
+    } else {
+        read_transcript_from(source, from)?
+    };
+    let text = text.trim().to_string();
+    if text.is_empty() {
+        return None;
+    }
+    Some(PeerDelta {
+        session: source.clone(),
+        text,
+        new_len: len,
+        added_bytes: len.saturating_sub(from),
+        reset,
+    })
+}
+
+/// Parse only the JSONL records after `from`. A byte offset can land mid-record
+/// (a partially flushed write); `parse_jsonl_reader` skips lines that do not
+/// parse, so the leading fragment is discarded on its own.
+fn read_transcript_from(source: &Session, from: u64) -> Option<String> {
+    let parse_turn = match source.agent {
+        Agent::Claude => parse_claude_turn,
+        Agent::Codex => parse_codex_turn,
+        // Kiro keeps a JSON sidecar rather than an append-only JSONL, so an
+        // offset means nothing there — always take the whole thing.
+        Agent::Kiro => return extract_transcript(source).ok(),
+    };
+    let mut file = File::open(&source.file).ok()?;
+    file.seek(SeekFrom::Start(from)).ok()?;
+    let (out, count) = parse_jsonl_reader(BufReader::new(file), parse_turn);
+    (count > 0).then(|| out.trim().to_string())
 }
 
 fn metadata_only_transcript(source: &Session, reason: &str) -> String {

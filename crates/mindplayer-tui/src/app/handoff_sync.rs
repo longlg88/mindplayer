@@ -11,6 +11,16 @@ pub(crate) fn handoff_label(label: &str) -> Option<String> {
     }
 }
 
+/// Read each peer from its watermark, dropping the ones with nothing new. An
+/// empty result is the normal quiet case: it is what makes re-entering a session
+/// silent instead of a repeated briefing.
+pub(crate) fn deltas_for(marks: Vec<(Session, u64)>) -> Vec<handoff::PeerDelta> {
+    marks
+        .into_iter()
+        .filter_map(|(peer, mark)| handoff::extract_transcript_delta(&peer, mark))
+        .collect()
+}
+
 impl App {
     pub fn begin_handoff(&mut self) {
         if self.selected_session().is_none() {
@@ -169,6 +179,51 @@ impl App {
             .collect()
     }
 
+    /// Peers for a *category* sync: everything in the same category, which
+    /// unlike `thread_peer_sessions` needs no handoff link between them. A
+    /// session created with `n` and dropped into a category has no lineage at
+    /// all, which is exactly why lineage-only peering never fired for it.
+    ///
+    /// Handoff lanes come along too: a lane's category is resolved through its
+    /// thread root, so a thread inside a category contributes every lane.
+    pub(crate) fn category_peer_sessions(&self, id: &str) -> Vec<Session> {
+        let Some(cat) = self.category_of_session(id) else {
+            return Vec::new();
+        };
+        self.all_sessions
+            .iter()
+            .filter(|s| s.id != id && self.category_of_session(&s.id).as_deref() == Some(&cat))
+            .cloned()
+            .collect()
+    }
+
+    /// A session's category, following its handoff root when the session itself
+    /// carries none — the same rule the list uses to place a lane under a topic.
+    pub(crate) fn category_of_session(&self, id: &str) -> Option<String> {
+        if let Some(c) = self.state.category_of(id) {
+            return Some(c.to_string());
+        }
+        let root = self.state.thread_root(id);
+        self.state.category_of(root).map(str::to_string)
+    }
+
+    /// Per-peer deltas, same call the worker thread makes. Test-only because
+    /// production reaches it through [`deltas_for`] on the worker (this needs
+    /// `&self`, which cannot cross the thread boundary) — it delegates rather
+    /// than reimplementing, so the two can never drift.
+    #[cfg(test)]
+    pub(crate) fn category_deltas(&self, id: &str) -> Vec<handoff::PeerDelta> {
+        let marks = self
+            .category_peer_sessions(id)
+            .into_iter()
+            .map(|p| {
+                let m = self.state.sync_mark(id, &p.id);
+                (p, m)
+            })
+            .collect();
+        deltas_for(marks)
+    }
+
     pub(crate) fn thread_sync_needed(&self, id: &str, peers: &[Session]) -> bool {
         if peers.is_empty() {
             return false;
@@ -271,6 +326,103 @@ impl App {
             self.queue_initial_input(id.clone(), sync.input);
             self.status = format!("peer-lane sync for {} queued", short(&id));
         }
+        true
+    }
+
+    /// Start a category sync for `session`. `force` bypasses the category's
+    /// auto-sync toggle (that is what `sync now` does). Returns false when
+    /// there is nothing to start, so callers fall straight through.
+    ///
+    /// Unlike thread-sync there is no once-ever guard: the watermarks make a
+    /// repeat call with no peer activity produce zero deltas, so it is naturally
+    /// silent instead of needing to be blocked.
+    pub(crate) fn spawn_category_sync_for(&mut self, session: &Session, force: bool) -> bool {
+        if self.category_sync_rx.is_some() {
+            return false; // one in flight; poll_category_sync clears it
+        }
+        let Some(cat) = self.category_of_session(&session.id) else {
+            return false;
+        };
+        if !force && !self.state.category_auto_sync(&cat) {
+            return false;
+        }
+        let peers = self.category_peer_sessions(&session.id);
+        if peers.is_empty() {
+            return false;
+        }
+        // Snapshot (peer, watermark) pairs on the main thread; the file reads
+        // themselves happen on the worker.
+        let marks: Vec<(Session, u64)> = peers
+            .into_iter()
+            .map(|p| {
+                let m = self.state.sync_mark(&session.id, &p.id);
+                (p, m)
+            })
+            .collect();
+        let target = session.clone();
+        let cat_name = self.category_label(&cat);
+        let (tx, rx) = mpsc::channel();
+        thread::spawn(move || {
+            let deltas = deltas_for(marks);
+            let result = if deltas.is_empty() {
+                Err("no peer lane has anything new".to_string())
+            } else {
+                let advance: Vec<(String, u64)> = deltas
+                    .iter()
+                    .map(|d| (d.session.id.clone(), d.new_len))
+                    .collect();
+                handoff::prepare_category_sync_input(&target, &cat_name, &deltas)
+                    .map(|prep| (prep, advance))
+            };
+            let _ = tx.send((target.id, result));
+        });
+        self.category_sync_rx = Some(rx);
+        true
+    }
+
+    /// Apply a finished category sync. Watermarks only advance once the prompt
+    /// has actually been handed over (submitted, or queued for the deferred
+    /// path) — advancing on a dropped sync would silently lose that peer
+    /// context forever.
+    pub fn poll_category_sync(&mut self) -> bool {
+        let Some(rx) = &self.category_sync_rx else {
+            return false;
+        };
+        let Ok((id, result)) = rx.try_recv() else {
+            return false;
+        };
+        self.category_sync_rx = None;
+        let Ok((sync, advance)) = result else {
+            return false; // nothing new, or unreadable peers
+        };
+        if self.ended.contains(&id) {
+            return false;
+        }
+        let injected = self.ptys.get_mut(&id).is_some_and(|pty| {
+            if pty.looks_idle() {
+                pty.paste_and_submit(&sync.input)
+            } else {
+                false
+            }
+        });
+        if injected {
+            self.turn_submitted.insert(id.clone());
+            self.status = format!(
+                "category sync into {} ({} chars)",
+                short(&id),
+                sync.transcript_chars
+            );
+        } else {
+            // Live but mid-turn, or the PTY is still pending on pane size. The
+            // deferred path sends it once the prompt is ready rather than
+            // dropping it, so a busy target is delayed, never skipped.
+            self.queue_initial_input(id.clone(), sync.input);
+            self.status = format!("category sync for {} queued", short(&id));
+        }
+        for (peer_id, new_len) in advance {
+            self.state.set_sync_mark(&id, &peer_id, new_len);
+        }
+        let _ = self.save_state();
         true
     }
 }

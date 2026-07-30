@@ -98,6 +98,15 @@ pub struct State {
     /// topic stays folded across restarts.
     #[serde(default)]
     pub collapsed_categories: BTreeSet<String>,
+    /// How much of each peer's transcript a target session has already been
+    /// shown: `target id -> peer id -> peer transcript byte length at last sync`.
+    ///
+    /// This is what replaces the old sync-once-ever rule. Only bytes past the
+    /// mark are injected, so a re-sync with no peer activity sends nothing and
+    /// the loop terminates on its own — the original problem was not the
+    /// re-trigger but re-sending the whole transcript every time.
+    #[serde(default)]
+    pub sync_marks: BTreeMap<String, BTreeMap<String, u64>>,
 }
 
 /// A user-named topic. Sessions join by id, never by name — see
@@ -106,6 +115,19 @@ pub struct State {
 pub struct Category {
     pub name: String,
     pub created_at: DateTime<Utc>,
+    /// Whether entering a session in this category pulls in what its peers did
+    /// since the last sync. Per-category so a tightly-coupled topic can stay in
+    /// lockstep while a loose one stays quiet.
+    ///
+    /// The default MUST stay explicit: a bare `#[serde(default)]` on a `bool`
+    /// yields `false`, which would silently load every category written before
+    /// this field as disabled.
+    #[serde(default = "default_auto_sync")]
+    pub auto_sync: bool,
+}
+
+fn default_auto_sync() -> bool {
+    true
 }
 
 fn default_version() -> u32 {
@@ -128,6 +150,7 @@ impl Default for State {
             categories: BTreeMap::new(),
             session_category: BTreeMap::new(),
             collapsed_categories: BTreeSet::new(),
+            sync_marks: BTreeMap::new(),
         }
     }
 }
@@ -243,6 +266,7 @@ impl State {
             Category {
                 name: name.to_string(),
                 created_at: now,
+                auto_sync: default_auto_sync(),
             },
         );
         Some(id)
@@ -277,6 +301,64 @@ impl State {
             }
             None => false,
         }
+    }
+
+    pub fn category_auto_sync(&self, cat_id: &str) -> bool {
+        self.categories.get(cat_id).is_some_and(|c| c.auto_sync)
+    }
+
+    pub fn set_category_auto_sync(&mut self, cat_id: &str, on: bool) -> bool {
+        match self.categories.get_mut(cat_id) {
+            Some(c) => {
+                c.auto_sync = on;
+                true
+            }
+            None => false,
+        }
+    }
+
+    // --- sync watermarks ----------------------------------------------------
+
+    /// Peer transcript length `target` was last shown. 0 = never synced.
+    pub fn sync_mark(&self, target: &str, peer: &str) -> u64 {
+        self.sync_marks
+            .get(target)
+            .and_then(|m| m.get(peer))
+            .copied()
+            .unwrap_or(0)
+    }
+
+    pub fn set_sync_mark(&mut self, target: &str, peer: &str, peer_len: u64) {
+        self.sync_marks
+            .entry(target.to_string())
+            .or_default()
+            .insert(peer.to_string(), peer_len);
+    }
+
+    /// Forget every watermark involving a session, so a re-created or
+    /// re-categorized session starts clean instead of inheriting a stale mark
+    /// that would hide real content from it.
+    pub fn clear_sync_marks_for(&mut self, id: &str) {
+        self.sync_marks.remove(id);
+        for marks in self.sync_marks.values_mut() {
+            marks.remove(id);
+        }
+        self.sync_marks.retain(|_, m| !m.is_empty());
+    }
+
+    /// Drop watermarks for sessions that no longer exist. Returns true if
+    /// anything changed. Called from `prune_categories`' caller side.
+    pub fn prune_sync_marks(&mut self, known_sessions: &BTreeSet<String>) -> bool {
+        let before = self.sync_marks.len();
+        let inner_before: usize = self.sync_marks.values().map(|m| m.len()).sum();
+        self.sync_marks
+            .retain(|target, _| known_sessions.contains(target));
+        for marks in self.sync_marks.values_mut() {
+            marks.retain(|peer, _| known_sessions.contains(peer));
+        }
+        self.sync_marks.retain(|_, m| !m.is_empty());
+        let inner_after: usize = self.sync_marks.values().map(|m| m.len()).sum();
+        before != self.sync_marks.len() || inner_before != inner_after
     }
 
     pub fn is_collapsed(&self, cat_id: &str) -> bool {

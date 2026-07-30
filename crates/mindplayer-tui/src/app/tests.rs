@@ -3042,3 +3042,334 @@ fn a_folded_category_still_reports_its_session_count() {
         "but the tally still describes what is inside"
     );
 }
+
+// --- category context sync --------------------------------------------------
+
+/// Write a claude-shaped JSONL transcript and return its path.
+fn write_claude_transcript(dir: &std::path::Path, id: &str, turns: &[(&str, &str)]) -> PathBuf {
+    let path = dir.join(format!("{id}.jsonl"));
+    let mut out = String::new();
+    for (role, text) in turns {
+        out.push_str(&format!(
+            r#"{{"type":"{role}","message":{{"role":"{role}","content":[{{"type":"text","text":"{text}"}}]}}}}"#
+        ));
+        out.push('\n');
+    }
+    std::fs::write(&path, out).unwrap();
+    path
+}
+
+fn transcript_dir(tag: &str) -> PathBuf {
+    let d = std::env::temp_dir().join(format!("mp-sync-{}-{tag}", std::process::id()));
+    std::fs::create_dir_all(&d).unwrap();
+    d
+}
+
+#[test]
+fn category_peers_need_no_handoff_link_between_them() {
+    // The reported flow: an existing session, then `n` a new one into the same
+    // category. There is no lineage, which is why thread-sync never fired.
+    let now = chrono::Utc::now();
+    let mut a = session("a", Agent::Codex, false);
+    a.last_active = Some(now);
+    let mut b = session("b", Agent::Claude, false);
+    b.last_active = Some(now);
+    let mut app = app_with(vec![a, b]);
+    categorize(&mut app, "topic", &["a", "b"]);
+
+    assert!(
+        app.thread_peer_sessions("b").is_empty(),
+        "no handoff link, so lineage peering finds nothing — the original gap"
+    );
+    let peers = app.category_peer_sessions("b");
+    assert_eq!(peers.len(), 1);
+    assert_eq!(peers[0].id, "a");
+}
+
+#[test]
+fn a_handoff_lane_inherits_its_roots_category_for_peering() {
+    let now = chrono::Utc::now();
+    let mut root = session("p", Agent::Codex, false);
+    root.last_active = Some(now);
+    let mut lane = session("c", Agent::Claude, false);
+    lane.last_active = Some(now);
+    let mut other = session("solo", Agent::Kiro, false);
+    other.last_active = Some(now);
+    let mut app = app_with(vec![root, lane, other]);
+    app.state
+        .set_handoff_link("c", "p", PathBuf::from("artifact.md"), now);
+    // Only the root is categorized.
+    categorize(&mut app, "topic", &["p", "solo"]);
+
+    assert_eq!(
+        app.category_of_session("c").as_deref(),
+        app.category_of_session("p").as_deref(),
+        "a lane follows its root into the topic"
+    );
+    let ids: Vec<String> = app
+        .category_peer_sessions("c")
+        .into_iter()
+        .map(|s| s.id)
+        .collect();
+    assert!(ids.contains(&"p".to_string()) && ids.contains(&"solo".to_string()));
+}
+
+#[test]
+fn an_uncategorized_session_has_no_category_peers() {
+    let now = chrono::Utc::now();
+    let mut a = session("a", Agent::Codex, false);
+    a.last_active = Some(now);
+    let mut b = session("b", Agent::Claude, false);
+    b.last_active = Some(now);
+    let app = app_with(vec![a, b]);
+    assert!(app.category_peer_sessions("a").is_empty());
+    assert!(app.category_of_session("a").is_none());
+}
+
+#[test]
+fn a_second_sync_with_no_peer_activity_produces_nothing() {
+    // This is what replaces the old sync-once-ever rule: re-entering is silent
+    // because the watermark has already covered everything.
+    let dir = transcript_dir("quiet");
+    let now = chrono::Utc::now();
+    let mut a = session("a", Agent::Claude, false);
+    a.file = write_claude_transcript(&dir, "a", &[("user", "first task"), ("assistant", "done")]);
+    a.last_active = Some(now);
+    let mut b = session("b", Agent::Claude, false);
+    b.last_active = Some(now);
+    let mut app = app_with(vec![a, b]);
+    categorize(&mut app, "topic", &["a", "b"]);
+
+    let first = app.category_deltas("b");
+    assert_eq!(first.len(), 1, "peer a has unseen content");
+    assert!(first[0].added_bytes > 0);
+
+    // Record the watermark the way poll_category_sync would.
+    for d in &first {
+        app.state.set_sync_mark("b", &d.session.id, d.new_len);
+    }
+    assert!(
+        app.category_deltas("b").is_empty(),
+        "nothing new since the mark, so a re-entry says nothing"
+    );
+}
+
+#[test]
+fn only_new_bytes_are_included_after_the_peer_advances() {
+    let dir = transcript_dir("delta");
+    let now = chrono::Utc::now();
+    let mut a = session("a", Agent::Claude, false);
+    a.file = write_claude_transcript(&dir, "a", &[("user", "ALPHA")]);
+    a.last_active = Some(now);
+    let mut b = session("b", Agent::Claude, false);
+    b.last_active = Some(now);
+    let mut app = app_with(vec![a, b]);
+    categorize(&mut app, "topic", &["a", "b"]);
+
+    let first = app.category_deltas("b");
+    let mark = first[0].new_len;
+    app.state.set_sync_mark("b", "a", mark);
+
+    // Peer appends a new turn.
+    let path = app
+        .all_sessions
+        .iter()
+        .find(|s| s.id == "a")
+        .unwrap()
+        .file
+        .clone();
+    let mut extra = std::fs::read_to_string(&path).unwrap();
+    extra.push_str(
+        &format!("{}\n", r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"BRAVO"}]}}"#),
+    );
+    std::fs::write(&path, extra).unwrap();
+
+    let second = app.category_deltas("b");
+    assert_eq!(second.len(), 1);
+    assert!(
+        second[0].text.contains("BRAVO"),
+        "the new turn is present: {}",
+        second[0].text
+    );
+    assert!(
+        !second[0].text.contains("ALPHA"),
+        "already-seen content must not be resent — that repeat was the actual bug: {}",
+        second[0].text
+    );
+    assert!(!second[0].reset);
+}
+
+#[test]
+fn a_shrunk_peer_transcript_falls_back_to_a_full_read() {
+    let dir = transcript_dir("shrunk");
+    let now = chrono::Utc::now();
+    let mut a = session("a", Agent::Claude, false);
+    a.file = write_claude_transcript(&dir, "a", &[("user", "REWRITTEN")]);
+    a.last_active = Some(now);
+    let mut b = session("b", Agent::Claude, false);
+    b.last_active = Some(now);
+    let mut app = app_with(vec![a, b]);
+    categorize(&mut app, "topic", &["a", "b"]);
+
+    // Pretend we had synced a much larger file that has since been rewritten.
+    app.state.set_sync_mark("b", "a", 10_000_000);
+    let deltas = app.category_deltas("b");
+    assert_eq!(deltas.len(), 1, "must not silently skip a rewritten peer");
+    assert!(deltas[0].reset, "flagged as a full re-read");
+    assert!(deltas[0].text.contains("REWRITTEN"));
+}
+
+#[test]
+fn auto_sync_defaults_on_and_survives_a_state_round_trip() {
+    let mut state = mindplayer_core::State::default();
+    let cat = state.create_category("topic", chrono::Utc::now()).unwrap();
+    assert!(
+        state.category_auto_sync(&cat),
+        "new categories sync by default"
+    );
+
+    // A category written before this field existed must load as ON, not OFF —
+    // a bare #[serde(default)] on a bool would give false here.
+    let legacy = r#"{"version":1,"categories":{"cat_9":{"name":"legacy","created_at":"2026-07-01T00:00:00Z"}}}"#;
+    let loaded: mindplayer_core::State = serde_json::from_str(legacy).unwrap();
+    assert!(
+        loaded.category_auto_sync("cat_9"),
+        "existing categories must not silently load with sync disabled"
+    );
+
+    state.set_category_auto_sync(&cat, false);
+    let json = serde_json::to_string(&state).unwrap();
+    let back: mindplayer_core::State = serde_json::from_str(&json).unwrap();
+    assert!(
+        !back.category_auto_sync(&cat),
+        "an explicit off round-trips"
+    );
+}
+
+#[test]
+fn the_category_menu_opens_only_on_a_real_category_header() {
+    let now = chrono::Utc::now();
+    let mut a = session("a", Agent::Codex, false);
+    a.last_active = Some(now);
+    let mut loose = session("loose", Agent::Codex, false);
+    loose.last_active = Some(now);
+    let mut app = app_with(vec![a, loose]);
+    let cat = categorize(&mut app, "topic", &["a"]);
+
+    // On the category header: opens.
+    app.selected = app
+        .visible
+        .iter()
+        .position(|r| matches!(r, Row::Header(Some(_))))
+        .unwrap();
+    assert!(app.open_category_menu());
+    assert_eq!(app.category_menu.as_ref().unwrap().cat_id, cat);
+    app.cancel_category_menu();
+
+    // On the uncategorized header: refused, there is nothing to configure.
+    app.selected = app
+        .visible
+        .iter()
+        .position(|r| matches!(r, Row::Header(None)))
+        .unwrap();
+    assert!(!app.open_category_menu());
+
+    // On a session row: refused (that keypress assigns a category instead).
+    app.selected = app.row_of_session("a").unwrap();
+    assert!(!app.open_category_menu());
+}
+
+#[test]
+fn the_menu_toggles_auto_sync_and_renames() {
+    let now = chrono::Utc::now();
+    let mut a = session("a", Agent::Codex, false);
+    a.last_active = Some(now);
+    let mut app = app_with(vec![a]);
+    let cat = categorize(&mut app, "topic", &["a"]);
+    app.selected = 0;
+    assert!(app.open_category_menu());
+
+    // auto-sync row toggles.
+    assert!(app.state.category_auto_sync(&cat));
+    app.confirm_category_menu();
+    assert!(!app.state.category_auto_sync(&cat));
+    app.confirm_category_menu();
+    assert!(app.state.category_auto_sync(&cat));
+
+    // rename: first enter opens the field pre-filled, second commits.
+    app.move_category_menu(CategoryMenu::RENAME as isize);
+    app.confirm_category_menu();
+    assert_eq!(
+        app.category_menu.as_ref().unwrap().rename.as_deref(),
+        Some("topic"),
+        "pre-filled so it can be edited rather than retyped"
+    );
+    app.category_rename_backspace();
+    app.category_rename_push('!');
+    app.confirm_category_menu();
+    assert_eq!(app.state.category_name(&cat), Some("topi!"));
+    assert!(app.category_menu.is_none());
+}
+
+#[test]
+fn removing_a_category_keeps_the_sessions_and_clears_watermarks() {
+    let now = chrono::Utc::now();
+    let mut a = session("a", Agent::Codex, false);
+    a.last_active = Some(now);
+    let mut b = session("b", Agent::Claude, false);
+    b.last_active = Some(now);
+    let mut app = app_with(vec![a, b]);
+    let cat = categorize(&mut app, "topic", &["a", "b"]);
+    app.state.set_sync_mark("a", "b", 500);
+
+    app.selected = 0;
+    assert!(app.open_category_menu());
+    app.move_category_menu(CategoryMenu::REMOVE as isize);
+    app.confirm_category_menu(); // asks first
+    assert!(
+        app.category_menu.as_ref().unwrap().confirm_remove,
+        "destructive action confirms rather than firing on one keypress"
+    );
+    app.confirm_category_menu(); // confirmed
+
+    assert!(app.state.categories.is_empty());
+    assert!(app.state.category_of("a").is_none());
+    assert_eq!(app.all_sessions.len(), 2, "sessions themselves are kept");
+    assert_eq!(
+        app.state.sync_mark("a", "b"),
+        0,
+        "stale watermarks would hide peer content if these were regrouped later"
+    );
+    assert!(!app.state.categories.contains_key(&cat));
+}
+
+#[test]
+fn moving_the_menu_cursor_cancels_a_pending_remove() {
+    let now = chrono::Utc::now();
+    let mut a = session("a", Agent::Codex, false);
+    a.last_active = Some(now);
+    let mut app = app_with(vec![a]);
+    categorize(&mut app, "topic", &["a"]);
+    app.selected = 0;
+    app.open_category_menu();
+    app.move_category_menu(CategoryMenu::REMOVE as isize);
+    app.confirm_category_menu();
+    assert!(app.category_menu.as_ref().unwrap().confirm_remove);
+    app.move_category_menu(-1);
+    assert!(
+        !app.category_menu.as_ref().unwrap().confirm_remove,
+        "walking away must not leave a live confirmation armed"
+    );
+}
+
+#[test]
+fn sync_marks_are_pruned_for_sessions_that_no_longer_exist() {
+    let mut state = mindplayer_core::State::default();
+    state.set_sync_mark("alive", "gone", 10);
+    state.set_sync_mark("gone", "alive", 20);
+    let known: std::collections::BTreeSet<String> = ["alive".to_string()].into_iter().collect();
+    assert!(state.prune_sync_marks(&known));
+    assert_eq!(state.sync_mark("alive", "gone"), 0);
+    assert_eq!(state.sync_mark("gone", "alive"), 0);
+    assert!(!state.prune_sync_marks(&known), "idempotent");
+}

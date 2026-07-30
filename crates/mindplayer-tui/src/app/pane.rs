@@ -417,6 +417,10 @@ impl App {
             // reopening a session with several handoff peers never freezes
             // the UI while their transcripts are read.
             self.spawn_thread_sync_for(&session);
+            // Category peers need their own pass: thread-sync only ever looks at
+            // handoff lineage, so a session dropped into a category with `n` has no
+            // peers there at all.
+            self.spawn_category_sync_for(&session, false);
             self.focus_or_add_pane(&session.id);
             return;
         }
@@ -436,6 +440,10 @@ impl App {
         // initial input once it's ready, same as a handoff's own initial
         // prompt already does.
         self.spawn_thread_sync_for(&session);
+        // Category peers need their own pass: thread-sync only ever looks at
+        // handoff lineage, so a session dropped into a category with `n` has no
+        // peers there at all.
+        self.spawn_category_sync_for(&session, false);
         self.pending = Some(PendingSpawn {
             command: resume(&session),
             session_id: session.id.clone(),

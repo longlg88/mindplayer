@@ -983,14 +983,15 @@ fn handle_main_key(app: &mut App, key: KeyEvent) {
                 KeyCode::PageUp => app.move_page(-1),
                 KeyCode::PageDown => app.move_page(1),
                 KeyCode::Enter if app.multi_select => app.launch_marked(),
-                // On a category header, enter/→ unfold instead of resuming —
-                // there is no session on that row to resume. `→` keeps its old
-                // meaning everywhere else, which is why this is checked first
-                // rather than rebinding the key outright.
-                KeyCode::Enter | KeyCode::Char('l') | KeyCode::Right
-                    if app.selected_category().is_some() =>
-                {
+                // On a category header there is no session to resume, so these
+                // keys act on the group instead. `enter` toggles it open/shut;
+                // `→` only ever goes deeper (unfold, then step inside) so that
+                // folding stays exclusively `←`'s job.
+                KeyCode::Enter if app.selected_category().is_some() => {
                     app.toggle_selected_category();
+                }
+                KeyCode::Char('l') | KeyCode::Right if app.selected_category().is_some() => {
+                    app.enter_selected_category();
                 }
                 KeyCode::Enter | KeyCode::Char('l') | KeyCode::Right => app.request_resume(),
                 // `←` folds the category the cursor is in and steps out to its

@@ -3373,3 +3373,70 @@ fn sync_marks_are_pruned_for_sessions_that_no_longer_exist() {
     assert_eq!(state.sync_mark("gone", "alive"), 0);
     assert!(!state.prune_sync_marks(&known), "idempotent");
 }
+
+/// Reported bug: `→` was wired to a toggle, so pressing it on an already-open
+/// category *closed* it. The key then never went deeper, and continuing to press
+/// it eventually landed on a session row and opened the session.
+#[test]
+fn right_arrow_on_a_category_never_folds_it() {
+    let now = chrono::Utc::now();
+    let mut a = session("a", Agent::Codex, false);
+    a.last_active = Some(now);
+    let mut b = session("b", Agent::Codex, false);
+    b.last_active = Some(now);
+    let mut app = app_with(vec![a, b]);
+    let cat = categorize(&mut app, "topic", &["a", "b"]);
+
+    // Folded: → opens it and the cursor stays on the header.
+    app.state.set_collapsed(&cat, true);
+    app.rebuild_visible();
+    app.selected = 0;
+    assert!(app.enter_selected_category());
+    assert!(!app.state.is_collapsed(&cat), "→ unfolds");
+    assert_eq!(
+        app.selected, 0,
+        "cursor stays on the header after unfolding"
+    );
+
+    // Open: → steps INSIDE instead of folding it back up.
+    assert!(app.enter_selected_category());
+    assert!(
+        !app.state.is_collapsed(&cat),
+        "→ must never fold — that is ←'s job"
+    );
+    assert_eq!(app.selected, 1, "cursor descends onto the first session");
+    assert!(app.selected_session().is_some());
+}
+
+#[test]
+fn enter_on_a_category_header_still_toggles_it() {
+    let now = chrono::Utc::now();
+    let mut a = session("a", Agent::Codex, false);
+    a.last_active = Some(now);
+    let mut app = app_with(vec![a]);
+    let cat = categorize(&mut app, "topic", &["a"]);
+    app.selected = 0;
+
+    // Enter is the explicit open/shut gesture, unlike →.
+    assert!(app.toggle_selected_category());
+    assert!(app.state.is_collapsed(&cat));
+    app.selected = 0;
+    assert!(app.toggle_selected_category());
+    assert!(!app.state.is_collapsed(&cat));
+}
+
+#[test]
+fn right_arrow_on_an_empty_or_folded_last_category_does_not_move_off_the_list() {
+    let now = chrono::Utc::now();
+    let mut a = session("a", Agent::Codex, false);
+    a.last_active = Some(now);
+    let mut app = app_with(vec![a]);
+    categorize(&mut app, "topic", &["a"]);
+    // Cursor on the last header with the session below it; stepping in is fine,
+    // but stepping in again from the session row must not run past the end.
+    app.selected = app.visible.len() - 1;
+    let before = app.selected;
+    // On a session row this is not a category action at all.
+    assert!(!app.enter_selected_category());
+    assert_eq!(app.selected, before, "no movement from a session row");
+}

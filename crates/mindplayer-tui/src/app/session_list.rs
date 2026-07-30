@@ -771,6 +771,29 @@ impl App {
         true
     }
 
+    /// `→` on a category header: unfold it when folded, otherwise step *into*
+    /// the group by moving onto its first session. Deliberately never folds —
+    /// that is `←`'s job. Wiring `→` to a toggle made it close a category that
+    /// was already open, so the key never went deeper and reading the list felt
+    /// unpredictable.
+    pub fn enter_selected_category(&mut self) -> bool {
+        let Some(id) = self.selected_category().map(str::to_string) else {
+            return false;
+        };
+        if self.state.is_collapsed(&id) {
+            return self.expand_selected_category();
+        }
+        // Already open: descend to the first row under this header, if it has one.
+        if self
+            .visible
+            .get(self.selected + 1)
+            .is_some_and(|r| !r.is_header())
+        {
+            self.selected += 1;
+        }
+        true
+    }
+
     /// `←`: fold the category the cursor is in, and park the cursor on its
     /// header — the same "step out" gesture a file tree has.
     pub fn collapse_category_at_cursor(&mut self) -> bool {

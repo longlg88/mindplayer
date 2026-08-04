@@ -2,11 +2,6 @@ use super::handoff_sync::handoff_label;
 use super::*;
 use mindplayer_core::session::TokenUsage;
 use std::path::PathBuf;
-use std::sync::Mutex;
-
-/// Serializes tests that set the process-global `MINDPLAYER_STATE` env var,
-/// so concurrent tests can't clobber each other's sidecar path.
-static STATE_ENV_LOCK: Mutex<()> = Mutex::new(());
 
 fn session(id: &str, agent: Agent, archived: bool) -> Session {
     Session {
@@ -36,19 +31,71 @@ fn scratch_state_path(tag: &str) -> PathBuf {
     dir.join("state.json")
 }
 
-fn isolated_app() -> App {
+thread_local! {
+    /// Where the next `App` built on THIS thread should persist its sidecar.
+    ///
+    /// Thread-local, not an env var, because `cargo test` gives every test its
+    /// own thread: this is per-test by construction. `MINDPLAYER_STATE` is
+    /// process-global, so while one test had it set, every other test calling
+    /// `App::new()` concurrently inherited that path — and then persisted its own
+    /// state over the first test's assertion target. `STATE_ENV_LOCK` could not
+    /// help, because the tests doing the inheriting never took it.
+    static TEST_STATE_PATH: std::cell::RefCell<Option<PathBuf>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Point this test's `App`s at `path` instead of a shared scratch file. Call it
+/// before building the `App` when the test asserts on what got persisted.
+pub(crate) fn use_state_path(path: PathBuf) {
+    TEST_STATE_PATH.with(|c| *c.borrow_mut() = Some(path));
+}
+
+pub(crate) fn isolated_app() -> App {
     let mut app = App::new();
-    // Tests that deliberately point MINDPLAYER_STATE at their own temp file (to
-    // assert what got persisted) keep working — `App::new` already resolved it.
-    // Everything else is redirected to a scratch path, so a test that simply
-    // forgets to isolate still cannot write to the real state file.
-    if std::env::var_os("MINDPLAYER_STATE").is_none() {
-        app.state_path = scratch_state_path("app");
-        // A previous run's scratch file must not leak into this one.
-        app.state = mindplayer_core::State::default();
-        app.walker_choice = crate::walker::index_of(crate::walker::DEFAULT_ID);
+    match TEST_STATE_PATH.with(|c| c.borrow().clone()) {
+        // The test named a path: load whatever is there, so it can assert that a
+        // fresh `App` reads back what an earlier one persisted.
+        Some(path) => {
+            app.state = mindplayer_core::State::load_from(&path);
+            app.walker_choice = resolve_walker(app.state.walker.as_deref());
+            app.state_path = path;
+        }
+        // No path named: a scratch file, and a previous run's leftovers there
+        // must not leak into this one.
+        None => {
+            app.state_path = scratch_state_path("app");
+            app.state = mindplayer_core::State::default();
+            app.walker_choice = crate::walker::index_of(crate::walker::DEFAULT_ID);
+        }
     }
     app
+}
+
+/// An isolated `App` whose sidecar path is given outright.
+///
+/// Equivalent to [`use_state_path`] followed by [`isolated_app`]; use whichever
+/// reads better at the call site.
+pub(crate) fn isolated_app_at(state_path: PathBuf) -> App {
+    let mut app = App::new();
+    app.state_path = state_path;
+    app.state = mindplayer_core::State::default();
+    app.walker_choice = crate::walker::index_of(crate::walker::DEFAULT_ID);
+    app
+}
+
+/// A sidecar path unique to one test, so no sibling can collide with it.
+/// [`scratch_state_path`] is keyed on the pid alone and therefore shared.
+fn test_state_path(tag: &str) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!(
+        "mp-test-{}-{tag}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    ));
+    let _ = std::fs::create_dir_all(&dir);
+    dir.join("state.json")
 }
 
 fn app_with(sessions: Vec<Session>) -> App {
@@ -140,11 +187,10 @@ fn write_large_codex_fixture(
 
 #[test]
 fn new_session_persists_then_reconciles() {
-    let _env = STATE_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let tmp = std::env::temp_dir().join(format!("mp-newstate-{}.json", std::process::id()));
-    std::env::set_var("MINDPLAYER_STATE", &tmp);
+    use_state_path(tmp.clone());
 
-    let mut app = App::new();
+    let mut app = isolated_app();
     app.scope = Scope::WorkingDir(PathBuf::from("/work"));
 
     // New labeled session shows up immediately (no disk file yet).
@@ -180,7 +226,6 @@ fn new_session_persists_then_reconciles() {
     assert_eq!(app.session_at(0).unwrap().id, "real-1234");
 
     let _ = std::fs::remove_file(&tmp);
-    std::env::remove_var("MINDPLAYER_STATE");
 }
 
 #[test]
@@ -211,11 +256,10 @@ fn refresh_applies_token_updates_to_existing_row() {
 
 #[test]
 fn new_session_stays_until_reconciled() {
-    let _env = STATE_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let tmp = std::env::temp_dir().join(format!("mp-newstate2-{}.json", std::process::id()));
-    std::env::set_var("MINDPLAYER_STATE", &tmp);
+    use_state_path(tmp.clone());
 
-    let mut app = App::new();
+    let mut app = isolated_app();
     app.scope = Scope::WorkingDir(PathBuf::from("/work"));
     app.request_new(Agent::Claude, "");
 
@@ -229,7 +273,6 @@ fn new_session_stays_until_reconciled() {
         .iter()
         .any(|s| s.id.starts_with("new:claude")));
 
-    std::env::remove_var("MINDPLAYER_STATE");
     let _ = std::fs::remove_file(&tmp);
 }
 
@@ -806,22 +849,22 @@ fn move_page_steps_and_clamps() {
 
 #[test]
 fn close_selected_archives_and_hides() {
-    let _env = STATE_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    // Redirect the sidecar write to a temp file so real state is untouched.
-    let tmp = std::env::temp_dir().join(format!("mp-state-{}.json", std::process::id()));
-    std::env::set_var("MINDPLAYER_STATE", &tmp);
-
-    let mut app = app_with(vec![
+    // No `MINDPLAYER_STATE`, no lock: the sidecar path is this test's alone, so
+    // a concurrent `App::new()` in another test cannot inherit it and persist
+    // over the assertion below. See `isolated_app_at`.
+    let tmp = test_state_path("close-selected-archives");
+    let mut app = isolated_app_at(tmp.clone());
+    app.all_sessions = vec![
         session("a", Agent::Codex, false),
         session("b", Agent::Codex, false),
-    ]);
+    ];
+    app.rebuild_visible();
     app.selected = 0;
     app.close_selected();
 
     let saved = mindplayer_core::State::load_from(&tmp);
     assert!(saved.is_archived("a"), "archive persisted to sidecar");
     let _ = std::fs::remove_file(&tmp);
-    std::env::remove_var("MINDPLAYER_STATE");
     assert!(
         app.all_sessions
             .iter()
@@ -834,9 +877,8 @@ fn close_selected_archives_and_hides() {
 
 #[test]
 fn toggle_in_progress_marks_persists_and_unmarks() {
-    let _env = STATE_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let tmp = std::env::temp_dir().join(format!("mp-inprog-{}.json", std::process::id()));
-    std::env::set_var("MINDPLAYER_STATE", &tmp);
+    use_state_path(tmp.clone());
 
     let mut app = app_with(vec![session("a", Agent::Codex, false)]);
     app.selected = 0;
@@ -852,7 +894,6 @@ fn toggle_in_progress_marks_persists_and_unmarks() {
     assert!(!saved.is_in_progress("a"), "unmark persisted to sidecar");
 
     let _ = std::fs::remove_file(&tmp);
-    std::env::remove_var("MINDPLAYER_STATE");
 }
 
 #[test]
@@ -1185,9 +1226,8 @@ fn merge_extras_ignores_preexisting_session() {
     // onto a session that already existed when it was created (e.g. one the
     // user just resumed in the same dir) — doing so would re-key its live
     // PTY over the running one and silently kill it.
-    let _env = STATE_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let tmp = std::env::temp_dir().join(format!("mp-merge-{}.json", std::process::id()));
-    std::env::set_var("MINDPLAYER_STATE", &tmp);
+    use_state_path(tmp.clone());
 
     let now = chrono::Utc::now();
     let pre = Session {
@@ -1205,7 +1245,7 @@ fn merge_extras_ignores_preexisting_session() {
         context_pct: None,
     };
 
-    let mut app = App::new();
+    let mut app = isolated_app();
     app.scope = Scope::WorkingDir(PathBuf::from("/work"));
     app.all_sessions = vec![pre.clone()];
     app.rebuild_visible();
@@ -1227,7 +1267,6 @@ fn merge_extras_ignores_preexisting_session() {
     assert!(app.all_sessions.iter().any(|s| s.id == "pre-real"));
 
     let _ = std::fs::remove_file(&tmp);
-    std::env::remove_var("MINDPLAYER_STATE");
 }
 
 #[test]
@@ -1235,9 +1274,8 @@ fn close_selected_keeps_cursor_on_neighbor() {
     // Regression: after archiving a middle row the cursor must land on a
     // deliberate neighbor by id, so a repeated 'x' can't archive+kill a
     // session the user never moved onto.
-    let _env = STATE_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let tmp = std::env::temp_dir().join(format!("mp-neigh-{}.json", std::process::id()));
-    std::env::set_var("MINDPLAYER_STATE", &tmp);
+    use_state_path(tmp.clone());
 
     let mut app = app_with(vec![
         session("a", Agent::Codex, false),
@@ -1262,14 +1300,12 @@ fn close_selected_keeps_cursor_on_neighbor() {
     assert_eq!(app.selected_session().unwrap().id, "a");
 
     let _ = std::fs::remove_file(&tmp);
-    std::env::remove_var("MINDPLAYER_STATE");
 }
 
 #[test]
 fn label_edit_sets_and_persists() {
-    let _env = STATE_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let tmp = std::env::temp_dir().join(format!("mp-label-{}.json", std::process::id()));
-    std::env::set_var("MINDPLAYER_STATE", &tmp);
+    use_state_path(tmp.clone());
 
     let mut app = app_with(vec![session("real-1", Agent::Codex, false)]);
     app.selected = 0;
@@ -1292,16 +1328,14 @@ fn label_edit_sets_and_persists() {
     assert_eq!(app.new_label.as_deref(), Some("deploy check"));
 
     let _ = std::fs::remove_file(&tmp);
-    std::env::remove_var("MINDPLAYER_STATE");
 }
 
 #[test]
 fn label_edit_skips_synthetic_placeholder() {
-    let _env = STATE_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let tmp = std::env::temp_dir().join(format!("mp-labelsyn-{}.json", std::process::id()));
-    std::env::set_var("MINDPLAYER_STATE", &tmp);
+    use_state_path(tmp.clone());
 
-    let mut app = App::new();
+    let mut app = isolated_app();
     app.scope = Scope::WorkingDir(PathBuf::from("/work"));
     app.request_new(Agent::Codex, "");
     app.selected = 0; // the synthetic new: row
@@ -1311,17 +1345,15 @@ fn label_edit_skips_synthetic_placeholder() {
     assert!(app.new_label.is_none());
 
     let _ = std::fs::remove_file(&tmp);
-    std::env::remove_var("MINDPLAYER_STATE");
 }
 
 #[test]
 fn handoff_queues_target_agent_with_initial_prompt() {
-    let _env = STATE_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _handoff_env = handoff::TEST_ENV_LOCK
         .lock()
         .unwrap_or_else(|e| e.into_inner());
     let tmp = std::env::temp_dir().join(format!("mp-handoff-label-{}.json", std::process::id()));
-    std::env::set_var("MINDPLAYER_STATE", &tmp);
+    use_state_path(tmp.clone());
     let (dir, transcript) = write_handoff_fixture("queue");
     std::env::set_var(handoff::HANDOFF_DIR_ENV, dir.join("handoffs"));
     let mut source = session_in(
@@ -1358,17 +1390,15 @@ fn handoff_queues_target_agent_with_initial_prompt() {
         && p.label == "(handoff)msk cohome"));
 
     std::env::remove_var(handoff::HANDOFF_DIR_ENV);
-    std::env::remove_var("MINDPLAYER_STATE");
 }
 
 #[test]
 fn handoff_into_kiro_sends_context_as_first_input_argument() {
-    let _env = STATE_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _handoff_env = handoff::TEST_ENV_LOCK
         .lock()
         .unwrap_or_else(|e| e.into_inner());
     let tmp = std::env::temp_dir().join(format!("mp-handoff-kiro-{}.json", std::process::id()));
-    std::env::set_var("MINDPLAYER_STATE", &tmp);
+    use_state_path(tmp.clone());
     let (dir, transcript) = write_handoff_fixture("kiro-target");
     std::env::set_var(handoff::HANDOFF_DIR_ENV, dir.join("handoffs"));
     let mut source = session_in(
@@ -1405,17 +1435,15 @@ fn handoff_into_kiro_sends_context_as_first_input_argument() {
 
     let _ = std::fs::remove_file(&tmp);
     std::env::remove_var(handoff::HANDOFF_DIR_ENV);
-    std::env::remove_var("MINDPLAYER_STATE");
 }
 
 #[test]
 fn kiro_handoff_to_codex_creates_child_lane() {
-    let _env = STATE_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _handoff_env = handoff::TEST_ENV_LOCK
         .lock()
         .unwrap_or_else(|e| e.into_inner());
     let tmp = std::env::temp_dir().join(format!("mp-kiro-handoff-{}.json", std::process::id()));
-    std::env::set_var("MINDPLAYER_STATE", &tmp);
+    use_state_path(tmp.clone());
     let dir = std::env::temp_dir().join(format!("mindplayer-kiro-handoff-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
@@ -1454,7 +1482,6 @@ fn kiro_handoff_to_codex_creates_child_lane() {
     std::env::remove_var(handoff::HANDOFF_DIR_ENV);
     let _ = std::fs::remove_dir_all(dir);
     let _ = std::fs::remove_file(&tmp);
-    std::env::remove_var("MINDPLAYER_STATE");
 }
 
 #[test]
@@ -1489,10 +1516,9 @@ fn resuming_thread_lane_injects_peer_context() {
     let _handoff_env = handoff::TEST_ENV_LOCK
         .lock()
         .unwrap_or_else(|e| e.into_inner());
-    let _state_env = STATE_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let (dir, codex_transcript) = write_codex_fixture("sync", "codex fixed tests");
     let state_path = dir.join("state.json");
-    std::env::set_var("MINDPLAYER_STATE", &state_path);
+    use_state_path(state_path.clone());
     std::env::set_var(handoff::HANDOFF_DIR_ENV, dir.join("handoffs"));
 
     let mut parent = session_in("claude-1", Agent::Claude, "/work/project", "msk cohome");
@@ -1541,7 +1567,6 @@ fn resuming_thread_lane_injects_peer_context() {
     assert!(input.ends_with('\r'));
 
     std::env::remove_var(handoff::HANDOFF_DIR_ENV);
-    std::env::remove_var("MINDPLAYER_STATE");
     let _ = std::fs::remove_dir_all(dir);
 }
 
@@ -1558,7 +1583,6 @@ fn resuming_a_session_with_large_peer_transcripts_does_not_block_the_caller() {
     let _handoff_env = handoff::TEST_ENV_LOCK
         .lock()
         .unwrap_or_else(|e| e.into_inner());
-    let _state_env = STATE_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
 
     const PEER_COUNT: usize = 6;
     // ~2MB per peer (4000 lines * ~500 bytes) — large enough that a
@@ -1580,7 +1604,7 @@ fn resuming_a_session_with_large_peer_transcripts_does_not_block_the_caller() {
     }
     let handoff_dir = dirs[0].join("handoffs");
     let state_path = dirs[0].join("state.json");
-    std::env::set_var("MINDPLAYER_STATE", &state_path);
+    use_state_path(state_path.clone());
     std::env::set_var(handoff::HANDOFF_DIR_ENV, &handoff_dir);
 
     let mut root = session_in("claude-root", Agent::Claude, "/work/project", "root lane");
@@ -1605,17 +1629,20 @@ fn resuming_a_session_with_large_peer_transcripts_does_not_block_the_caller() {
     app.rebuild_visible();
     app.selected = 0;
 
-    let started = std::time::Instant::now();
     app.request_resume();
-    let elapsed = started.elapsed();
 
-    // The generous 50ms ceiling only needs to rule out "read N x ~2MB files
-    // synchronously" (which the old code path did); it's not a tight
-    // performance budget.
-    assert!(
-        elapsed < std::time::Duration::from_millis(50),
-        "request_resume took {elapsed:?} — peer transcripts appear to be read synchronously again"
-    );
+    // Deliberately NO wall-clock ceiling here. There used to be a 50ms one,
+    // justified as "enough to rule out reading N x ~2MB synchronously" — but
+    // measured, that synchronous read+parse of this exact fixture (6 peers,
+    // 14 MB total) costs 23ms unloaded and 30ms under full-core load, i.e. it
+    // fits *under* the ceiling. The ceiling could not tell the two code paths
+    // apart; all it detected was scheduler noise, and it failed ~25% of loaded
+    // parallel runs.
+    //
+    // The assertion below is the real regression test and needs no timing: the
+    // result can only arrive through `poll_thread_sync`'s channel, which exists
+    // only because the read runs on a worker. The old synchronous path never
+    // sent anything through it, so `applied` would stay false.
 
     // The background read does eventually complete and land somewhere
     // (queued as a deferred initial input, since the session hasn't spawned
@@ -1635,7 +1662,6 @@ fn resuming_a_session_with_large_peer_transcripts_does_not_block_the_caller() {
     );
 
     std::env::remove_var(handoff::HANDOFF_DIR_ENV);
-    std::env::remove_var("MINDPLAYER_STATE");
     for dir in dirs {
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -1656,7 +1682,6 @@ fn real_user_saav_style_data_request_resume_does_not_block() {
     let _handoff_env = handoff::TEST_ENV_LOCK
         .lock()
         .unwrap_or_else(|e| e.into_inner());
-    let _state_env = STATE_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
 
     let home = std::env::var("HOME").expect("HOME must be set");
     let root_id = "019ebb9e-5083-7961-8f8d-a3bcffae5702";
@@ -1835,23 +1860,21 @@ fn walker_defaults_to_the_rubber_duck_when_nothing_is_stored() {
 
 #[test]
 fn walker_picker_only_commits_on_confirm_and_persists_the_choice() {
-    let _env = STATE_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let dir = std::env::temp_dir().join(format!("mp-walker-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("state.json");
     let _ = std::fs::remove_file(&path);
-    std::env::set_var("MINDPLAYER_STATE", &path);
-    // `confirm_walker_pick` calls `State::save()`, which resolves the path from
-    // this env var. If the `set_var` above ever fails to take effect (it raced
-    // once and this test wrote to the developer's real ~/.mindplayer/state.json),
-    // fail loudly here instead of silently clobbering real user data.
-    assert_eq!(
-        mindplayer_core::state::default_state_path(),
-        path,
-        "MINDPLAYER_STATE did not take effect; refusing to run a test that saves state"
-    );
+    use_state_path(path.clone());
 
-    let mut app = App::new();
+    let mut app = isolated_app();
+    // `confirm_walker_pick` calls `save_state()`, which writes to this field.
+    // Asserted rather than assumed: this test wrote to the developer's real
+    // `~/.mindplayer/state.json` once, back when the path came from a
+    // process-global env var another test could clear mid-run.
+    assert_eq!(
+        app.state_path, path,
+        "refusing to run a state-saving test that is not isolated"
+    );
     // Pinned rather than read from whatever `App::new` resolved, so the
     // expectations below don't depend on ambient state at all.
     app.walker_choice = 0;
@@ -1876,10 +1899,9 @@ fn walker_picker_only_commits_on_confirm_and_persists_the_choice() {
     assert_eq!(app.state.walker.as_deref(), Some(expected_id.as_str()));
 
     // A fresh App reads it back from disk.
-    let reopened = App::new();
+    let reopened = isolated_app();
     assert_eq!(reopened.walker().id, expected_id);
 
-    std::env::remove_var("MINDPLAYER_STATE");
     let _ = std::fs::remove_file(&path);
 }
 
@@ -2107,13 +2129,12 @@ fn ended_sessions_do_not_keep_recent_activity_alive() {
 
 #[test]
 fn dir_input_repoints_scope_to_valid_dir() {
-    let _env = STATE_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let tmp = std::env::temp_dir().join(format!("mp-dirstate-{}.json", std::process::id()));
-    std::env::set_var("MINDPLAYER_STATE", &tmp);
+    use_state_path(tmp.clone());
 
     // A real directory that exists on every machine.
     let target = std::env::temp_dir();
-    let mut app = App::new();
+    let mut app = isolated_app();
     app.begin_dir_input();
     assert!(app.dir_input.is_some());
     // Replace the prefilled buffer with the target path.
@@ -2131,11 +2152,10 @@ fn dir_input_repoints_scope_to_valid_dir() {
 
 #[test]
 fn dir_input_rejects_nonexistent_dir() {
-    let _env = STATE_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let tmp = std::env::temp_dir().join(format!("mp-dirstate2-{}.json", std::process::id()));
-    std::env::set_var("MINDPLAYER_STATE", &tmp);
+    use_state_path(tmp.clone());
 
-    let mut app = App::new();
+    let mut app = isolated_app();
     let original = app.scope.clone();
     app.begin_dir_input();
     app.dir_input = Some("/no/such/path/mindplayer-xyz".to_string());
@@ -2148,11 +2168,10 @@ fn dir_input_rejects_nonexistent_dir() {
 
 #[test]
 fn dir_input_blank_switches_to_global() {
-    let _env = STATE_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let tmp = std::env::temp_dir().join(format!("mp-dirstate3-{}.json", std::process::id()));
-    std::env::set_var("MINDPLAYER_STATE", &tmp);
+    use_state_path(tmp.clone());
 
-    let mut app = App::new();
+    let mut app = isolated_app();
     app.begin_dir_input();
     app.dir_input = Some("   ".to_string());
     app.confirm_dir_input();
@@ -2178,10 +2197,9 @@ fn audit_tmp_path(name: &str) -> PathBuf {
 
 #[test]
 fn close_selected_logs_a_session_close_event() {
-    let _env = STATE_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let state_tmp =
         std::env::temp_dir().join(format!("mp-audit-close-state-{}.json", std::process::id()));
-    std::env::set_var("MINDPLAYER_STATE", &state_tmp);
+    use_state_path(state_tmp.clone());
     let audit_tmp = audit_tmp_path("close");
 
     let mut app = app_with(vec![session("a", Agent::Codex, false)]);
@@ -2874,13 +2892,11 @@ fn a_header_row_has_no_session_so_single_row_actions_are_inert() {
 
 #[test]
 fn the_picker_assigns_every_marked_session_at_once() {
-    let _env = STATE_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let dir = std::env::temp_dir().join(format!("mp-cat-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("state.json");
     let _ = std::fs::remove_file(&path);
-    std::env::set_var("MINDPLAYER_STATE", &path);
-    assert_eq!(mindplayer_core::state::default_state_path(), path);
+    use_state_path(path.clone());
 
     let now = chrono::Utc::now();
     let mut a = session("a", Agent::Codex, false);
@@ -2888,6 +2904,11 @@ fn the_picker_assigns_every_marked_session_at_once() {
     let mut b = session("b", Agent::Codex, false);
     b.last_active = Some(now);
     let mut app = app_with(vec![a, b]);
+    // This test persists categories, so prove it is isolated before it writes.
+    assert_eq!(
+        app.state_path, path,
+        "refusing to run a state-saving test that is not isolated"
+    );
     app.toggle_multi_select();
     app.selected = 0;
     app.toggle_mark();
@@ -2913,7 +2934,6 @@ fn the_picker_assigns_every_marked_session_at_once() {
     assert!(ca.is_some() && ca == cb, "both land in the same category");
     assert_eq!(app.state.category_name(&ca.unwrap()), Some("shared"));
 
-    std::env::remove_var("MINDPLAYER_STATE");
     let _ = std::fs::remove_file(&path);
 }
 
@@ -2975,7 +2995,6 @@ fn an_unknown_category_id_is_refused_rather_than_dangling() {
 
 #[test]
 fn a_handoff_thread_stays_in_one_category_via_its_root() {
-    let _env = STATE_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let now = chrono::Utc::now();
     let mut parent = session("p", Agent::Codex, false);
     parent.last_active = Some(now);

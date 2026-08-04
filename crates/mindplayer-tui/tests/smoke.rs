@@ -316,11 +316,22 @@ impl Mp {
     /// show. Both seeded sessions must be listed before returning.
     fn start_into_main_list(&mut self) {
         self.expect("collect sessions", STARTUP_TIMEOUT, "scope-select screen");
-        // `j` selects Global, Enter starts the scan → summary → main list.
-        self.send(b"j");
+        // Down moves the pick to Global; `▶ ` marks the selected option. Waiting
+        // for the marker before pressing enter is what makes this reliable —
+        // sending Down and Enter back to back raced, and the scan then ran under
+        // Project scope. (`j` did this until vim-style navigation was removed.)
+        self.send(b"\x1b[B");
+        self.expect("▶ global", STARTUP_TIMEOUT, "Global option selected");
         self.send(b"\r");
         self.expect(TITLE_A, STARTUP_TIMEOUT, "main list (session A)");
         self.expect(TITLE_B, STARTUP_TIMEOUT, "main list (session B)");
+        // Prove the scan actually ran under Global rather than Project, so
+        // cwd-matching cannot decide which sessions show. The footer renders
+        // `· global` vs `· working dir (…)` (see `App::scope_label`); the `· `
+        // prefix is what keeps this from matching the scope-select option text,
+        // which lingers on stale screen rows and made a bare "global" match pass
+        // even while the footer said "working dir".
+        self.expect("· global", STARTUP_TIMEOUT, "Global scope in the footer");
     }
 }
 

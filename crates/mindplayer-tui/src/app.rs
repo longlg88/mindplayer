@@ -27,6 +27,14 @@ type CategorySyncResult = (
     Result<(handoff::PreparedHandoff, Vec<(String, u64)>), String>,
 );
 
+/// A finished conversation-log batch. The worker owns a clone of the index
+/// while it runs and hands the whole thing back, so the UI thread never sees a
+/// half-updated index.
+pub(crate) struct ConvoIngestResult {
+    pub(crate) index: crate::convo_log::ConvoIndex,
+    pub(crate) turns: usize,
+}
+
 /// Background refresh result for one already-discovered session.
 struct ActivityUpdate {
     id: String,
@@ -313,6 +321,18 @@ pub struct App {
     /// no env mutation at all, which is what stops a test from ever writing to
     /// the developer's real ~/.mindplayer/state.json (it has happened twice).
     pub state_path: PathBuf,
+    /// Conversation-log directory, an explicit field for the same reason
+    /// `state_path` is: a test must never be able to append to the real log.
+    pub convo_dir: PathBuf,
+    pub convo_index: crate::convo_log::ConvoIndex,
+    /// In-flight background ingest batch; one at a time, cleared by the poll.
+    pub(crate) convo_rx: Option<Receiver<ConvoIngestResult>>,
+    /// Turns appended since launch. Nothing renders this yet; it is what the
+    /// ingest tests assert progress against.
+    pub convo_ingested: usize,
+    /// When the pending-scan last ran, so it stays interval-gated rather than
+    /// stat-ing every session on every tick.
+    pub(crate) convo_last_scan: Option<Instant>,
 
     /// Full in-scope scan (drives the aggregate / scan numbers).
     pub all_sessions: Vec<Session>,
@@ -471,8 +491,8 @@ pub struct App {
     /// into edit mode gets multi-line editing for free.
     pub transition_report_review: Option<text_input::BroadcastDraft>,
     /// False = read-only preview (enter sends as-is, `e` edits); true = the
-    /// buffer above is directly editable (enter still sends; ctrl-j /
-    /// shift/alt-enter inserts a newline instead, same as broadcast/dispatch).
+    /// buffer above is directly editable (enter still sends; shift/alt/ctrl-enter
+    /// inserts a newline instead, same as broadcast/dispatch).
     pub transition_report_review_editing: bool,
     /// Resolved once at construction (see [`audit_path_for_app`]) so every
     /// instrumentation call site logs to the same place without re-resolving
@@ -487,6 +507,12 @@ pub struct App {
     /// log is small enough that a full read+aggregate is effectively instant,
     /// so there's no cache to keep in sync.
     pub usage_stats: Option<mindplayer_core::UsageStats>,
+    /// Subscription rate-limit windows for the usage popup. `None` until the
+    /// first fetch lands; the fetch does network I/O so it never blocks a keypress.
+    pub limits: Option<mindplayer_core::limits::Limits>,
+    pub(crate) limits_rx: Option<Receiver<mindplayer_core::limits::Limits>>,
+    /// When the in-flight fetch started, so a wedged one can be abandoned.
+    pub(crate) limits_started: Option<Instant>,
     /// Keyboard shortcut help overlay opened by `?`.
     pub help_visible: bool,
     /// When `Some`, the session list is filtered as the user types after `/`.
@@ -575,6 +601,7 @@ impl App {
         // to an index up front (an unknown id falls back to the default).
         let state_path = mindplayer_core::state::default_state_path();
         let state = State::load_from(&state_path);
+        let convo_dir = convo_dir_for_app();
         let walker_choice = resolve_walker(state.walker.as_deref());
         App {
             screen: Screen::ScopeSelect,
@@ -589,6 +616,11 @@ impl App {
             cfg: ScanConfig::from_env(),
             state,
             state_path,
+            convo_index: crate::convo_log::load_index(&convo_dir),
+            convo_dir,
+            convo_rx: None,
+            convo_ingested: 0,
+            convo_last_scan: None,
             all_sessions: Vec::new(),
             aggregate: Aggregate::default(),
             visible_aggregate: Aggregate::default(),
@@ -644,6 +676,9 @@ impl App {
             prompts_dir: prompts_dir_for_app(),
             usage_popup: false,
             usage_stats: None,
+            limits: None,
+            limits_rx: None,
+            limits_started: None,
             help_visible: false,
             search_query: None,
             new_counter: 0,
@@ -820,6 +855,42 @@ fn status_label(status: SessionStatus) -> &'static str {
     }
 }
 
+/// The home directory the rate-limit fetch reads credentials and rollouts from.
+///
+/// Guarded like [`convo_dir_for_app`] and for a sharper reason: under `cargo
+/// test` the real home would send `limits::fetch` into the user's login Keychain
+/// (`security find-generic-password`) and, once a subscription token exists
+/// there, into a live authenticated request to api.anthropic.com. A unit test
+/// must not touch either. `MINDPLAYER_LIMITS_HOME` lets a test opt into a
+/// fixture home deliberately.
+fn limits_home_for_app() -> PathBuf {
+    if cfg!(test) {
+        std::env::var("MINDPLAYER_LIMITS_HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| {
+                std::env::temp_dir().join(format!("mindplayer-test-home-{}", std::process::id()))
+            })
+    } else {
+        PathBuf::from(std::env::var("HOME").unwrap_or_default())
+    }
+}
+
+/// The conversation-log directory an `App` writes to, mirroring
+/// [`audit_path_for_app`]'s test isolation exactly: real build → the shared
+/// `~/.mindplayer/convo`; under `cargo test` → a per-process temp directory, so
+/// a test that never opted in can't append turns to the real user's log.
+fn convo_dir_for_app() -> PathBuf {
+    if cfg!(test) {
+        std::env::var("MINDPLAYER_CONVO_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| {
+                std::env::temp_dir().join(format!("mindplayer-test-convo-{}", std::process::id()))
+            })
+    } else {
+        crate::convo_log::default_dir()
+    }
+}
+
 /// The audit-log path an `App` logs to. In a real build this is always
 /// `mindplayer_core::default_audit_path()`. Under `cargo test`, `cfg!(test)`
 /// is true for every test in this crate regardless of whether that
@@ -876,6 +947,7 @@ fn trim_submit(bytes: &mut Vec<u8>) {
     }
 }
 
+mod convo_ingest;
 mod handoff_sync;
 mod modals;
 mod pane;

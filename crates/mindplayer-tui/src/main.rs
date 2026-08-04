@@ -2,6 +2,7 @@
 
 mod agent_hooks;
 mod app;
+mod convo_log;
 mod handoff;
 mod kiro_patterns;
 mod mascot;
@@ -315,6 +316,15 @@ fn run(terminal: &mut Terminal<CrosstermBackend<FrameSink>>, app: &mut App) -> R
             if app.poll_thread_sync() {
                 needs_draw = true;
             }
+            // Conversation log: adopt a finished batch, then queue the next one.
+            // Both are cheap here — the file walking happens on the worker.
+            if app.poll_convo_ingest() {
+                needs_draw = true;
+            }
+            app.spawn_convo_ingest();
+            if app.poll_limits() {
+                needs_draw = true;
+            }
             if last_refresh.elapsed() >= Duration::from_secs(3) {
                 app.start_refresh();
                 last_refresh = Instant::now();
@@ -592,8 +602,8 @@ fn handle_key(app: &mut App, key: KeyEvent) {
             // the popup instead of quitting the app.
             if app.walker_picker.is_some() {
                 match normalize_shortcut(key.code) {
-                    KeyCode::Up | KeyCode::Char('k') => app.move_walker_pick(-1),
-                    KeyCode::Down | KeyCode::Char('j') => app.move_walker_pick(1),
+                    KeyCode::Up => app.move_walker_pick(-1),
+                    KeyCode::Down => app.move_walker_pick(1),
                     KeyCode::Enter => app.confirm_walker_pick(),
                     KeyCode::Esc | KeyCode::Char('q') => app.cancel_walker_picker(),
                     _ => {}
@@ -601,8 +611,8 @@ fn handle_key(app: &mut App, key: KeyEvent) {
                 return;
             }
             match normalize_shortcut(key.code) {
-                KeyCode::Up | KeyCode::Char('k') => app.scope_choice = 0,
-                KeyCode::Down | KeyCode::Char('j') => app.scope_choice = 1,
+                KeyCode::Up => app.scope_choice = 0,
+                KeyCode::Down => app.scope_choice = 1,
                 KeyCode::Enter => app.start_scan(),
                 KeyCode::Char('c') => app.open_walker_picker(),
                 KeyCode::Char('q') | KeyCode::Esc => app.quit(),
@@ -657,8 +667,8 @@ fn handle_main_key(app: &mut App, key: KeyEvent) {
             }
         } else {
             match normalize_shortcut(key.code) {
-                KeyCode::Up | KeyCode::Char('k') => app.move_category_menu(-1),
-                KeyCode::Down | KeyCode::Char('j') => app.move_category_menu(1),
+                KeyCode::Up => app.move_category_menu(-1),
+                KeyCode::Down => app.move_category_menu(1),
                 KeyCode::Enter | KeyCode::Char(' ') => app.confirm_category_menu(),
                 KeyCode::Esc | KeyCode::Char('q') => app.cancel_category_menu(),
                 _ => {}
@@ -685,8 +695,8 @@ fn handle_main_key(app: &mut App, key: KeyEvent) {
             }
         } else {
             match normalize_shortcut(key.code) {
-                KeyCode::Up | KeyCode::Char('k') => app.move_category_pick(-1),
-                KeyCode::Down | KeyCode::Char('j') => app.move_category_pick(1),
+                KeyCode::Up => app.move_category_pick(-1),
+                KeyCode::Down => app.move_category_pick(1),
                 KeyCode::Enter => app.confirm_category_pick(),
                 KeyCode::Esc | KeyCode::Char('q') => app.cancel_category_pick(),
                 _ => {}
@@ -698,8 +708,8 @@ fn handle_main_key(app: &mut App, key: KeyEvent) {
     // Cross-agent handoff picker.
     if let Some(choice) = app.handoff_picker {
         match key.code {
-            KeyCode::Up | KeyCode::Char('k') => app.handoff_picker = Some(choice.saturating_sub(1)),
-            KeyCode::Down | KeyCode::Char('j') => app.handoff_picker = Some((choice + 1).min(2)),
+            KeyCode::Up => app.handoff_picker = Some(choice.saturating_sub(1)),
+            KeyCode::Down => app.handoff_picker = Some((choice + 1).min(2)),
             KeyCode::Enter => {
                 let target = handoff::target_for_choice(choice);
                 app.confirm_handoff(target);
@@ -713,8 +723,8 @@ fn handle_main_key(app: &mut App, key: KeyEvent) {
     // Step 1 (modal): pick codex/claude.
     if let Some(choice) = app.new_picker {
         match key.code {
-            KeyCode::Up | KeyCode::Char('k') => app.new_picker = Some(choice.saturating_sub(1)),
-            KeyCode::Down | KeyCode::Char('j') => app.new_picker = Some((choice + 1).min(2)),
+            KeyCode::Up => app.new_picker = Some(choice.saturating_sub(1)),
+            KeyCode::Down => app.new_picker = Some((choice + 1).min(2)),
             KeyCode::Enter => {
                 let agent = match choice {
                     0 => Agent::Codex,
@@ -774,12 +784,8 @@ fn handle_main_key(app: &mut App, key: KeyEvent) {
     if let Some(choice) = app.html_preview_picker {
         let last = app.html_candidates_for_focused().len().saturating_sub(1);
         match key.code {
-            KeyCode::Up | KeyCode::Char('k') => {
-                app.html_preview_picker = Some(choice.saturating_sub(1))
-            }
-            KeyCode::Down | KeyCode::Char('j') => {
-                app.html_preview_picker = Some((choice + 1).min(last))
-            }
+            KeyCode::Up => app.html_preview_picker = Some(choice.saturating_sub(1)),
+            KeyCode::Down => app.html_preview_picker = Some((choice + 1).min(last)),
             KeyCode::Enter => app.confirm_html_preview_pick(),
             KeyCode::Tab => app.html_preview_picker_to_input(),
             KeyCode::Esc => app.cancel_html_preview_picker(),
@@ -842,9 +848,6 @@ fn handle_main_key(app: &mut App, key: KeyEvent) {
                 }
                 KeyCode::Enter => app.send_transition_report_review(),
                 KeyCode::Esc => app.cancel_transition_report_review(),
-                KeyCode::Char('j') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    app.transition_report_review_push_text("\n")
-                }
                 KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
                     app.transition_report_review_push_char(c)
                 }
@@ -978,8 +981,8 @@ fn handle_main_key(app: &mut App, key: KeyEvent) {
             // Normalize Korean 2-beolsik jamo to the QWERTY letter so the list
             // shortcuts work regardless of the active input source.
             match normalize_shortcut(key.code) {
-                KeyCode::Up | KeyCode::Char('k') => app.move_selection(-1),
-                KeyCode::Down | KeyCode::Char('j') => app.move_selection(1),
+                KeyCode::Up => app.move_selection(-1),
+                KeyCode::Down => app.move_selection(1),
                 KeyCode::PageUp => app.move_page(-1),
                 KeyCode::PageDown => app.move_page(1),
                 KeyCode::Enter if app.multi_select => app.launch_marked(),

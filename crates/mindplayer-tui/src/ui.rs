@@ -741,7 +741,7 @@ fn main_view(f: &mut Frame, app: &mut App) {
             .unwrap_or("this session");
         catchup_confirm_popup(f, title);
     } else if let Some(stats) = &app.usage_stats {
-        usage_popup(f, stats);
+        usage_popup(f, stats, app.limits.as_ref());
     } else if let Some(input) = &app.transition_report_input {
         transition_report_popup(f, input);
     } else if let Some(draft) = &app.transition_report_review {
@@ -808,7 +808,7 @@ fn transition_report_review_popup(
         Line::from(""),
         Line::from(Span::styled(
             if editing {
-                "enter send   ctrl-j or shift/alt-enter newline   esc cancel"
+                "enter send   shift/alt/ctrl-enter newline   esc cancel"
             } else {
                 "enter send as-is   e edit first   esc cancel"
             },
@@ -888,8 +888,12 @@ fn proportional_bar(counts: [(usize, Color); 3], width: usize) -> Vec<Span<'stat
     spans
 }
 
-fn usage_popup(f: &mut Frame, stats: &UsageStats) {
-    let area = centered(f.area(), 66, 12);
+fn usage_popup(
+    f: &mut Frame,
+    stats: &UsageStats,
+    limits: Option<&mindplayer_core::limits::Limits>,
+) {
+    let area = centered(f.area(), 66, 15);
     f.render_widget(Clear, area);
     let block = Block::default()
         .borders(Borders::ALL)
@@ -909,6 +913,9 @@ fn usage_popup(f: &mut Frame, stats: &UsageStats) {
             Constraint::Length(1), // agent legend
             Constraint::Length(1), // blank
             Constraint::Length(1), // handoffs / catch-up
+            Constraint::Length(1), // blank
+            Constraint::Length(1), // rate limits: claude
+            Constraint::Length(1), // rate limits: codex
             Constraint::Length(1), // blank
             Constraint::Length(1), // footer
         ])
@@ -1025,9 +1032,37 @@ fn usage_popup(f: &mut Frame, stats: &UsageStats) {
         rows[7],
     );
 
+    // Subscription windows. Rendered as the reason when a provider has no
+    // number, never as 0% — an absent limit must not read as "plenty left".
+    // `summary_rows` pairs each line with whether THAT provider produced a
+    // number, so a row carrying a reason stays dim even when the other provider
+    // has a value.
+    let limit_rows: Vec<(String, bool)> = match limits {
+        Some(l) => l.summary_rows(),
+        None => vec![("claude  …".into(), false), ("codex   …".into(), false)],
+    };
+    for (i, (text, known)) in limit_rows.iter().take(2).enumerate() {
+        let (head, rest) = text.split_at(text.find("  ").map(|p| p + 2).unwrap_or(0));
+        let known = *known;
+        f.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled(head.to_string(), Style::default().fg(DIM)),
+                Span::styled(
+                    rest.to_string(),
+                    if known {
+                        Style::default()
+                    } else {
+                        Style::default().fg(DIM)
+                    },
+                ),
+            ])),
+            rows[9 + i],
+        );
+    }
+
     f.render_widget(
         Paragraph::new(Span::styled("esc / enter  close", Style::default().fg(DIM))),
-        rows[9],
+        rows[12],
     );
 }
 
@@ -2027,8 +2062,7 @@ fn help_popup(f: &mut Frame) {
             "ctrl-p",
             "open a local .html file in the browser: pick from detected files (badge shows the count), or tab to type a path",
         ),
-        item("ctrl-j", "insert newline in text modals"),
-        item("shift/alt-enter", "insert newline in text modals"),
+        item("shift/alt/ctrl-enter", "insert newline in text modals"),
         item("esc", "cancel modal or close this help"),
         item("?", "show or close this help"),
     ];

@@ -956,7 +956,17 @@ fn handoff_dir() -> PathBuf {
         .join("handoffs")
 }
 
-fn safe_id(id: &str) -> String {
+/// Per-agent turn parser, so other modules pick one by `Agent` rather than
+/// re-deriving which transcript shape belongs to which agent.
+pub(crate) fn parse_turn_for(agent: Agent) -> fn(&Value) -> Option<(String, String)> {
+    match agent {
+        Agent::Claude => parse_claude_turn,
+        Agent::Codex => parse_codex_turn,
+        Agent::Kiro => parse_kiro_turn,
+    }
+}
+
+pub(crate) fn safe_id(id: &str) -> String {
     id.chars()
         .map(|c| {
             if c.is_ascii_alphanumeric() || c == '-' || c == '.' {
@@ -969,7 +979,7 @@ fn safe_id(id: &str) -> String {
         .collect()
 }
 
-fn neutralize_controls(text: &str) -> String {
+pub(crate) fn neutralize_controls(text: &str) -> String {
     text.chars()
         .map(|c| {
             if c == '\n' || c == '\t' || !c.is_control() {

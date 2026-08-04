@@ -1,5 +1,10 @@
 use super::*;
 
+/// How long an in-flight rate-limit fetch may run before it is abandoned.
+/// Generous next to curl's own 8 s cap; the case this covers is `security(1)`
+/// blocking on a Keychain approval dialog, which has no timeout of its own.
+pub(crate) const LIMITS_FETCH_DEADLINE: Duration = Duration::from_secs(30);
+
 /// Default content for `~/.mindplayer/prompts/catchup.md` — seeded there on
 /// first use (see `mindplayer_core::load_prompt`) so it can be rewritten at
 /// any time without a rebuild. Sent verbatim into a live session's CLI by
@@ -1061,12 +1066,53 @@ impl App {
             std::process::id(),
         ));
         self.usage_popup = true;
+        self.spawn_limits_fetch();
         // Logged after the stats are computed above, so the numbers the popup
         // shows reflect the log as it was *before* this open event.
         mindplayer_core::log_event_to(
             &self.audit_path,
             mindplayer_core::AuditEvent::UsagePopup { open: true },
         );
+    }
+
+    /// Refresh the rate-limit readout on a worker thread. Skipped when one is
+    /// already in flight; the popup shows the previous values until it lands.
+    pub(crate) fn spawn_limits_fetch(&mut self) {
+        // A fetch that never returns — `security(1)` can block on an interactive
+        // Keychain prompt — would otherwise hold `limits_rx` for the rest of the
+        // process and leave the popup stuck on "…" with no way to retry. After
+        // the deadline the channel is abandoned so a later open can try again.
+        if self
+            .limits_started
+            .is_some_and(|t| t.elapsed() >= LIMITS_FETCH_DEADLINE)
+        {
+            self.limits_rx = None;
+            self.limits_started = None;
+        }
+        if self.limits_rx.is_some() {
+            return;
+        }
+        self.limits_started = Some(Instant::now());
+        let home = super::limits_home_for_app();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(mindplayer_core::limits::fetch(&home));
+        });
+        self.limits_rx = Some(rx);
+    }
+
+    /// Adopt a finished rate-limit fetch. True when the popup needs redrawing.
+    pub fn poll_limits(&mut self) -> bool {
+        let Some(rx) = &self.limits_rx else {
+            return false;
+        };
+        let Ok(limits) = rx.try_recv() else {
+            return false;
+        };
+        self.limits_rx = None;
+        self.limits_started = None;
+        self.limits = Some(limits);
+        self.usage_popup
     }
 
     pub fn close_usage_popup(&mut self) {

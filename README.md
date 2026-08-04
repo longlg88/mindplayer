@@ -76,8 +76,7 @@ never modifies them — so it just works with the sessions you already have.
 - 📝 **Transition report** — <kbd>Ctrl‑t</kbd> from a live pane opens a
   one-line prompt (`topic / RUNBOOK §n / files`), then shows the fully
   assembled prompt for review: <kbd>Enter</kbd> sends it as-is, or
-  <kbd>e</kbd> edits it first (multi-line, same editor as broadcast/dispatch)
-  before sending. Asks the focused pane's own agent to write
+  <kbd>e</kbd> edits it first (multi-line) before sending. Asks the focused pane's own agent to write
   `transition-<topic>.html` against your `_assets/transition-template.html`
   structure. Provider-agnostic (it's just text) and works whether one pane or
   several are open.
@@ -86,9 +85,22 @@ never modifies them — so it just works with the sessions you already have.
   time, plus a 14‑day trend), sessions opened per agent, handoffs, and
   catch‑ups sent — from a small local append-only log
   (`~/.mindplayer/audit.jsonl`), not from reading any transcript content.
+- 🚥 **Subscription limits** — the same popup reports how much of each plan's
+  rate-limit window is spent: the numbers Claude Code's `/usage` and Codex's own
+  TUI show, not a token total. Codex needs no auth and no network (every turn
+  writes a snapshot into its rollout); Claude is a live authenticated call. A
+  window with no number is shown as the **reason** it's missing, never as `0%` —
+  which would read as "plenty left".
+- 📚 **Conversation log** — every user/assistant turn is mirrored out of the
+  agents' own transcripts into one normalized store at `~/.mindplayer/convo/`.
+  Theirs are three different per-agent formats that rotate and get cleared;
+  this keeps just the conversation, in one shape, as plain JSONL you can grep.
+  It grows incrementally by byte watermark, so a re-scan costs nothing, and a
+  directory lock keeps two MindPlayer instances from duplicating each other's
+  work.
 - ⛶ **Live panes** — drive one session full‑screen or split the view across
-  every session you launch together (an orchestration thread's 20+ lanes all
-  land in one grid). <kbd>Tab</kbd> (or <kbd>Ctrl‑w</kbd>) cycles focus,
+  every session you launch together (mark a whole topic and they all land in
+  one grid). <kbd>Tab</kbd> (or <kbd>Ctrl‑w</kbd>) cycles focus,
   <kbd>Ctrl‑z</kbd> zooms the focused pane back to full size (toggle again for
   the split — no more squinting at a packed grid), <kbd>Ctrl‑o</kbd> toggles
   the horizontal/vertical split, <kbd>Ctrl‑q</kbd> closes the focused pane,
@@ -103,8 +115,9 @@ never modifies them — so it just works with the sessions you already have.
   existing one with <kbd>e</kbd>); it shows as `🏷 your label`.
 - 🗂️ **Scope & archive** — view the current working dir or everything; archive
   finished sessions (originals untouched); hide sub‑agent/`/team` workers.
-- 🌏 **Friendly input** — `Shift+Enter` soft newlines, full Korean/CJK (IME)
-  support, and shortcuts that work on a Korean keyboard layout too.
+- 🌏 **Friendly input** — soft newlines on
+  `Shift`/`Alt`/`Ctrl`+`Enter`, full Korean/CJK (IME) support, and shortcuts
+  that work on a Korean keyboard layout too.
 - 🦆 **A walking buddy** — a small pixel character paces along the bottom of
   the session list (and the startup screens). Ships as a **rubber duck**;
   press <kbd>c</kbd> on the first screen to swap in a bunny, chick, slime,
@@ -190,7 +203,7 @@ make test                                          # cargo test --all
 
 | Key | Action |
 | --- | --- |
-| <kbd>↑</kbd> <kbd>↓</kbd> / <kbd>j</kbd> <kbd>k</kbd> | move selection (`▶`) |
+| <kbd>↑</kbd> <kbd>↓</kbd> | move selection (`▶`) |
 | <kbd>→</kbd> / <kbd>←</kbd> | move around the tree: <kbd>→</kbd> unfolds a **category** then steps inside it, <kbd>←</kbd> folds it and steps back out to the header. Neither opens a session — that's <kbd>Enter</kbd> |
 | <kbd>Enter</kbd> | open the selected session (on a **category** header, folds/unfolds it instead), **adding it to the live view** (resume, or focus if already shown); remove a pane with <kbd>Ctrl‑q</kbd>. In multi‑select mode, launch **all marked** at once |
 | <kbd>v</kbd> | toggle **multi‑select** mode — then <kbd>Space</kbd> marks sessions and <kbd>Enter</kbd> launches them all (<kbd>Esc</kbd> cancels) |
@@ -201,6 +214,7 @@ make test                                          # cargo test --all
 | <kbd>Ctrl‑o</kbd> | toggle the live‑pane split (horizontal ⇄ vertical) |
 | <kbd>Ctrl‑q</kbd> | close the focused live pane |
 | <kbd>Ctrl‑t</kbd> | **transition report** — `topic / RUNBOOK §n / files` → review the assembled prompt → <kbd>Enter</kbd> sends, <kbd>e</kbd> edits first |
+| <kbd>Ctrl‑p</kbd> | open a local `.html` the focused pane just produced, in your browser — pick from the detected files (the badge shows how many), or <kbd>Tab</kbd> to type a path |
 | <kbd>Ctrl‑x</kbd> | back to the list (the session keeps running) |
 | <kbd>n</kbd> | new session — pick codex/claude/kiro, then an optional label |
 | <kbd>h</kbd> | handoff the selected session to another provider |
@@ -210,12 +224,6 @@ make test                                          # cargo test --all
 | <kbd>c</kbd> | send a **catch-up prompt** to the selected session (confirms first if it's busy) |
 | <kbd>t</kbd> | on a **session**: put it in a **topic category** — pick an existing one, create a new one, or remove it. In multi‑select, categorizes **all marked** at once |
 | <kbd>t</kbd> | on a **category header**: the category menu — auto‑sync on/off, sync now, rename, remove |
-| <kbd>o</kbd> | start an orchestration group with a main lane and child lanes |
-| <kbd>b</kbd> | broadcast the same instruction to every child lane in an orchestration thread |
-| <kbd>m</kbd> | ask the orchestration main lane to route work to specific child lanes |
-| <kbd>M</kbd> | paste and apply the main lane's `MINDPLAYER_DISPATCH` block |
-| <kbd>p</kbd> | run a child-lane peer review cycle |
-| <kbd>s</kbd> | send child-lane results back to the main lane for synthesis |
 | <kbd>/</kbd> | search / filter the visible sessions |
 | <kbd>x</kbd> | close (archive) & stop the selected session |
 | <kbd>a</kbd> | toggle archived view · <kbd>g</kbd> toggle sub‑agents · <kbd>r</kbd> rescan |
@@ -223,35 +231,15 @@ make test                                          # cargo test --all
 | <kbd>?</kbd> | show the full keyboard-shortcut list |
 | <kbd>q</kbd> | quit (stops all sessions) |
 
-Inside a live session, <kbd>Shift+Enter</kbd> inserts a newline (<kbd>Enter</kbd>
-submits), and Korean/CJK input works with the cursor tracking the prompt. The
+Inside a live session, <kbd>Enter</kbd> submits and
+<kbd>Shift</kbd>/<kbd>Alt</kbd>/<kbd>Ctrl</kbd>+<kbd>Enter</kbd> inserts a
+newline, and Korean/CJK input works with the cursor tracking the prompt. The
 **mouse wheel scrolls MindPlayer's own scrollback** (so history that ran off the
 top stays readable). **Drag inside a pane to select &amp; copy just that pane's
 text** to the system clipboard (via OSC 52) — so a side‑by‑side split never
 copies the neighbor pane too. (For panes running a full‑screen mouse app like
 Codex, the drag goes to that app; use your terminal's <kbd>Shift</kbd>+drag
 native selection there.)
-
-### 🧭 Orchestration
-
-MindPlayer can run a public multi-lane orchestration thread across Codex, Claude
-Code, or Kiro:
-
-1. Press <kbd>o</kbd> to create a main coordinator lane plus numbered child
-   lanes.
-2. Press <kbd>b</kbd> to send every child lane the **same** instruction at
-   once — skip this if lanes need different work.
-3. Or press <kbd>m</kbd> on the orchestration thread to ask the main lane to
-   decide which child lanes should receive the next (possibly different)
-   work.
-4. Copy the main lane's `MINDPLAYER_DISPATCH` block, press <kbd>M</kbd>, paste
-   it, and MindPlayer sends each lane only its assigned instruction.
-5. Press <kbd>p</kbd> when child lanes should review one another's results.
-6. Press <kbd>s</kbd> to wait for child lanes to become idle and send the latest
-   implementation/review context back to the main lane for synthesis.
-
-Opening an orchestration lane with <kbd>Enter</kbd> does not auto-submit thread
-sync prompts; explicit orchestration commands control when context is injected.
 
 ## 🧠 How it works
 
@@ -263,12 +251,19 @@ Read‑only data sources:
   timestamps, and title). Kiro records no cumulative token counts, so the usage
   column shows its **context‑window occupancy** (e.g. `15%`) instead.
 
-MindPlayer keeps its own tiny sidecar state (archived ids, labels,
-in-progress marks, your walking-buddy pick) at
-`~/.mindplayer/state.json`, an append-only usage-audit log (counts/timestamps
-only — no session id, title, or cwd) at `~/.mindplayer/audit.jsonl` for the
-<kbd>u</kbd> stats popup, and per‑session stderr logs at
-`~/.mindplayer/logs/`.
+What MindPlayer writes, all under `~/.mindplayer/`:
+
+| Path | Contents |
+| --- | --- |
+| `state.json` | sidecar state — archived ids, labels, in-progress marks, topic categories, your walking-buddy pick |
+| `audit.jsonl` | append-only usage log for the <kbd>u</kbd> popup: counts and timestamps only, no session id, title, or cwd |
+| `convo/` | the conversation log — `index.json` plus one append-only `<session-id>.jsonl` per session |
+| `prompts/` | editable canned prompts (see below) |
+| `hooks/` | per-pane status readings written by the agents' own lifecycle hooks |
+| `logs/` | per-session stderr |
+
+The source transcripts under `~/.codex`, `~/.claude`, and `~/.kiro` are only
+ever read.
 
 **Live status, in more detail.** Codex and Claude Code status comes from
 their own official lifecycle hooks (`UserPromptSubmit`, `PreToolUse`,

@@ -6,6 +6,7 @@
 
 pub mod audit;
 pub mod discovery;
+pub mod limits;
 pub mod prompts;
 pub mod resume;
 pub mod session;

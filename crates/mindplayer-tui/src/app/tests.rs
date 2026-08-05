@@ -2704,6 +2704,148 @@ fn zoom_layout_and_view_toggles_log_their_resulting_state() {
     let _ = std::fs::remove_file(&audit_tmp);
 }
 
+// --- pane bands -------------------------------------------------------------
+
+/// Panes launched in an interleaved order end up grouped, because the grid draws
+/// one band per category and `focused` indexes `panes` — so Tab must walk the
+/// grid the way it looks.
+#[test]
+fn opening_panes_groups_them_by_category() {
+    let mut app = app_with(vec![
+        session("m1", Agent::Claude, false),
+        session("s1", Agent::Codex, false),
+        session("m2", Agent::Codex, false),
+        session("loose", Agent::Claude, false),
+        session("s2", Agent::Claude, false),
+    ]);
+    categorize(&mut app, "mindplayer", &["m1", "m2"]);
+    categorize(&mut app, "soda-nest", &["s1", "s2"]);
+
+    for id in ["m1", "s1", "m2", "loose", "s2"] {
+        app.focus_or_add_pane(id);
+    }
+
+    assert_eq!(
+        app.panes,
+        vec!["m1", "m2", "s1", "s2", "loose"],
+        "same-category panes adjacent, uncategorized trailing"
+    );
+    assert_eq!(app.pane_band_sizes(), vec![2, 2, 1]);
+}
+
+/// Bands are ordered by the first pane opened into each, so a band never jumps
+/// position as later panes arrive.
+#[test]
+fn band_order_follows_the_first_pane_opened_into_each() {
+    let mut app = app_with(vec![
+        session("s1", Agent::Codex, false),
+        session("m1", Agent::Claude, false),
+        session("m2", Agent::Codex, false),
+    ]);
+    categorize(&mut app, "mindplayer", &["m1", "m2"]);
+    categorize(&mut app, "soda-nest", &["s1"]);
+
+    app.focus_or_add_pane("s1");
+    app.focus_or_add_pane("m1");
+    app.focus_or_add_pane("m2");
+
+    assert_eq!(
+        app.panes,
+        vec!["s1", "m1", "m2"],
+        "soda-nest opened first, so its band stays first"
+    );
+    assert_eq!(app.pane_band_sizes(), vec![1, 2]);
+}
+
+/// Regrouping reorders `panes`, so the focus index has to follow the session it
+/// was on — otherwise opening a pane silently moves focus to a different one.
+#[test]
+fn regrouping_keeps_focus_on_the_same_session() {
+    let mut app = app_with(vec![
+        session("m1", Agent::Claude, false),
+        session("loose", Agent::Codex, false),
+        session("m2", Agent::Codex, false),
+    ]);
+    categorize(&mut app, "mindplayer", &["m1", "m2"]);
+
+    app.focus_or_add_pane("m1");
+    app.focus_or_add_pane("loose");
+    assert_eq!(app.focused_pane(), Some("loose"));
+
+    // Opening m2 pushes `loose` to the trailing band; focus must stay on m2,
+    // the pane just opened, and `loose` must not be silently focused instead.
+    app.focus_or_add_pane("m2");
+    assert_eq!(app.panes, vec!["m1", "m2", "loose"]);
+    assert_eq!(app.focused_pane(), Some("m2"));
+    assert_eq!(app.active.as_deref(), Some("m2"));
+}
+
+/// A handoff child inherits its parent's category through the thread root, so it
+/// belongs in the parent's band rather than the uncategorized one.
+#[test]
+fn a_handoff_child_lands_in_its_parents_band() {
+    let mut app = app_with(vec![
+        session("parent", Agent::Claude, false),
+        session("child", Agent::Codex, false),
+        session("loose", Agent::Claude, false),
+    ]);
+    categorize(&mut app, "mindplayer", &["parent"]);
+    app.state.set_handoff_link(
+        "child",
+        "parent",
+        PathBuf::from("/tmp/handoff.md"),
+        chrono::Utc::now(),
+    );
+    assert_eq!(
+        app.category_of_session("child"),
+        app.category_of_session("parent"),
+        "the child resolves to the parent's category"
+    );
+
+    app.focus_or_add_pane("loose");
+    app.focus_or_add_pane("parent");
+    app.focus_or_add_pane("child");
+
+    assert_eq!(
+        app.panes,
+        vec!["parent", "child", "loose"],
+        "the child sits with its parent, not in the trailing band"
+    );
+    assert_eq!(app.pane_band_sizes(), vec![2, 1]);
+}
+
+/// With nothing categorized there is one band, and the renderer takes the flat
+/// grid instead of drawing a header for a single group.
+#[test]
+fn uncategorized_panes_form_a_single_band() {
+    let mut app = app_with(vec![
+        session("a", Agent::Codex, false),
+        session("b", Agent::Claude, false),
+    ]);
+    app.focus_or_add_pane("a");
+    app.focus_or_add_pane("b");
+    assert_eq!(app.panes, vec!["a", "b"]);
+    assert_eq!(app.pane_band_sizes(), vec![2]);
+    assert_eq!(app.pane_band_label(0), None);
+}
+
+#[test]
+fn a_band_reports_its_category_label() {
+    let mut app = app_with(vec![
+        session("m1", Agent::Claude, false),
+        session("loose", Agent::Codex, false),
+    ]);
+    categorize(&mut app, "mindplayer", &["m1"]);
+    app.focus_or_add_pane("m1");
+    app.focus_or_add_pane("loose");
+    assert_eq!(app.pane_band_label(0).as_deref(), Some("mindplayer"));
+    assert_eq!(
+        app.pane_band_label(1),
+        None,
+        "the trailing band has no label"
+    );
+}
+
 // --- categorize -------------------------------------------------------------
 
 /// Assign helper: create-or-reuse a category and put `ids` in it.

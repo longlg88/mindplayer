@@ -76,8 +76,75 @@ impl App {
             self.pane_sizes.remove(&old);
             self.pane_bounds.remove(&old);
         }
+        self.regroup_panes();
         self.focus = Focus::Terminal;
         self.sync_active();
+    }
+
+    /// Sort `panes` so panes in the same category sit next to each other.
+    ///
+    /// The grid draws one band per category, so this ordering is what the eye
+    /// sees — and `focused` indexes `panes`, so keeping the two in one order is
+    /// what makes <kbd>Tab</kbd> walk the grid the way it looks rather than
+    /// jumping between bands in launch order.
+    ///
+    /// Bands are ordered by the first pane opened into each, and uncategorized
+    /// panes trail, so a band never jumps position as panes come and go. Order
+    /// within a band stays as launched.
+    pub(crate) fn regroup_panes(&mut self) {
+        if self.panes.len() < 2 {
+            return;
+        }
+        let focused_id = self.panes.get(self.focused).cloned();
+        let ids = self.panes.clone();
+        // Follows the thread root, so a handoff child lands in its parent's band.
+        let keys: Vec<Option<String>> = ids.iter().map(|id| self.category_of_session(id)).collect();
+        let mut order: Vec<Option<String>> = Vec::new();
+        for k in keys.iter() {
+            if k.is_some() && !order.contains(k) {
+                order.push(k.clone());
+            }
+        }
+        order.push(None);
+        let mut idx: Vec<usize> = (0..ids.len()).collect();
+        idx.sort_by_key(|&i| {
+            let rank = order
+                .iter()
+                .position(|o| o == &keys[i])
+                .unwrap_or(usize::MAX);
+            (rank, i)
+        });
+        self.panes = idx.into_iter().map(|i| ids[i].clone()).collect();
+        if let Some(fid) = focused_id {
+            if let Some(p) = self.panes.iter().position(|id| id == &fid) {
+                self.focused = p;
+            }
+        }
+    }
+
+    /// Pane counts per band, in `panes` order — what the grid needs to lay bands
+    /// out. Assumes [`Self::regroup_panes`] has already grouped `panes`.
+    pub fn pane_band_sizes(&self) -> Vec<usize> {
+        let mut out: Vec<usize> = Vec::new();
+        let mut prev: Option<Option<String>> = None;
+        for id in &self.panes {
+            let key = self.category_of_session(id);
+            if prev.as_ref() == Some(&key) {
+                *out.last_mut().expect("prev implies a band") += 1;
+            } else {
+                out.push(1);
+                prev = Some(key);
+            }
+        }
+        out
+    }
+
+    /// Category label for the band starting at `pane_index`, or `None` for the
+    /// uncategorized band.
+    pub fn pane_band_label(&self, pane_index: usize) -> Option<String> {
+        let id = self.panes.get(pane_index)?;
+        let cat = self.category_of_session(id)?;
+        Some(self.category_label(&cat))
     }
 
     pub(crate) fn remove_pane(&mut self, sid: &str) {
@@ -381,9 +448,11 @@ impl App {
             return false;
         }
         let focused_id = self.focused_pane().map(str::to_string);
-        let reordered = bubble_urgent_to_front(&self.panes, |id| {
-            self.session_status(id) == SessionStatus::Blocked
-        });
+        let reordered = bubble_urgent_within_bands(
+            &self.panes,
+            |id| self.category_of_session(id),
+            |id| self.session_status(id) == SessionStatus::Blocked,
+        );
         if reordered == self.panes {
             return false;
         }
@@ -1107,24 +1176,105 @@ fn transition_report_prompt(prompts_dir: &std::path::Path, input: &str) -> Strin
     }
 }
 
-/// Stable-partitions `ids` into "urgent first, everyone else after," keeping
-/// each group's original relative order. Pulled out of `App` so the sort
-/// itself can be tested without a real `PtySession` (see the `pane` test
-/// module for the App-level focus-preservation smoke test).
-fn bubble_urgent_to_front(ids: &[String], mut is_urgent: impl FnMut(&str) -> bool) -> Vec<String> {
-    let mut ranked: Vec<(u8, usize, &String)> = ids
-        .iter()
-        .enumerate()
-        .map(|(i, id)| (u8::from(!is_urgent(id)), i, id))
-        .collect();
-    ranked.sort_by_key(|(rank, i, _)| (*rank, *i));
-    ranked.into_iter().map(|(_, _, id)| id.clone()).collect()
+/// Stable-partitions `ids` into "urgent first, everyone else after" within each
+/// category's run of panes, keeping each group's original relative order.
+///
+/// The grid draws one band per category and reads the bands off consecutive runs
+/// in `panes`, so pulling an urgent pane to the very front would split its
+/// category and put the wrong header over the wrong panes. Bands keep their
+/// order — first appearance wins, and uncategorized panes group too; urgency only
+/// decides position inside one band.
+///
+/// Pulled out of `App` so the sort can be tested without a real `PtySession`
+/// (a pane with no pty never classifies as Blocked).
+fn bubble_urgent_within_bands(
+    ids: &[String],
+    mut band_of: impl FnMut(&str) -> Option<String>,
+    mut is_urgent: impl FnMut(&str) -> bool,
+) -> Vec<String> {
+    let mut ranked: Vec<(usize, u8, usize, &String)> = Vec::with_capacity(ids.len());
+    let mut bands: Vec<Option<String>> = Vec::new();
+    for (i, id) in ids.iter().enumerate() {
+        let key = band_of(id);
+        let band = match bands.iter().position(|b| b == &key) {
+            Some(p) => p,
+            None => {
+                bands.push(key);
+                bands.len() - 1
+            }
+        };
+        ranked.push((band, u8::from(!is_urgent(id)), i, id));
+    }
+    ranked.sort_by_key(|(band, rank, i, _)| (*band, *rank, *i));
+    ranked.into_iter().map(|(_, _, _, id)| id.clone()).collect()
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{bubble_urgent_to_front, within_max_age};
+    use super::{bubble_urgent_within_bands, within_max_age};
     use std::time::{Duration, SystemTime};
+
+    fn ids(list: &[&str]) -> Vec<String> {
+        list.iter().map(|s| s.to_string()).collect()
+    }
+
+    /// Bands are the outer structure; urgency only reorders inside one. Pulling an
+    /// urgent pane to the very front would split its category, and the grid reads
+    /// bands off consecutive runs — so it would draw the wrong header over it.
+    #[test]
+    fn urgent_bubbles_inside_its_band_not_to_the_front_of_the_grid() {
+        let panes = ids(&["m1", "m2", "s1", "s2"]);
+        let band = |id: &str| Some(id[..1].to_string());
+        // The last pane is the urgent one — furthest from the front.
+        let out = bubble_urgent_within_bands(&panes, band, |id| id == "s2");
+        assert_eq!(out, ids(&["m1", "m2", "s2", "s1"]));
+        // Band membership is still two consecutive runs.
+        let bands: Vec<String> = out.iter().map(|id| id[..1].to_string()).collect();
+        assert_eq!(bands, vec!["m", "m", "s", "s"]);
+    }
+
+    #[test]
+    fn band_order_is_first_appearance_and_survives_bubbling() {
+        // soda-nest appears first, so it stays the first band even though the
+        // urgent pane is in mindplayer.
+        let panes = ids(&["s1", "m1", "m2", "s2"]);
+        let out =
+            bubble_urgent_within_bands(&panes, |id| Some(id[..1].to_string()), |id| id == "m2");
+        assert_eq!(out, ids(&["s1", "s2", "m2", "m1"]));
+    }
+
+    #[test]
+    fn uncategorized_panes_stay_one_band_at_the_position_they_first_appear() {
+        let panes = ids(&["a", "m1", "b", "m2"]);
+        let band = |id: &str| id.starts_with('m').then(|| "m".to_string());
+        let out = bubble_urgent_within_bands(&panes, band, |_| false);
+        assert_eq!(
+            out,
+            ids(&["a", "b", "m1", "m2"]),
+            "the None band groups too, ordered by where it first appeared"
+        );
+    }
+
+    #[test]
+    fn nothing_urgent_leaves_a_grouped_order_untouched() {
+        let panes = ids(&["m1", "m2", "s1"]);
+        let out = bubble_urgent_within_bands(&panes, |id| Some(id[..1].to_string()), |_| false);
+        assert_eq!(
+            out, panes,
+            "no reorder means reorder_panes_by_status stays quiet"
+        );
+    }
+
+    #[test]
+    fn several_urgent_panes_keep_their_relative_order_within_a_band() {
+        let panes = ids(&["m1", "m2", "m3", "m4"]);
+        let out = bubble_urgent_within_bands(
+            &panes,
+            |_| Some("m".to_string()),
+            |id| id == "m2" || id == "m4",
+        );
+        assert_eq!(out, ids(&["m2", "m4", "m1", "m3"]));
+    }
 
     #[test]
     fn within_max_age_keeps_fresh_and_drops_stale() {
@@ -1146,16 +1296,11 @@ mod tests {
     }
 
     #[test]
-    fn bubble_urgent_to_front_preserves_relative_order_within_each_group() {
-        let ids: Vec<String> = ["a", "b", "c", "d"].iter().map(|s| s.to_string()).collect();
-        let out = bubble_urgent_to_front(&ids, |id| id == "c");
-        assert_eq!(out, vec!["c", "a", "b", "d"]);
-    }
-
-    #[test]
-    fn bubble_urgent_to_front_is_a_no_op_when_nothing_is_urgent() {
-        let ids: Vec<String> = ["a", "b", "c"].iter().map(|s| s.to_string()).collect();
-        let out = bubble_urgent_to_front(&ids, |_| false);
-        assert_eq!(out, ids);
+    fn urgent_bubbles_to_the_front_when_there_is_only_one_band() {
+        // Nothing categorized: a single band, so this is the plain "urgent first"
+        // behaviour the flat grid had.
+        let panes = ids(&["a", "b", "c", "d"]);
+        let out = bubble_urgent_within_bands(&panes, |_| None, |id| id == "c");
+        assert_eq!(out, ids(&["c", "a", "b", "d"]));
     }
 }

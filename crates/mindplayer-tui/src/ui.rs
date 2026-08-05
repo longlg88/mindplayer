@@ -1680,6 +1680,99 @@ pub fn compute_pane_rects(area: Rect, n: usize, layout: PaneLayout) -> Vec<Rect>
     rects
 }
 
+/// One category's slice of the live grid: the row its header goes on, plus a
+/// rect per pane belonging to it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PaneBand {
+    pub header: Rect,
+    pub panes: Vec<Rect>,
+}
+
+/// Rows a pane needs to show one line inside its top and bottom border.
+const MIN_PANE_HEIGHT: u16 = 3;
+
+/// Height a band needs: its header row, plus a usable row for every row of panes
+/// its internal grid will lay out. A band holding eight panes needs room for the
+/// two grid rows those panes occupy, not just for one.
+fn min_band_height(n: usize, layout: PaneLayout) -> u16 {
+    1 + grid_rows(n, layout) as u16 * MIN_PANE_HEIGHT
+}
+
+/// Split `area` into one band per group — a header row above that group's panes.
+///
+/// Height is shared out in proportion to pane count, so a three-pane topic is not
+/// squeezed to the same height as a one-pane topic. Returns `None` when the area
+/// cannot give every band a header plus a usable pane row; the caller then falls
+/// back to the flat grid rather than drawing headers over collapsed panes.
+pub fn compute_pane_bands(
+    area: Rect,
+    group_sizes: &[usize],
+    layout: PaneLayout,
+) -> Option<Vec<PaneBand>> {
+    let bands = group_sizes.len();
+    if bands == 0 || group_sizes.contains(&0) {
+        return None;
+    }
+    // Every band must clear its own minimum, so the budget is checked against the
+    // sum of those rather than a flat per-band figure. Refusing here is what lets
+    // the caller fall back to the flat grid, which packs dense pane counts better
+    // than banding can.
+    let mins: Vec<u16> = group_sizes
+        .iter()
+        .map(|&n| min_band_height(n, layout) - 1)
+        .collect();
+    let floor: u16 = mins.iter().sum::<u16>() + bands as u16;
+    if area.height < floor {
+        return None;
+    }
+    let total_panes: usize = group_sizes.iter().sum();
+    // Header rows come off the top of the budget first; what is left is shared
+    // among the bands' contents, starting from each band's minimum so no band can
+    // be starved by a busier neighbour.
+    let content_total = area.height - bands as u16;
+    let mut heights = mins.clone();
+    let surplus = content_total - mins.iter().sum::<u16>();
+    let mut handed = 0u16;
+    for (i, &n) in group_sizes.iter().enumerate() {
+        let share = surplus as usize * n / total_panes;
+        heights[i] += share as u16;
+        handed += share as u16;
+    }
+    // Integer division loses rows; hand them to the largest bands first so the
+    // busiest topic gets the slack.
+    let mut by_size: Vec<usize> = (0..bands).collect();
+    by_size.sort_by_key(|&i| std::cmp::Reverse(group_sizes[i]));
+    let mut cursor = 0;
+    while handed < surplus {
+        heights[by_size[cursor % bands]] += 1;
+        handed += 1;
+        cursor += 1;
+    }
+
+    let mut out = Vec::with_capacity(bands);
+    let mut y = area.y;
+    for (i, &n) in group_sizes.iter().enumerate() {
+        let header = Rect {
+            x: area.x,
+            y,
+            width: area.width,
+            height: 1,
+        };
+        let content = Rect {
+            x: area.x,
+            y: y + 1,
+            width: area.width,
+            height: heights[i],
+        };
+        out.push(PaneBand {
+            header,
+            panes: compute_pane_rects(content, n, layout),
+        });
+        y = y.saturating_add(1 + heights[i]);
+    }
+    Some(out)
+}
+
 fn live_pane(f: &mut Frame, app: &mut App, area: Rect) {
     let focused_view = app.focus == Focus::Terminal;
     let live_count = app.live_pty_count();
@@ -1744,7 +1837,26 @@ fn live_pane(f: &mut Frame, app: &mut App, area: Rect) {
         return;
     }
 
-    let rects = compute_pane_rects(area, panes.len(), app.effective_layout());
+    // Grouped grid: one band per category, matching how the session list groups.
+    // Falls back to the flat grid when there is only one band (nothing to show a
+    // header for) or the area is too short to give every band a header.
+    let sizes = app.pane_band_sizes();
+    let bands = (sizes.len() > 1)
+        .then(|| compute_pane_bands(area, &sizes, app.effective_layout()))
+        .flatten();
+
+    let rects: Vec<Rect> = match &bands {
+        Some(bands) => {
+            let mut first = 0usize;
+            for (band, &n) in bands.iter().zip(sizes.iter()) {
+                render_band_header(f, app, first, n, band.header);
+                first += n;
+            }
+            bands.iter().flat_map(|b| b.panes.iter().copied()).collect()
+        }
+        None => compute_pane_rects(area, panes.len(), app.effective_layout()),
+    };
+
     for (idx, sid) in panes.iter().enumerate() {
         let pane_area = rects.get(idx).copied().unwrap_or(area);
         let pane_focused = focused_view && idx == app.focused;
@@ -1759,6 +1871,39 @@ fn live_pane(f: &mut Frame, app: &mut App, area: Rect) {
             false,
         );
     }
+}
+
+/// One band's header row: the same `▾ name (n) ⇄ auto` shape the session list
+/// uses for a category, so the grid needs no new vocabulary.
+fn render_band_header(f: &mut Frame, app: &App, first_pane: usize, n: usize, area: Rect) {
+    let mut spans = Vec::new();
+    match app.pane_band_label(first_pane) {
+        Some(label) => {
+            spans.push(Span::styled(
+                "▾ ",
+                Style::default().fg(CATEGORY).add_modifier(Modifier::BOLD),
+            ));
+            // Parent path dim, name bright — long paths stay readable without
+            // pushing the count off the row.
+            let (parent, name) = match label.rsplit_once('/') {
+                Some((p, n)) => (format!("…/{p}/").replace("…//", "…/"), n.to_string()),
+                None => (String::new(), label.clone()),
+            };
+            if !parent.is_empty() {
+                spans.push(Span::styled(parent, Style::default().fg(DIM)));
+            }
+            spans.push(Span::styled(
+                name,
+                Style::default().fg(CATEGORY).add_modifier(Modifier::BOLD),
+            ));
+        }
+        None => spans.push(Span::styled(
+            "▾ no category",
+            Style::default().fg(Color::Rgb(90, 95, 108)),
+        )),
+    }
+    spans.push(Span::styled(format!("  ({n})"), Style::default().fg(DIM)));
+    f.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
 /// Render one live pane's border, title, and terminal contents into `pane_area`
@@ -2373,6 +2518,129 @@ mod tests {
             width: 120,
             height: 40,
         }
+    }
+
+    /// Every band gets exactly one header row, and the bands tile `area` from top
+    /// to bottom with no gap and no overlap.
+    #[test]
+    fn bands_tile_the_area_with_one_header_each() {
+        let area = body();
+        let bands = compute_pane_bands(area, &[3, 2, 1], PaneLayout::Horizontal)
+            .expect("40 rows is plenty for three bands");
+        assert_eq!(bands.len(), 3);
+        let mut y = area.y;
+        for (i, b) in bands.iter().enumerate() {
+            assert_eq!(b.header.y, y, "band {i} header follows the previous band");
+            assert_eq!(b.header.height, 1);
+            assert_eq!(b.header.x, area.x);
+            assert_eq!(b.header.width, area.width);
+            let top = b.panes.iter().map(|p| p.y).min().unwrap();
+            assert_eq!(top, y + 1, "band {i} panes start under its header");
+            let bottom = b.panes.iter().map(|p| p.y + p.height).max().unwrap();
+            y = bottom;
+        }
+        assert_eq!(y, area.y + area.height, "the bands consume the whole area");
+    }
+
+    #[test]
+    fn each_band_holds_exactly_its_own_panes() {
+        let bands = compute_pane_bands(body(), &[3, 2, 1], PaneLayout::Horizontal).unwrap();
+        assert_eq!(
+            bands.iter().map(|b| b.panes.len()).collect::<Vec<_>>(),
+            vec![3, 2, 1]
+        );
+    }
+
+    /// A three-pane topic should not be squeezed to the same height as a
+    /// one-pane topic.
+    #[test]
+    fn band_height_follows_pane_count() {
+        let bands = compute_pane_bands(body(), &[3, 1], PaneLayout::Horizontal).unwrap();
+        let h: Vec<u16> = bands
+            .iter()
+            .map(|b| b.panes.iter().map(|p| p.height).max().unwrap())
+            .collect();
+        assert!(h[0] > h[1], "the three-pane band must be taller: {h:?}");
+    }
+
+    /// Rather than draw headers over panes collapsed to nothing, the caller is
+    /// told to fall back to the flat grid.
+    #[test]
+    fn a_too_short_area_refuses_to_band() {
+        let sizes = [1, 1, 1];
+        let need: u16 = sizes
+            .iter()
+            .map(|&n| min_band_height(n, PaneLayout::Horizontal))
+            .sum();
+        let short = Rect {
+            x: 0,
+            y: 0,
+            width: 120,
+            height: need - 1,
+        };
+        assert!(compute_pane_bands(short, &sizes, PaneLayout::Horizontal).is_none());
+        let just_enough = Rect {
+            height: need,
+            ..short
+        };
+        assert!(compute_pane_bands(just_enough, &sizes, PaneLayout::Horizontal).is_some());
+    }
+
+    /// The invariant that matters: either banding is refused, or every pane it
+    /// hands back can actually show a line. A band holding eight panes needs room
+    /// for the two grid rows they occupy — the first version of this only reserved
+    /// one row per band and silently produced 2-row panes.
+    #[test]
+    fn banding_is_refused_rather_than_collapsing_a_pane() {
+        for height in 4u16..60 {
+            let area = Rect {
+                x: 0,
+                y: 0,
+                width: 120,
+                height,
+            };
+            for sizes in [
+                vec![8, 1, 1, 1],
+                vec![3, 2, 1],
+                vec![1, 1],
+                vec![12, 12],
+                vec![1, 20],
+            ] {
+                for layout in [PaneLayout::Horizontal, PaneLayout::Vertical] {
+                    let Some(bands) = compute_pane_bands(area, &sizes, layout) else {
+                        continue;
+                    };
+                    for (i, b) in bands.iter().enumerate() {
+                        for p in &b.panes {
+                            assert!(
+                                p.height >= MIN_PANE_HEIGHT,
+                                "h={height} sizes={sizes:?} {layout:?}: band {i} pane collapsed to {}",
+                                p.height
+                            );
+                        }
+                    }
+                    let last = bands
+                        .last()
+                        .unwrap()
+                        .panes
+                        .iter()
+                        .map(|p| p.y + p.height)
+                        .max()
+                        .unwrap();
+                    assert_eq!(
+                        last,
+                        area.y + area.height,
+                        "h={height} sizes={sizes:?}: bands must fill the area"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn an_empty_or_zero_sized_group_is_refused() {
+        assert!(compute_pane_bands(body(), &[], PaneLayout::Horizontal).is_none());
+        assert!(compute_pane_bands(body(), &[2, 0], PaneLayout::Horizontal).is_none());
     }
 
     #[test]

@@ -543,6 +543,11 @@ pub struct App {
     /// session that is NOT in this baseline, so it can never re-key the new
     /// session's live PTY onto a pre-existing (or freshly-resumed) session.
     new_baselines: HashMap<String, HashSet<String>>,
+    /// New sessions closed with `x` before their rollout file ever appeared.
+    /// The agent may still write that file, and the scan would then show the
+    /// closed session as a brand-new row — so these are kept just long enough
+    /// to archive the disk session on arrival. Never rendered.
+    closed_extras: Vec<Session>,
 
     /// Last known inner size of the right pane (rows, cols).
     pub pty_rows: u16,
@@ -699,6 +704,7 @@ impl App {
             new_counter: 0,
             extra_sessions: Vec::new(),
             new_baselines: HashMap::new(),
+            closed_extras: Vec::new(),
             pty_rows: 24,
             pty_cols: 80,
             pty_x: 0,

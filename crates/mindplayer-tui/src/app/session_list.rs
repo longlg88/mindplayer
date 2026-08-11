@@ -88,10 +88,17 @@ impl App {
             }
         }
         // Keep retrying (until matched or expired) while labels are unresolved.
-        if !self.state.pending_labels.is_empty() {
+        if self.awaits_rescan() {
             self.rescan_due = Some(Instant::now() + Duration::from_secs(6));
         }
         true
+    }
+
+    /// Whether a session file is still expected to appear — either to carry a
+    /// queued label, or to be archived because its new session was closed
+    /// before the agent wrote it.
+    fn awaits_rescan(&self) -> bool {
+        !self.state.pending_labels.is_empty() || !self.closed_extras.is_empty()
     }
 
     /// Poll the scan thread; when finished, populate state and show the summary.
@@ -112,7 +119,7 @@ impl App {
                 self.screen = Screen::ScanSummary;
                 // If labels are still unresolved (their sessions don't exist
                 // yet), keep trying via background re-scans.
-                if !self.state.pending_labels.is_empty() {
+                if self.awaits_rescan() {
                     self.rescan_due = Some(Instant::now() + Duration::from_secs(6));
                 }
                 return true;
@@ -1241,10 +1248,22 @@ impl App {
             self.remove_pane(&session.id);
         }
         if session.id.starts_with("new:") {
-            // Synthetic placeholder (no rollout file): just remove it.
+            // Synthetic placeholder: drop the row, but the agent may still write
+            // the rollout file for it. Un-queue the label so it can't be stamped
+            // onto the next session in this dir, and keep the placeholder aside
+            // so `reap_closed_extras` archives the file when it lands — either
+            // one alone would let the closed session reappear.
+            if let Some(label) = session.title.strip_prefix("🏷 ") {
+                if self
+                    .state
+                    .remove_pending_label(session.agent.as_str(), &session.cwd, label)
+                {
+                    let _ = self.save_state();
+                }
+            }
             self.extra_sessions.retain(|s| s.id != session.id);
             self.all_sessions.retain(|s| s.id != session.id);
-            self.new_baselines.remove(&session.id);
+            self.closed_extras.push(session.clone());
             self.status = "closed new session".to_string();
         } else {
             self.state.set_archived(&session.id, true);

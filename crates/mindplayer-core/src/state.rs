@@ -446,6 +446,29 @@ impl State {
         }
     }
 
+    /// Drop the newest queued label for this agent/dir/label. Called when a new
+    /// session is closed before its rollout file ever appeared: without this the
+    /// queue outlives the session for an hour and stamps the closed session's
+    /// name onto whatever the agent writes next, so the closed session appears
+    /// to come back. Returns true if an entry was removed.
+    pub fn remove_pending_label(&mut self, agent: &str, cwd: &Path, label: &str) -> bool {
+        let label = label.trim();
+        let newest = self
+            .pending_labels
+            .iter()
+            .enumerate()
+            .filter(|(_, p)| p.agent == agent && p.cwd == cwd && p.label == label)
+            .max_by_key(|(_, p)| p.after)
+            .map(|(i, _)| i);
+        match newest {
+            Some(i) => {
+                self.pending_labels.remove(i);
+                true
+            }
+            None => false,
+        }
+    }
+
     pub fn add_pending_handoff(
         &mut self,
         parent_id: &str,

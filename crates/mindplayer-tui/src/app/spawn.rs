@@ -1,5 +1,9 @@
 use super::*;
 
+/// How long a new session closed before its rollout file existed keeps waiting
+/// for that file. See `reap_closed_extras`.
+const CLOSED_EXTRA_GRACE: chrono::Duration = chrono::Duration::minutes(5);
+
 impl App {
     /// Spawn a new Codex/Claude session in the current scope dir, optionally
     /// tagging the resulting session with a user label.
@@ -163,39 +167,14 @@ impl App {
     /// live PTY to the real id), and re-append the ones still unmatched so they
     /// stay visible.
     pub(crate) fn merge_extras(&mut self) {
+        self.reap_closed_extras();
         if self.extra_sessions.is_empty() {
             return;
         }
         let mut claimed: HashSet<String> = HashSet::new();
         let mut remaining = Vec::new();
         for extra in std::mem::take(&mut self.extra_sessions) {
-            let after = extra
-                .started_at
-                .map(|t| t - chrono::Duration::seconds(30))
-                .unwrap_or_else(Utc::now);
-            let baseline = self.new_baselines.get(&extra.id);
-            let ptys = &self.ptys;
-            let matched = self
-                .all_sessions
-                .iter()
-                .filter(|s| {
-                    !s.id.starts_with("new:")
-                            && !s.id.starts_with("handoff:")
-                            && !claimed.contains(&s.id)
-                            // Never re-key onto a session that already owns a live
-                            // PTY (e.g. one the user resumed) — that would drop the
-                            // displaced PtySession and silently SIGKILL its child.
-                            && !ptys.contains_key(&s.id)
-                            // Only adopt a session that did NOT exist when this new
-                            // session was created — i.e. the one codex/claude just
-                            // wrote — never to a pre-existing same-dir/same-agent one.
-                            && baseline.is_none_or(|b| !b.contains(&s.id))
-                            && s.agent == extra.agent
-                            && s.cwd == extra.cwd
-                            && s.started_at.is_some_and(|t| t >= after)
-                })
-                .max_by_key(|s| s.started_at)
-                .map(|s| s.id.clone());
+            let matched = self.adopt_match(&extra, &claimed);
             match matched {
                 Some(real_id) => {
                     // Move the live PTY / state from the synthetic id to the real
@@ -264,6 +243,85 @@ impl App {
             }
         }
         self.extra_sessions = remaining;
+    }
+
+    /// The real disk session a synthetic new-session row should become, if it
+    /// has appeared yet. `claimed` holds ids already taken this pass.
+    fn adopt_match(&self, extra: &Session, claimed: &HashSet<String>) -> Option<String> {
+        let after = extra
+            .started_at
+            .map(|t| t - chrono::Duration::seconds(30))
+            .unwrap_or_else(Utc::now);
+        let baseline = self.new_baselines.get(&extra.id);
+        let ptys = &self.ptys;
+        self.all_sessions
+            .iter()
+            .filter(|s| {
+                !s.id.starts_with("new:")
+                    && !s.id.starts_with("handoff:")
+                    && !claimed.contains(&s.id)
+                    // Never re-key onto a session that already owns a live
+                    // PTY (e.g. one the user resumed) — that would drop the
+                    // displaced PtySession and silently SIGKILL its child.
+                    && !ptys.contains_key(&s.id)
+                    // Only adopt a session that did NOT exist when this new
+                    // session was created — i.e. the one codex/claude just
+                    // wrote — never to a pre-existing same-dir/same-agent one.
+                    && baseline.is_none_or(|b| !b.contains(&s.id))
+                    && s.agent == extra.agent
+                    && s.cwd == extra.cwd
+                    && s.started_at.is_some_and(|t| t >= after)
+            })
+            .max_by_key(|s| s.started_at)
+            .map(|s| s.id.clone())
+    }
+
+    /// Archive the disk sessions belonging to new sessions the user already
+    /// closed. Without this the agent's late-written rollout file surfaces as a
+    /// brand-new row, so a closed session comes back — under its old name, once
+    /// the queued label lands on it.
+    ///
+    /// A closed session is only owed one file and the agent writes it within
+    /// seconds of the first turn, so the wait is short: past
+    /// `CLOSED_EXTRA_GRACE` the placeholder is dropped unmatched, because any
+    /// session appearing that late is far more likely one the user started
+    /// themselves in the same directory — and archiving that silently is worse
+    /// than letting a stale row through.
+    pub(crate) fn reap_closed_extras(&mut self) {
+        if self.closed_extras.is_empty() {
+            return;
+        }
+        let now = Utc::now();
+        let claimed = HashSet::new();
+        let mut still = Vec::new();
+        let mut archived_any = false;
+        for extra in std::mem::take(&mut self.closed_extras) {
+            // Checked before matching: an expired placeholder must claim
+            // nothing, or narrowing the window would buy no safety at all.
+            if extra
+                .started_at
+                .is_some_and(|t| now.signed_duration_since(t) > CLOSED_EXTRA_GRACE)
+            {
+                self.new_baselines.remove(&extra.id);
+                continue;
+            }
+            match self.adopt_match(&extra, &claimed) {
+                Some(real_id) => {
+                    self.state.set_archived(&real_id, true);
+                    if let Some(s) = self.all_sessions.iter_mut().find(|s| s.id == real_id) {
+                        s.archived = true;
+                    }
+                    self.new_baselines.remove(&extra.id);
+                    archived_any = true;
+                }
+                None => still.push(extra),
+            }
+        }
+        self.closed_extras = still;
+        if archived_any {
+            let _ = self.save_state();
+            self.rebuild_visible();
+        }
     }
 
     /// Consume a pending spawn now that the pane size is known. Other sessions'

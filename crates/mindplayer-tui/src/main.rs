@@ -5,6 +5,7 @@ mod app;
 mod convo_log;
 mod handoff;
 mod kiro_patterns;
+mod links;
 mod mascot;
 mod pty;
 mod render_writer;
@@ -775,6 +776,22 @@ fn handle_main_key(app: &mut App, key: KeyEvent) {
         return;
     }
 
+    // Link picker: opened by Ctrl-Y from a live pane when the answer it found
+    // held two or more links (one is copied outright, with no popup). Checked
+    // before `match app.focus` so its keys don't fall through to the pty — `a`
+    // in particular would otherwise be typed into the agent.
+    if app.link_picker.is_some() {
+        match key.code {
+            KeyCode::Up => app.move_link_pick(-1),
+            KeyCode::Down => app.move_link_pick(1),
+            KeyCode::Enter => app.confirm_link_pick(),
+            KeyCode::Char('a') => app.copy_all_links(),
+            KeyCode::Esc => app.cancel_link_pick(),
+            _ => {}
+        }
+        return;
+    }
+
     // HTML candidate picker: opened by Ctrl-P from a live pane when the passive
     // poll has detected `.html` files. Checked before the free-text popup (and
     // before `match app.focus`) so its keys don't fall through to the pty.
@@ -926,6 +943,10 @@ fn handle_main_key(app: &mut App, key: KeyEvent) {
                     }
                     KeyCode::Char('z') | KeyCode::Char('ㅋ') => {
                         app.toggle_zoom();
+                        return;
+                    }
+                    KeyCode::Char('y') | KeyCode::Char('ㅛ') => {
+                        app.copy_links_from_focused();
                         return;
                     }
                     KeyCode::Char('t') | KeyCode::Char('ㅅ') => {

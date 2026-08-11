@@ -35,6 +35,15 @@ pub(crate) struct ConvoIngestResult {
     pub(crate) turns: usize,
 }
 
+/// The open "copy a link" picker: the links found, which row the cursor is on,
+/// and how far back the answer they came from was.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LinkPicker {
+    pub links: Vec<String>,
+    pub selected: usize,
+    pub turns_ago: usize,
+}
+
 /// Background refresh result for one already-discovered session.
 struct ActivityUpdate {
     id: String,
@@ -414,6 +423,11 @@ pub struct App {
     /// selected index into the focused pane's `html_candidates` list. Mirrors
     /// `new_picker`/`handoff_picker`.
     pub html_preview_picker: Option<usize>,
+    /// Links found in a recent answer, waiting to be picked from. Only opened
+    /// when there are two or more — a single link is copied outright, since 17
+    /// of 22 link-bearing answers in this project's own history had exactly one
+    /// and a picker for one item is a step that buys nothing.
+    pub link_picker: Option<LinkPicker>,
     /// The focused live pane id. Multi-pane state lives in `panes`/`focused`;
     /// this keeps legacy single-pane routing paths small.
     pub active: Option<String>,
@@ -644,6 +658,7 @@ impl App {
             hook_status: HashMap::new(),
             hook_status_due: None,
             html_preview_picker: None,
+            link_picker: None,
             active: None,
             panes: Vec::new(),
             focused: 0,
@@ -949,6 +964,7 @@ fn trim_submit(bytes: &mut Vec<u8>) {
 
 mod convo_ingest;
 mod handoff_sync;
+mod link_copy;
 mod modals;
 mod pane;
 mod selection;

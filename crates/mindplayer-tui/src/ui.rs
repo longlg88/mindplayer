@@ -728,6 +728,8 @@ fn main_view(f: &mut Frame, app: &mut App) {
         }
     } else if let Some(path) = &app.dir_input {
         dir_input_popup(f, path);
+    } else if let Some(picker) = &app.link_picker {
+        link_picker_popup(f, picker);
     } else if let Some(choice) = app.html_preview_picker {
         html_preview_picker_popup(f, choice, app.html_candidates_for_focused());
     } else if let Some(path) = &app.html_preview_input {
@@ -1136,6 +1138,56 @@ fn html_preview_popup(f: &mut Frame, path: &str, error: Option<&str>) {
 /// highlighted). Each row shows the filename plus its parent directory so
 /// same-named files in different subdirs stay distinguishable. The hint line
 /// documents `tab` as the escape hatch to the free-text path popup.
+/// The "copy a link" picker. Same shape as the `.html` picker so the two read as
+/// one family — only opened when an answer had two or more links.
+fn link_picker_popup(f: &mut Frame, picker: &crate::app::LinkPicker) {
+    const MAX_ROWS: usize = 10;
+    let shown = picker.links.len().min(MAX_ROWS);
+    let overflow = usize::from(picker.links.len() > MAX_ROWS);
+    let height = (shown + overflow + 4).max(5) as u16;
+    let area = centered(f.area(), 84, height);
+    f.render_widget(Clear, area);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(PREVIEW))
+        .title(" Copy a link ");
+    // Saying which answer these came from is what makes searching back
+    // acceptable — otherwise the links have no provenance on screen.
+    let from = match picker.turns_ago {
+        0 => "the latest answer".to_string(),
+        1 => "the answer before".to_string(),
+        n => format!("{n} answers back"),
+    };
+    let mut lines = vec![Line::from(Span::styled(
+        format!("Links in {from}:"),
+        Style::default().fg(DIM),
+    ))];
+    for (i, url) in picker.links.iter().take(MAX_ROWS).enumerate() {
+        let selected = i == picker.selected;
+        let marker = if selected { "▶ " } else { "  " };
+        let style = if selected {
+            Style::default().fg(PREVIEW).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default()
+        };
+        lines.push(Line::from(Span::styled(format!("{marker}{url}"), style)));
+    }
+    if overflow == 1 {
+        lines.push(Line::from(Span::styled(
+            format!("  … +{} more", picker.links.len() - MAX_ROWS),
+            Style::default().fg(DIM),
+        )));
+    }
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "enter copy   a copy all   ↑↓ choose   esc cancel",
+        Style::default().fg(DIM),
+    )));
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+    f.render_widget(Paragraph::new(lines), inner);
+}
+
 fn html_preview_picker_popup(f: &mut Frame, choice: usize, candidates: &[PathBuf]) {
     const MAX_ROWS: usize = 10;
     let shown = candidates.len().min(MAX_ROWS);

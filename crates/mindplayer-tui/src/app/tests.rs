@@ -3,7 +3,7 @@ use super::*;
 use mindplayer_core::session::TokenUsage;
 use std::path::PathBuf;
 
-fn session(id: &str, agent: Agent, archived: bool) -> Session {
+pub(crate) fn session(id: &str, agent: Agent, archived: bool) -> Session {
     Session {
         id: id.into(),
         agent,
@@ -225,6 +225,126 @@ fn new_session_persists_then_reconciles() {
     assert_eq!(app.visible.len(), 1);
     assert_eq!(app.session_at(0).unwrap().id, "real-1234");
 
+    let _ = std::fs::remove_file(&tmp);
+}
+
+/// A real session written by the agent for a new session created just now.
+fn late_disk_session(id: &str, agent: Agent, cwd: &str) -> Session {
+    Session {
+        id: id.into(),
+        agent,
+        cwd: PathBuf::from(cwd),
+        file: PathBuf::new(),
+        started_at: Some(chrono::Utc::now()),
+        last_active: Some(chrono::Utc::now()),
+        last_prompt_at: None,
+        tokens: TokenUsage::default(),
+        title: "(codex session)".into(),
+        archived: false,
+        is_subagent: false,
+        context_pct: None,
+    }
+}
+
+/// Regression: closing a new session left its label queued for an hour, so the
+/// name landed on whatever the agent wrote next and the closed session looked
+/// like it had come back.
+#[test]
+fn closing_a_new_session_unqueues_its_label() {
+    let tmp = test_state_path("close-new-unqueues-label");
+    let mut app = isolated_app_at(tmp.clone());
+    app.scope = Scope::WorkingDir(PathBuf::from("/work"));
+    app.request_new(Agent::Codex, "bar");
+    assert_eq!(app.state.pending_labels.len(), 1, "label queued on create");
+
+    app.selected = 0;
+    app.close_selected();
+    assert!(
+        app.state.pending_labels.is_empty(),
+        "closing the row must un-queue its label"
+    );
+    let saved = mindplayer_core::State::load_from(&tmp);
+    assert!(saved.pending_labels.is_empty(), "un-queue is persisted");
+    let _ = std::fs::remove_file(&tmp);
+}
+
+/// Regression: the agent writes its rollout file only after the first turn, so
+/// a new session closed before that left a file behind that the next scan
+/// showed as a brand-new row — the closed session, back again.
+#[test]
+fn a_closed_new_sessions_late_file_is_archived_not_shown() {
+    let tmp = test_state_path("close-new-late-file");
+    let mut app = isolated_app_at(tmp.clone());
+    app.scope = Scope::WorkingDir(PathBuf::from("/work"));
+    app.request_new(Agent::Codex, "bar");
+    app.selected = 0;
+    app.close_selected();
+
+    // The agent writes the file after the close; the scan picks it up.
+    app.all_sessions = vec![late_disk_session("real-late", Agent::Codex, "/work")];
+    app.merge_extras();
+    app.rebuild_visible();
+
+    assert!(app.state.is_archived("real-late"), "late file is archived");
+    assert!(
+        app.visible_sessions().all(|s| s.id != "real-late"),
+        "and never shown"
+    );
+    assert!(app.closed_extras.is_empty(), "the placeholder is consumed");
+    let _ = std::fs::remove_file(&tmp);
+}
+
+/// Past the grace window the placeholder must claim nothing: a session
+/// appearing that much later is far more likely one the user started in the
+/// same directory, and archiving that silently is the worse failure.
+#[test]
+fn a_closed_new_session_stops_claiming_files_after_the_grace_window() {
+    let tmp = test_state_path("close-new-grace-expiry");
+    let mut app = isolated_app_at(tmp.clone());
+    app.scope = Scope::WorkingDir(PathBuf::from("/work"));
+    app.request_new(Agent::Codex, "bar");
+    app.selected = 0;
+    app.close_selected();
+
+    // Backdate the placeholder past the grace window.
+    for extra in &mut app.closed_extras {
+        extra.started_at = Some(chrono::Utc::now() - chrono::Duration::minutes(6));
+    }
+    app.all_sessions = vec![late_disk_session("started-by-hand", Agent::Codex, "/work")];
+    app.merge_extras();
+    app.rebuild_visible();
+
+    assert!(
+        !app.state.is_archived("started-by-hand"),
+        "an expired placeholder must not archive anything"
+    );
+    assert!(app.visible_sessions().any(|s| s.id == "started-by-hand"));
+    assert!(app.closed_extras.is_empty(), "and is dropped");
+    let _ = std::fs::remove_file(&tmp);
+}
+
+/// The reaper must only ever claim the file its own closed session produced —
+/// a session that already existed is off-limits, exactly as for adoption.
+#[test]
+fn reaping_never_archives_a_pre_existing_session() {
+    let tmp = test_state_path("close-new-preexisting");
+    let mut app = isolated_app_at(tmp.clone());
+    app.scope = Scope::WorkingDir(PathBuf::from("/work"));
+    // Present before the new session is created → in its baseline.
+    app.all_sessions = vec![late_disk_session("older", Agent::Codex, "/work")];
+    app.request_new(Agent::Codex, "bar");
+    app.selected = app.row_of_session("new:codex:1").unwrap();
+    app.close_selected();
+
+    app.all_sessions = vec![late_disk_session("older", Agent::Codex, "/work")];
+    app.merge_extras();
+    app.rebuild_visible();
+
+    assert!(
+        !app.state.is_archived("older"),
+        "pre-existing session spared"
+    );
+    assert!(app.visible_sessions().any(|s| s.id == "older"));
     let _ = std::fs::remove_file(&tmp);
 }
 

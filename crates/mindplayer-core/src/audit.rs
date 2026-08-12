@@ -103,10 +103,6 @@ pub enum AuditEvent {
     ZoomToggle {
         on: bool,
     },
-    /// Pane grid layout cycled (ctrl-o); `layout` is the new layout.
-    LayoutCycle {
-        layout: String,
-    },
     /// Focused pane cycled (Tab / Shift-Tab / ctrl-w); `focused` is the new
     /// 1-based pane index out of `count` open panes.
     PaneFocusCycle {
@@ -123,17 +119,10 @@ pub enum AuditEvent {
         id: String,
         in_progress: bool,
     },
-    /// A list view filter toggled: `view` is "archived" (`a`) or "subagents"
-    /// (`g`).
+    /// The archived-sessions filter toggled (`a`).
     ViewToggle {
         view: String,
         on: bool,
-    },
-    /// Manual full rescan of the current scope (`r`).
-    Rescan,
-    /// Usage-stats popup opened/closed (`u`).
-    UsagePopup {
-        open: bool,
     },
     /// Session-list search opened (`/`).
     SearchBegin,
@@ -176,6 +165,51 @@ pub enum AuditEvent {
     },
     /// Working-dir modal dismissed (esc).
     WorkingDirCancel,
+    /// Category picker opened (`t` on a session); `targets` is how many rows it
+    /// will apply to (more than one in multi-select).
+    CategoryPickBegin {
+        targets: usize,
+    },
+    /// Category assignment confirmed; `category` is the new name, empty when
+    /// the rows were cleared of their category.
+    CategoryAssign {
+        targets: usize,
+        category: String,
+    },
+    /// Category menu opened (`t` on a category header).
+    CategoryMenuBegin {
+        cat_id: String,
+    },
+    /// A category folded or unfolded from the list (`←` / `→`).
+    CategoryFold {
+        cat_id: String,
+        folded: bool,
+    },
+    /// Links copied out of a pane (ctrl-y); `links` is how many the answer held
+    /// and `turns_ago` how far back that answer was. `picked` is false when a
+    /// lone link was copied without opening the picker.
+    LinkCopy {
+        links: usize,
+        turns_ago: usize,
+        picked: bool,
+    },
+    /// The `.html` preview picker opened (ctrl-p); `candidates` is how many
+    /// files were detected.
+    HtmlPreviewBegin {
+        candidates: usize,
+    },
+    /// A local `.html` file was opened in the browser.
+    HtmlPreviewOpen,
+    /// The shortcuts popup opened or closed (`?`).
+    HelpToggle {
+        open: bool,
+    },
+    /// The list cursor moved (`↑` / `↓` / wheel). One per move: the audit log
+    /// has no runtime reader, so the volume costs disk and nothing else, and a
+    /// coalesced count would hide how much of the session is spent navigating.
+    ListMove {
+        delta: isize,
+    },
 
     // --- app-computed status transitions ("what the app thought") -----------
     /// A session's computed live status changed since the last poll

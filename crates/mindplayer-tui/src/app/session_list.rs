@@ -130,7 +130,6 @@ impl App {
 
     pub(crate) fn rebuild_visible(&mut self) {
         let show_archived = self.show_archived;
-        let show_subagents = self.show_subagents;
         let query = self.search_query.as_deref();
         let mut groups: Vec<(String, Vec<usize>)> = Vec::new();
         let mut by_root: HashMap<String, Vec<usize>> = HashMap::new();
@@ -152,7 +151,7 @@ impl App {
             let has_visible_match = indices.iter().any(|&i| {
                 let s = &self.all_sessions[i];
                 show_archived == s.archived
-                    && (show_subagents || !s.is_subagent)
+                    && !s.is_subagent
                     && query.is_none_or(|query| matches_search(s, query))
             });
             if !has_visible_match {
@@ -163,7 +162,7 @@ impl App {
                 .filter(|&i| {
                     let s = &self.all_sessions[i];
                     show_archived == s.archived
-                        && (show_subagents || !s.is_subagent)
+                        && !s.is_subagent
                         && query.is_none_or(|query| {
                             matches_search(s, query)
                                 || self
@@ -327,6 +326,10 @@ impl App {
         let Some(id) = self.selected_category().map(str::to_string) else {
             return false;
         };
+        mindplayer_core::log_event_to(
+            &self.audit_path,
+            mindplayer_core::AuditEvent::CategoryMenuBegin { cat_id: id.clone() },
+        );
         self.category_menu = Some(CategoryMenu {
             cat_id: id,
             selected: 0,
@@ -505,6 +508,12 @@ impl App {
                 }
             }
         };
+        mindplayer_core::log_event_to(
+            &self.audit_path,
+            mindplayer_core::AuditEvent::CategoryPickBegin {
+                targets: targets.len(),
+            },
+        );
         // Start on the category the (first) target already has, so re-opening
         // shows where it currently sits.
         let current = self.state.category_of(&targets[0]).map(str::to_string);
@@ -600,7 +609,19 @@ impl App {
     }
 
     /// Assign (or clear) the category for every target, persist, and rebuild.
+    #[cfg(test)]
+    pub(crate) fn apply_category_for_test(&mut self, targets: &[String], cat: Option<&str>) {
+        self.apply_category(targets, cat);
+    }
+
     fn apply_category(&mut self, targets: &[String], cat: Option<&str>) {
+        mindplayer_core::log_event_to(
+            &self.audit_path,
+            mindplayer_core::AuditEvent::CategoryAssign {
+                targets: targets.len(),
+                category: cat.map(|c| self.category_label(c)).unwrap_or_default(),
+            },
+        );
         for id in targets {
             let moved = self.state.category_of(id).map(str::to_string) != cat.map(str::to_string);
             match cat {
@@ -678,6 +699,10 @@ impl App {
     }
 
     pub fn move_selection(&mut self, delta: isize) {
+        mindplayer_core::log_event_to(
+            &self.audit_path,
+            mindplayer_core::AuditEvent::ListMove { delta },
+        );
         if self.visible.is_empty() {
             return;
         }
@@ -793,6 +818,13 @@ impl App {
             return false;
         };
         if self.state.is_collapsed(&id) {
+            mindplayer_core::log_event_to(
+                &self.audit_path,
+                mindplayer_core::AuditEvent::CategoryFold {
+                    cat_id: id,
+                    folded: false,
+                },
+            );
             return self.expand_selected_category();
         }
         // Already open: descend to the first row under this header, if it has one.
@@ -812,6 +844,13 @@ impl App {
         let Some(id) = self.category_at_cursor().map(str::to_string) else {
             return false;
         };
+        mindplayer_core::log_event_to(
+            &self.audit_path,
+            mindplayer_core::AuditEvent::CategoryFold {
+                cat_id: id.clone(),
+                folded: true,
+            },
+        );
         self.state.set_collapsed(&id, true);
         let _ = self.save_state();
         self.rebuild_visible();
@@ -949,19 +988,6 @@ impl App {
         self.rebuild_visible();
     }
 
-    pub fn toggle_subagents(&mut self) {
-        self.show_subagents = !self.show_subagents;
-        self.selected = 0;
-        mindplayer_core::log_event_to(
-            &self.audit_path,
-            mindplayer_core::AuditEvent::ViewToggle {
-                view: "subagents".to_string(),
-                on: self.show_subagents,
-            },
-        );
-        self.rebuild_visible();
-    }
-
     /// Toggle the manual "my work here isn't done yet" mark on the selected
     /// session — orthogonal to its live PTY status (see [`SessionStatus`]),
     /// so it survives the session going Idle/Ended and stays visible even
@@ -1059,29 +1085,6 @@ impl App {
         }
     }
 
-    pub fn rescan(&mut self) {
-        mindplayer_core::log_event_to(&self.audit_path, mindplayer_core::AuditEvent::Rescan);
-        self.start_scan();
-    }
-
-    /// `u`: recompute usage stats from the audit log and show the popup.
-    pub fn open_usage_popup(&mut self) {
-        let events = mindplayer_core::read_events(&self.audit_path);
-        self.usage_stats = Some(mindplayer_core::compute_stats(
-            &events,
-            Utc::now(),
-            std::process::id(),
-        ));
-        self.usage_popup = true;
-        self.spawn_limits_fetch();
-        // Logged after the stats are computed above, so the numbers the popup
-        // shows reflect the log as it was *before* this open event.
-        mindplayer_core::log_event_to(
-            &self.audit_path,
-            mindplayer_core::AuditEvent::UsagePopup { open: true },
-        );
-    }
-
     /// Refresh the rate-limit readout on a worker thread. Skipped when one is
     /// already in flight; the popup shows the previous values until it lands.
     pub(crate) fn spawn_limits_fetch(&mut self) {
@@ -1119,16 +1122,7 @@ impl App {
         self.limits_rx = None;
         self.limits_started = None;
         self.limits = Some(limits);
-        self.usage_popup
-    }
-
-    pub fn close_usage_popup(&mut self) {
-        self.usage_popup = false;
-        self.usage_stats = None;
-        mindplayer_core::log_event_to(
-            &self.audit_path,
-            mindplayer_core::AuditEvent::UsagePopup { open: false },
-        );
+        true
     }
 
     /// Kick off a background usage refresh (no-op if one is already running).

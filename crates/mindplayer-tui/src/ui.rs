@@ -8,12 +8,12 @@ use crate::text_input;
 use crate::walker;
 use chrono::{DateTime, Utc};
 use mindplayer_core::tokens::human_tokens;
-use mindplayer_core::{Agent, UsageStats};
+use mindplayer_core::Agent;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{
-    Block, BorderType, Borders, Clear, Gauge, List, ListItem, ListState, Paragraph, Sparkline, Wrap,
+    Block, BorderType, Borders, Clear, Gauge, List, ListItem, ListState, Paragraph, Wrap,
 };
 use ratatui::Frame;
 use std::path::{Path, PathBuf};
@@ -669,7 +669,7 @@ fn main_view(f: &mut Frame, app: &mut App) {
             format!("{live}enter open · v multi-select · n new · h handoff   View: / search · ? help")
         }
         Focus::Terminal => {
-            "ctrl-x list · tab/ctrl-w pane · ctrl-z zoom · ctrl-o layout · ctrl-q close · wheel history · drag=copy this pane"
+            "ctrl-x list · tab/ctrl-w pane · ctrl-z zoom · ctrl-y links · ctrl-q close · wheel history · drag=copy this pane"
                 .to_string()
         }
         }
@@ -702,7 +702,7 @@ fn main_view(f: &mut Frame, app: &mut App) {
     if show_more_keys {
         f.render_widget(
             Paragraph::new(Line::from(Span::styled(
-                "i in progress · c catch-up · t category · ←→ fold    +8 more · ? help",
+                "i in progress · c catch-up · t category · ←→ fold    +5 more · ? help",
                 Style::default().fg(Color::Rgb(90, 95, 108)),
             )))
             .alignment(Alignment::Right),
@@ -742,8 +742,6 @@ fn main_view(f: &mut Frame, app: &mut App) {
             .map(|s| s.title.as_str())
             .unwrap_or("this session");
         catchup_confirm_popup(f, title);
-    } else if let Some(stats) = &app.usage_stats {
-        usage_popup(f, stats, app.limits.as_ref());
     } else if let Some(input) = &app.transition_report_input {
         transition_report_popup(f, input);
     } else if let Some(draft) = &app.transition_report_review {
@@ -849,223 +847,6 @@ fn catchup_confirm_popup(f: &mut Frame, title: &str) {
         )),
     ];
     f.render_widget(Paragraph::new(lines).block(block), area);
-}
-
-/// "2h 14m" / "45m" / "0m" — the popup only ever needs coarse hours+minutes,
-/// never seconds.
-fn format_duration_short(total_secs: i64) -> String {
-    let secs = total_secs.max(0);
-    let hours = secs / 3600;
-    let mins = (secs % 3600) / 60;
-    if hours > 0 {
-        format!("{hours}h {mins:02}m")
-    } else {
-        format!("{mins}m")
-    }
-}
-
-/// A single-row proportional bar (no ratatui widget for this — it's just
-/// colored block runs sized to each count's share of the total, unfilled
-/// space left dim). `width` is the number of terminal cells available.
-fn proportional_bar(counts: [(usize, Color); 3], width: usize) -> Vec<Span<'static>> {
-    let total: usize = counts.iter().map(|(n, _)| *n).sum();
-    if total == 0 || width == 0 {
-        return vec![Span::styled(".".repeat(width), Style::default().fg(DIM))];
-    }
-    let mut spans = Vec::new();
-    let mut used = 0usize;
-    for &(count, color) in &counts {
-        let cells = (width * count) / total;
-        if cells > 0 {
-            spans.push(Span::styled("█".repeat(cells), Style::default().fg(color)));
-            used += cells;
-        }
-    }
-    if used < width {
-        spans.push(Span::styled(
-            "░".repeat(width - used),
-            Style::default().fg(DIM),
-        ));
-    }
-    spans
-}
-
-fn usage_popup(
-    f: &mut Frame,
-    stats: &UsageStats,
-    limits: Option<&mindplayer_core::limits::Limits>,
-) {
-    let area = centered(f.area(), 66, 15);
-    f.render_widget(Clear, area);
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(ACCENT))
-        .title(" mindplayer usage ");
-    let inner = block.inner(area);
-    f.render_widget(block, area);
-
-    let rows = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(1), // blank
-            Constraint::Length(1), // active time label + sparkline
-            Constraint::Length(1), // today / all-time numbers
-            Constraint::Length(1), // blank
-            Constraint::Length(1), // sessions opened bar
-            Constraint::Length(1), // agent legend
-            Constraint::Length(1), // blank
-            Constraint::Length(1), // handoffs / catch-up
-            Constraint::Length(1), // blank
-            Constraint::Length(1), // rate limits: claude
-            Constraint::Length(1), // rate limits: codex
-            Constraint::Length(1), // blank
-            Constraint::Length(1), // footer
-        ])
-        .split(inner);
-
-    let trend_row = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Length(15),
-            Constraint::Min(0),
-            Constraint::Length(5),
-        ])
-        .split(rows[1]);
-    f.render_widget(
-        Paragraph::new(Span::styled("active time", Style::default().fg(DIM))),
-        trend_row[0],
-    );
-    let sparkline_data: Vec<u64> = stats
-        .daily_active_secs
-        .iter()
-        .map(|&s| s.max(0) as u64)
-        .collect();
-    f.render_widget(
-        Sparkline::default()
-            .data(&sparkline_data)
-            .style(Style::default().fg(ACCENT)),
-        trend_row[1],
-    );
-    f.render_widget(
-        Paragraph::new(Span::styled(
-            format!("{}d", sparkline_data.len()),
-            Style::default().fg(DIM),
-        ))
-        .alignment(Alignment::Right),
-        trend_row[2],
-    );
-
-    f.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled(
-                format_duration_short(stats.active_secs_today),
-                Style::default().add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(" today  ·  ", Style::default().fg(DIM)),
-            Span::styled(
-                format_duration_short(stats.active_secs_all_time),
-                Style::default().fg(DIM),
-            ),
-            Span::styled(" all-time", Style::default().fg(DIM)),
-        ])),
-        rows[2],
-    );
-
-    let bar_row = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Length(17),
-            Constraint::Min(0),
-            Constraint::Length(8),
-        ])
-        .split(rows[4]);
-    f.render_widget(
-        Paragraph::new(Span::styled("sessions opened", Style::default().fg(DIM))),
-        bar_row[0],
-    );
-    let opened = stats.sessions_opened_all_time;
-    let bar_spans = proportional_bar(
-        [
-            (opened.codex, ACCENT),
-            (opened.claude, Color::Magenta),
-            (opened.kiro, Color::Cyan),
-        ],
-        bar_row[1].width as usize,
-    );
-    f.render_widget(Paragraph::new(Line::from(bar_spans)), bar_row[1]);
-    f.render_widget(
-        Paragraph::new(Span::styled(
-            opened.total().to_string(),
-            Style::default().add_modifier(Modifier::BOLD),
-        ))
-        .alignment(Alignment::Right),
-        bar_row[2],
-    );
-
-    f.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled(
-                format!("codex {}", opened.codex),
-                Style::default().fg(ACCENT),
-            ),
-            Span::styled(" · ", Style::default().fg(DIM)),
-            Span::styled(
-                format!("claude {}", opened.claude),
-                Style::default().fg(Color::Magenta),
-            ),
-            Span::styled(" · ", Style::default().fg(DIM)),
-            Span::styled(
-                format!("kiro {}", opened.kiro),
-                Style::default().fg(Color::Cyan),
-            ),
-        ])),
-        rows[5],
-    );
-
-    f.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled("handoffs ", Style::default().fg(DIM)),
-            Span::raw(stats.handoffs_all_time.to_string()),
-            Span::styled("  ·  catch-up ", Style::default().fg(DIM)),
-            Span::raw(stats.catchups_all_time.to_string()),
-            Span::styled("  ·  transition reports ", Style::default().fg(DIM)),
-            Span::raw(stats.transition_reports_all_time.to_string()),
-        ])),
-        rows[7],
-    );
-
-    // Subscription windows. Rendered as the reason when a provider has no
-    // number, never as 0% — an absent limit must not read as "plenty left".
-    // `summary_rows` pairs each line with whether THAT provider produced a
-    // number, so a row carrying a reason stays dim even when the other provider
-    // has a value.
-    let limit_rows: Vec<(String, bool)> = match limits {
-        Some(l) => l.summary_rows(),
-        None => vec![("claude  …".into(), false), ("codex   …".into(), false)],
-    };
-    for (i, (text, known)) in limit_rows.iter().take(2).enumerate() {
-        let (head, rest) = text.split_at(text.find("  ").map(|p| p + 2).unwrap_or(0));
-        let known = *known;
-        f.render_widget(
-            Paragraph::new(Line::from(vec![
-                Span::styled(head.to_string(), Style::default().fg(DIM)),
-                Span::styled(
-                    rest.to_string(),
-                    if known {
-                        Style::default()
-                    } else {
-                        Style::default().fg(DIM)
-                    },
-                ),
-            ])),
-            rows[9 + i],
-        );
-    }
-
-    f.render_widget(
-        Paragraph::new(Span::styled("esc / enter  close", Style::default().fg(DIM))),
-        rows[12],
-    );
 }
 
 fn dir_input_popup(f: &mut Frame, path: &str) {
@@ -1294,7 +1075,6 @@ fn session_list(f: &mut Frame, app: &mut App, area: Rect, now: DateTime<Utc>) {
     } else {
         "active"
     };
-    let subs = if app.show_subagents { " +sub" } else { "" };
     // A trailing cursor makes search the same kind of "live text entry" as
     // every popup input, instead of the one text-entry mode with no visible
     // caret at all.
@@ -1318,7 +1098,7 @@ fn session_list(f: &mut Frame, app: &mut App, area: Rect, now: DateTime<Utc>) {
             DIM
         }))
         .title(format!(
-            " Sessions · recent first · {tab}{subs}{search}{multi} ({}) ",
+            " Sessions · recent first · {tab}{search}{multi} ({}) ",
             app.visible.len()
         ));
 
@@ -1685,14 +1465,9 @@ fn session_list(f: &mut Frame, app: &mut App, area: Rect, now: DateTime<Utc>) {
 fn grid_rows(n: usize, layout: PaneLayout) -> usize {
     match (n, layout) {
         (_, PaneLayout::Single) | (1, _) => 1,
-        (2, PaneLayout::Horizontal) | (3, PaneLayout::Horizontal) => 1,
-        (2, PaneLayout::Vertical) => 2,
-        (3, PaneLayout::Vertical) => 3,
-        (4, _) => 2,
-        (5, PaneLayout::Horizontal) | (6, PaneLayout::Horizontal) => 2,
-        (5, PaneLayout::Vertical) | (6, PaneLayout::Vertical) => 3,
-        (_, PaneLayout::Horizontal) => ((n as f64).sqrt().floor() as usize).max(1),
-        (_, PaneLayout::Vertical) => ((n as f64).sqrt().ceil() as usize).max(1),
+        (2, _) | (3, _) => 1,
+        (4, _) | (5, _) | (6, _) => 2,
+        _ => ((n as f64).sqrt().floor() as usize).max(1),
     }
 }
 
@@ -2208,16 +1983,12 @@ fn help_lines() -> Vec<Line<'static>> {
         item("/", "search visible sessions"),
         item("d", "change working directory scope"),
         item("a", "toggle archived sessions"),
-        item("g", "toggle subagent sessions"),
-        item("r", "rescan sessions"),
-        item("u", "show usage stats (active time, sessions opened, ...)"),
         Line::from(""),
         section("Terminal / Modal"),
         item("ctrl-x", "return from terminal to session list"),
         item("tab / shift-tab", "cycle live panes (when 2+ open)"),
         item("ctrl-w", "cycle live panes (always)"),
         item("ctrl-z", "zoom the focused pane full-size (toggle back to split)"),
-        item("ctrl-o", "toggle pane layout (horizontal/vertical)"),
         item("ctrl-q", "close focused pane"),
         item(
             "ctrl-t",
@@ -2664,46 +2435,21 @@ mod tests {
     }
 
     #[test]
-    fn two_panes_split_vertically_without_gap() {
-        let area = body();
-        let rects = compute_pane_rects(area, 2, PaneLayout::Vertical);
-        assert_eq!(rects.len(), 2);
-        assert_eq!(rects[0].x, area.x);
-        assert_eq!(rects[0].width, area.width);
-        assert_eq!(rects[1].width, area.width);
-        assert_eq!(rects[0].y + rects[0].height, rects[1].y);
-        assert_eq!(rects[0].height + rects[1].height, area.height);
-    }
-
-    #[test]
     fn three_panes_tile_the_body() {
         let area = body();
-        for layout in [PaneLayout::Horizontal, PaneLayout::Vertical] {
-            let rects = compute_pane_rects(area, 3, layout);
-            assert_eq!(rects.len(), 3);
-            match layout {
-                PaneLayout::Horizontal => {
-                    assert_eq!(rects[0].x + rects[0].width, rects[1].x);
-                    assert_eq!(rects[1].x + rects[1].width, rects[2].x);
-                    assert_eq!(rects.iter().map(|r| r.width).sum::<u16>(), area.width);
-                    assert!(rects.iter().all(|r| r.height == area.height));
-                }
-                PaneLayout::Vertical => {
-                    assert_eq!(rects[0].y + rects[0].height, rects[1].y);
-                    assert_eq!(rects[1].y + rects[1].height, rects[2].y);
-                    assert_eq!(rects.iter().map(|r| r.height).sum::<u16>(), area.height);
-                    assert!(rects.iter().all(|r| r.width == area.width));
-                }
-                PaneLayout::Single => unreachable!(),
-            }
-        }
+        let rects = compute_pane_rects(area, 3, PaneLayout::Horizontal);
+        assert_eq!(rects.len(), 3);
+        assert_eq!(rects[0].x + rects[0].width, rects[1].x);
+        assert_eq!(rects[1].x + rects[1].width, rects[2].x);
+        assert_eq!(rects.iter().map(|r| r.width).sum::<u16>(), area.width);
+        assert!(rects.iter().all(|r| r.height == area.height));
     }
 
     /// Every cell of an `n`-pane grid stays inside `area`, has no zero-size
     /// pane, and the cells cover `area` exactly (no gaps / no overlap, checked
     /// via summed cell area) — for both split layouts.
     fn assert_tiles_exactly(area: Rect, n: usize) {
-        for layout in [PaneLayout::Horizontal, PaneLayout::Vertical] {
+        for layout in [PaneLayout::Horizontal] {
             let rects = compute_pane_rects(area, n, layout);
             assert_eq!(rects.len(), n, "all {n} panes get a rect");
             for r in &rects {

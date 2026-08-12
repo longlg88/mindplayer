@@ -348,6 +348,105 @@ fn reaping_never_archives_a_pre_existing_session() {
     let _ = std::fs::remove_file(&tmp);
 }
 
+/// Every command that had no audit event now writes one. The usage question
+/// this answers — "which commands do I actually reach for" — is only as good as
+/// its coverage, and the gaps were invisible until the log was ranked.
+#[test]
+fn the_newly_instrumented_commands_each_log_once() {
+    let audit_tmp = audit_tmp_path("instrumented");
+    let tmp = test_state_path("instrumented-state");
+    let mut app = isolated_app_at(tmp.clone());
+    app.audit_path = audit_tmp.clone();
+    app.all_sessions = vec![session("s1", Agent::Codex, false)];
+    app.rebuild_visible();
+    app.selected = 0;
+
+    app.toggle_help(); // ? open
+    app.toggle_help(); // ? close
+    app.move_selection(1); // down
+    app.begin_category_pick(); // t on a session
+    let cat = app
+        .state
+        .create_category("pulse", chrono::Utc::now())
+        .unwrap();
+    app.apply_category_for_test(&["s1".to_string()], Some(&cat));
+
+    let kinds: Vec<String> = mindplayer_core::read_events(&audit_tmp)
+        .into_iter()
+        .map(|r| format!("{:?}", r.event))
+        .map(|d| d.split_whitespace().next().unwrap_or("?").to_string())
+        .collect();
+    for want in [
+        "HelpToggle",
+        "ListMove",
+        "CategoryPickBegin",
+        "CategoryAssign",
+    ] {
+        assert!(
+            kinds.iter().any(|k| k.starts_with(want)),
+            "{want} was not logged; got {kinds:?}"
+        );
+    }
+    assert_eq!(
+        kinds.iter().filter(|k| k.starts_with("HelpToggle")).count(),
+        2,
+        "open and close are separate events"
+    );
+
+    let _ = std::fs::remove_file(&audit_tmp);
+    let _ = std::fs::remove_file(&tmp);
+}
+
+#[test]
+fn pane_focus_and_close_update_active() {
+    let mut app = App::new();
+    app.focus_or_add_pane("a");
+    app.focus_or_add_pane("b");
+    assert_eq!(app.active.as_deref(), Some("b"));
+
+    app.cycle_focus();
+    assert_eq!(app.active.as_deref(), Some("a"));
+
+    app.close_focused_pane();
+    assert_eq!(app.panes, vec!["b"]);
+    assert_eq!(app.active.as_deref(), Some("b"));
+    app.close_focused_pane();
+    assert!(app.panes.is_empty());
+    assert_eq!(app.active, None);
+    assert_eq!(app.focus, Focus::List);
+}
+
+/// Zoom and the archived filter both log the state they landed in, so the log
+/// reads as "what the user did" rather than "a key was pressed".
+#[test]
+fn zoom_and_view_toggles_log_their_resulting_state() {
+    let audit_tmp = audit_tmp_path("toggles");
+    let mut app = app_with(vec![session("s1", Agent::Codex, false)]);
+    app.audit_path = audit_tmp.clone();
+
+    app.focus_or_add_pane("s1");
+    app.toggle_zoom(); // on
+    app.toggle_zoom(); // off
+    app.toggle_archived_view(); // on
+
+    let events: Vec<_> = mindplayer_core::read_events(&audit_tmp)
+        .into_iter()
+        .map(|r| r.event)
+        .collect();
+    assert_eq!(
+        events,
+        vec![
+            mindplayer_core::AuditEvent::ZoomToggle { on: true },
+            mindplayer_core::AuditEvent::ZoomToggle { on: false },
+            mindplayer_core::AuditEvent::ViewToggle {
+                view: "archived".to_string(),
+                on: true
+            },
+        ]
+    );
+    let _ = std::fs::remove_file(&audit_tmp);
+}
+
 #[test]
 fn refresh_applies_token_updates_to_existing_row() {
     let mut app = app_with(vec![session("s1", Agent::Codex, false)]);
@@ -446,27 +545,6 @@ fn reorder_panes_by_status_is_quiet_unless_a_pane_is_actually_blocked() {
         vec!["a".to_string(), "b".to_string(), "c".to_string()]
     );
     assert_eq!(app.focused_pane(), Some("c"));
-}
-
-#[test]
-fn pane_focus_layout_and_close_update_active() {
-    let mut app = App::new();
-    app.focus_or_add_pane("a");
-    app.focus_or_add_pane("b");
-    assert_eq!(app.active.as_deref(), Some("b"));
-
-    app.cycle_focus();
-    assert_eq!(app.active.as_deref(), Some("a"));
-    app.cycle_layout();
-    assert_eq!(app.layout, PaneLayout::Vertical);
-
-    app.close_focused_pane();
-    assert_eq!(app.panes, vec!["b"]);
-    assert_eq!(app.active.as_deref(), Some("b"));
-    app.close_focused_pane();
-    assert!(app.panes.is_empty());
-    assert_eq!(app.active, None);
-    assert_eq!(app.focus, Focus::List);
 }
 
 #[test]
@@ -2561,45 +2639,6 @@ fn esc_cancels_the_review_without_sending() {
     let _ = std::fs::remove_file(&audit_tmp);
 }
 
-#[test]
-fn open_usage_popup_computes_stats_from_the_audit_log() {
-    let audit_tmp = audit_tmp_path("open-popup");
-    mindplayer_core::log_event_to(
-        &audit_tmp,
-        mindplayer_core::AuditEvent::SessionOpen {
-            agent: "codex".to_string(),
-        },
-    );
-    mindplayer_core::log_event_to(&audit_tmp, mindplayer_core::AuditEvent::Handoff);
-
-    let mut app = app_with(vec![]);
-    app.audit_path = audit_tmp.clone();
-    assert!(!app.usage_popup);
-    app.open_usage_popup();
-
-    assert!(app.usage_popup);
-    let stats = app.usage_stats.as_ref().expect("stats computed");
-    assert_eq!(stats.sessions_opened_all_time.codex, 1);
-    assert_eq!(stats.handoffs_all_time, 1);
-
-    let _ = std::fs::remove_file(&audit_tmp);
-}
-
-#[test]
-fn close_usage_popup_clears_the_cached_stats() {
-    let audit_tmp = audit_tmp_path("close-popup");
-    let mut app = app_with(vec![]);
-    app.audit_path = audit_tmp.clone();
-    app.open_usage_popup();
-    assert!(app.usage_popup);
-
-    app.close_usage_popup();
-    assert!(!app.usage_popup);
-    assert!(app.usage_stats.is_none());
-
-    let _ = std::fs::remove_file(&audit_tmp);
-}
-
 // --- action + status-transition instrumentation ----------------------------
 
 #[test]
@@ -2778,45 +2817,6 @@ fn search_begin_confirm_records_the_resulting_terminal_focus() {
             },
             mindplayer_core::AuditEvent::SearchConfirm {
                 focus: "terminal".to_string()
-            },
-        ]
-    );
-
-    let _ = std::fs::remove_file(&audit_tmp);
-}
-
-#[test]
-fn zoom_layout_and_view_toggles_log_their_resulting_state() {
-    let audit_tmp = audit_tmp_path("toggles");
-    let mut app = app_with(vec![session("s1", Agent::Codex, false)]);
-    app.audit_path = audit_tmp.clone();
-
-    app.focus_or_add_pane("s1");
-    app.toggle_zoom(); // on
-    app.toggle_zoom(); // off
-    app.cycle_layout(); // Horizontal -> Vertical
-    app.toggle_archived_view(); // on
-    app.toggle_subagents(); // on
-
-    let events: Vec<_> = mindplayer_core::read_events(&audit_tmp)
-        .into_iter()
-        .map(|r| r.event)
-        .collect();
-    assert_eq!(
-        events,
-        vec![
-            mindplayer_core::AuditEvent::ZoomToggle { on: true },
-            mindplayer_core::AuditEvent::ZoomToggle { on: false },
-            mindplayer_core::AuditEvent::LayoutCycle {
-                layout: "vertical".to_string()
-            },
-            mindplayer_core::AuditEvent::ViewToggle {
-                view: "archived".to_string(),
-                on: true
-            },
-            mindplayer_core::AuditEvent::ViewToggle {
-                view: "subagents".to_string(),
-                on: true
             },
         ]
     );

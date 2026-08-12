@@ -176,24 +176,6 @@ impl App {
         );
     }
 
-    pub fn cycle_layout(&mut self) {
-        self.layout = match self.layout {
-            PaneLayout::Single | PaneLayout::Vertical => PaneLayout::Horizontal,
-            PaneLayout::Horizontal => PaneLayout::Vertical,
-        };
-        mindplayer_core::log_event_to(
-            &self.audit_path,
-            mindplayer_core::AuditEvent::LayoutCycle {
-                layout: layout_label(self.layout).to_string(),
-            },
-        );
-        self.status = match self.layout {
-            PaneLayout::Horizontal => "live panes split horizontally".to_string(),
-            PaneLayout::Vertical => "live panes split vertically".to_string(),
-            PaneLayout::Single => "single live pane".to_string(),
-        };
-    }
-
     pub fn effective_layout(&self) -> PaneLayout {
         if self.panes.len() <= 1 {
             PaneLayout::Single

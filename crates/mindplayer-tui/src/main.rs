@@ -328,6 +328,10 @@ fn run(terminal: &mut Terminal<CrosstermBackend<FrameSink>>, app: &mut App) -> R
             }
             if last_refresh.elapsed() >= Duration::from_secs(3) {
                 app.start_refresh();
+                // The subscription readout lives in the status line now, so it
+                // has to be fetched on the same tick rather than when a popup
+                // opened.
+                app.spawn_limits_fetch();
                 last_refresh = Instant::now();
             }
             // Pick up newly created sessions (and resolve their labels).
@@ -643,13 +647,6 @@ fn handle_main_key(app: &mut App, key: KeyEvent) {
         }
         return;
     }
-    if app.usage_popup {
-        match key.code {
-            KeyCode::Esc | KeyCode::Enter | KeyCode::Char('u') => app.close_usage_popup(),
-            _ => {}
-        }
-        return;
-    }
 
     // Category menu (`t` on a header). Owns every key while open, and while
     // renaming the letters are text rather than shortcuts.
@@ -933,10 +930,6 @@ fn handle_main_key(app: &mut App, key: KeyEvent) {
                         app.cycle_focus();
                         return;
                     }
-                    KeyCode::Char('o') | KeyCode::Char('ㅐ') => {
-                        app.cycle_layout();
-                        return;
-                    }
                     KeyCode::Char('q') | KeyCode::Char('ㅂ') => {
                         app.close_focused_pane();
                         return;
@@ -1056,9 +1049,6 @@ fn handle_main_key(app: &mut App, key: KeyEvent) {
                 KeyCode::Char('h') => app.begin_handoff(),
                 KeyCode::Char('x') => app.close_selected(),
                 KeyCode::Char('a') => app.toggle_archived_view(),
-                KeyCode::Char('g') => app.toggle_subagents(),
-                KeyCode::Char('r') => app.rescan(),
-                KeyCode::Char('u') => app.open_usage_popup(),
                 KeyCode::Char('q') => app.quit(),
                 _ => {}
             }
@@ -1228,33 +1218,24 @@ mod tests {
         app
     }
 
+    /// The list's single-letter shortcuts have to survive a Korean IME, which
+    /// sends the jamo on the same physical key rather than the latin letter.
     #[test]
-    fn u_opens_the_usage_popup_and_esc_enter_or_u_closes_it() {
-        for closing_key in [
-            KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
-            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
-            KeyEvent::new(KeyCode::Char('u'), KeyModifiers::NONE),
-        ] {
-            let mut app = main_app();
-            handle_main_key(
-                &mut app,
-                KeyEvent::new(KeyCode::Char('u'), KeyModifiers::NONE),
-            );
-            assert!(app.usage_popup);
-            assert!(app.usage_stats.is_some());
+    fn list_shortcuts_accept_korean_ime_keys() {
+        let mut app = main_app();
+        assert!(!app.show_archived);
 
-            // While open, unrelated keys (e.g. rescan) are swallowed rather
-            // than acting on the list underneath the popup.
-            handle_main_key(
-                &mut app,
-                KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE),
-            );
-            assert!(app.usage_popup, "unrelated key must not close the popup");
+        handle_main_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('ㅁ'), KeyModifiers::NONE),
+        );
+        assert!(app.show_archived, "ㅁ is the a key");
 
-            handle_main_key(&mut app, closing_key);
-            assert!(!app.usage_popup, "{closing_key:?} should close the popup");
-            assert!(app.usage_stats.is_none());
-        }
+        handle_main_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('ㅁ'), KeyModifiers::NONE),
+        );
+        assert!(!app.show_archived);
     }
 
     #[test]
@@ -1465,24 +1446,6 @@ mod tests {
             KeyEvent::new(KeyCode::Char('h'), KeyModifiers::NONE),
         );
         assert_eq!(app.handoff_picker, Some(0));
-    }
-
-    #[test]
-    fn list_shortcuts_accept_korean_ime_keys() {
-        let mut app = main_app();
-        assert!(!app.show_subagents);
-
-        handle_main_key(
-            &mut app,
-            KeyEvent::new(KeyCode::Char('ㅎ'), KeyModifiers::NONE),
-        );
-        assert!(app.show_subagents);
-
-        handle_main_key(
-            &mut app,
-            KeyEvent::new(KeyCode::Char('ㅎ'), KeyModifiers::NONE),
-        );
-        assert!(!app.show_subagents);
     }
 
     #[test]

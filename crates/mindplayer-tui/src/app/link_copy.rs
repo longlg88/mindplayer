@@ -24,14 +24,20 @@ impl App {
         };
         match links::latest_links(&session, MAX_TURNS_BACK) {
             None => {
+                // Logged even though nothing was copied: the usage question is
+                // how often the key is reached for, and a search that came back
+                // empty is still a use of it.
+                self.log_link_copy(0, 0, false);
                 self.status = format!("no links found · searched back {MAX_TURNS_BACK} answers");
             }
             Some(hit) if hit.links.len() == 1 => {
+                self.log_link_copy(1, hit.turns_ago, false);
                 let url = hit.links[0].clone();
                 self.status = format!("link copied · {} · {}", url, ago(hit.turns_ago));
                 self.pending_clipboard = Some(url);
             }
             Some(hit) => {
+                self.log_link_copy(hit.links.len(), hit.turns_ago, true);
                 self.status = format!("{} links · {}", hit.links.len(), ago(hit.turns_ago));
                 self.link_picker = Some(LinkPicker {
                     links: hit.links,
@@ -40,6 +46,17 @@ impl App {
                 });
             }
         }
+    }
+
+    fn log_link_copy(&self, links: usize, turns_ago: usize, picked: bool) {
+        mindplayer_core::log_event_to(
+            &self.audit_path,
+            mindplayer_core::AuditEvent::LinkCopy {
+                links,
+                turns_ago,
+                picked,
+            },
+        );
     }
 
     pub fn move_link_pick(&mut self, delta: isize) {

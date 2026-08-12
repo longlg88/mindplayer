@@ -38,9 +38,23 @@ impl App {
 
     pub fn toggle_help(&mut self) {
         self.help_visible = !self.help_visible;
+        mindplayer_core::log_event_to(
+            &self.audit_path,
+            mindplayer_core::AuditEvent::HelpToggle {
+                open: self.help_visible,
+            },
+        );
     }
 
     pub fn close_help(&mut self) {
+        // Esc closes without going through `toggle_help`, so the close has to
+        // log here or the log shows opens with no matching closes.
+        if self.help_visible {
+            mindplayer_core::log_event_to(
+                &self.audit_path,
+                mindplayer_core::AuditEvent::HelpToggle { open: false },
+            );
+        }
         self.help_visible = false;
     }
 
@@ -235,10 +249,18 @@ impl App {
             self.status = "open in browser needs a live pane".to_string();
             return;
         };
+        // Logged before the branch: both the picker and the type-a-path fallback
+        // are the same command, and counting only the picker would hide every
+        // use in a directory with no detected files.
+        let candidates = self.html_candidates.get(&id).map_or(0, Vec::len);
+        mindplayer_core::log_event_to(
+            &self.audit_path,
+            mindplayer_core::AuditEvent::HtmlPreviewBegin { candidates },
+        );
         // Prefer the ranked picker when the passive poll has detected candidates
         // for this pane; the blank free-text popup is the fallback (and stays
         // reachable from the picker via its escape-hatch key).
-        if self.html_candidates.get(&id).is_some_and(|c| !c.is_empty()) {
+        if candidates > 0 {
             self.html_preview_picker = Some(0);
             self.html_preview_error = None;
             self.status =
@@ -294,6 +316,10 @@ impl App {
             self.html_preview_error = Some("no focused pane".to_string());
             return;
         };
+        mindplayer_core::log_event_to(
+            &self.audit_path,
+            mindplayer_core::AuditEvent::HtmlPreviewOpen,
+        );
         match open_in_browser(&resolved) {
             Ok(()) => {
                 self.mark_html_seen(&id, &resolved);
@@ -336,6 +362,10 @@ impl App {
             self.html_preview_error = Some(format!("not a file: {}", resolved.display()));
             return;
         }
+        mindplayer_core::log_event_to(
+            &self.audit_path,
+            mindplayer_core::AuditEvent::HtmlPreviewOpen,
+        );
         match open_in_browser(&resolved) {
             Ok(()) => {
                 // Suppress by BOTH the candidate path (what a future scan yields)

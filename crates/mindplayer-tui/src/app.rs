@@ -78,7 +78,6 @@ pub const MAX_PANES: usize = 32;
 pub enum PaneLayout {
     Single,
     Horizontal,
-    Vertical,
 }
 
 /// A drag-to-copy text selection inside ONE live pane, in pane-relative 0-based
@@ -367,7 +366,6 @@ pub struct App {
     pub recent_count: usize,
     pub show_archived: bool,
     /// Show spawned helper/sub-agent sessions (hidden by default).
-    pub show_subagents: bool,
     /// Set by the list renderer each frame: true when the animated hero block
     /// (mascot) is actually on screen, so the loop only animates when useful.
     pub hero_visible: bool,
@@ -515,12 +513,6 @@ pub struct App {
     /// Resolved once at construction (see [`prompts_dir_for_app`]) — the
     /// directory `load_prompt` calls read/seed catchup.md, transition_report.md, etc. from.
     pub(crate) prompts_dir: PathBuf,
-    /// Whether the `u` usage-stats popup is open.
-    pub usage_popup: bool,
-    /// Recomputed fresh from the audit log each time the popup opens — the
-    /// log is small enough that a full read+aggregate is effectively instant,
-    /// so there's no cache to keep in sync.
-    pub usage_stats: Option<mindplayer_core::UsageStats>,
     /// Subscription rate-limit windows for the usage popup. `None` until the
     /// first fetch lands; the fetch does network I/O so it never blocks a keypress.
     pub limits: Option<mindplayer_core::limits::Limits>,
@@ -648,7 +640,6 @@ impl App {
             recent_count: 0,
             category_counts: HashMap::new(),
             show_archived: false,
-            show_subagents: false,
             hero_visible: false,
             list_rows: 0,
             focus: Focus::List,
@@ -694,8 +685,6 @@ impl App {
             transition_report_review_editing: false,
             audit_path: audit_path_for_app(),
             prompts_dir: prompts_dir_for_app(),
-            usage_popup: false,
-            usage_stats: None,
             limits: None,
             limits_rx: None,
             limits_started: None,
@@ -833,14 +822,36 @@ impl App {
             String::new()
         };
         format!(
-            "{} sessions · {} tok (codex {} · claude {}{}) · {}",
+            "{} sessions · {} tok (codex {} · claude {}{}) · {}{}",
             a.session_count(),
             human_tokens(a.total.total),
             human_tokens(a.codex.total),
             human_tokens(a.claude.total),
             kiro,
             self.scope_label(),
+            self.limits_suffix(),
         )
+    }
+
+    /// Subscription windows, appended to the summary line once a reading has
+    /// come back. This is the only place they surface: the popup that used to
+    /// show them is gone, and a reading nobody can see is a reading not worth
+    /// fetching.
+    fn limits_suffix(&self) -> String {
+        let Some(limits) = self.limits.as_ref() else {
+            return String::new();
+        };
+        let parts: Vec<String> = limits
+            .summary_rows()
+            .into_iter()
+            .filter(|(_, has_value)| *has_value)
+            .map(|(line, _)| line.split_whitespace().collect::<Vec<_>>().join(" "))
+            .collect();
+        if parts.is_empty() {
+            String::new()
+        } else {
+            format!("  ·  {}", parts.join(" · "))
+        }
     }
 }
 
@@ -853,15 +864,6 @@ fn focus_label(focus: Focus) -> &'static str {
     match focus {
         Focus::List => "list",
         Focus::Terminal => "terminal",
-    }
-}
-
-/// Snake-case label for an audit event's `layout` field.
-fn layout_label(layout: PaneLayout) -> &'static str {
-    match layout {
-        PaneLayout::Single => "single",
-        PaneLayout::Horizontal => "horizontal",
-        PaneLayout::Vertical => "vertical",
     }
 }
 

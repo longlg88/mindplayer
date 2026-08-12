@@ -1732,99 +1732,6 @@ pub fn compute_pane_rects(area: Rect, n: usize, layout: PaneLayout) -> Vec<Rect>
     rects
 }
 
-/// One category's slice of the live grid: the row its header goes on, plus a
-/// rect per pane belonging to it.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PaneBand {
-    pub header: Rect,
-    pub panes: Vec<Rect>,
-}
-
-/// Rows a pane needs to show one line inside its top and bottom border.
-const MIN_PANE_HEIGHT: u16 = 3;
-
-/// Height a band needs: its header row, plus a usable row for every row of panes
-/// its internal grid will lay out. A band holding eight panes needs room for the
-/// two grid rows those panes occupy, not just for one.
-fn min_band_height(n: usize, layout: PaneLayout) -> u16 {
-    1 + grid_rows(n, layout) as u16 * MIN_PANE_HEIGHT
-}
-
-/// Split `area` into one band per group — a header row above that group's panes.
-///
-/// Height is shared out in proportion to pane count, so a three-pane topic is not
-/// squeezed to the same height as a one-pane topic. Returns `None` when the area
-/// cannot give every band a header plus a usable pane row; the caller then falls
-/// back to the flat grid rather than drawing headers over collapsed panes.
-pub fn compute_pane_bands(
-    area: Rect,
-    group_sizes: &[usize],
-    layout: PaneLayout,
-) -> Option<Vec<PaneBand>> {
-    let bands = group_sizes.len();
-    if bands == 0 || group_sizes.contains(&0) {
-        return None;
-    }
-    // Every band must clear its own minimum, so the budget is checked against the
-    // sum of those rather than a flat per-band figure. Refusing here is what lets
-    // the caller fall back to the flat grid, which packs dense pane counts better
-    // than banding can.
-    let mins: Vec<u16> = group_sizes
-        .iter()
-        .map(|&n| min_band_height(n, layout) - 1)
-        .collect();
-    let floor: u16 = mins.iter().sum::<u16>() + bands as u16;
-    if area.height < floor {
-        return None;
-    }
-    let total_panes: usize = group_sizes.iter().sum();
-    // Header rows come off the top of the budget first; what is left is shared
-    // among the bands' contents, starting from each band's minimum so no band can
-    // be starved by a busier neighbour.
-    let content_total = area.height - bands as u16;
-    let mut heights = mins.clone();
-    let surplus = content_total - mins.iter().sum::<u16>();
-    let mut handed = 0u16;
-    for (i, &n) in group_sizes.iter().enumerate() {
-        let share = surplus as usize * n / total_panes;
-        heights[i] += share as u16;
-        handed += share as u16;
-    }
-    // Integer division loses rows; hand them to the largest bands first so the
-    // busiest topic gets the slack.
-    let mut by_size: Vec<usize> = (0..bands).collect();
-    by_size.sort_by_key(|&i| std::cmp::Reverse(group_sizes[i]));
-    let mut cursor = 0;
-    while handed < surplus {
-        heights[by_size[cursor % bands]] += 1;
-        handed += 1;
-        cursor += 1;
-    }
-
-    let mut out = Vec::with_capacity(bands);
-    let mut y = area.y;
-    for (i, &n) in group_sizes.iter().enumerate() {
-        let header = Rect {
-            x: area.x,
-            y,
-            width: area.width,
-            height: 1,
-        };
-        let content = Rect {
-            x: area.x,
-            y: y + 1,
-            width: area.width,
-            height: heights[i],
-        };
-        out.push(PaneBand {
-            header,
-            panes: compute_pane_rects(content, n, layout),
-        });
-        y = y.saturating_add(1 + heights[i]);
-    }
-    Some(out)
-}
-
 fn live_pane(f: &mut Frame, app: &mut App, area: Rect) {
     let focused_view = app.focus == Focus::Terminal;
     let live_count = app.live_pty_count();
@@ -1885,33 +1792,29 @@ fn live_pane(f: &mut Frame, app: &mut App, area: Rect) {
         let sid = panes[idx].clone();
         app.pane_bounds.retain(|id, _| id == &sid);
         app.pane_sizes.retain(|id, _| id == &sid);
-        render_pane(f, app, &sid, idx, panes.len(), area, focused_view, true);
+        render_pane(
+            f,
+            app,
+            &sid,
+            idx,
+            panes.len(),
+            area,
+            focused_view,
+            true,
+            None,
+        );
         return;
     }
 
-    // Grouped grid: one band per category, matching how the session list groups.
-    // Falls back to the flat grid when there is only one band (nothing to show a
-    // header for) or the area is too short to give every band a header.
-    let sizes = app.pane_band_sizes();
-    let bands = (sizes.len() > 1)
-        .then(|| compute_pane_bands(area, &sizes, app.effective_layout()))
-        .flatten();
-
-    let rects: Vec<Rect> = match &bands {
-        Some(bands) => {
-            let mut first = 0usize;
-            for (band, &n) in bands.iter().zip(sizes.iter()) {
-                render_band_header(f, app, first, n, band.header);
-                first += n;
-            }
-            bands.iter().flat_map(|b| b.panes.iter().copied()).collect()
-        }
-        None => compute_pane_rects(area, panes.len(), app.effective_layout()),
-    };
-
+    // One pane per session in a uniform grid. Category is shown, not laid out:
+    // it colours the border and names itself in the title, so grouping costs no
+    // rows and every session stays visible — the thing stacking took away.
+    let rects = compute_pane_rects(area, panes.len(), app.effective_layout());
     for (idx, sid) in panes.iter().enumerate() {
         let pane_area = rects.get(idx).copied().unwrap_or(area);
-        let pane_focused = focused_view && idx == app.focused;
+        let cat = app
+            .category_of_session(sid)
+            .map(|id| (app.category_label(&id), category_color(&id)));
         render_pane(
             f,
             app,
@@ -1919,43 +1822,30 @@ fn live_pane(f: &mut Frame, app: &mut App, area: Rect) {
             idx,
             panes.len(),
             pane_area,
-            pane_focused,
+            focused_view && idx == app.focused,
             false,
+            cat.as_ref().map(|(l, c)| (l.as_str(), *c)),
         );
     }
 }
 
-/// One band's header row: the same `▾ name (n) ⇄ auto` shape the session list
-/// uses for a category, so the grid needs no new vocabulary.
-fn render_band_header(f: &mut Frame, app: &App, first_pane: usize, n: usize, area: Rect) {
-    let mut spans = Vec::new();
-    match app.pane_band_label(first_pane) {
-        Some(label) => {
-            spans.push(Span::styled(
-                "▾ ",
-                Style::default().fg(CATEGORY).add_modifier(Modifier::BOLD),
-            ));
-            // Parent path dim, name bright — long paths stay readable without
-            // pushing the count off the row.
-            let (parent, name) = match label.rsplit_once('/') {
-                Some((p, n)) => (format!("…/{p}/").replace("…//", "…/"), n.to_string()),
-                None => (String::new(), label.clone()),
-            };
-            if !parent.is_empty() {
-                spans.push(Span::styled(parent, Style::default().fg(DIM)));
-            }
-            spans.push(Span::styled(
-                name,
-                Style::default().fg(CATEGORY).add_modifier(Modifier::BOLD),
-            ));
-        }
-        None => spans.push(Span::styled(
-            "▾ no category",
-            Style::default().fg(Color::Rgb(90, 95, 108)),
-        )),
-    }
-    spans.push(Span::styled(format!("  ({n})"), Style::default().fg(DIM)));
-    f.render_widget(Paragraph::new(Line::from(spans)), area);
+/// Colours a category's cell is drawn in. Assigned from the category id so a
+/// topic keeps its colour across restarts without anything being stored, and
+/// picked to stay apart from the focus and zoom border colours.
+const CELL_COLORS: [Color; 6] = [
+    Color::Rgb(180, 142, 173), // mauve
+    Color::Rgb(163, 190, 140), // green
+    Color::Rgb(208, 135, 112), // clay
+    Color::Rgb(136, 192, 208), // ice
+    Color::Rgb(235, 203, 139), // sand
+    Color::Rgb(180, 168, 220), // periwinkle
+];
+
+fn category_color(cat_id: &str) -> Color {
+    let sum = cat_id
+        .bytes()
+        .fold(0u32, |a, b| a.wrapping_mul(31) + b as u32);
+    CELL_COLORS[sum as usize % CELL_COLORS.len()]
 }
 
 /// Render one live pane's border, title, and terminal contents into `pane_area`
@@ -1971,6 +1861,10 @@ fn render_pane(
     pane_area: Rect,
     pane_focused: bool,
     zoomed: bool,
+    // The category this pane's cell belongs to: its name goes in front of the
+    // session name and its colour on the border, so a stack is identifiable
+    // without costing the grid a header row.
+    cell: Option<(&str, Color)>,
 ) {
     let ended = app.ended.contains(sid);
     let (dot, dot_color) = pane_dot(app, sid, ended);
@@ -1984,6 +1878,13 @@ fn render_pane(
     // idle status dot is drawn in that same accent color, so a focused+idle
     // pane would otherwise read as just "blue" — shape, not hue, is what
     // actually disambiguates focus from status here.
+    let mut title_spans: Vec<Span> = Vec::new();
+    if let Some((label, color)) = cell {
+        title_spans.push(Span::styled(
+            format!(" {label}"),
+            Style::default().fg(color).add_modifier(Modifier::BOLD),
+        ));
+    }
     let title = Line::from(vec![
         if pane_focused {
             Span::styled(
@@ -2038,24 +1939,24 @@ fn render_pane(
             Span::raw("")
         },
     ]);
-    // A thick border on the focused pane makes it unmistakable which one Tab
-    // will act on next when several panes are open side by side. Zoom always
-    // tints the border gold too, so "am I zoomed" reads at a glance even
-    // without stopping to parse the title text.
+    let mut title = title;
+    if !title_spans.is_empty() {
+        title_spans.extend(title.spans);
+        title = Line::from(title_spans);
+    }
+    // Border shape marks focus, border colour marks category and attention.
+    let (border_type, weight) = pane_border_for(pane_focused, zoomed);
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_type(if pane_focused {
-            BorderType::Thick
-        } else {
-            BorderType::Plain
-        })
+        .border_type(border_type)
         .title(title)
-        .border_style(if zoomed {
-            Style::default().fg(ZOOM).add_modifier(Modifier::BOLD)
-        } else if pane_focused {
-            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(DIM)
+        .border_style(match (zoomed, pane_focused) {
+            (true, _) => Style::default().fg(ZOOM).add_modifier(Modifier::BOLD),
+            (_, true) => Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+            // Never dimmed: at this weight a dim frame reads as a grey slab.
+            _ => Style::default()
+                .fg(pane_border_color(app, sid, ended, cell.map(|(_, c)| c)))
+                .add_modifier(weight),
         });
     let inner = block.inner(pane_area);
     f.render_widget(block, pane_area);
@@ -2095,6 +1996,52 @@ fn render_pane(
             inner,
         );
     }
+}
+
+/// Border colour for a pane with no category — a neutral that still reads as a
+/// drawn line, well clear of the dim grey used for de-emphasised text.
+const UNCATEGORIZED_BORDER: Color = Color::Rgb(140, 148, 162);
+
+/// Border colour for a session that has stopped and wants you. With every pane
+/// at the same weight this is what makes one stand out, so it is the one colour
+/// on screen no category is ever assigned.
+const WAITING_BORDER: Color = Color::Rgb(224, 128, 92);
+
+/// Which border a pane gets, and whether it is emboldened.
+///
+/// Every pane gets a half-block frame — the heaviest border a terminal can draw
+/// without spending a second row. Line-drawing glyphs, even `Thick`, read as
+/// hairlines next to a full-height pane of text, which left the grid looking
+/// like a wireframe.
+///
+/// That uniform weight costs the attention channel, so attention moves to
+/// colour: a session waiting on you takes the alert colour (see
+/// `pane_border_color`), everything else keeps its category's. The status dot in
+/// each title carries the same signal in text, so nothing depends on colour
+/// alone.
+///
+/// The focused pane keeps the mirrored `QuadrantInside` set: same weight, but
+/// the corners point the other way, so it is identifiable even in one colour.
+fn pane_border_for(focused: bool, zoomed: bool) -> (BorderType, Modifier) {
+    if zoomed || focused {
+        return (BorderType::QuadrantInside, Modifier::BOLD);
+    }
+    (BorderType::QuadrantOutside, Modifier::BOLD)
+}
+
+/// A pane's border colour: the alert colour while it waits on you, otherwise its
+/// category's (or a neutral when it has none). Focus and zoom are handled by the
+/// caller, which overrides both.
+fn pane_border_color(app: &App, sid: &str, ended: bool, cat: Option<Color>) -> Color {
+    if ended
+        || matches!(
+            app.session_status(sid),
+            SessionStatus::Blocked | SessionStatus::Ended
+        )
+    {
+        return WAITING_BORDER;
+    }
+    cat.unwrap_or(UNCATEGORIZED_BORDER)
 }
 
 fn pane_dot(app: &App, sid: &str, ended: bool) -> (&'static str, Color) {
@@ -2183,11 +2130,30 @@ fn handoff_popup(f: &mut Frame, choice: usize, source: Option<Agent>) {
     );
 }
 
+/// The width `help_popup` asks for, before the frame clamps it.
+const HELP_WIDTH: u16 = 96;
+
 fn help_popup(f: &mut Frame) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(ACCENT))
         .title(" Keyboard shortcuts ");
+    let lines = help_lines();
+    let width = HELP_WIDTH.min(f.area().width);
+    let area = centered(f.area(), width, wrapped_popup_height(&lines, width));
+    f.render_widget(Clear, area);
+    f.render_widget(
+        Paragraph::new(lines)
+            .block(block)
+            .alignment(Alignment::Left)
+            .wrap(Wrap { trim: false }),
+        area,
+    );
+}
+
+/// Every row of the shortcuts popup. Split out from the drawing so a test can
+/// check the real list against the height it will be given.
+fn help_lines() -> Vec<Line<'static>> {
     let section = |title: &'static str| {
         Line::from(Span::styled(
             title,
@@ -2203,7 +2169,7 @@ fn help_popup(f: &mut Frame) {
             Span::raw(text),
         ])
     };
-    let lines = vec![
+    vec![
         section("Session"),
         item(
             "enter",
@@ -2223,13 +2189,15 @@ fn help_popup(f: &mut Frame) {
             "c",
             "send a catch-up prompt to selected session (confirms if busy)",
         ),
+        // One key, resolved by what the cursor is on (see main.rs). The context
+        // rides in the key column so two rows can't read as two bindings.
         item(
-            "t",
-            "on a session: put it in a topic category (all marked, in multi-select)",
+            "t (session)",
+            "put it in a topic category (all marked, in multi-select)",
         ),
         item(
-            "t",
-            "on a category header: auto-sync on/off, sync now, rename, remove",
+            "t (header)",
+            "auto-sync on/off, sync now, rename, remove",
         ),
         Line::from(""),
         section("View"),
@@ -2259,23 +2227,31 @@ fn help_popup(f: &mut Frame) {
             "ctrl-p",
             "open a local .html file in the browser: pick from detected files (badge shows the count), or tab to type a path",
         ),
+        item(
+            "ctrl-y",
+            "copy a link out of the focused pane's most recent answer that had one: a single link copies straight away, several open a picker (enter takes one, a takes all)",
+        ),
         item("shift/alt/ctrl-enter", "insert newline in text modals"),
         item("esc", "cancel modal or close this help"),
         item("?", "show or close this help"),
-    ];
-    // Sized to content (+ borders and a little slack for lines that wrap at
-    // narrower terminal widths) rather than a fixed guess, so adding an
-    // entry above can't silently clip the ones below it again.
-    let height = lines.len() as u16 + 6;
-    let area = centered(f.area(), 96, height);
-    f.render_widget(Clear, area);
-    f.render_widget(
-        Paragraph::new(lines)
-            .block(block)
-            .alignment(Alignment::Left)
-            .wrap(Wrap { trim: false }),
-        area,
-    );
+    ]
+}
+
+/// Rows a bordered popup needs to show `lines` at `width` without clipping —
+/// screen rows, not entries, because a line longer than the popup is wide takes
+/// two of them.
+///
+/// This was a constant of slack added to `lines.len()` twice over, and both
+/// times an entry was added the slack ran out and silently cut off the last
+/// row. A guess cannot be kept in sync with the text above it; a measurement
+/// can.
+fn wrapped_popup_height(lines: &[Line], width: u16) -> u16 {
+    let inner = width.saturating_sub(2).max(1);
+    let rows: u16 = lines
+        .iter()
+        .map(|line| (line.width() as u16).div_ceil(inner).max(1))
+        .sum();
+    rows.saturating_add(2)
 }
 
 // --- helpers --------------------------------------------------------------
@@ -2509,6 +2485,100 @@ fn relative_time(t: Option<DateTime<Utc>>, now: DateTime<Utc>) -> String {
 mod tests {
     use super::*;
 
+    /// A line that fits costs one row; one that overflows costs as many as it
+    /// wraps into. The old sizing counted entries, so long descriptions were
+    /// free — which is how the last shortcut kept falling off the popup.
+    #[test]
+    fn popup_height_counts_wrapped_rows_not_entries() {
+        let inner = 20u16;
+        let width = inner + 2;
+        let short = Line::from("x".repeat(inner as usize));
+        let long = Line::from("x".repeat(inner as usize + 1));
+        assert_eq!(
+            wrapped_popup_height(std::slice::from_ref(&short), width),
+            3,
+            "1 row + 2 borders"
+        );
+        assert_eq!(wrapped_popup_height(&[long], width), 4, "wraps to 2 rows");
+        assert_eq!(
+            wrapped_popup_height(&[Line::from(""), short], width),
+            4,
+            "an empty spacer still costs its row"
+        );
+    }
+
+    /// The guard that stops this from breaking a third time: whatever the
+    /// shortcut list grows into, the popup it is drawn in must be tall enough
+    /// for all of it at the width the popup actually asks for.
+    #[test]
+    fn every_shortcut_fits_in_the_help_popup() {
+        let lines = help_lines();
+        let inner = HELP_WIDTH - 2;
+        let needed: u16 = lines
+            .iter()
+            .map(|l| (l.width() as u16).div_ceil(inner).max(1))
+            .sum();
+        assert_eq!(
+            wrapped_popup_height(&lines, HELP_WIDTH),
+            needed + 2,
+            "help popup must fit every row plus its borders"
+        );
+    }
+
+    /// Two rows both labelled `t` read as a duplicate binding; the context
+    /// belongs in the key column instead. See main.rs — one key, resolved by
+    /// what the cursor is on.
+    #[test]
+    fn no_shortcut_key_is_listed_twice() {
+        let keys: Vec<String> = help_lines()
+            .iter()
+            .filter(|l| l.spans.len() == 2)
+            .map(|l| l.spans[0].content.trim().to_string())
+            .collect();
+        let mut seen = std::collections::HashSet::new();
+        for key in &keys {
+            assert!(seen.insert(key.clone()), "`{key}` is listed twice");
+        }
+        assert!(keys.iter().any(|k| k == "ctrl-y"), "ctrl-y is documented");
+    }
+
+    /// Every pane is drawn at the same weight; the focused one differs by the
+    /// direction of its corners, not by being heavier. If both ever resolved to
+    /// the same set, focus would be legible only by colour.
+    #[test]
+    fn focus_uses_a_different_border_set_at_the_same_weight() {
+        let (plain, _) = pane_border_for(false, false);
+        let (focused, _) = pane_border_for(true, false);
+        let (zoomed, _) = pane_border_for(false, true);
+        assert_eq!(plain, BorderType::QuadrantOutside);
+        assert_eq!(focused, BorderType::QuadrantInside);
+        assert_eq!(zoomed, focused, "zoom reads as focus");
+        assert_ne!(plain, focused);
+    }
+
+    /// The colour has to carry attention now that weight is uniform, so the
+    /// waiting colour must not collide with any colour a category can take.
+    #[test]
+    fn no_category_can_be_mistaken_for_the_waiting_colour() {
+        assert_ne!(WAITING_BORDER, UNCATEGORIZED_BORDER);
+        for c in CELL_COLORS {
+            assert_ne!(
+                c, WAITING_BORDER,
+                "a category would look like it is waiting"
+            );
+        }
+    }
+
+    /// Borders are never dimmed. Fading a quiet pane's frame was what made the
+    /// old grid look unfinished rather than calm.
+    #[test]
+    fn no_border_colour_is_the_dim_grey_used_for_text() {
+        assert_ne!(UNCATEGORIZED_BORDER, DIM);
+        for id in ["cat_1", "cat_2", "cat_3", "pulse", "tower"] {
+            assert_ne!(category_color(id), DIM, "{id}");
+        }
+    }
+
     #[test]
     fn cwd_leaf_uses_last_path_component() {
         assert_eq!(cwd_leaf(Path::new("/Users/alex/project")), "project");
@@ -2570,129 +2640,6 @@ mod tests {
             width: 120,
             height: 40,
         }
-    }
-
-    /// Every band gets exactly one header row, and the bands tile `area` from top
-    /// to bottom with no gap and no overlap.
-    #[test]
-    fn bands_tile_the_area_with_one_header_each() {
-        let area = body();
-        let bands = compute_pane_bands(area, &[3, 2, 1], PaneLayout::Horizontal)
-            .expect("40 rows is plenty for three bands");
-        assert_eq!(bands.len(), 3);
-        let mut y = area.y;
-        for (i, b) in bands.iter().enumerate() {
-            assert_eq!(b.header.y, y, "band {i} header follows the previous band");
-            assert_eq!(b.header.height, 1);
-            assert_eq!(b.header.x, area.x);
-            assert_eq!(b.header.width, area.width);
-            let top = b.panes.iter().map(|p| p.y).min().unwrap();
-            assert_eq!(top, y + 1, "band {i} panes start under its header");
-            let bottom = b.panes.iter().map(|p| p.y + p.height).max().unwrap();
-            y = bottom;
-        }
-        assert_eq!(y, area.y + area.height, "the bands consume the whole area");
-    }
-
-    #[test]
-    fn each_band_holds_exactly_its_own_panes() {
-        let bands = compute_pane_bands(body(), &[3, 2, 1], PaneLayout::Horizontal).unwrap();
-        assert_eq!(
-            bands.iter().map(|b| b.panes.len()).collect::<Vec<_>>(),
-            vec![3, 2, 1]
-        );
-    }
-
-    /// A three-pane topic should not be squeezed to the same height as a
-    /// one-pane topic.
-    #[test]
-    fn band_height_follows_pane_count() {
-        let bands = compute_pane_bands(body(), &[3, 1], PaneLayout::Horizontal).unwrap();
-        let h: Vec<u16> = bands
-            .iter()
-            .map(|b| b.panes.iter().map(|p| p.height).max().unwrap())
-            .collect();
-        assert!(h[0] > h[1], "the three-pane band must be taller: {h:?}");
-    }
-
-    /// Rather than draw headers over panes collapsed to nothing, the caller is
-    /// told to fall back to the flat grid.
-    #[test]
-    fn a_too_short_area_refuses_to_band() {
-        let sizes = [1, 1, 1];
-        let need: u16 = sizes
-            .iter()
-            .map(|&n| min_band_height(n, PaneLayout::Horizontal))
-            .sum();
-        let short = Rect {
-            x: 0,
-            y: 0,
-            width: 120,
-            height: need - 1,
-        };
-        assert!(compute_pane_bands(short, &sizes, PaneLayout::Horizontal).is_none());
-        let just_enough = Rect {
-            height: need,
-            ..short
-        };
-        assert!(compute_pane_bands(just_enough, &sizes, PaneLayout::Horizontal).is_some());
-    }
-
-    /// The invariant that matters: either banding is refused, or every pane it
-    /// hands back can actually show a line. A band holding eight panes needs room
-    /// for the two grid rows they occupy — the first version of this only reserved
-    /// one row per band and silently produced 2-row panes.
-    #[test]
-    fn banding_is_refused_rather_than_collapsing_a_pane() {
-        for height in 4u16..60 {
-            let area = Rect {
-                x: 0,
-                y: 0,
-                width: 120,
-                height,
-            };
-            for sizes in [
-                vec![8, 1, 1, 1],
-                vec![3, 2, 1],
-                vec![1, 1],
-                vec![12, 12],
-                vec![1, 20],
-            ] {
-                for layout in [PaneLayout::Horizontal, PaneLayout::Vertical] {
-                    let Some(bands) = compute_pane_bands(area, &sizes, layout) else {
-                        continue;
-                    };
-                    for (i, b) in bands.iter().enumerate() {
-                        for p in &b.panes {
-                            assert!(
-                                p.height >= MIN_PANE_HEIGHT,
-                                "h={height} sizes={sizes:?} {layout:?}: band {i} pane collapsed to {}",
-                                p.height
-                            );
-                        }
-                    }
-                    let last = bands
-                        .last()
-                        .unwrap()
-                        .panes
-                        .iter()
-                        .map(|p| p.y + p.height)
-                        .max()
-                        .unwrap();
-                    assert_eq!(
-                        last,
-                        area.y + area.height,
-                        "h={height} sizes={sizes:?}: bands must fill the area"
-                    );
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn an_empty_or_zero_sized_group_is_refused() {
-        assert!(compute_pane_bands(body(), &[], PaneLayout::Horizontal).is_none());
-        assert!(compute_pane_bands(body(), &[2, 0], PaneLayout::Horizontal).is_none());
     }
 
     #[test]

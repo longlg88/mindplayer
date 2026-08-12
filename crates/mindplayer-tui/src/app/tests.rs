@@ -2850,13 +2850,12 @@ fn opening_panes_groups_them_by_category() {
         vec!["m1", "m2", "s1", "s2", "loose"],
         "same-category panes adjacent, uncategorized trailing"
     );
-    assert_eq!(app.pane_band_sizes(), vec![2, 2, 1]);
 }
 
-/// Bands are ordered by the first pane opened into each, so a band never jumps
-/// position as later panes arrive.
+/// A category's run of panes sits where its first pane landed, so the grid does
+/// not reshuffle as later panes arrive.
 #[test]
-fn band_order_follows_the_first_pane_opened_into_each() {
+fn category_order_follows_the_first_pane_opened_into_each() {
     let mut app = app_with(vec![
         session("s1", Agent::Codex, false),
         session("m1", Agent::Claude, false),
@@ -2872,9 +2871,8 @@ fn band_order_follows_the_first_pane_opened_into_each() {
     assert_eq!(
         app.panes,
         vec!["s1", "m1", "m2"],
-        "soda-nest opened first, so its band stays first"
+        "soda-nest opened first, so its panes stay first"
     );
-    assert_eq!(app.pane_band_sizes(), vec![1, 2]);
 }
 
 /// Regrouping reorders `panes`, so the focus index has to follow the session it
@@ -2901,9 +2899,10 @@ fn regrouping_keeps_focus_on_the_same_session() {
 }
 
 /// A handoff child inherits its parent's category through the thread root, so it
-/// belongs in the parent's band rather than the uncategorized one.
+/// sits beside the parent in the grid rather than trailing with the
+/// uncategorized ones.
 #[test]
-fn a_handoff_child_lands_in_its_parents_band() {
+fn a_handoff_child_sits_beside_its_parent() {
     let mut app = app_with(vec![
         session("parent", Agent::Claude, false),
         session("child", Agent::Codex, false),
@@ -2929,40 +2928,7 @@ fn a_handoff_child_lands_in_its_parents_band() {
     assert_eq!(
         app.panes,
         vec!["parent", "child", "loose"],
-        "the child sits with its parent, not in the trailing band"
-    );
-    assert_eq!(app.pane_band_sizes(), vec![2, 1]);
-}
-
-/// With nothing categorized there is one band, and the renderer takes the flat
-/// grid instead of drawing a header for a single group.
-#[test]
-fn uncategorized_panes_form_a_single_band() {
-    let mut app = app_with(vec![
-        session("a", Agent::Codex, false),
-        session("b", Agent::Claude, false),
-    ]);
-    app.focus_or_add_pane("a");
-    app.focus_or_add_pane("b");
-    assert_eq!(app.panes, vec!["a", "b"]);
-    assert_eq!(app.pane_band_sizes(), vec![2]);
-    assert_eq!(app.pane_band_label(0), None);
-}
-
-#[test]
-fn a_band_reports_its_category_label() {
-    let mut app = app_with(vec![
-        session("m1", Agent::Claude, false),
-        session("loose", Agent::Codex, false),
-    ]);
-    categorize(&mut app, "mindplayer", &["m1"]);
-    app.focus_or_add_pane("m1");
-    app.focus_or_add_pane("loose");
-    assert_eq!(app.pane_band_label(0).as_deref(), Some("mindplayer"));
-    assert_eq!(
-        app.pane_band_label(1),
-        None,
-        "the trailing band has no label"
+        "the child sits with its parent, not at the end"
     );
 }
 

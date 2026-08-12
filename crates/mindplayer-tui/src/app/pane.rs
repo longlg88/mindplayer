@@ -122,31 +122,6 @@ impl App {
         }
     }
 
-    /// Pane counts per band, in `panes` order — what the grid needs to lay bands
-    /// out. Assumes [`Self::regroup_panes`] has already grouped `panes`.
-    pub fn pane_band_sizes(&self) -> Vec<usize> {
-        let mut out: Vec<usize> = Vec::new();
-        let mut prev: Option<Option<String>> = None;
-        for id in &self.panes {
-            let key = self.category_of_session(id);
-            if prev.as_ref() == Some(&key) {
-                *out.last_mut().expect("prev implies a band") += 1;
-            } else {
-                out.push(1);
-                prev = Some(key);
-            }
-        }
-        out
-    }
-
-    /// Category label for the band starting at `pane_index`, or `None` for the
-    /// uncategorized band.
-    pub fn pane_band_label(&self, pane_index: usize) -> Option<String> {
-        let id = self.panes.get(pane_index)?;
-        let cat = self.category_of_session(id)?;
-        Some(self.category_label(&cat))
-    }
-
     pub(crate) fn remove_pane(&mut self, sid: &str) {
         // Per-pane HTML-candidate detection state must not outlive the pane; the
         // interval gate is global, so there's nothing pane-scoped to clear for it.

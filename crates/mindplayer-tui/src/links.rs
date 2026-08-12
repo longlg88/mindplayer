@@ -138,12 +138,36 @@ fn recent_answers(session: &Session, max_turns: usize) -> Option<Vec<String>> {
         let Ok(v) = serde_json::from_str::<Value>(line) else {
             continue;
         };
-        if let Some((role, body)) = parse(&v) {
-            if role == "assistant" && !body.trim().is_empty() {
-                answers.push(body);
+        let Some((role, body)) = parse(&v) else {
+            // Reasoning, tool calls and the like sit between the pieces of one
+            // reply without ending it, so they must not split a run.
+            continue;
+        };
+        if role == "assistant" {
+            if body.trim().is_empty() {
+                continue;
             }
+            // Codex writes one visible reply as several assistant records.
+            // Treating each as its own answer meant a reply whose links were
+            // spread over two records only ever offered the last record's —
+            // and when that was a single link it was copied with no picker at
+            // all, so the rest were unreachable. A reply is every assistant
+            // record up to the next thing the user said.
+            match answers.last_mut() {
+                Some(open) if !open.is_empty() => {
+                    open.push_str("\n\n");
+                    open.push_str(&body);
+                }
+                // The slot a previous speaker opened for the next reply.
+                Some(open) => *open = body,
+                None => answers.push(body),
+            }
+        } else if answers.last().is_some_and(|a| !a.is_empty()) {
+            // Someone else spoke: the reply that was open is finished.
+            answers.push(String::new());
         }
     }
+    answers.retain(|a| !a.trim().is_empty());
     answers.reverse();
     answers.truncate(max_turns);
     Some(answers)
@@ -184,6 +208,104 @@ fn read_tail(path: &std::path::Path, n: u64) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use mindplayer_core::Agent;
+
+    /// Build a codex rollout from `(role, text)` turns and ask what `Ctrl-y`
+    /// would find in it.
+    fn codex_hit(turns: &[(&str, &str)]) -> Option<LinkHit> {
+        // A path per call: these run in parallel, and two fixtures with the
+        // same turn count would otherwise share a file and clobber each other.
+        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("mp-links-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(format!("rollout-{n}.jsonl"));
+        let body: String = turns
+            .iter()
+            .map(|(role, text)| {
+                format!(
+                    "{}\n",
+                    serde_json::json!({
+                        "type": "response_item",
+                        "payload": {
+                            "type": "message",
+                            "role": role,
+                            "content": [{"type": "output_text", "text": text}],
+                        }
+                    })
+                )
+            })
+            .collect();
+        std::fs::write(&path, body).unwrap();
+        let session = mindplayer_core::Session {
+            id: "s".into(),
+            agent: Agent::Codex,
+            cwd: PathBuf::new(),
+            file: path.clone(),
+            started_at: None,
+            last_active: None,
+            last_prompt_at: None,
+            tokens: Default::default(),
+            title: String::new(),
+            archived: false,
+            is_subagent: false,
+            context_pct: None,
+        };
+        let hit = latest_links(&session, MAX_TURNS_BACK);
+        let _ = std::fs::remove_file(&path);
+        hit
+    }
+
+    /// Regression: codex writes one visible reply as several assistant records.
+    /// Each was treated as its own answer, so only the last record's links were
+    /// offered — and a last record holding one link was copied outright, with no
+    /// picker, putting the earlier links out of reach entirely.
+    #[test]
+    fn one_reply_split_across_records_offers_all_its_links() {
+        let hit = codex_hit(&[
+            ("user", "어디서 보나요"),
+            ("assistant", "대시보드는 https://one.example 입니다."),
+            ("assistant", "런북은 https://two.example 를 보세요."),
+        ])
+        .expect("the reply has links");
+        assert_eq!(
+            hit.links,
+            vec!["https://one.example", "https://two.example"],
+            "both records belong to the same reply"
+        );
+        assert_eq!(hit.turns_ago, 0);
+    }
+
+    /// The merge must stop at the next thing the user said, or an older reply's
+    /// links would be offered as though they were part of the newest one.
+    #[test]
+    fn a_users_turn_ends_the_reply() {
+        let hit = codex_hit(&[
+            ("assistant", "예전 답 https://old.example"),
+            ("user", "다른 질문"),
+            ("assistant", "새 답 https://new.example"),
+        ])
+        .expect("the reply has links");
+        assert_eq!(hit.links, vec!["https://new.example"]);
+        assert_eq!(hit.turns_ago, 0, "the newest reply is its own answer");
+    }
+
+    /// Counting back must count replies, not records, or "3 answers back" means
+    /// nothing the user can recognise.
+    #[test]
+    fn turns_ago_counts_replies_not_records() {
+        let hit = codex_hit(&[
+            ("assistant", "링크 https://old.example"),
+            ("user", "질문 1"),
+            ("assistant", "조각 하나"),
+            ("assistant", "조각 둘"),
+            ("user", "질문 2"),
+            ("assistant", "링크 없음"),
+        ])
+        .expect("an older reply has links");
+        assert_eq!(hit.links, vec!["https://old.example"]);
+        assert_eq!(hit.turns_ago, 2, "two replies back, not four records");
+    }
 
     /// Every string below is lifted verbatim from this project's own transcript,
     /// so these assert against the shapes answers actually produce rather than

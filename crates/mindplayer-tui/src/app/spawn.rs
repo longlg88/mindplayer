@@ -336,6 +336,9 @@ impl App {
             old.kill();
         }
         self.ended.remove(&id);
+        // A retry starts clean: the previous failure must not shadow the new
+        // pane if this attempt succeeds.
+        self.clear_pane_error(&id);
         self.pending_initial_inputs.remove(&id);
         self.out_seq.remove(&id);
         self.out_at.remove(&id);

@@ -541,6 +541,10 @@ pub struct App {
     /// to archive the disk session on arrival. Never rendered.
     closed_extras: Vec<Session>,
 
+    /// Why a pane's child exited, for the ones that exited without drawing
+    /// anything. Keyed by session id; empty for panes that failed visibly.
+    pub(crate) pane_error: HashMap<String, String>,
+
     /// Last known inner size of the right pane (rows, cols).
     pub pty_rows: u16,
     pub pty_cols: u16,
@@ -694,6 +698,7 @@ impl App {
             extra_sessions: Vec::new(),
             new_baselines: HashMap::new(),
             closed_extras: Vec::new(),
+            pane_error: HashMap::new(),
             pty_rows: 24,
             pty_cols: 80,
             pty_x: 0,

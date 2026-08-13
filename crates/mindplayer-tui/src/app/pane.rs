@@ -425,6 +425,11 @@ impl App {
 
     /// Request a resume of the selected session in the right pane. If it is
     /// already running, just switch to it (keeping every other session alive).
+    /// Forget a pane's captured failure, so a fresh attempt starts clean.
+    pub(crate) fn clear_pane_error(&mut self, sid: &str) {
+        self.pane_error.remove(sid);
+    }
+
     pub fn request_resume(&mut self) {
         let Some(session) = self.selected_session().cloned() else {
             return;
@@ -846,6 +851,15 @@ impl App {
                 self.status =
                     "session ended — ctrl-x for the list · ctrl-q closes the pane".to_string();
             }
+            // A child that exited without ever drawing anything leaves an
+            // empty pane, which says nothing about why. Its stderr is
+            // redirected to a file (sharing the PTY makes codex abort), so the
+            // reason is on disk and nowhere the user can see. Lift it out.
+            if self.ptys.get(&id).is_some_and(|p| p.output_seq() == 0) {
+                if let Some(text) = read_stderr_tail(&id) {
+                    self.pane_error.insert(id.clone(), text);
+                }
+            }
             self.ended.insert(id);
         }
         true
@@ -1164,6 +1178,96 @@ fn bubble_urgent_within_bands(
     }
     ranked.sort_by_key(|(band, rank, i, _)| (*band, *rank, *i));
     ranked.into_iter().map(|(_, _, _, id)| id.clone()).collect()
+}
+
+/// The last few lines a dead child wrote to stderr, if it wrote any.
+///
+/// Capped at both ends: only the tail of the file is read, and only the last
+/// few lines of that are kept, because a crash loop can append the same message
+/// hundreds of times and the pane has room for one.
+fn read_stderr_tail(session_id: &str) -> Option<String> {
+    use std::io::{Read, Seek, SeekFrom};
+    const TAIL_BYTES: u64 = 16 * 1024;
+    const MAX_LINES: usize = 6;
+
+    let path = crate::pty::stderr_log_path(session_id);
+    let mut f = std::fs::File::open(&path).ok()?;
+    let len = f.metadata().ok()?.len();
+    f.seek(SeekFrom::Start(len.saturating_sub(TAIL_BYTES)))
+        .ok()?;
+    let mut buf = Vec::new();
+    f.take(TAIL_BYTES).read_to_end(&mut buf).ok()?;
+    let text = String::from_utf8_lossy(&buf);
+
+    let mut lines: Vec<&str> = text
+        .lines()
+        .map(str::trim_end)
+        .filter(|l| !l.trim().is_empty())
+        .collect();
+    // A child that fails the same way every time writes the same line every
+    // time; showing it six times would crowd out nothing but itself.
+    lines.dedup();
+    let tail: Vec<&str> = lines.iter().rev().take(MAX_LINES).rev().copied().collect();
+    (!tail.is_empty()).then(|| tail.join("\n"))
+}
+
+#[cfg(test)]
+mod stderr_tail_tests {
+    use super::read_stderr_tail;
+
+    fn write_log(id: &str, body: &str) {
+        let path = crate::pty::stderr_log_path(id);
+        if let Some(dir) = std::path::Path::new(&path).parent() {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        std::fs::write(&path, body).unwrap();
+    }
+
+    /// The failure that started this: codex refuses to resume a session another
+    /// process already holds, writes one line to stderr, and exits. That line
+    /// is the whole explanation, and it was going only to a file.
+    #[test]
+    fn the_reason_a_child_died_is_recovered_from_its_log() {
+        let id = format!("tail-basic-{}", std::process::id());
+        write_log(
+            &id,
+            "Error: thread 019f already has an active writer (code -32600)\n",
+        );
+        let got = read_stderr_tail(&id).expect("a log with a line yields it");
+        assert!(got.contains("already has an active writer"), "{got}");
+        let _ = std::fs::remove_file(crate::pty::stderr_log_path(&id));
+    }
+
+    /// Retrying appends the same line every time. Six copies of one message
+    /// would fill the pane with no more information than one.
+    #[test]
+    fn a_message_repeated_by_every_retry_is_shown_once() {
+        let id = format!("tail-dedup-{}", std::process::id());
+        write_log(&id, &"Error: same failure\n".repeat(20));
+        let got = read_stderr_tail(&id).unwrap();
+        assert_eq!(got, "Error: same failure");
+        let _ = std::fs::remove_file(crate::pty::stderr_log_path(&id));
+    }
+
+    #[test]
+    fn only_the_last_few_lines_survive() {
+        let id = format!("tail-cap-{}", std::process::id());
+        let body: String = (0..50).map(|i| format!("line {i}\n")).collect();
+        write_log(&id, &body);
+        let got = read_stderr_tail(&id).unwrap();
+        assert_eq!(got.lines().count(), 6, "capped");
+        assert!(got.ends_with("line 49"), "keeps the newest: {got}");
+        let _ = std::fs::remove_file(crate::pty::stderr_log_path(&id));
+    }
+
+    #[test]
+    fn a_child_that_wrote_nothing_yields_nothing() {
+        let id = format!("tail-empty-{}", std::process::id());
+        write_log(&id, "   \n\n");
+        assert!(read_stderr_tail(&id).is_none());
+        assert!(read_stderr_tail("tail-never-existed-xyz").is_none());
+        let _ = std::fs::remove_file(crate::pty::stderr_log_path(&id));
+    }
 }
 
 #[cfg(test)]

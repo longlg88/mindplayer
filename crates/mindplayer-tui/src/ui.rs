@@ -1749,6 +1749,15 @@ fn render_pane(
         app.pty_y = inner.y;
     }
 
+    // A child that died without drawing anything leaves the terminal view
+    // blank, which reads as "nothing happened" rather than "it failed". Its
+    // stderr went to a file (sharing the PTY makes codex abort), so show that
+    // instead of the empty screen.
+    if let Some(reason) = app.pane_error.get(sid) {
+        render_pane_failure(f, reason, inner);
+        return;
+    }
+
     let selection = app.selection_for_pane(sid);
     if let Some(pty) = app.ptys.get(sid) {
         if let Ok(parser) = pty.parser().lock() {
@@ -1817,6 +1826,30 @@ fn pane_border_color(app: &App, sid: &str, ended: bool, cat: Option<Color>) -> C
         return WAITING_BORDER;
     }
     cat.unwrap_or(UNCATEGORIZED_BORDER)
+}
+
+/// What a pane shows instead of an empty screen when its child failed to start.
+fn render_pane_failure(f: &mut Frame, reason: &str, area: Rect) {
+    let mut lines = vec![
+        Line::from(Span::styled(
+            "this session did not start",
+            Style::default()
+                .fg(WAITING_BORDER)
+                .add_modifier(Modifier::BOLD),
+        )),
+        Line::from(""),
+    ];
+    lines.extend(
+        reason
+            .lines()
+            .map(|l| Line::from(Span::styled(l.to_string(), Style::default().fg(DIM)))),
+    );
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "ctrl-q closes this pane · enter on the row tries again",
+        Style::default().fg(DIM),
+    )));
+    f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), area);
 }
 
 fn pane_dot(app: &App, sid: &str, ended: bool) -> (&'static str, Color) {

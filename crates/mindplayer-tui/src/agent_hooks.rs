@@ -246,11 +246,15 @@ pub fn plan_install() -> (MergeResult, MergeResult) {
 pub fn apply_install(claude: &MergeResult, codex: &MergeResult) -> std::io::Result<()> {
     let script_path = hook_script_path();
     if let Some(dir) = script_path.parent() {
-        fs::create_dir_all(dir)?;
+        // `~/.mindplayer` — ours, so owner-only.
+        mindplayer_core::private::create_dir_private(dir)?;
     }
     fs::write(&script_path, HOOK_SCRIPT)?;
     #[cfg(unix)]
     {
+        // 0755, not the 0600 the rest of `~/.mindplayer` gets: the agent has to
+        // be able to execute this. It runs as the same user, so owner-execute
+        // is all it needs.
         use std::os::unix::fs::PermissionsExt;
         let mut perms = fs::metadata(&script_path)?.permissions();
         perms.set_mode(0o755);
@@ -262,6 +266,9 @@ pub fn apply_install(claude: &MergeResult, codex: &MergeResult) -> std::io::Resu
         (codex_hooks_path(), &codex.value),
     ] {
         if let Some(dir) = path.parent() {
+            // `~/.claude` and `~/.codex` belong to the agents, not to us.
+            // Creating them is fine; changing the mode of a directory someone
+            // else owns is not.
             fs::create_dir_all(dir)?;
         }
         let pretty = serde_json::to_string_pretty(merged)?;

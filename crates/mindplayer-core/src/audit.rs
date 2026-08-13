@@ -253,14 +253,7 @@ pub fn log_event_to(path: &Path, event: AuditEvent) {
     let Ok(line) = serde_json::to_string(&record) else {
         return;
     };
-    if let Some(dir) = path.parent() {
-        let _ = std::fs::create_dir_all(dir);
-    }
-    if let Ok(mut f) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)
-    {
+    if let Ok(mut f) = crate::private::open_private(path, true) {
         let _ = writeln!(f, "{line}");
     }
 }

@@ -69,6 +69,16 @@ fn main() -> Result<()> {
     // user runs `reset`. The hook runs before the default panic printer so the
     // backtrace lands on a sane screen.
     install_panic_hook();
+    // Everything mindplayer keeps is a record of the user's own sessions. Files
+    // written before that rule existed are still on disk at the ambient umask,
+    // and there are far too many to rewrite; narrowing the directory they live
+    // in is what puts them out of reach. Best-effort: a home directory we
+    // cannot chmod is not a reason to refuse to start.
+    if let Err(e) =
+        mindplayer_core::private::migrate_data_root(&mindplayer_core::private::data_root())
+    {
+        eprintln!("mindplayer: could not narrow ~/.mindplayer permissions: {e}");
+    }
     let mut terminal = setup()?;
     let mut app = match explicit_dir {
         Some(dir) => App::new_in(dir),

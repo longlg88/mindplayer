@@ -849,13 +849,8 @@ fn append_block(out: &mut String, text: &str) {
 
 fn write_artifact(source: &Session, target: Agent, transcript: &str) -> Result<PathBuf, String> {
     let dir = handoff_dir();
-    std::fs::create_dir_all(&dir)
+    mindplayer_core::private::create_dir_private(&dir)
         .map_err(|e| format!("failed to create {}: {e}", dir.display()))?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
-    }
     let ts = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_err(|e| format!("system clock before unix epoch: {e}"))?
@@ -889,13 +884,8 @@ fn write_thread_sync_artifact(
     transcript: &str,
 ) -> Result<PathBuf, String> {
     let dir = handoff_dir();
-    std::fs::create_dir_all(&dir)
+    mindplayer_core::private::create_dir_private(&dir)
         .map_err(|e| format!("failed to create {}: {e}", dir.display()))?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
-    }
     let ts = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_err(|e| format!("system clock before unix epoch: {e}"))?
@@ -927,23 +917,8 @@ fn write_thread_sync_artifact(
     Ok(path)
 }
 
-#[cfg(unix)]
 fn create_private_file(path: &Path) -> Result<File, String> {
-    use std::os::unix::fs::OpenOptionsExt;
-    std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .open(path)
-        .map_err(|e| format!("failed to create {}: {e}", path.display()))
-}
-
-#[cfg(not(unix))]
-fn create_private_file(path: &Path) -> Result<File, String> {
-    std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(path)
+    mindplayer_core::private::create_new_private(path)
         .map_err(|e| format!("failed to create {}: {e}", path.display()))
 }
 

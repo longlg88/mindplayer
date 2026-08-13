@@ -12,7 +12,7 @@
 //! the real user's log by forgetting to set an env var.
 
 use std::collections::BTreeMap;
-use std::fs::{File, OpenOptions};
+use std::fs::File;
 use std::io::{BufRead, BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
@@ -128,14 +128,8 @@ impl ConvoLock {
     /// `None` when another process holds the lock. The caller skips this pass
     /// instead of waiting, so no UI thread ever blocks on a peer's ingest.
     pub fn try_acquire(dir: &Path) -> Option<Self> {
-        std::fs::create_dir_all(dir).ok()?;
-        let file = OpenOptions::new()
-            .create(true)
-            .read(true)
-            .write(true)
-            .truncate(false)
-            .open(dir.join(".lock"))
-            .ok()?;
+        mindplayer_core::private::create_dir_private(dir).ok()?;
+        let file = mindplayer_core::private::open_private(&dir.join(".lock"), true).ok()?;
         #[cfg(unix)]
         {
             use std::os::fd::AsRawFd;
@@ -181,7 +175,7 @@ pub fn load_index(dir: &Path) -> ConvoIndex {
 /// though the new one was written. A crash mid-write always leaves the previous
 /// good index intact rather than a half-parsed one.
 pub fn save_index(dir: &Path, idx: &ConvoIndex) -> std::io::Result<()> {
-    std::fs::create_dir_all(dir)?;
+    mindplayer_core::private::create_dir_private(dir)?;
     let target = index_path(dir);
     // Per-process temp name. A shared `index.json.tmp` let two instances
     // truncate each other's staging file, so one could rename the other's
@@ -190,7 +184,7 @@ pub fn save_index(dir: &Path, idx: &ConvoIndex) -> std::io::Result<()> {
     let body = serde_json::to_string_pretty(idx)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
     {
-        let mut f = File::create(&tmp)?;
+        let mut f = mindplayer_core::private::open_private(&tmp, false)?;
         f.write_all(body.as_bytes())?;
         f.sync_all()?;
     }
@@ -250,17 +244,10 @@ pub fn ingest(dir: &Path, idx: &mut ConvoIndex, session: &Session) -> std::io::R
         return Ok(Ingested::default());
     }
 
-    std::fs::create_dir_all(dir)?;
+    mindplayer_core::private::create_dir_private(dir)?;
     let path = turns_path(dir, &session.id);
-    let file = if rebuild {
-        OpenOptions::new()
-            .create(true)
-            .write(true)
-            .truncate(true)
-            .open(&path)?
-    } else {
-        OpenOptions::new().create(true).append(true).open(&path)?
-    };
+    // Transcripts, so owner-only: this is the whole conversation, not metadata.
+    let file = mindplayer_core::private::open_private(&path, !rebuild)?;
     // Buffered, and the newline is part of the same buffer, so a turn is not
     // split into payload-then-"\n" the way `writeln!` on a bare `File` splits it.
     // That is a reduction in syscalls, NOT an atomicity guarantee: `write_all`
@@ -423,6 +410,7 @@ fn read_turns_from(agent: Agent, path: &Path, from: u64, max: u64) -> (Vec<(Stri
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs::OpenOptions;
     use std::path::PathBuf;
 
     fn scratch(name: &str) -> PathBuf {

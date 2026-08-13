@@ -11,6 +11,7 @@ serde_json.workspace = true
 chrono.workspace = true
 anyhow.workspace = true
 walkdir.workspace = true
+libc = "0.2"
 
 [dev-dependencies]
 tempfile = "3"

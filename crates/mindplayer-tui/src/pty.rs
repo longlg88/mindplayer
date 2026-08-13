@@ -798,12 +798,10 @@ fn shell_quote(s: &str) -> String {
 /// whatever codex/claude write to stderr (potentially sensitive), so the dir is
 /// created `0700` and the file pre-created `0600` before the shell appends to it
 /// — never world-/group-readable on a shared machine.
-fn stderr_log_path(session_id: &str) -> String {
-    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+pub(crate) fn stderr_log_path(session_id: &str) -> String {
     let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
     let dir = std::path::Path::new(&home).join(".mindplayer").join("logs");
-    let _ = std::fs::create_dir_all(&dir);
-    let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
+    let _ = mindplayer_core::private::create_dir_private(&dir);
     let safe: String = session_id
         .chars()
         .map(|c| {
@@ -815,13 +813,10 @@ fn stderr_log_path(session_id: &str) -> String {
         })
         .collect();
     let path = dir.join(format!("{safe}.stderr.log"));
-    // Create with 0600 if absent; tighten perms on a pre-existing log too.
-    let _ = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .mode(0o600)
-        .open(&path);
-    let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+    // Pre-created so the shell's append lands in an owner-only file. A log
+    // written before this rule existed keeps its mode; the startup migration of
+    // `~/.mindplayer` is what puts those out of reach.
+    let _ = mindplayer_core::private::open_private(&path, true);
     path.to_string_lossy().into_owned()
 }
 

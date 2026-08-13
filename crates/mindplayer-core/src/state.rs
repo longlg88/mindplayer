@@ -195,12 +195,14 @@ impl State {
     pub fn save_to(&self, path: &Path) -> Result<()> {
         use std::io::Write as _;
         if let Some(dir) = path.parent() {
-            std::fs::create_dir_all(dir)?;
+            crate::private::create_dir_private(dir)?;
         }
         let tmp = path.with_extension(format!("json.tmp.{}", std::process::id()));
         let data = serde_json::to_string_pretty(self)?;
         {
-            let mut f = std::fs::File::create(&tmp)?;
+            // The temp file carries the same content as the final one, so it is
+            // created owner-only too rather than being narrowed after the fact.
+            let mut f = crate::private::open_private(&tmp, false)?;
             f.write_all(data.as_bytes())?;
             f.sync_all()?; // durable before the rename
         }

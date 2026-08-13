@@ -35,7 +35,7 @@ pub fn load_prompt_from(dir: &Path, name: &str, default: &str) -> String {
     if let Ok(existing) = std::fs::read_to_string(&path) {
         return existing.trim_end().to_string();
     }
-    let _ = std::fs::create_dir_all(dir);
+    let _ = crate::private::create_dir_private(dir);
     let _ = std::fs::write(&path, default);
     default.to_string()
 }
@@ -61,7 +61,7 @@ mod tests {
     #[test]
     fn load_prompt_returns_edited_content_without_overwriting_it() {
         let dir = tmp_dir("edited");
-        std::fs::create_dir_all(&dir).unwrap();
+        crate::private::create_dir_private(&dir).unwrap();
         std::fs::write(dir.join("catchup.md"), "a user-edited prompt\n").unwrap();
 
         let text = load_prompt_from(&dir, "catchup", "the default, unused here");

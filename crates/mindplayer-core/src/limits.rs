@@ -478,20 +478,12 @@ fn curl_config(url: &str, token: &str) -> String {
 
 /// Create a file readable only by this user, before writing secrets into it.
 ///
-/// `create_new` rather than `create`: the latter follows symlinks and opens a
-/// path someone else pre-created, and `mode(0o600)` applies only on creation —
-/// so a pre-created 0666 file would have kept its own mode and exposed the
-/// token. Failing outright is the correct response to an occupied path.
+/// [`crate::private::create_new_private`] refuses an occupied path rather than
+/// opening it: `create` would follow a symlink and adopt a pre-created file,
+/// whose own mode would then survive and expose the token.
 fn write_private(path: &Path, body: &str) -> std::io::Result<()> {
     use std::io::Write;
-    let mut opts = std::fs::OpenOptions::new();
-    opts.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        opts.mode(0o600);
-    }
-    let mut f = opts.open(path)?;
+    let mut f = crate::private::create_new_private(path)?;
     f.write_all(body.as_bytes())
 }
 

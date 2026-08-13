@@ -33,6 +33,14 @@ const TAIL_BYTES: u64 = 4 << 20;
 /// they are how markdown, tables, and quoting fence one off.
 const HARD_STOPS: &[char] = &['<', '>', '"', '`', '|', '\\', '^', '{', '}'];
 
+/// A control character ends a URL too. They are not whitespace, so without this
+/// an `ESC` or `BEL` embedded in an answer rode along into the clipboard, and
+/// pasting that into a terminal hands it an escape sequence. Carriage return
+/// already stopped a URL (it is whitespace); the rest did not.
+fn ends_url(c: char) -> bool {
+    c.is_whitespace() || c.is_control() || HARD_STOPS.contains(&c)
+}
+
 /// Trailing characters that are punctuation or markup rather than part of the
 /// address. `)` is handled separately, since a URL may legitimately contain a
 /// balanced pair.
@@ -58,9 +66,7 @@ pub fn extract_links(text: &str) -> Vec<String> {
         };
         let abs = i + start;
         let candidate = &text[abs..];
-        let end = candidate
-            .find(|c: char| c.is_whitespace() || HARD_STOPS.contains(&c))
-            .unwrap_or(candidate.len());
+        let end = candidate.find(ends_url).unwrap_or(candidate.len());
         let url = trim_trailing(&candidate[..end]);
         // A scheme with nothing after it is not a link.
         if url.len() > "https://".len() && !out.iter().any(|u| u == url) {
@@ -375,6 +381,26 @@ mod tests {
                 "https://example.com/y".to_string()
             ]
         );
+    }
+
+    /// A hostile or corrupted answer can carry an escape sequence right up
+    /// against a URL. Copying that hands the user's terminal an escape sequence
+    /// the moment they paste, so a control character has to end the address.
+    #[test]
+    fn a_control_character_ends_the_address() {
+        for (name, text) in [
+            ("esc", "see https://evil.example\u{1b}[2J now"),
+            ("bel", "see https://evil.example\u{7}danger now"),
+            ("nul", "see https://evil.example\u{0}x now"),
+            ("cr", "see https://evil.example\rmore now"),
+        ] {
+            let got = extract_links(text);
+            assert_eq!(got, vec!["https://evil.example"], "{name}");
+            assert!(
+                !got.iter().any(|u| u.chars().any(char::is_control)),
+                "{name}: a control character reached the clipboard"
+            );
+        }
     }
 
     #[test]

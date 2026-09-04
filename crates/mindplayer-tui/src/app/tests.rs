@@ -567,12 +567,33 @@ fn typing_while_initial_input_pending_is_held_not_dropped() {
         b"hi"
     );
     assert!(app.status.contains("input is held"));
+}
 
-    assert!(app.paste_to_pty("more"));
-    assert_eq!(
-        app.pending_initial_inputs.get("a").unwrap().held_input,
-        b"himore"
+#[test]
+fn pasting_while_initial_input_pending_is_never_held() {
+    let mut app = App::new();
+    app.focus_or_add_pane("a");
+    app.pending_initial_inputs.insert(
+        "a".to_string(),
+        DeferredInitialInput {
+            bytes: b"handoff context".to_vec(),
+            queued_at: Instant::now(),
+            held_input: Vec::new(),
+        },
     );
+
+    // A dropped screenshot path must not land in held_input: buffered, the child
+    // never sees the paste and the drop is silently lost. Asserted before the
+    // return value so a regression names the swallow, not the delivery.
+    let delivered = app.paste_to_pty("/tmp/shot.png");
+    assert!(app
+        .pending_initial_inputs
+        .get("a")
+        .unwrap()
+        .held_input
+        .is_empty());
+    // False only because the test harness has no live PTY to write to.
+    assert!(!delivered);
 }
 
 #[test]

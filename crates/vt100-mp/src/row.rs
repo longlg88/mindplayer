@@ -14,7 +14,7 @@ impl Row {
         }
     }
 
-    fn cols(&self) -> u16 {
+    pub(crate) fn cols(&self) -> u16 {
         self.cells
             .len()
             .try_into()

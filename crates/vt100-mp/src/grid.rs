@@ -62,7 +62,12 @@ impl Grid {
     }
 
     pub fn set_size(&mut self, size: Size) {
-        if size.cols != self.size.cols {
+        // Reflow rebuilds every row at the new width, so the plain per-row
+        // resize below must not run after it and clear the wrap flags again.
+        let reflowed = size.cols != self.size.cols && self.can_reflow();
+        if reflowed {
+            self.reflow(size);
+        } else if size.cols != self.size.cols {
             for row in &mut self.rows {
                 row.wrap(false);
             }
@@ -73,10 +78,12 @@ impl Grid {
         }
 
         self.size = size;
-        for row in &mut self.rows {
-            row.resize(size.cols, crate::cell::Cell::default());
+        if !reflowed {
+            for row in &mut self.rows {
+                row.resize(size.cols, crate::cell::Cell::default());
+            }
+            self.rows.resize(usize::from(size.rows), self.new_row());
         }
-        self.rows.resize(usize::from(size.rows), self.new_row());
 
         if self.scroll_bottom >= size.rows {
             self.scroll_bottom = size.rows - 1;
@@ -88,6 +95,166 @@ impl Grid {
         self.row_clamp_top(false);
         self.row_clamp_bottom(false);
         self.col_clamp();
+    }
+
+    /// Reflow applies to the scrolling screen only. The alternate screen keeps
+    /// no scrollback and is fully repainted by the application on SIGWINCH, so
+    /// rewrapping it would only fight that repaint.
+    fn can_reflow(&self) -> bool {
+        self.scrollback_len > 0 && !self.rows.is_empty()
+    }
+
+    /// Rewrap every row — scrollback included — to `size`.
+    ///
+    /// Without this, widening a pane pads each row that was hard-wrapped at the
+    /// old width with blanks on the right, so text keeps the narrow shape it was
+    /// written in and the new space stays empty. The application repaints what
+    /// it is currently drawing, but it cannot repair what has already scrolled
+    /// past, which is the part users see broken.
+    ///
+    /// Cells are moved, not re-rendered, so colors and attributes survive; the
+    /// cursor is carried by tracking its offset within its own logical line.
+    fn reflow(&mut self, size: Size) {
+        let cursor_row = self.scrollback.len() + usize::from(self.pos.row);
+        // Blank rows below the last written one are unused screen, not content.
+        // Rewrapping them as if they were lines would push real text up into
+        // scrollback every time the pane is resized.
+        let last_used = self
+            .scrollback
+            .iter()
+            .chain(self.rows.iter())
+            .enumerate()
+            .filter(|(_, row)| {
+                (0..row.cols()).any(|c| row.get(c).is_some_and(crate::cell::Cell::has_contents))
+            })
+            .map(|(i, _)| i)
+            .last()
+            .unwrap_or(0)
+            .max(cursor_row);
+        let (lines, cursor) = self.logical_lines(cursor_row, usize::from(self.pos.col), last_used);
+        let (mut rows, cursor) = Self::rewrap(&lines, size.cols, cursor);
+
+        let wanted = usize::from(size.rows);
+        while rows.len() < wanted {
+            rows.push(crate::row::Row::new(size.cols));
+        }
+        let scrolled_off = rows.len() - wanted;
+        self.rows = rows.split_off(scrolled_off);
+        self.scrollback = rows.into();
+        while self.scrollback.len() > self.scrollback_len {
+            self.scrollback.pop_front();
+        }
+
+        if let Some((row, col)) = cursor {
+            self.pos = Pos {
+                row: u16::try_from(row.saturating_sub(scrolled_off))
+                    .unwrap_or(0)
+                    .min(size.rows - 1),
+                col: col.min(size.cols - 1),
+            };
+        }
+        self.scrollback_offset = self.scrollback_offset.min(self.scrollback.len());
+    }
+
+    /// Join every run of rows linked by their wrap flag back into one logical
+    /// line of cells, and report where `(cursor_row, cursor_col)` fell in it.
+    ///
+    /// Rows carry their own width rather than the grid's: scrollback rows were
+    /// left at whatever width they were written at by earlier resizes.
+    fn logical_lines(
+        &self,
+        cursor_row: usize,
+        cursor_col: usize,
+        last_used: usize,
+    ) -> (Vec<Vec<crate::cell::Cell>>, Option<(usize, usize)>) {
+        let mut lines = Vec::new();
+        let mut cursor = None;
+        let mut line: Vec<crate::cell::Cell> = Vec::new();
+        for (idx, row) in self
+            .scrollback
+            .iter()
+            .chain(self.rows.iter())
+            .take(last_used + 1)
+            .enumerate()
+        {
+            if idx == cursor_row {
+                cursor = Some((lines.len(), line.len() + cursor_col));
+            }
+            // A wrapped row ran to the edge, so all of it belongs to the line;
+            // only the row that ends one has meaningless trailing blanks.
+            let keep = if row.wrapped() {
+                row.cols()
+            } else {
+                (0..row.cols())
+                    .rev()
+                    .find(|c| row.get(*c).is_some_and(crate::cell::Cell::has_contents))
+                    .map_or(0, |c| c + 1)
+            };
+            line.extend((0..keep).filter_map(|c| row.get(c).cloned()));
+            if !row.wrapped() {
+                lines.push(std::mem::take(&mut line));
+            }
+        }
+        if !line.is_empty() {
+            lines.push(line);
+        }
+        (lines, cursor)
+    }
+
+    /// Split each logical line into rows `cols` wide, marking every row but a
+    /// line's last as wrapped, and report where the cursor landed.
+    ///
+    /// A double-width cell is never cut in half at the edge: it moves whole to
+    /// the next row. A cell too wide for the pane itself stays put rather than
+    /// wrapping forever against an edge it can never clear.
+    fn rewrap(
+        lines: &[Vec<crate::cell::Cell>],
+        cols: u16,
+        cursor: Option<(usize, usize)>,
+    ) -> (Vec<crate::row::Row>, Option<(usize, u16)>) {
+        let width = usize::from(cols);
+        let mut rows: Vec<crate::row::Row> = Vec::new();
+        let mut at = None;
+        for (index, line) in lines.iter().enumerate() {
+            let mut row = crate::row::Row::new(cols);
+            let mut col = 0usize;
+            let mut i = 0usize;
+            while i < line.len() {
+                let cell = &line[i];
+                if cell.is_wide_continuation() {
+                    i += 1;
+                    continue;
+                }
+                let cell_width = if cell.is_wide() { 2 } else { 1 };
+                if col > 0 && col + cell_width > width {
+                    row.wrap(true);
+                    rows.push(std::mem::replace(&mut row, crate::row::Row::new(cols)));
+                    col = 0;
+                }
+                if at.is_none()
+                    && cursor.is_some_and(|(l, o)| l == index && o >= i && o < i + cell_width)
+                {
+                    at = Some((rows.len(), col as u16));
+                }
+                if let Some(dst) = row.get_mut(col as u16) {
+                    *dst = cell.clone();
+                }
+                if cell_width == 2 {
+                    if let (Some(dst), Some(src)) = (row.get_mut(col as u16 + 1), line.get(i + 1)) {
+                        *dst = src.clone();
+                    }
+                }
+                col += cell_width;
+                i += cell_width;
+            }
+            // A cursor sitting past the end of its own line lands after it.
+            if at.is_none() && cursor.is_some_and(|(l, _)| l == index) {
+                at = Some((rows.len(), (col as u16).min(cols.saturating_sub(1))));
+            }
+            row.wrap(false);
+            rows.push(row);
+        }
+        (rows, at)
     }
 
     pub fn pos(&self) -> Pos {
@@ -114,13 +281,19 @@ impl Grid {
         self.origin_mode = self.saved_origin_mode;
     }
 
+    /// The `rows`-tall window ending `scrollback_offset` rows back. The offset
+    /// is only bounded by the scrollback's length, so it can exceed the row
+    /// count: past that the window lies entirely inside scrollback and takes no
+    /// drawing rows at all, which is why both ends are saturating.
     pub fn visible_rows(&self) -> impl Iterator<Item = &crate::row::Row> {
         let scrollback_len = self.scrollback.len();
         let rows_len = self.rows.len();
+        let offset = self.scrollback_offset.min(scrollback_len);
         self.scrollback
             .iter()
-            .skip(scrollback_len - self.scrollback_offset)
-            .chain(self.rows.iter().take(rows_len - self.scrollback_offset))
+            .skip(scrollback_len - offset)
+            .take(rows_len)
+            .chain(self.rows.iter().take(rows_len.saturating_sub(offset)))
     }
 
     pub fn drawing_rows(&self) -> impl Iterator<Item = &crate::row::Row> {

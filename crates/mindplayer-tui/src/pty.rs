@@ -1175,3 +1175,124 @@ mod tests {
         assert!(mouse_allowed(AnyMotion, false, true, 3));
     }
 }
+
+// Reflow lives in the vendored vt100 crate, which is excluded from the
+// workspace so upstream code escapes our clippy gate — and therefore from
+// `cargo test --all` too. These drive it through its public API from here,
+// where CI does run them.
+
+#[cfg(test)]
+mod vt100_reflow {
+    use vt100::Parser;
+
+    /// The pane as drawn: one string per row, blanks as spaces, so a test sees
+    /// the shape a user sees rather than the text with padding stripped out.
+    fn painted(p: &Parser) -> Vec<String> {
+        let s = p.screen();
+        let (rows, cols) = s.size();
+        (0..rows)
+            .map(|r| {
+                let mut line = String::new();
+                let mut skip = false;
+                for c in 0..cols {
+                    if skip {
+                        skip = false;
+                        continue;
+                    }
+                    match s.cell(r, c) {
+                        Some(cell) if cell.has_contents() => {
+                            skip = cell.is_wide();
+                            line.push_str(&cell.contents());
+                        }
+                        _ => line.push(' '),
+                    }
+                }
+                line.trim_end().to_string()
+            })
+            .collect()
+    }
+
+    /// Claude-style output: long lines streamed with newlines, wrapped by the
+    /// terminal and scrolled off the top. Widening must rewrap them.
+    #[test]
+    fn widening_rewraps_lines_that_already_scrolled_past() {
+        let mut p = Parser::new(8, 20, 100);
+        for i in 0..6 {
+            p.process(format!("line {i} is longer than twenty columns wide\r\n").as_bytes());
+        }
+        p.set_size(8, 60);
+        let seen = painted(&p);
+        assert!(
+            seen.iter()
+                .any(|l| l == "line 5 is longer than twenty columns wide"),
+            "a line that wrapped at 20 columns should occupy one row at 60: {seen:#?}"
+        );
+        assert!(
+            !seen.iter().any(|l| l == "line 5 is longer tha"),
+            "no row may keep the old 20-column wrap: {seen:#?}"
+        );
+    }
+
+    /// Narrowing is the same operation in reverse.
+    #[test]
+    fn narrowing_rewraps_instead_of_truncating() {
+        let mut p = Parser::new(8, 60, 100);
+        p.process(b"line 0 is longer than twenty columns wide\r\n");
+        p.set_size(8, 20);
+        let seen = painted(&p);
+        assert!(
+            seen.iter().any(|l| l == "line 0 is longer tha"),
+            "{seen:#?}"
+        );
+        assert!(
+            seen.iter().any(|l| l == "n twenty columns wid"),
+            "{seen:#?}"
+        );
+    }
+
+    /// Codex-style output: absolute cursor addressing, never a newline. It is
+    /// repainted by the application, so reflow must leave it alone.
+    #[test]
+    fn a_repainted_region_is_untouched_by_widening() {
+        let mut p = Parser::new(4, 20, 100);
+        for r in 1..=4 {
+            p.process(format!("\x1b[{r};1H\x1b[Krepaint row {r}").as_bytes());
+        }
+        let before = painted(&p);
+        p.set_size(4, 60);
+        assert_eq!(before, painted(&p));
+    }
+
+    /// A double-width character must not be split across the wrap point.
+    #[test]
+    fn a_wide_character_is_never_cut_in_half() {
+        // Tall enough that narrowing cannot push any of it into scrollback,
+        // so the assertions below are about wrapping and not about scrolling.
+        let mut p = Parser::new(12, 20, 100);
+        p.process("한글이 아주 길게 이어지는 줄입니다\r\n".as_bytes());
+        p.set_size(12, 9);
+        let seen = painted(&p);
+        let joined: String = seen.join("");
+        assert!(joined.contains("한글이"), "{seen:#?}");
+        assert!(joined.contains("줄입니다"), "{seen:#?}");
+        for line in &seen {
+            assert!(
+                line.chars().count() <= 9,
+                "row wider than the pane: {line:?}"
+            );
+        }
+    }
+
+    /// Scrolling back further than one screenful must not run off either end.
+    #[test]
+    fn scrolling_back_past_the_pane_height_stays_in_bounds() {
+        let mut p = Parser::new(4, 20, 100);
+        for i in 0..40 {
+            p.process(format!("row {i}\r\n").as_bytes());
+        }
+        p.set_scrollback(30);
+        assert_eq!(painted(&p).len(), 4);
+        p.set_scrollback(1000);
+        assert_eq!(painted(&p).len(), 4);
+    }
+}

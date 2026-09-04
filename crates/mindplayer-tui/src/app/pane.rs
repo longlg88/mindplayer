@@ -894,14 +894,15 @@ impl App {
 
     /// Forward pasted text to the displayed PTY (only when a live session has
     /// focus). Returns true if it was delivered (caller redraws). Pastes go
-    /// nowhere useful from the list, so they're ignored there.
+    /// nowhere useful from the list, so they're ignored there. A drag-and-
+    /// dropped file path arrives here, and only counts as an attachment if the
+    /// child sees it as a paste while it is still the current input — so this
+    /// never defers it the way [`Self::send_to_pty`] defers typing.
     pub fn paste_to_pty(&mut self, text: &str) -> bool {
         if self.focus != Focus::Terminal {
             return false;
         }
-        if self.hold_for_pending_initial_input(text.as_bytes()) {
-            return true;
-        }
+        // Never held for a pending initial input, unlike typing: a dropped path only reaches the child as a paste, now.
         if let Some(id) = self.focused_pane().map(str::to_string) {
             if let Some(pty) = self.ptys.get_mut(&id) {
                 if !pty.paste(text) {

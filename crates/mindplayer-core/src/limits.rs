@@ -360,24 +360,62 @@ fn claude_token(home: &Path) -> Result<String, String> {
     // also raise an interactive approval dialog in the middle of a test run.
     #[cfg(target_os = "macos")]
     if is_real_home(home) {
-        let out = std::process::Command::new("security")
-            .args([
-                "find-generic-password",
-                "-s",
-                "Claude Code-credentials",
-                "-w",
-            ])
-            .output()
-            .map_err(|e| format!("cannot run security(1): {e}"))?;
-        if out.status.success() {
-            let raw = String::from_utf8_lossy(&out.stdout);
-            if let Some(t) = token_from_credentials(&raw) {
-                return Ok(t);
+        let user = std::env::var("USER").ok();
+        let mut blobs = Vec::new();
+        for args in keychain_lookups(user.as_deref()) {
+            let out = std::process::Command::new("security")
+                .args(&args)
+                .output()
+                .map_err(|e| format!("cannot run security(1): {e}"))?;
+            if out.status.success() {
+                blobs.push(String::from_utf8_lossy(&out.stdout).into_owned());
             }
+        }
+        if let Some(t) = first_claude_token(blobs.iter().map(String::as_str)) {
+            return Ok(t);
+        }
+        if !blobs.is_empty() {
             return Err("keychain item has no claudeAiOauth token".into());
         }
     }
     Err("no subscription OAuth token found".into())
+}
+
+/// The keychain service Claude Code stores its credential JSON under.
+#[cfg(any(target_os = "macos", test))]
+const KEYCHAIN_SERVICE: &str = "Claude Code-credentials";
+
+/// `security` argument lists to try, in order. Claude Code writes the item with
+/// the OS user as its account, so that lookup comes first: the service name
+/// alone can resolve to several items, and a stale one holding only `mcpOAuth`
+/// was found ahead of the real token. Service-only stays as the fallback.
+#[cfg(any(target_os = "macos", test))]
+fn keychain_lookups(user: Option<&str>) -> Vec<Vec<String>> {
+    let to_args = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+    let mut out = Vec::new();
+    if let Some(u) = user.filter(|u| !u.is_empty()) {
+        out.push(to_args(&[
+            "find-generic-password",
+            "-s",
+            KEYCHAIN_SERVICE,
+            "-a",
+            u,
+            "-w",
+        ]));
+    }
+    out.push(to_args(&[
+        "find-generic-password",
+        "-s",
+        KEYCHAIN_SERVICE,
+        "-w",
+    ]));
+    out
+}
+
+/// The first credential blob that carries a usable subscription token.
+#[cfg(any(target_os = "macos", test))]
+fn first_claude_token<'a>(blobs: impl IntoIterator<Item = &'a str>) -> Option<String> {
+    blobs.into_iter().find_map(token_from_credentials)
 }
 
 /// Is `home` the real `$HOME`? Gates the machine-global Keychain lookup.
@@ -527,6 +565,51 @@ fn parse_epoch(v: &Value) -> Option<i64> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn the_keychain_is_asked_for_the_users_account_before_any_account() {
+        let lookups = keychain_lookups(Some("eden"));
+        assert_eq!(lookups.len(), 2, "{lookups:?}");
+        assert_eq!(
+            lookups[0],
+            [
+                "find-generic-password",
+                "-s",
+                KEYCHAIN_SERVICE,
+                "-a",
+                "eden",
+                "-w"
+            ],
+            "the item Claude Code writes (account = OS user) comes first"
+        );
+        assert_eq!(
+            lookups[1],
+            ["find-generic-password", "-s", KEYCHAIN_SERVICE, "-w"],
+            "then whatever the service name alone resolves to"
+        );
+        assert_eq!(keychain_lookups(None).len(), 1, "no user → service-only");
+        assert_eq!(
+            keychain_lookups(Some("")).len(),
+            1,
+            "empty user → service-only"
+        );
+    }
+
+    #[test]
+    fn an_mcp_only_item_is_skipped_in_favour_of_one_holding_the_token() {
+        let mcp_only = json!({ "mcpOAuth": { "srv": { "accessToken": "x" } } }).to_string();
+        let real = json!({
+            "mcpOAuth": {},
+            "claudeAiOauth": { "accessToken": "tok-real", "expiresAt": 4_102_444_800_000i64 }
+        })
+        .to_string();
+        assert_eq!(
+            first_claude_token([mcp_only.as_str(), real.as_str()]),
+            Some("tok-real".to_string())
+        );
+        assert_eq!(first_claude_token([mcp_only.as_str()]), None);
+        assert_eq!(first_claude_token([]), None);
+    }
 
     #[test]
     fn claude_windows_are_read_as_percentages_with_resets() {

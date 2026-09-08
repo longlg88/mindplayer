@@ -26,6 +26,14 @@ const HTML_CANDIDATE_MAX_AGE: Duration = Duration::from_secs(2 * 60 * 60);
 /// Keep the candidate walk shallow: it's meant to catch a file the agent just
 /// wrote *near* where it's working, not to index an entire repo.
 const HTML_WALK_MAX_DEPTH: usize = 3;
+/// Ceiling on entries one walk will look at, so a pane opened somewhere
+/// pathological — a home directory, a machine-wide checkout root — cannot make
+/// a periodic sweep expensive no matter how deep the skip list goes.
+///
+/// Set well above a large monorepo root (this workspace visits about 32,000 at
+/// depth 3) so it never truncates a realistic tree: the depth limit and the
+/// skip list shape the normal case, this only stops the unbounded one.
+pub(crate) const HTML_WALK_MAX_ENTRIES: usize = 50_000;
 /// Directory names never descended into during the candidate walk — heavy
 /// vendor/build/VCS trees that can hold thousands of files and would make a
 /// periodic recursive scan a real performance/battery problem.
@@ -965,9 +973,6 @@ impl App {
             // this one lands and `apply_html_scan` clears the receiver.
             return false;
         }
-        // Interval measured start-to-start: re-arm before returning so an empty
-        // pane set still backs off instead of spinning every tick.
-        self.html_candidates_due = Some(Instant::now() + HTML_CANDIDATE_POLL_INTERVAL);
         // Snapshot which panes to scan and where — cheap, in-memory, on the main
         // thread — so the spawned closure owns plain data and never touches
         // `self` (a thread closure can't safely capture `&mut App`).
@@ -982,15 +987,17 @@ impl App {
             })
             .collect();
         if targets.is_empty() {
+            // Nothing to walk, so back off here rather than retrying every tick.
+            self.html_candidates_due = Some(Instant::now() + HTML_CANDIDATE_POLL_INTERVAL);
             return false;
         }
+        // Cleared, not re-armed: the next sweep is scheduled from when this one
+        // LANDS (see `apply_html_scan`), so a walk slower than the interval can
+        // never finish into an already-due timer and run back to back.
+        self.html_candidates_due = None;
         let (tx, rx) = mpsc::channel();
         thread::spawn(move || {
-            let batch: HtmlScanBatch = targets
-                .into_iter()
-                .map(|(id, cwd)| (id, scan_html_candidates(&cwd)))
-                .collect();
-            let _ = tx.send(batch);
+            let _ = tx.send(walk_targets_once(targets, scan_html_candidates));
         });
         self.html_scan_rx = Some(rx);
         true
@@ -1011,6 +1018,8 @@ impl App {
             return false;
         };
         self.html_scan_rx = None;
+        // End-to-start: the interval starts counting now that the walk is done.
+        self.html_candidates_due = Some(Instant::now() + HTML_CANDIDATE_POLL_INTERVAL);
 
         let now = SystemTime::now();
         // Panes still open now — a pane closed between kicking off the sweep and
@@ -1083,6 +1092,32 @@ fn within_max_age(mtime: SystemTime, now: SystemTime, max_age: Duration) -> bool
 /// files, returning `(path, mtime)` sorted most-recently-modified first. Pulled
 /// out of `App` so the scan itself can be unit-tested against a real temp dir
 /// without constructing panes/PTYs.
+/// Walk each distinct directory in `targets` once, then give every pane the
+/// result for the directory it sits in.
+///
+/// Panes routinely share one cwd — every pane opened at a monorepo root does —
+/// and the walk dwarfs everything else the sweep does, so walking per pane made
+/// the cost scale with pane count for no new information. `walk` is a parameter
+/// so a test can count how many times it actually ran.
+pub(crate) fn walk_targets_once<F>(targets: Vec<(String, PathBuf)>, mut walk: F) -> HtmlScanBatch
+where
+    F: FnMut(&Path) -> Vec<(PathBuf, SystemTime)>,
+{
+    let mut walked: HashMap<PathBuf, Vec<(PathBuf, SystemTime)>> = HashMap::new();
+    for (_, cwd) in &targets {
+        if !walked.contains_key(cwd) {
+            walked.insert(cwd.clone(), walk(cwd));
+        }
+    }
+    targets
+        .into_iter()
+        .map(|(id, cwd)| {
+            let found = walked.get(&cwd).cloned().unwrap_or_default();
+            (id, found)
+        })
+        .collect()
+}
+
 pub(crate) fn scan_html_candidates(cwd: &Path) -> Vec<(PathBuf, SystemTime)> {
     let mut out: Vec<(PathBuf, SystemTime)> = Vec::new();
     let walker = WalkDir::new(cwd)
@@ -1100,7 +1135,10 @@ pub(crate) fn scan_html_candidates(cwd: &Path) -> Vec<(PathBuf, SystemTime)> {
                 .to_str()
                 .is_none_or(|name| !HTML_SKIP_DIRS.contains(&name))
         });
-    for entry in walker.filter_map(Result::ok) {
+    for (visited, entry) in walker.filter_map(Result::ok).enumerate() {
+        if visited >= HTML_WALK_MAX_ENTRIES {
+            break;
+        }
         if !entry.file_type().is_file() {
             continue;
         }

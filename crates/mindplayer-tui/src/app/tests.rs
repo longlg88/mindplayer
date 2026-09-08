@@ -3813,3 +3813,91 @@ fn a_short_path_survives_shortening_unchanged() {
         app.summary_tail()
     );
 }
+
+/// Every pane opened at a monorepo root shares one cwd. The sweep used to walk
+/// that tree once per pane, which on this workspace meant six walks of ~32,000
+/// entries every three seconds — the sweep never finished before the next was
+/// due, so it ran continuously and burned a core.
+#[test]
+fn panes_sharing_one_directory_are_walked_once_not_once_each() {
+    use std::cell::RefCell;
+    let shared = PathBuf::from("/tmp/one-root");
+    let other = PathBuf::from("/tmp/other-root");
+    let targets = vec![
+        ("s1".to_string(), shared.clone()),
+        ("s2".to_string(), shared.clone()),
+        ("s3".to_string(), shared.clone()),
+        ("s4".to_string(), other.clone()),
+    ];
+
+    let walked: RefCell<Vec<PathBuf>> = RefCell::new(Vec::new());
+    let batch = crate::app::pane::walk_targets_once(targets, |dir| {
+        walked.borrow_mut().push(dir.to_path_buf());
+        vec![(dir.join("page.html"), SystemTime::UNIX_EPOCH)]
+    });
+
+    // Four panes, two distinct directories: two walks, not four.
+    assert_eq!(walked.borrow().len(), 2, "walked: {:?}", walked.borrow());
+    assert_eq!(
+        batch.len(),
+        4,
+        "every pane still gets its own entry in the batch"
+    );
+    // And the three panes sharing a root all got that root's finding.
+    for (id, found) in batch.iter().filter(|(id, _)| id != "s4") {
+        assert_eq!(found.len(), 1, "{id}");
+        assert!(found[0].0.starts_with(&shared), "{id}: {found:?}");
+    }
+}
+
+/// The interval is measured from when a sweep LANDS, not from when it starts.
+/// Re-arming at spawn time meant a walk slower than the interval finished into
+/// an already-expired timer, so the next sweep began immediately and the walk
+/// ran back to back forever.
+#[test]
+fn the_next_sweep_is_scheduled_from_when_the_last_one_landed() {
+    let dir = temp_html_dir("interval");
+    std::fs::write(dir.join("page.html"), "<html></html>").unwrap();
+
+    let mut app = app_with(vec![session_in(
+        "s1",
+        Agent::Codex,
+        &dir.display().to_string(),
+        "t",
+    )]);
+    app.focus_or_add_pane("s1");
+
+    app.html_candidates_due = None;
+    assert!(app.spawn_html_scan(), "a sweep starts");
+    assert!(
+        app.html_candidates_due.is_none(),
+        "an in-flight sweep leaves nothing scheduled"
+    );
+
+    finish_html_scan(&mut app);
+    let due = app
+        .html_candidates_due
+        .expect("landing schedules the next sweep");
+    assert!(due > Instant::now(), "the next sweep is in the future");
+    assert!(
+        !app.spawn_html_scan(),
+        "and it does not start again until that interval has passed"
+    );
+}
+
+/// A pane opened somewhere pathological must not make the sweep unbounded.
+#[test]
+fn the_walk_stops_at_its_entry_ceiling() {
+    let dir = temp_html_dir("ceiling");
+    // Far below the real ceiling, so this asserts the loop's shape, not the
+    // constant: with no cap the walk would return every one of these.
+    for i in 0..40 {
+        std::fs::write(dir.join(format!("f{i}.html")), "<html></html>").unwrap();
+    }
+    let found = crate::app::pane::scan_html_candidates(&dir);
+    assert_eq!(found.len(), 40, "a small tree is never truncated");
+    assert!(
+        found.len() <= crate::app::pane::HTML_WALK_MAX_ENTRIES,
+        "the walk never returns more than it is allowed to visit"
+    );
+}

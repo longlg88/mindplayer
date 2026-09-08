@@ -51,6 +51,53 @@ impl Aggregate {
     }
 }
 
+/// Split `cells` proportionally across `parts`, exactly.
+///
+/// Largest remainder, so the pieces always sum to `cells` instead of drifting
+/// low the way independent rounding does. Any part with usage is guaranteed at
+/// least one cell — a share too small to round up is still not nothing, and a
+/// bar that renders it as nothing while the label names it reads as a bug.
+pub fn apportion(parts: &[u64], cells: usize) -> Vec<usize> {
+    let sum: u128 = parts.iter().map(|p| u128::from(*p)).sum();
+    if sum == 0 || cells == 0 {
+        return vec![0; parts.len()];
+    }
+    let exact: Vec<f64> = parts
+        .iter()
+        .map(|p| *p as f64 / sum as f64 * cells as f64)
+        .collect();
+    let mut out: Vec<usize> = exact.iter().map(|e| *e as usize).collect();
+    let mut order: Vec<usize> = (0..parts.len()).collect();
+    order.sort_by(|a, b| {
+        (exact[*b] - out[*b] as f64)
+            .partial_cmp(&(exact[*a] - out[*a] as f64))
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    let mut left = cells.saturating_sub(out.iter().sum::<usize>());
+    for i in order.iter().cycle().take(left) {
+        out[*i] += 1;
+    }
+    // Lift every used part off zero, paying for it from the widest segment.
+    left = 0;
+    for i in 0..out.len() {
+        if parts[i] > 0 && out[i] == 0 {
+            out[i] = 1;
+            left += 1;
+        }
+    }
+    while left > 0 {
+        let Some(widest) = (0..out.len()).max_by_key(|i| out[*i]) else {
+            break;
+        };
+        if out[widest] <= 1 {
+            break;
+        }
+        out[widest] -= 1;
+        left -= 1;
+    }
+    out
+}
+
 /// Format a token count compactly: `38.4M`, `12.0K`, `512`.
 pub fn human_tokens(n: u64) -> String {
     if n >= 1_000_000 {
@@ -103,6 +150,36 @@ mod tests {
         assert_eq!(a.codex_count, 2);
         assert_eq!(a.claude_count, 1);
         assert_eq!(a.session_count(), 3);
+    }
+
+    #[test]
+    fn apportion_sums_to_the_bar_width() {
+        // The real footer figures: claude 18223.7M, codex 1827.1M, kiro unread.
+        let got = apportion(&[18_223_700_000, 1_827_100_000], 24);
+        assert_eq!(got.iter().sum::<usize>(), 24);
+        assert_eq!(got, vec![22, 2]);
+    }
+
+    #[test]
+    fn apportion_never_hides_a_part_that_has_usage() {
+        // 0.2% would floor to zero cells while the label still names it.
+        let got = apportion(&[9_980, 20], 20);
+        assert_eq!(got.iter().sum::<usize>(), 20);
+        assert_eq!(got[1], 1, "a used part must occupy at least one cell");
+        assert_eq!(got[0], 19);
+    }
+
+    #[test]
+    fn apportion_leaves_unused_parts_empty() {
+        let got = apportion(&[100, 0, 50], 12);
+        assert_eq!(got[1], 0);
+        assert_eq!(got.iter().sum::<usize>(), 12);
+    }
+
+    #[test]
+    fn apportion_is_empty_when_there_is_nothing_to_show() {
+        assert_eq!(apportion(&[0, 0], 20), vec![0, 0]);
+        assert_eq!(apportion(&[5, 5], 0), vec![0, 0]);
     }
 
     #[test]

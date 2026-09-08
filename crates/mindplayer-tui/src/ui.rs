@@ -49,6 +49,44 @@ fn agent_tag(agent: Agent) -> (&'static str, Color) {
     }
 }
 
+/// The usage bar: each agent's share of the measured tokens as one run of
+/// cells, followed by the same shares as labels.
+///
+/// The agents keep the colors [`agent_tag`] already gives them elsewhere, so
+/// the bar reads as the same vocabulary as the session list rather than a
+/// second, private color scheme.
+fn usage_bar_spans(app: &App) -> Vec<Span<'static>> {
+    let segments = app.usage_segments();
+    if segments.is_empty() {
+        return Vec::new();
+    }
+    let color = |label: &str| match label {
+        "codex" => ACCENT,
+        "claude" => Color::Magenta,
+        _ => Color::Cyan,
+    };
+    let mut spans: Vec<Span> = segments
+        .iter()
+        .map(|seg| {
+            Span::styled(
+                seg.glyph.to_string().repeat(seg.cells),
+                Style::default().fg(color(seg.label)),
+            )
+        })
+        .collect();
+    for (i, seg) in segments.iter().enumerate() {
+        spans.push(Span::styled(
+            if i == 0 {
+                format!("  {} {}%", seg.label, seg.percent)
+            } else {
+                format!(" · {} {}%", seg.label, seg.percent)
+            },
+            Style::default().fg(color(seg.label)),
+        ));
+    }
+    spans
+}
+
 fn plural_session(count: usize) -> &'static str {
     if count == 1 {
         "session"
@@ -674,11 +712,16 @@ fn main_view(f: &mut Frame, app: &mut App) {
         }
         }
     };
-    let status = if app.status.is_empty() {
-        app.summary_line()
-    } else {
-        format!("{}  ·  {}", app.status, app.summary_line())
-    };
+    let mut status: Vec<Span> = Vec::new();
+    if !app.status.is_empty() {
+        status.push(Span::styled(
+            format!("{}  ·  ", app.status),
+            Style::default().fg(DIM),
+        ));
+    }
+    status.push(Span::styled(app.summary_head(), Style::default().fg(DIM)));
+    status.extend(usage_bar_spans(app));
+    status.push(Span::styled(app.summary_tail(), Style::default().fg(DIM)));
     // Row 2 (Min(0), so it collapses to nothing when show_more_keys is false)
     // surfaces a couple of the most-reached-for hidden shortcuts plus an
     // honest count of the rest, instead of hiding all of them silently.
@@ -690,10 +733,7 @@ fn main_view(f: &mut Frame, app: &mut App) {
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(60), Constraint::Percentage(40)])
         .split(footer_rows[0]);
-    f.render_widget(
-        Paragraph::new(Line::from(Span::styled(status, Style::default().fg(DIM)))),
-        footer_line[0],
-    );
+    f.render_widget(Paragraph::new(Line::from(status)), footer_line[0]);
     f.render_widget(
         Paragraph::new(Line::from(Span::styled(keys, Style::default().fg(DIM))))
             .alignment(Alignment::Right),

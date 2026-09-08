@@ -3728,3 +3728,88 @@ fn right_arrow_on_a_session_row_does_not_open_it() {
     assert!(app.pending.is_none(), "must not queue a resume");
     assert!(app.panes.is_empty(), "must not add a pane");
 }
+
+/// The footer's usage bar is a share of what was measured, not a magnitude
+/// against an invented ceiling, so these pin the two things that makes true:
+/// the segments fill the bar exactly, and an agent whose tokens are never read
+/// is named rather than drawn as an empty slice of the whole.
+#[test]
+fn the_usage_bar_splits_the_measured_tokens_between_agents() {
+    let mut app = App::new();
+    // The real footer figures at the time this was built.
+    app.visible_aggregate.claude.total = 18_223_700_000;
+    app.visible_aggregate.codex.total = 1_827_100_000;
+    app.visible_aggregate.claude_count = 20;
+    app.visible_aggregate.codex_count = 5;
+
+    let segs = app.usage_segments();
+    assert_eq!(segs.len(), 2);
+    assert_eq!(segs[0].label, "claude");
+    assert_eq!(segs[1].label, "codex");
+    assert_eq!(
+        segs.iter().map(|s| s.cells).sum::<usize>(),
+        crate::app::USAGE_BAR_CELLS
+    );
+    assert_eq!(segs.iter().map(|s| s.percent).sum::<usize>(), 100);
+    assert_eq!((segs[0].percent, segs[1].percent), (91, 9));
+    assert_ne!(
+        segs[0].glyph, segs[1].glyph,
+        "segments must differ without color too"
+    );
+}
+
+#[test]
+fn an_agent_with_no_token_counts_is_named_but_never_drawn() {
+    let mut app = App::new();
+    app.visible_aggregate.claude.total = 1_000;
+    app.visible_aggregate.claude_count = 1;
+    // Kiro logs carry no token counts: sessions exist, usage reads as zero.
+    app.visible_aggregate.kiro_count = 3;
+
+    let segs = app.usage_segments();
+    assert_eq!(segs.len(), 1, "kiro has no share to draw: {segs:?}");
+    assert_eq!(segs[0].cells, crate::app::USAGE_BAR_CELLS);
+    assert!(
+        app.summary_tail().contains("kiro —"),
+        "the gap must stay visible: {}",
+        app.summary_tail()
+    );
+}
+
+#[test]
+fn the_bar_disappears_rather_than_showing_a_false_whole() {
+    let mut app = App::new();
+    app.visible_aggregate.kiro_count = 2;
+    assert!(app.usage_segments().is_empty());
+}
+
+#[test]
+fn the_footer_shortens_the_working_dir_but_the_scan_screen_does_not() {
+    let mut app = App::new();
+    app.scope = Scope::WorkingDir(PathBuf::from("/Users/eden.jang/Work/SendBird/working2"));
+    app.cwd = PathBuf::from("/Users/eden.jang/Work/SendBird/working2");
+
+    assert_eq!(app.scope_label_short(), "working dir (SendBird/working2)");
+    assert_eq!(
+        app.scope_label(),
+        "working dir (/Users/eden.jang/Work/SendBird/working2)"
+    );
+    assert!(app.summary_tail().contains("SendBird/working2"));
+    assert!(!app.summary_tail().contains("/Users/eden.jang"));
+}
+
+#[test]
+fn a_short_path_survives_shortening_unchanged() {
+    let mut app = App::new();
+    app.scope = Scope::WorkingDir(PathBuf::from("/tmp"));
+    app.cwd = PathBuf::from("/tmp");
+    assert_eq!(app.scope_label_short(), "working dir (/tmp)");
+
+    app.scope = Scope::Global;
+    assert_eq!(app.scope_label_short(), "global");
+    assert!(
+        app.summary_tail().contains("· global"),
+        "the smoke test greps for this exact marker: {}",
+        app.summary_tail()
+    );
+}

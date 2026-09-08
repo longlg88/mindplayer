@@ -67,6 +67,13 @@ pub struct CodexLimits {
     pub credit_balance: Option<f64>,
     pub credits_unlimited: bool,
     pub plan_type: Option<String>,
+    /// Which pool the balance belongs to. Snapshots carry more than one — a
+    /// `codex` pool and a `premium` pool with separate balances — so a bare
+    /// number says nothing about what ran out.
+    pub limit_id: Option<String>,
+    /// Set when the account has actually hit a limit. This is the one field
+    /// here that calls for action, so it outranks the balance on screen.
+    pub rate_limit_reached: Option<String>,
 }
 
 impl CodexLimits {
@@ -76,6 +83,19 @@ impl CodexLimits {
             || self.secondary.is_some()
             || self.credit_balance.is_some()
             || self.credits_unlimited
+            || self.rate_limit_reached.is_some()
+    }
+}
+
+/// Turn a `rate_limit_reached_type` into something a person reads.
+///
+/// Unknown values are passed through with their underscores opened up rather
+/// than dropped: a limit we cannot name is still a limit that was hit.
+fn reached_label(raw: &str) -> String {
+    match raw {
+        "workspace_member_usage_limit_reached" => "workspace limit reached".to_string(),
+        "usage_limit_reached" => "usage limit reached".to_string(),
+        other => other.replace('_', " "),
     }
 }
 
@@ -138,10 +158,22 @@ impl Limits {
                         parts.push(format!("{} {p:.0}%", window_label(window)));
                     }
                 }
+                // A limit that was actually hit leads: it is the only thing here
+                // the user can act on, and a balance beside it is background.
+                if let Some(reached) = c.rate_limit_reached.as_deref() {
+                    parts.push(reached_label(reached));
+                }
+                // The pool is named unless it is the plain `codex` one, which
+                // the line already starts with — snapshots also carry a
+                // `premium` pool whose balance is a different number entirely.
+                let pool = match c.limit_id.as_deref() {
+                    Some("codex") | None => String::new(),
+                    Some(other) => format!("{other} "),
+                };
                 if c.credits_unlimited {
-                    parts.push("credits unlimited".into());
+                    parts.push(format!("{pool}credits unlimited"));
                 } else if let Some(b) = c.credit_balance {
-                    parts.push(format!("credits {b:.0}"));
+                    parts.push(format!("{pool}credits {b:.0}"));
                 }
                 out.push(format!("codex   {}", parts.join("  ")));
             }
@@ -313,6 +345,14 @@ pub fn parse_codex_rate_limits(rl: &Value) -> CodexLimits {
             .and_then(|c| c.get("unlimited"))
             .and_then(Value::as_bool)
             .unwrap_or(false),
+        limit_id: rl
+            .get("limit_id")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        rate_limit_reached: rl
+            .get("rate_limit_reached_type")
+            .and_then(Value::as_str)
+            .map(str::to_string),
         plan_type: rl
             .get("plan_type")
             .and_then(Value::as_str)
@@ -766,6 +806,71 @@ mod tests {
             "{lines:?}"
         );
         assert!(lines[1].contains("business"), "{lines:?}");
+    }
+
+    #[test]
+    fn a_limit_that_was_actually_hit_leads_the_line() {
+        // Real snapshot shape: the premium pool, drained, with the workspace
+        // limit reached. The old line said only "credits 0", which reads as a
+        // balance nobody set rather than a limit that stopped the account.
+        let rl = json!({
+            "limit_id": "premium",
+            "primary": null,
+            "secondary": null,
+            "credits": { "has_credits": true, "unlimited": false, "balance": "0" },
+            "plan_type": "business",
+            "rate_limit_reached_type": "workspace_member_usage_limit_reached"
+        });
+        let got = parse_codex_rate_limits(&rl);
+        assert_eq!(
+            got.rate_limit_reached.as_deref(),
+            Some("workspace_member_usage_limit_reached")
+        );
+        assert_eq!(got.limit_id.as_deref(), Some("premium"));
+
+        let limits = Limits {
+            claude: Err("not under test".into()),
+            codex: Ok(got),
+        };
+        let line = &limits.summary_lines()[1];
+        assert!(line.contains("workspace limit reached"), "{line}");
+        assert!(line.contains("premium credits 0"), "{line}");
+        assert!(
+            line.find("workspace limit reached") < line.find("premium credits"),
+            "the actionable half comes first: {line}"
+        );
+    }
+
+    #[test]
+    fn the_plain_codex_pool_is_not_labelled_twice() {
+        // limit_id "codex" on a line that already starts with "codex".
+        let rl = json!({
+            "limit_id": "codex",
+            "credits": { "has_credits": true, "unlimited": false, "balance": "25571.1" },
+            "plan_type": "business"
+        });
+        let limits = Limits {
+            claude: Err("not under test".into()),
+            codex: Ok(parse_codex_rate_limits(&rl)),
+        };
+        let line = &limits.summary_lines()[1];
+        assert!(line.contains("credits 25571"), "{line}");
+        assert!(!line.contains("codex codex"), "{line}");
+    }
+
+    #[test]
+    fn an_unnamed_limit_type_is_still_reported() {
+        let rl = json!({
+            "limit_id": "codex",
+            "credits": { "has_credits": true, "unlimited": false, "balance": "0" },
+            "rate_limit_reached_type": "some_future_limit_reached"
+        });
+        let limits = Limits {
+            claude: Err("not under test".into()),
+            codex: Ok(parse_codex_rate_limits(&rl)),
+        };
+        let line = &limits.summary_lines()[1];
+        assert!(line.contains("some future limit reached"), "{line}");
     }
 
     #[test]

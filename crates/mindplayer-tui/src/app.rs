@@ -4,7 +4,8 @@
 use crate::{handoff, pty::PtySession, text_input};
 use chrono::{DateTime, Utc};
 use mindplayer_core::{
-    refresh_activity_and_usage, resume, scan, sort_by_recency, tokens::human_tokens,
+    refresh_activity_and_usage, resume, scan, sort_by_recency,
+    tokens::{apportion, human_tokens},
     touched_recently, Agent, Aggregate, ScanConfig, Scope, Session, State, TokenUsage,
 };
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -73,6 +74,24 @@ pub enum Focus {
 /// resource safety ceiling only (each pane spawns a real child process),
 /// sized well above any observed real selection.
 pub const MAX_PANES: usize = 32;
+
+/// Cells the usage bar occupies. The footer's left half already carries the
+/// status text and the working directory, so this is sized to read as a bar
+/// while leaving those legible on a normal-width terminal.
+pub const USAGE_BAR_CELLS: usize = 12;
+
+/// One agent's share of the measured tokens.
+///
+/// `glyph` differs per agent on purpose: color alone would carry the whole
+/// distinction, and the bar has to stay readable in a monochrome terminal and
+/// for a viewer who cannot separate the hues.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UsageSegment {
+    pub label: &'static str,
+    pub glyph: char,
+    pub cells: usize,
+    pub percent: usize,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PaneLayout {
@@ -796,6 +815,21 @@ impl App {
         }
     }
 
+    /// [`Self::scope_label`] trimmed to the last two path components, for the
+    /// footer — where the usage bar and this share one row. The scan screen
+    /// keeps the full path: there it has a row to itself, and that is the point
+    /// at which knowing exactly which tree is being scanned matters.
+    pub fn scope_label_short(&self) -> String {
+        match self.scope {
+            Scope::Global => "global".to_string(),
+            Scope::WorkingDir(_) => {
+                let tail: Vec<_> = self.cwd.components().rev().take(2).collect();
+                let tail: PathBuf = tail.into_iter().rev().collect();
+                format!("working dir ({})", tail.display())
+            }
+        }
+    }
+
     pub fn tick(&mut self) {
         self.spinner = self.spinner.wrapping_add(1);
     }
@@ -817,25 +851,67 @@ impl App {
     /// One-line summary used in the status bar. Totals the *visible* rows so the
     /// count and tokens match the list on screen (not the full scan, which also
     /// counts archived + sub-agent sessions and is shown on the scan screen).
-    pub fn summary_line(&self) -> String {
+    /// Everything before the usage bar.
+    pub fn summary_head(&self) -> String {
         let a = &self.visible_aggregate;
-        // Only mention kiro once there are kiro sessions, to keep the bar short.
-        // Kiro token counts aren't read from its log, so show "—" not "0".
-        let kiro = if a.kiro_count > 0 {
-            " · kiro —".to_string()
-        } else {
-            String::new()
-        };
         format!(
-            "{} sessions · {} tok (codex {} · claude {}{}) · {}{}",
+            "{} sessions · {} tok ",
             a.session_count(),
             human_tokens(a.total.total),
-            human_tokens(a.codex.total),
-            human_tokens(a.claude.total),
-            kiro,
-            self.scope_label(),
-            self.limits_suffix(),
         )
+    }
+
+    /// Everything after the usage bar and its labels.
+    ///
+    /// Kiro is named here rather than given a bar segment: its logs carry no
+    /// token counts, so it has no share to draw. Saying "kiro —" keeps that gap
+    /// visible instead of letting the bar imply it accounts for every session.
+    pub fn summary_tail(&self) -> String {
+        let kiro = if self.visible_aggregate.kiro_count > 0 {
+            " · kiro —"
+        } else {
+            ""
+        };
+        format!(
+            "{} · {}{}",
+            kiro,
+            self.scope_label_short(),
+            self.limits_suffix()
+        )
+    }
+
+    /// The share of measured tokens each agent holds, as bar cells.
+    ///
+    /// A share, not a magnitude: cumulative token totals have no ceiling to be
+    /// a percentage of, so the only honest bar is one where the parts add up to
+    /// the whole shown. Agents whose tokens are not read at all — kiro — are
+    /// left out rather than drawn as zero, and the caller still labels them so
+    /// the gap is visible instead of implied.
+    pub fn usage_segments(&self) -> Vec<UsageSegment> {
+        let a = &self.visible_aggregate;
+        let measured: Vec<(&'static str, char, u64)> = [
+            ("claude", '█', a.claude.total),
+            ("codex", '▓', a.codex.total),
+            ("kiro", '▒', a.kiro.total),
+        ]
+        .into_iter()
+        .filter(|(_, _, total)| *total > 0)
+        .collect();
+        let totals: Vec<u64> = measured.iter().map(|(_, _, t)| *t).collect();
+        let cells = apportion(&totals, USAGE_BAR_CELLS);
+        // Percentages get the same treatment as the cells so the labels add up
+        // to 100 rather than to 99 or 101 after independent rounding.
+        let percents = apportion(&totals, 100);
+        measured
+            .into_iter()
+            .enumerate()
+            .map(|(i, (label, glyph, _))| UsageSegment {
+                label,
+                glyph,
+                cells: cells[i],
+                percent: percents[i],
+            })
+            .collect()
     }
 
     /// Subscription windows, appended to the summary line once a reading has

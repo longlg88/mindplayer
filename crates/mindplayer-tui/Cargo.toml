@@ -3,7 +3,7 @@ name = "mindplayer-tui"
 edition.workspace = true
 version.workspace = true
 license.workspace = true
-description = "MindPlayer terminal UI: Codex/Claude/Kiro session manager with an embedded PTY."
+description = "MindPlayer terminal UI: Codex/Claude/Kiro/Cursor session manager with an embedded PTY."
 
 [[bin]]
 name = "mindplayer"

@@ -26,17 +26,21 @@ the CLIs give you no way to see them all, compare token usage, or run more than
 one at a time. MindPlayer is a thin, fast layer on top: a history‑aware launcher
 plus an embedded terminal, so sessions feel like **browser tabs**.
 
-It reads your existing `~/.codex` and `~/.claude` transcripts **read‑only** — it
-never modifies them — so it just works with the sessions you already have.
+It reads your existing `~/.codex`, `~/.claude`, `~/.kiro`, and `~/.cursor`
+session metadata **read‑only** — it never modifies it — so it just works with
+the sessions you already have.
 
 ## ✨ Features
 
 - 📜 **Full session history** — scans `~/.codex/sessions`, `~/.claude/projects`,
-  and `~/.kiro/sessions/cli`, with real titles pulled from the first actual
-  prompt (boilerplate skipped).
-- 🤖 **Codex · Claude · Kiro** — browse, resume, and start sessions for all
-  three from one list (press <kbd>n</kbd> to pick the agent).
-- 🔢 **Token dashboard** — per‑session and total usage, Codex vs Claude vs Kiro.
+  `~/.kiro/sessions/cli`, and `~/.cursor/chats`, with titles where each CLI's
+  verified local schema exposes them.
+- 🤖 **Codex · Claude · Kiro · Cursor** — browse, resume, and start sessions for
+  all four from one list (press <kbd>n</kbd> to pick the agent).
+- 🔢 **Usage dashboard** — per-session token totals for Codex/Claude, Kiro
+  context occupancy, and account plan usage for Kiro and Cursor. Cursor session
+  metadata still exposes no per-session token or context metric; its account
+  quota is a separate first-party reading, not inferred from chat files.
 - 🪟 **Many sessions at once** — resume or start several; each keeps running in
   the background. **Mark several** in the list (<kbd>Space</kbd>) and launch them
   together as live panes with one <kbd>Enter</kbd>.
@@ -46,9 +50,9 @@ never modifies them — so it just works with the sessions you already have.
   needs you), `● working` (producing output now), or `● idle` (running,
   waiting) at a glance. For Codex and Claude Code this comes straight from
   the agent's own lifecycle hooks once installed (see `--install-agent-hooks`
-  below) — a confirmed state, not a screen‑text guess. Kiro has no such hook
-  to switch to, so its status still comes from watching the pane's own text,
-  via an editable `~/.mindplayer/kiro-patterns.json` (see **How it works**).
+  below) — a confirmed state, not a screen‑text guess. Kiro and Cursor use
+  the pane's own text instead; Kiro's patterns are editable in
+  `~/.mindplayer/kiro-patterns.json` (see **How it works**).
 - ⏱️ **Time since last prompt** — a live session's time column shows how
   long it's been since *you* last typed something, not just "now" (which a
   running agent's own file mtime would otherwise always show) — so you can
@@ -85,11 +89,11 @@ never modifies them — so it just works with the sessions you already have.
   time, plus a 14‑day trend), sessions opened per agent, handoffs, and
   catch‑ups sent — from a small local append-only log
   (`~/.mindplayer/audit.jsonl`), not from reading any transcript content.
-- 🚥 **Subscription limits** — the same popup reports how much of each plan's
-  rate-limit window is spent: the numbers Claude Code's `/usage` and Codex's own
-  TUI show, not a token total. Codex needs no auth and no network (every turn
-  writes a snapshot into its rollout); Claude is a live authenticated call. A
-  window with no number is shown as the **reason** it's missing, never as `0%` —
+- 🚥 **Subscription limits** — account-level plan usage stays separate from
+  session tokens and context occupancy: Claude uses its authenticated usage API,
+  Codex reads the latest local rate-limit snapshot, Kiro runs its own bounded
+  `/usage` command, and Cursor calls its first-party `/api/usage-summary`. A
+  quota with no number is shown as the **reason** it's missing, never as `0%` —
   which would read as "plenty left".
 - 📚 **Conversation log** — every user/assistant turn is mirrored out of the
   agents' own transcripts into one normalized store at `~/.mindplayer/convo/`.
@@ -137,7 +141,7 @@ never modifies them — so it just works with the sessions you already have.
 | For | You need |
 |-----|----------|
 | MindPlayer itself | nothing — the installer downloads a prebuilt binary (`curl`/`wget`). Only `--build` needs **Rust**. |
-| Driving sessions | the agent CLIs you use, on `PATH`: [`codex`](https://github.com/openai/codex), [`claude`](https://docs.anthropic.com/claude-code), [`kiro-cli`](https://kiro.dev/docs/cli/) — browsing works without them; a CLI is only needed to *resume/start* that agent |
+| Driving sessions | the agent CLIs you use, on `PATH`: [`codex`](https://github.com/openai/codex), [`claude`](https://docs.anthropic.com/claude-code), [`kiro-cli`](https://kiro.dev/docs/cli/), and Cursor `agent` — browsing works without them; a CLI is only needed to *resume/start* that agent |
 
 The installer downloads the latest **release binary** (no build).
 Download the script, inspect it, then run it:
@@ -174,7 +178,7 @@ On that first screen, <kbd>c</kbd> opens the character picker — the rubber
 duck walking on the floor can become a bunny, chick, slime, penguin, or
 octopus, and the choice sticks for next time.
 
-Press <kbd>n</kbd> for a new Codex / Claude / Kiro session. `mindplayer --help`
+Press <kbd>n</kbd> for a new Codex / Claude / Kiro / Cursor session. `mindplayer --help`
 lists the rest.
 
 **Optional — confirmed live status for Codex & Claude.** Both expose official
@@ -216,7 +220,7 @@ make test                                          # cargo test --all
 | <kbd>Ctrl‑t</kbd> | **transition report** — `topic / RUNBOOK §n / files` → review the assembled prompt → <kbd>Enter</kbd> sends, <kbd>e</kbd> edits first |
 | <kbd>Ctrl‑p</kbd> | open a local `.html` the focused pane just produced, in your browser — pick from the detected files (the badge shows how many), or <kbd>Tab</kbd> to type a path |
 | <kbd>Ctrl‑x</kbd> | back to the list (the session keeps running) |
-| <kbd>n</kbd> | new session — pick codex/claude/kiro, then an optional label |
+| <kbd>n</kbd> | new session — pick codex/claude/kiro/cursor, then an optional label |
 | <kbd>h</kbd> | handoff the selected session to another provider |
 | <kbd>d</kbd> | change the working directory (blank = global) and rescan in place |
 | <kbd>e</kbd> | label the selected session (tag an existing one, or edit/clear its label) |
@@ -250,6 +254,21 @@ Read‑only data sources:
 - **Kiro** — `~/.kiro/sessions/cli/<uuid>.json` (a metadata sidecar with cwd,
   timestamps, and title). Kiro records no cumulative token counts, so the usage
   column shows its **context‑window occupancy** (e.g. `15%`) instead.
+- **Cursor session metadata** —
+  `~/.cursor/chats/<workspace-hash>/<chat-id>/meta.json`. Only
+  `hasConversation=true` chats are listed; cwd, timestamps, optional title, and
+  subagent state are available, but per-session token/context metrics and
+  transcript content are not exposed by this verified local schema.
+
+Account-level quota sources are separate from those session stores. Kiro uses
+`kiro-cli chat --no-interactive /usage`. On macOS, Cursor reads the Cursor Agent
+access token from the login Keychain item `cursor-access-token` / `cursor-user`,
+validates its JWT subject and expiry, and sends only the resulting session cookie
+to `https://cursor.com/api/usage-summary`. The cookie is staged in a private
+mode-0600 curl config, never argv; HTTPS is required and redirects are disabled.
+Cursor quota is unavailable rather than guessed when that macOS Agent credential
+or a numeric plan/personal/team cap is absent. Browser cookies, chat content,
+project content, on-demand spend, and session metadata are not used as quota.
 
 What MindPlayer writes, all under `~/.mindplayer/`:
 
@@ -262,8 +281,8 @@ What MindPlayer writes, all under `~/.mindplayer/`:
 | `hooks/` | per-pane status readings written by the agents' own lifecycle hooks |
 | `logs/` | per-session stderr |
 
-The source transcripts under `~/.codex`, `~/.claude`, and `~/.kiro` are only
-ever read.
+The source data under `~/.codex`, `~/.claude`, `~/.kiro`, and `~/.cursor` is
+only ever read.
 
 **Live status, in more detail.** Codex and Claude Code status comes from
 their own official lifecycle hooks (`UserPromptSubmit`, `PreToolUse`,
@@ -275,7 +294,9 @@ screen‑text heuristic rather than reporting a status that's just an
 artifact of a crashed hook. Kiro-cli has no comparable hook, so it always
 uses the screen‑text heuristic, driven by `~/.mindplayer/kiro-patterns.json`
 (created with sensible defaults on first use) — edit it to add wording from a
-newer kiro-cli release without waiting on a MindPlayer update.
+newer kiro-cli release without waiting on a MindPlayer update. Cursor currently
+uses the same generic PTY screen-state fallback (blocked/working/idle markers)
+without a Cursor-specific lifecycle hook.
 
 Canned prompts (<kbd>c</kbd> catch-up, <kbd>Ctrl‑t</kbd> transition report)
 live as plain `.md` files under `~/.mindplayer/prompts/` — `catchup.md`,
@@ -283,8 +304,8 @@ live as plain `.md` files under `~/.mindplayer/prompts/` — `catchup.md`,
 each is used. Edit them in any text editor; the next send picks up the
 change immediately, no rebuild or restart needed.
 
-Resuming launches `codex resume <id>` /
-`claude --resume <id>` / `kiro-cli chat --resume-id <id>` in an embedded PTY in
+Resuming launches `codex resume <id>` / `claude --resume <id>` /
+`kiro-cli chat --resume-id <id>` / `agent --resume <id>` in an embedded PTY in
 the session's original directory.
 
 <details>

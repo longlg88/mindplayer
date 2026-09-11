@@ -83,7 +83,7 @@ pub enum AuditEvent {
         id: String,
         remaining: usize,
     },
-    /// A new Codex/Claude/Kiro session was requested (its real `SessionOpen`
+    /// A new Codex/Claude/Kiro/Cursor session was requested (its real `SessionOpen`
     /// lands once the PTY actually spawns).
     NewSession {
         agent: String,
@@ -275,6 +275,7 @@ pub struct AgentCounts {
     pub codex: usize,
     pub claude: usize,
     pub kiro: usize,
+    pub cursor: usize,
 }
 
 impl AgentCounts {
@@ -283,12 +284,13 @@ impl AgentCounts {
             "codex" => self.codex += 1,
             "claude" => self.claude += 1,
             "kiro" => self.kiro += 1,
+            "cursor" => self.cursor += 1,
             _ => {}
         }
     }
 
     pub fn total(&self) -> usize {
-        self.codex + self.claude + self.kiro
+        self.codex + self.claude + self.kiro + self.cursor
     }
 }
 
@@ -600,6 +602,12 @@ mod tests {
                     agent: "kiro".to_string(),
                 },
             ),
+            rec(
+                now,
+                AuditEvent::SessionOpen {
+                    agent: "cursor".to_string(),
+                },
+            ),
         ];
         let stats = compute_stats(&events, now, 0);
         assert_eq!(
@@ -607,10 +615,11 @@ mod tests {
             AgentCounts {
                 codex: 2,
                 claude: 1,
-                kiro: 1
+                kiro: 1,
+                cursor: 1,
             }
         );
-        assert_eq!(stats.sessions_opened_all_time.total(), 4);
+        assert_eq!(stats.sessions_opened_all_time.total(), 5);
     }
 
     #[test]

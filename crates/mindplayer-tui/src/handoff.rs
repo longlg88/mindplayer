@@ -19,7 +19,8 @@ pub fn target_for_choice(choice: usize) -> Agent {
     match choice {
         0 => Agent::Codex,
         1 => Agent::Claude,
-        _ => Agent::Kiro,
+        2 => Agent::Kiro,
+        _ => Agent::Cursor,
     }
 }
 
@@ -433,6 +434,10 @@ fn extract_transcript(source: &Session) -> Result<String, String> {
         Agent::Claude => extract_jsonl_transcript(source, parse_claude_turn),
         Agent::Codex => extract_jsonl_transcript(source, parse_codex_turn),
         Agent::Kiro => extract_kiro_transcript(source),
+        Agent::Cursor => Ok(metadata_only_transcript(
+            source,
+            "Cursor's local meta.json contains no transcript; resume remains available by chat ID",
+        )),
     }
 }
 
@@ -497,6 +502,9 @@ fn read_transcript_from(source: &Session, from: u64) -> Option<String> {
         // Kiro keeps a JSON sidecar rather than an append-only JSONL, so an
         // offset means nothing there — always take the whole thing.
         Agent::Kiro => return extract_transcript(source).ok(),
+        // Cursor persists only listing metadata locally; there is no append-only
+        // transcript delta to synchronize into another lane.
+        Agent::Cursor => return None,
     };
     let mut file = File::open(&source.file).ok()?;
     file.seek(SeekFrom::Start(from)).ok()?;
@@ -738,6 +746,12 @@ fn parse_kiro_turn(v: &Value) -> Option<(String, String)> {
     (!text.trim().is_empty()).then(|| (role.to_string(), text))
 }
 
+fn parse_cursor_turn(_v: &Value) -> Option<(String, String)> {
+    // Cursor's local session sidecar contains listing metadata only. Conversation
+    // content is not exposed through the verified local storage contract.
+    None
+}
+
 fn extract_kiro_content_text(content: &Value) -> Option<String> {
     match content {
         Value::String(s) => Some(s.clone()),
@@ -938,6 +952,7 @@ pub(crate) fn parse_turn_for(agent: Agent) -> fn(&Value) -> Option<(String, Stri
         Agent::Claude => parse_claude_turn,
         Agent::Codex => parse_codex_turn,
         Agent::Kiro => parse_kiro_turn,
+        Agent::Cursor => parse_cursor_turn,
     }
 }
 
@@ -1149,6 +1164,9 @@ mod tests {
         // A non-kiro handoff target gets no trust flag injected here.
         let codex = command_for(&src, Agent::Codex);
         assert!(!codex.args.iter().any(|a| a == "--trust-all-tools"));
+        let cursor = command_for(&src, Agent::Cursor);
+        assert_eq!(cursor.program, "agent");
+        assert!(cursor.args.is_empty());
     }
 
     #[test]
@@ -1195,6 +1213,32 @@ mod tests {
 
         assert!(prompt.contains("source session has no transcript file yet"));
         assert!(prompt.contains("new:claude:1"));
+        assert!(prepared.artifact.exists());
+
+        std::env::remove_var(HANDOFF_DIR_ENV);
+    }
+
+    #[test]
+    fn cursor_source_handoff_is_explicitly_metadata_only() {
+        let _env = TEST_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = temp_dir("cursor-metadata");
+        let meta = dir.join("meta.json");
+        fs::write(
+            &meta,
+            r#"{"schemaVersion":1,"createdAtMs":1767513600000,"hasConversation":true,"cwd":"/work/project"}"#,
+        )
+        .unwrap();
+        std::env::set_var(HANDOFF_DIR_ENV, dir.join("handoffs"));
+        let mut source = session(meta);
+        source.agent = Agent::Cursor;
+        source.id = "cursor-chat-synthetic".into();
+        source.title = "synthetic cursor fixture".into();
+
+        let prepared = prepare_initial_input(&source, Agent::Codex).unwrap();
+        let prompt = String::from_utf8(prepared.input).unwrap();
+        assert!(prompt.contains("from cursor to codex"));
+        assert!(prompt.contains("local meta.json contains no transcript"));
+        assert!(prompt.contains("cursor-chat-synthetic"));
         assert!(prepared.artifact.exists());
 
         std::env::remove_var(HANDOFF_DIR_ENV);

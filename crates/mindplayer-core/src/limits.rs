@@ -4,7 +4,7 @@
 //! A different quantity from [`crate::tokens`]: that counts tokens this session
 //! spent, this reports utilization of the plan's windows.
 //!
-//! Two sources, deliberately different in cost:
+//! Four sources, deliberately different in cost:
 //!
 //! * **Codex** — no auth, no network. Every turn writes a `rate_limits` snapshot
 //!   into `~/.codex/sessions/**/rollout-*.jsonl`; the newest one is read from the
@@ -12,12 +12,20 @@
 //! * **Claude** — a live `GET /api/oauth/usage` with the subscription OAuth
 //!   token, shelled out through `curl` so no HTTP/TLS dependency enters the tree
 //!   and a corporate MITM CA is trusted exactly as the user's other tools trust it.
+//! * **Kiro** — its own bounded `kiro-cli chat --no-interactive /usage` report.
+//!   That is account plan-credit usage; per-session context occupancy remains in
+//!   [`crate::session::Session::context_pct`] and is not mislabeled as quota.
+//! * **Cursor** — account quota from Cursor's first-party `/api/usage-summary`,
+//!   authenticated with the Cursor Agent's macOS Keychain access token. This is
+//!   separate from chat metadata, context occupancy, and per-session metering.
 //!
 //! Every failure carries its reason so the UI can say WHY a number is absent.
 //! A missing window is never rendered as `0%` — that would read as "plenty left".
 
+use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::time::SystemTime;
+use std::process::{Command, Stdio};
+use std::time::{Duration, Instant, SystemTime};
 
 use serde_json::Value;
 
@@ -30,10 +38,18 @@ const ROLLOUT_TAIL_BYTES: u64 = 1 << 20;
 /// Claude's OAuth usage endpoint and the beta header it requires.
 const CLAUDE_USAGE_URL: &str = "https://api.anthropic.com/api/oauth/usage";
 const CLAUDE_BETA_HEADER: &str = "anthropic-beta: oauth-2025-04-20";
+const CURSOR_USAGE_URL: &str = "https://cursor.com/api/usage-summary";
+const CURSOR_KEYCHAIN_SERVICE: &str = "cursor-access-token";
+const CURSOR_KEYCHAIN_ACCOUNT: &str = "cursor-user";
 
 /// Seconds before the `curl` call is abandoned. The readout is decoration; it
 /// must never hold anything up.
 const CURL_TIMEOUT_SECS: u32 = 8;
+/// Kiro's hidden `/usage` command sometimes keeps its harness alive after
+/// printing a complete report. The readout is optional, so bound the whole
+/// child and let the next refresh try again.
+const KIRO_USAGE_TIMEOUT: Duration = Duration::from_secs(15);
+const KEYCHAIN_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Claude's two subscription windows, as percentages already (not fractions).
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
@@ -87,6 +103,102 @@ impl CodexLimits {
     }
 }
 
+/// Kiro's account-level plan usage as reported by its own `/usage` command.
+/// This is distinct from both context-window occupancy and the per-session
+/// metering entries in sidecars: it has the plan ceiling and reset date needed
+/// for an honest percentage gauge.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct KiroLimits {
+    pub plan_name: Option<String>,
+    pub credits_used: Option<f64>,
+    pub credits_total: Option<f64>,
+    pub used_percent: Option<f64>,
+    pub reset_date: Option<String>,
+}
+
+impl KiroLimits {
+    pub fn has_any(&self) -> bool {
+        self.credits_used.is_some()
+            && self.credits_total.is_some_and(|total| total > 0.0)
+            && self.used_percent.is_some()
+    }
+}
+
+/// Which first-party usage-summary block supplied the Cursor account quota.
+/// `OnDemand` is deliberately absent: spend billing must not silently replace
+/// the included-plan allowance.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CursorQuotaSource {
+    Plan,
+    IndividualOverall,
+    TeamPooled,
+}
+
+/// Cursor account-level quota from `/api/usage-summary`.
+///
+/// Monetary values remain in the endpoint's cents unit. They are not context
+/// tokens, per-session tokens, or the on-demand spend meter.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct CursorLimits {
+    pub used_percent: Option<f64>,
+    pub used_cents: Option<i64>,
+    pub limit_cents: Option<i64>,
+    pub remaining_cents: Option<i64>,
+    pub billing_cycle_start: Option<String>,
+    pub billing_cycle_end: Option<String>,
+    pub membership_type: Option<String>,
+    pub limit_type: Option<String>,
+    pub is_unlimited: bool,
+    pub source: Option<CursorQuotaSource>,
+}
+
+impl CursorLimits {
+    pub fn has_any(&self) -> bool {
+        self.used_percent.is_some() || self.is_unlimited
+    }
+}
+
+/// One account window for the footer, as values rather than a rendered line.
+#[derive(Debug, Clone, PartialEq)]
+pub struct QuotaRow {
+    /// `claude 5h`, `kiro`, `cursor` — what the row is about.
+    pub label: String,
+    /// Percent USED. `None` means no window was reported; draw no gauge.
+    pub used_percent: Option<f64>,
+    /// The figure behind the percentage, or the reason there isn't one.
+    pub detail: String,
+    /// When the window rolls over, already shortened for display.
+    pub resets: Option<String>,
+}
+
+impl QuotaRow {
+    /// A row that explains an absent reading instead of implying a full one.
+    fn reason(label: &str, why: &str) -> Self {
+        Self {
+            label: label.to_string(),
+            used_percent: None,
+            detail: why.to_string(),
+            resets: None,
+        }
+    }
+
+    /// True when this row carries a number the footer can gauge.
+    pub fn has_gauge(&self) -> bool {
+        self.used_percent.is_some()
+    }
+}
+
+/// Shorten a reset epoch: a clock for windows that roll over within a day, a
+/// date for the ones that don't.
+fn epoch_label(epoch: i64, clock: bool) -> Option<String> {
+    use chrono::TimeZone;
+    let when = chrono::Local.timestamp_opt(epoch, 0).single()?;
+    Some(
+        when.format(if clock { "%H:%M" } else { "%m-%d" })
+            .to_string(),
+    )
+}
+
 /// Turn a `rate_limit_reached_type` into something a person reads.
 ///
 /// Unknown values are passed through with their underscores opened up rather
@@ -99,11 +211,13 @@ fn reached_label(raw: &str) -> String {
     }
 }
 
-/// Both providers, each either a reading or the reason there isn't one.
+/// All providers, each either a reading or the reason there isn't one.
 #[derive(Debug, Clone)]
 pub struct Limits {
     pub claude: Result<ClaudeLimits, String>,
     pub codex: Result<CodexLimits, String>,
+    pub kiro: Result<KiroLimits, String>,
+    pub cursor: Result<CursorLimits, String>,
 }
 
 impl Limits {
@@ -111,6 +225,121 @@ impl Limits {
     pub fn has_any(&self) -> bool {
         self.claude.as_ref().is_ok_and(ClaudeLimits::has_any)
             || self.codex.as_ref().is_ok_and(CodexLimits::has_any)
+            || self.kiro.as_ref().is_ok_and(KiroLimits::has_any)
+            || self.cursor.as_ref().is_ok_and(CursorLimits::has_any)
+    }
+
+    /// One row per account window, as values rather than a formatted line, so
+    /// the footer can draw a gauge instead of printing a number to be read.
+    ///
+    /// Claude contributes two rows when it reports both windows; every other
+    /// provider contributes one. `used_percent` is `None` whenever the provider
+    /// reports no window at all — the caller must draw no gauge then, because
+    /// an empty gauge reads as "plenty left" when the truth is "not reported".
+    pub fn quota_rows(&self) -> Vec<QuotaRow> {
+        let mut out = Vec::new();
+        match &self.claude {
+            Ok(c) if c.has_any() => {
+                for (label, used, reset, clock) in [
+                    ("claude 5h", c.five_hour, c.five_hour_reset, true),
+                    ("claude wk", c.seven_day, c.seven_day_reset, false),
+                ] {
+                    if let Some(p) = used {
+                        out.push(QuotaRow {
+                            label: label.into(),
+                            used_percent: Some(p),
+                            detail: String::new(),
+                            resets: reset.and_then(|e| epoch_label(e, clock)),
+                        });
+                    }
+                }
+            }
+            Ok(_) => out.push(QuotaRow::reason("claude", "no windows reported")),
+            Err(e) => out.push(QuotaRow::reason("claude", e)),
+        }
+        // Codex reports `primary`/`secondary` only on plans metered by windows.
+        // On a business plan both are null and the monthly figure its own
+        // `/status` shows is never written to the rollout, so there is no
+        // percentage to gauge here — only the balance, which is not the same
+        // quantity and must not be drawn as one.
+        match &self.codex {
+            Ok(c) if c.has_any() => {
+                let windowed = [
+                    (c.primary, c.primary_window_minutes),
+                    (c.secondary, c.secondary_window_minutes),
+                ];
+                let mut any_window = false;
+                for (used, window) in windowed {
+                    if let Some(p) = used {
+                        any_window = true;
+                        out.push(QuotaRow {
+                            label: format!("codex {}", window_label(window)),
+                            used_percent: Some(p),
+                            detail: String::new(),
+                            resets: None,
+                        });
+                    }
+                }
+                if !any_window {
+                    let detail = if c.credits_unlimited {
+                        "credits unlimited".to_string()
+                    } else if let Some(b) = c.credit_balance {
+                        format!("credits {b:.0} · no window reported")
+                    } else {
+                        "no window reported".to_string()
+                    };
+                    out.push(QuotaRow {
+                        label: "codex".into(),
+                        used_percent: None,
+                        detail,
+                        resets: None,
+                    });
+                }
+            }
+            Ok(c) => out.push(QuotaRow::reason(
+                "codex",
+                &format!(
+                    "no windows on {} plan",
+                    c.plan_type.as_deref().unwrap_or("this")
+                ),
+            )),
+            Err(e) => out.push(QuotaRow::reason("codex", e)),
+        }
+        match &self.kiro {
+            Ok(k) if k.has_any() => out.push(QuotaRow {
+                label: "kiro".into(),
+                used_percent: k.used_percent,
+                detail: match (k.credits_used, k.credits_total) {
+                    (Some(u), Some(t)) => {
+                        format!("{}/{} cr", compact_decimal(u), compact_decimal(t))
+                    }
+                    _ => String::new(),
+                },
+                resets: k.reset_date.clone(),
+            }),
+            Ok(_) => out.push(QuotaRow::reason("kiro", "no usage reported")),
+            Err(e) => out.push(QuotaRow::reason("kiro", e)),
+        }
+        match &self.cursor {
+            Ok(c) if c.has_any() => out.push(QuotaRow {
+                label: "cursor".into(),
+                used_percent: c.used_percent,
+                detail: match (c.used_cents, c.limit_cents) {
+                    (Some(u), Some(l)) => {
+                        format!("${:.2}/${}", u as f64 / 100.0, l / 100)
+                    }
+                    _ => String::new(),
+                },
+                resets: c
+                    .billing_cycle_end
+                    .as_deref()
+                    .and_then(cursor_date_label)
+                    .map(str::to_string),
+            }),
+            Ok(_) => out.push(QuotaRow::reason("cursor", "no usage reported")),
+            Err(e) => out.push(QuotaRow::reason("cursor", e)),
+        }
+        out
     }
 
     /// One row per provider: the line to show, and whether THAT provider
@@ -126,6 +355,8 @@ impl Limits {
             .zip([
                 self.claude.as_ref().is_ok_and(ClaudeLimits::has_any),
                 self.codex.as_ref().is_ok_and(CodexLimits::has_any),
+                self.kiro.as_ref().is_ok_and(KiroLimits::has_any),
+                self.cursor.as_ref().is_ok_and(CursorLimits::has_any),
             ])
             .collect()
     }
@@ -183,8 +414,86 @@ impl Limits {
             )),
             Err(e) => out.push(format!("codex   — {e}")),
         }
+        match &self.kiro {
+            Ok(k) if k.has_any() => {
+                let mut parts = Vec::new();
+                if let Some(percent) = k.used_percent {
+                    parts.push(format!("{percent:.1}%"));
+                }
+                if let (Some(used), Some(total)) = (k.credits_used, k.credits_total) {
+                    parts.push(format!(
+                        "{}/{} cr",
+                        compact_decimal(used),
+                        compact_decimal(total)
+                    ));
+                }
+                if let Some(reset) = k.reset_date.as_deref() {
+                    parts.push(format!("reset {reset}"));
+                }
+                out.push(format!("kiro  {}", parts.join("  ")));
+            }
+            Ok(k) => out.push(format!(
+                "kiro  no usage metrics on {}",
+                k.plan_name.as_deref().unwrap_or("this plan")
+            )),
+            Err(e) => out.push(format!("kiro  — {e}")),
+        }
+        match &self.cursor {
+            Ok(c) if c.has_any() => {
+                let mut parts = Vec::new();
+                if c.source == Some(CursorQuotaSource::TeamPooled) {
+                    parts.push("team".to_string());
+                }
+                if let Some(percent) = c.used_percent {
+                    parts.push(format!("{percent:.1}%"));
+                } else if c.is_unlimited {
+                    parts.push("unlimited".to_string());
+                }
+                if let (Some(used), Some(limit)) = (c.used_cents, c.limit_cents) {
+                    parts.push(format!(
+                        "${}/${}",
+                        compact_decimal(used as f64 / 100.0),
+                        compact_decimal(limit as f64 / 100.0)
+                    ));
+                }
+                if let Some(reset) = c.billing_cycle_end.as_deref().and_then(cursor_date_label) {
+                    parts.push(format!("reset {reset}"));
+                }
+                out.push(format!("cursor  {}", parts.join("  ")));
+            }
+            Ok(c) => out.push(format!(
+                "cursor  no numeric quota on {} plan",
+                c.membership_type.as_deref().unwrap_or("this")
+            )),
+            Err(e) => out.push(format!("cursor  — {e}")),
+        }
         out
     }
+}
+
+fn cursor_date_label(raw: &str) -> Option<&str> {
+    chrono::DateTime::parse_from_rfc3339(raw).ok()?;
+    raw.get(..10)
+}
+
+fn compact_decimal(value: f64) -> String {
+    let precision = if value >= 1000.0 {
+        0
+    } else if value >= 10.0 {
+        1
+    } else {
+        2
+    };
+    let mut text = format!("{value:.precision$}");
+    if text.contains('.') {
+        while text.ends_with('0') {
+            text.pop();
+        }
+        if text.ends_with('.') {
+            text.pop();
+        }
+    }
+    text
 }
 
 /// Name a codex window by its length rather than by which slot it arrived in.
@@ -202,12 +511,497 @@ fn window_label(window_minutes: Option<f64>) -> String {
     }
 }
 
-/// Read both providers. Does disk and network I/O — call it off the UI thread.
+/// Read all providers concurrently. Each source has independent latency and
+/// failure modes; serializing them let a slow Claude/Codex probe consume the
+/// TUI's entire fetch deadline before Kiro even started.
 pub fn fetch(home: &Path) -> Limits {
-    Limits {
-        claude: claude_limits(home),
-        codex: codex_limits(home),
+    fetch_parallel(
+        || claude_limits(home),
+        || codex_limits(home),
+        || kiro_limits(home),
+        || cursor_limits(home),
+    )
+}
+
+fn fetch_parallel<C, D, K, U>(claude: C, codex: D, kiro: K, cursor: U) -> Limits
+where
+    C: FnOnce() -> Result<ClaudeLimits, String> + Send,
+    D: FnOnce() -> Result<CodexLimits, String> + Send,
+    K: FnOnce() -> Result<KiroLimits, String> + Send,
+    U: FnOnce() -> Result<CursorLimits, String> + Send,
+{
+    std::thread::scope(|scope| {
+        let claude = scope.spawn(claude);
+        let codex = scope.spawn(codex);
+        let kiro = scope.spawn(kiro);
+        let cursor = scope.spawn(cursor);
+        Limits {
+            claude: claude
+                .join()
+                .unwrap_or_else(|_| Err("Claude limits probe panicked".into())),
+            codex: codex
+                .join()
+                .unwrap_or_else(|_| Err("Codex limits probe panicked".into())),
+            kiro: kiro
+                .join()
+                .unwrap_or_else(|_| Err("Kiro limits probe panicked".into())),
+            cursor: cursor
+                .join()
+                .unwrap_or_else(|_| Err("Cursor limits probe panicked".into())),
+        }
+    })
+}
+
+// ── Kiro ──────────────────────────────────────────────────────────────────
+
+/// Ask Kiro's own CLI for the account-level credit window. The command is the
+/// same local `/usage` surface Kiro renders interactively; no transcript or
+/// project content is sent. A missing local Kiro store skips the child entirely
+/// (important for fixture homes and machines that do not use Kiro).
+pub fn kiro_limits(home: &Path) -> Result<KiroLimits, String> {
+    if !home.join(".kiro").exists() {
+        return Err("no local Kiro profile".into());
     }
+    let mut command = Command::new("kiro-cli");
+    command
+        .args(["chat", "--no-interactive", "/usage"])
+        .current_dir(home)
+        .env("HOME", home);
+    let (status, stdout, stderr) = run_bounded(command, KIRO_USAGE_TIMEOUT, "kiro-cli")?;
+    let output = [stdout, stderr]
+        .into_iter()
+        .filter(|part| !part.trim().is_empty())
+        .collect::<Vec<_>>()
+        .join("\n");
+    if !status.success() {
+        return Err(format!("kiro-cli /usage exited with {status}"));
+    }
+    parse_kiro_usage(&output)
+}
+
+/// Parse the stable, human-readable report emitted by
+/// `kiro-cli chat --no-interactive /usage`.
+pub fn parse_kiro_usage(output: &str) -> Result<KiroLimits, String> {
+    let clean = strip_ansi(output);
+    let output = clean.as_str();
+    let usage_line = output.lines().find(|line| line.contains("Estimated Usage"));
+    let mut result = KiroLimits::default();
+    if let Some(line) = usage_line {
+        for part in line.split('|').map(str::trim) {
+            if let Some(raw) = part.strip_prefix("resets on ") {
+                let date = raw.trim();
+                if chrono::NaiveDate::parse_from_str(date, "%Y-%m-%d").is_ok() {
+                    result.reset_date = Some(date.to_string());
+                }
+            } else if !part.is_empty()
+                && !part.eq_ignore_ascii_case("Estimated Usage")
+                && !part.to_ascii_lowercase().contains("managed by")
+            {
+                result.plan_name = Some(part.to_string());
+            }
+        }
+    }
+
+    let credit_line = output.lines().find(|line| line.contains("Credits ("));
+    if let Some(line) = credit_line {
+        let inside = line
+            .split_once('(')
+            .and_then(|(_, rest)| rest.split_once(')'))
+            .map(|(inside, _)| inside)
+            .ok_or_else(|| "malformed Kiro credits line".to_string())?;
+        let words: Vec<&str> = inside.split_whitespace().collect();
+        let of = words
+            .iter()
+            .position(|word| word.eq_ignore_ascii_case("of"))
+            .ok_or_else(|| "malformed Kiro credits line".to_string())?;
+        let used = words
+            .get(of.wrapping_sub(1))
+            .and_then(|raw| parse_finite_nonnegative(raw))
+            .ok_or_else(|| "invalid Kiro credits used".to_string())?;
+        let total = words
+            .get(of + 1)
+            .and_then(|raw| parse_finite_nonnegative(raw))
+            .filter(|value| *value > 0.0)
+            .ok_or_else(|| "invalid Kiro credits total".to_string())?;
+        if used > total {
+            return Err("Kiro plan usage exceeds its credit total".into());
+        }
+        result.credits_used = Some(used);
+        result.credits_total = Some(total);
+        result.used_percent = Some((used / total) * 100.0);
+    }
+
+    if result.plan_name.is_none() && !result.has_any() {
+        return Err("no recognizable Kiro usage report".into());
+    }
+    Ok(result)
+}
+
+fn parse_finite_nonnegative(raw: &str) -> Option<f64> {
+    let value = raw.replace(',', "").parse::<f64>().ok()?;
+    (value.is_finite() && value >= 0.0).then_some(value)
+}
+
+fn strip_ansi(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let mut chars = input.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch != '\u{1b}' {
+            out.push(ch);
+            continue;
+        }
+        match chars.peek().copied() {
+            Some('[') => {
+                chars.next();
+                // CSI ends at its final byte in the ASCII 0x40..=0x7e range.
+                for c in chars.by_ref() {
+                    if ('@'..='~').contains(&c) {
+                        break;
+                    }
+                }
+            }
+            Some(']') => {
+                chars.next();
+                // OSC ends at BEL or ST (ESC + backslash).
+                let mut saw_escape = false;
+                for c in chars.by_ref() {
+                    if c == '\u{7}' || (saw_escape && c == '\\') {
+                        break;
+                    }
+                    saw_escape = c == '\u{1b}';
+                }
+            }
+            Some(_) => {
+                // Two-byte escape sequence.
+                chars.next();
+            }
+            None => {}
+        }
+    }
+    out
+}
+
+fn run_bounded(
+    mut command: Command,
+    timeout: Duration,
+    label: &str,
+) -> Result<(std::process::ExitStatus, String, String), String> {
+    command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut child = command
+        .spawn()
+        .map_err(|e| format!("cannot start {label}: {e}"))?;
+    let mut stdout = child
+        .stdout
+        .take()
+        .ok_or(format!("cannot capture {label} stdout"))?;
+    let mut stderr = child
+        .stderr
+        .take()
+        .ok_or(format!("cannot capture {label} stderr"))?;
+    let stdout_reader = std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let _ = stdout.read_to_end(&mut bytes);
+        bytes
+    });
+    let stderr_reader = std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let _ = stderr.read_to_end(&mut bytes);
+        bytes
+    });
+
+    let start = Instant::now();
+    let status = loop {
+        if let Some(status) = child
+            .try_wait()
+            .map_err(|e| format!("cannot wait for {label}: {e}"))?
+        {
+            break status;
+        }
+        if start.elapsed() >= timeout {
+            let _ = child.kill();
+            let _ = child.wait();
+            let _ = stdout_reader.join();
+            let _ = stderr_reader.join();
+            return Err(format!("{label} timed out"));
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    let stdout = stdout_reader
+        .join()
+        .map_err(|_| format!("{label} stdout reader panicked"))?;
+    let stderr = stderr_reader
+        .join()
+        .map_err(|_| format!("{label} stderr reader panicked"))?;
+    Ok((
+        status,
+        String::from_utf8_lossy(&stdout).into_owned(),
+        String::from_utf8_lossy(&stderr).into_owned(),
+    ))
+}
+
+// ── Cursor ─────────────────────────────────────────────────────────────────
+
+/// Fetch Cursor account quota from the same first-party endpoint used by
+/// CodexBar. Only the Cursor Agent's macOS Keychain credential is used: browser
+/// cookies and project/session data are never inspected or transmitted.
+pub fn cursor_limits(home: &Path) -> Result<CursorLimits, String> {
+    let token = cursor_access_token(home)?;
+    let cookie = cursor_cookie_from_access_token(&token)?;
+    let body = cursor_curl_json(&cookie)?;
+    let value: Value = serde_json::from_str(&body)
+        .map_err(|e| format!("unparsable response from /api/usage-summary: {e}"))?;
+    let parsed = parse_cursor_usage(&value)?;
+    if parsed.has_any() {
+        Ok(parsed)
+    } else {
+        Err("response carried no account quota".into())
+    }
+}
+
+/// Parse the verified Cursor `/api/usage-summary` schema.
+///
+/// Source precedence follows CodexBar: regular plans use `individualUsage.plan`;
+/// Enterprise/Team accounts then fall back to the personal `overall` cap, and
+/// only finally to a shared team `pooled` cap. On-demand spend is not a quota
+/// fallback because it is a different billing concept.
+pub fn parse_cursor_usage(body: &Value) -> Result<CursorLimits, String> {
+    if !body.is_object() {
+        return Err("Cursor usage summary is not a JSON object".into());
+    }
+
+    fn cents(value: Option<&Value>) -> Option<i64> {
+        value.and_then(Value::as_i64).filter(|v| *v >= 0)
+    }
+    fn percent(value: Option<&Value>) -> Option<f64> {
+        value
+            .and_then(Value::as_f64)
+            .filter(|v| v.is_finite())
+            .map(|v| v.clamp(0.0, 100.0))
+    }
+    fn ratio(used: Option<i64>, limit: Option<i64>) -> Option<f64> {
+        match (used, limit) {
+            (Some(used), Some(limit)) if limit > 0 => {
+                Some(((used as f64 / limit as f64) * 100.0).clamp(0.0, 100.0))
+            }
+            _ => None,
+        }
+    }
+    fn string(body: &Value, key: &str) -> Option<String> {
+        body.get(key).and_then(Value::as_str).map(str::to_string)
+    }
+
+    let is_unlimited = body
+        .get("isUnlimited")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let plan = body
+        .pointer("/individualUsage/plan")
+        .filter(|block| block.get("enabled").and_then(Value::as_bool) != Some(false));
+    let plan_used = cents(plan.and_then(|v| v.get("used")));
+    let plan_limit = cents(plan.and_then(|v| v.get("limit")));
+    let plan_remaining = cents(plan.and_then(|v| v.get("remaining")));
+    let auto = percent(plan.and_then(|v| v.get("autoPercentUsed")));
+    let api = percent(plan.and_then(|v| v.get("apiPercentUsed")));
+    let plan_percent =
+        percent(plan.and_then(|v| v.get("totalPercentUsed"))).or_else(|| match (auto, api) {
+            (Some(auto), Some(api)) => Some((auto + api) / 2.0),
+            (Some(auto), None) => Some(auto),
+            (None, Some(api)) => Some(api),
+            (None, None) => ratio(plan_used, plan_limit),
+        });
+
+    let overall = body
+        .pointer("/individualUsage/overall")
+        .filter(|block| block.get("enabled").and_then(Value::as_bool) != Some(false));
+    let overall_used = cents(overall.and_then(|v| v.get("used")));
+    let overall_limit = cents(overall.and_then(|v| v.get("limit")));
+    let overall_remaining = cents(overall.and_then(|v| v.get("remaining")));
+    let overall_percent = ratio(overall_used, overall_limit);
+
+    let pooled = body
+        .pointer("/teamUsage/pooled")
+        .filter(|block| block.get("enabled").and_then(Value::as_bool) != Some(false));
+    let pooled_used = cents(pooled.and_then(|v| v.get("used")));
+    let pooled_limit = cents(pooled.and_then(|v| v.get("limit")));
+    let pooled_remaining = cents(pooled.and_then(|v| v.get("remaining")));
+    let pooled_percent = ratio(pooled_used, pooled_limit);
+
+    let (used_percent, used_cents, limit_cents, remaining_cents, source) = if is_unlimited {
+        (None, None, None, None, None)
+    } else if plan_percent.is_some() {
+        (
+            plan_percent,
+            plan_used,
+            plan_limit,
+            plan_remaining,
+            Some(CursorQuotaSource::Plan),
+        )
+    } else if overall_percent.is_some() {
+        (
+            overall_percent,
+            overall_used,
+            overall_limit,
+            overall_remaining,
+            Some(CursorQuotaSource::IndividualOverall),
+        )
+    } else if pooled_percent.is_some() {
+        (
+            pooled_percent,
+            pooled_used,
+            pooled_limit,
+            pooled_remaining,
+            Some(CursorQuotaSource::TeamPooled),
+        )
+    } else {
+        (None, None, None, None, None)
+    };
+
+    Ok(CursorLimits {
+        used_percent,
+        used_cents,
+        limit_cents,
+        remaining_cents,
+        billing_cycle_start: string(body, "billingCycleStart"),
+        billing_cycle_end: string(body, "billingCycleEnd"),
+        membership_type: string(body, "membershipType"),
+        limit_type: string(body, "limitType"),
+        is_unlimited,
+        source,
+    })
+}
+
+fn cursor_access_token(home: &Path) -> Result<String, String> {
+    #[cfg(target_os = "macos")]
+    {
+        if !is_real_home(home) {
+            return Err("Cursor Keychain lookup is disabled for a non-user home".into());
+        }
+        let mut command = Command::new("/usr/bin/security");
+        command.args([
+            "find-generic-password",
+            "-s",
+            CURSOR_KEYCHAIN_SERVICE,
+            "-a",
+            CURSOR_KEYCHAIN_ACCOUNT,
+            "-w",
+        ]);
+        let (status, stdout, _) = run_bounded(command, KEYCHAIN_TIMEOUT, "security(1)")?;
+        if !status.success() {
+            return Err("no Cursor Agent access token in macOS Keychain".into());
+        }
+        let token = stdout.trim_end_matches(['\r', '\n']);
+        if token.is_empty() || token.chars().any(char::is_control) {
+            return Err("Cursor Agent access token is empty or malformed".into());
+        }
+        Ok(token.to_string())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = home;
+        Err("Cursor account quota authentication is currently supported on macOS".into())
+    }
+}
+
+/// Build the WorkOS dashboard cookie used by Cursor and CodexBar. The JWT is
+/// accepted only with three base64url segments, a safe subject, and at least 60
+/// seconds of remaining validity.
+fn cursor_cookie_from_access_token(token: &str) -> Result<String, String> {
+    let segments: Vec<&str> = token.split('.').collect();
+    if segments.len() != 3
+        || segments.iter().any(|s| {
+            s.is_empty()
+                || !s
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_'))
+        })
+    {
+        return Err("Cursor Agent access token is not a valid JWT".into());
+    }
+    let payload = base64url_decode(segments[1])
+        .ok_or_else(|| "Cursor Agent JWT payload is malformed".to_string())?;
+    let payload: Value = serde_json::from_slice(&payload)
+        .map_err(|_| "Cursor Agent JWT payload is malformed".to_string())?;
+    let subject = payload
+        .get("sub")
+        .and_then(Value::as_str)
+        .filter(|s| {
+            !s.is_empty()
+                && s.len() <= 256
+                && s.bytes().all(|b| {
+                    b.is_ascii_alphanumeric()
+                        || matches!(b, b'_' | b'-' | b'.' | b'|' | b'@' | b'+')
+                })
+        })
+        .ok_or_else(|| "Cursor Agent JWT has no safe subject".to_string())?;
+    let expires = payload
+        .get("exp")
+        .and_then(Value::as_i64)
+        .ok_or_else(|| "Cursor Agent JWT has no expiration".to_string())?;
+    if expires <= chrono::Utc::now().timestamp() + 60 {
+        return Err("Cursor Agent access token is expired or near expiry".into());
+    }
+    Ok(format!("WorkosCursorSessionToken={subject}%3A%3A{token}"))
+}
+
+fn base64url_decode(input: &str) -> Option<Vec<u8>> {
+    fn value(byte: u8) -> Option<u8> {
+        match byte {
+            b'A'..=b'Z' => Some(byte - b'A'),
+            b'a'..=b'z' => Some(byte - b'a' + 26),
+            b'0'..=b'9' => Some(byte - b'0' + 52),
+            b'-' => Some(62),
+            b'_' => Some(63),
+            _ => None,
+        }
+    }
+
+    if input.len() % 4 == 1 {
+        return None;
+    }
+    let mut out = Vec::with_capacity(input.len() * 3 / 4);
+    let mut accumulator = 0_u32;
+    let mut bits = 0_u8;
+    for byte in input.bytes() {
+        accumulator = (accumulator << 6) | u32::from(value(byte)?);
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push((accumulator >> bits) as u8);
+            accumulator &= (1_u32 << bits).saturating_sub(1);
+        }
+    }
+    (accumulator == 0).then_some(out)
+}
+
+/// Call only the fixed Cursor endpoint. The cookie is in a mode-0600 config,
+/// never argv; redirects are disabled and curl's default rc is disabled first.
+fn cursor_curl_json(cookie: &str) -> Result<String, String> {
+    let path = std::env::temp_dir().join(format!(
+        "mindplayer-cursor-usage-{}-{}.curlrc",
+        std::process::id(),
+        chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
+    ));
+    write_private(&path, &cursor_curl_config(cookie))
+        .map_err(|e| format!("cannot stage Cursor curl config: {e}"))?;
+    let output = Command::new("curl").args(curl_args()).arg(&path).output();
+    let _ = std::fs::remove_file(&path);
+    let output = output.map_err(|e| format!("cannot run curl for Cursor usage: {e}"))?;
+    if !output.status.success() {
+        return Err(format!("Cursor usage request failed ({})", output.status));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+fn cursor_curl_config(cookie: &str) -> String {
+    let escaped = cookie
+        .chars()
+        .filter(|c| !c.is_control())
+        .collect::<String>()
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"");
+    format!(
+        "silent\nshow-error\nfail\nproto = \"=https\"\nmax-time = {CURL_TIMEOUT_SECS}\nurl = \"{CURSOR_USAGE_URL}\"\nheader = \"Cookie: {escaped}\"\n"
+    )
 }
 
 // ── Codex ──────────────────────────────────────────────────────────────────
@@ -569,6 +1363,259 @@ mod tests {
     use serde_json::json;
 
     #[test]
+    fn cursor_plan_usage_uses_the_dashboard_total_percent() {
+        let body = json!({
+            "billingCycleStart": "2026-09-01T00:00:00.000Z",
+            "billingCycleEnd": "2026-10-01T00:00:00.000Z",
+            "membershipType": "pro",
+            "limitType": "user",
+            "isUnlimited": false,
+            "individualUsage": {
+                "plan": {
+                    "enabled": true,
+                    "used": 1500,
+                    "limit": 5000,
+                    "remaining": 3500,
+                    "autoPercentUsed": 20.0,
+                    "apiPercentUsed": 40.0,
+                    "totalPercentUsed": 30.0
+                }
+            }
+        });
+        let got = parse_cursor_usage(&body).expect("verified usage-summary shape parses");
+        assert_eq!(got.used_percent, Some(30.0));
+        assert_eq!(got.used_cents, Some(1500));
+        assert_eq!(got.limit_cents, Some(5000));
+        assert_eq!(got.source, Some(CursorQuotaSource::Plan));
+        assert_eq!(
+            got.billing_cycle_end.as_deref(),
+            Some("2026-10-01T00:00:00.000Z")
+        );
+        assert!(got.has_any());
+    }
+
+    #[test]
+    fn cursor_plan_ratio_is_used_when_percent_fields_are_absent() {
+        let got = parse_cursor_usage(&json!({
+            "individualUsage": { "plan": { "used": 4900, "limit": 50000 } }
+        }))
+        .unwrap();
+        assert_eq!(got.used_percent, Some(9.8));
+        assert_eq!(got.source, Some(CursorQuotaSource::Plan));
+    }
+
+    #[test]
+    fn cursor_enterprise_prefers_the_personal_overall_cap() {
+        let got = parse_cursor_usage(&json!({
+            "membershipType": "enterprise",
+            "individualUsage": {
+                "overall": { "enabled": true, "used": 7384, "limit": 10000, "remaining": 2616 }
+            },
+            "teamUsage": {
+                "pooled": { "enabled": true, "used": 12725135, "limit": 28122000, "remaining": 15396865 }
+            }
+        }))
+        .unwrap();
+        assert!((got.used_percent.unwrap() - 73.84).abs() < 0.0001);
+        assert_eq!(got.used_cents, Some(7384));
+        assert_eq!(got.limit_cents, Some(10000));
+        assert_eq!(got.source, Some(CursorQuotaSource::IndividualOverall));
+    }
+
+    #[test]
+    fn cursor_team_pool_is_only_a_last_resort() {
+        let got = parse_cursor_usage(&json!({
+            "membershipType": "enterprise",
+            "teamUsage": {
+                "pooled": { "enabled": true, "used": 12725135, "limit": 28122000 }
+            }
+        }))
+        .unwrap();
+        assert!(got.used_percent.unwrap() > 45.0);
+        assert!(got.used_percent.unwrap() < 45.5);
+        assert_eq!(got.source, Some(CursorQuotaSource::TeamPooled));
+    }
+
+    #[test]
+    fn cursor_missing_numeric_quota_never_becomes_zero() {
+        let got = parse_cursor_usage(&json!({
+            "membershipType": "enterprise",
+            "isUnlimited": false,
+            "individualUsage": {
+                "plan": { "enabled": true, "used": 0, "limit": null, "remaining": null }
+            }
+        }))
+        .unwrap();
+        assert_eq!(got.used_percent, None);
+        assert_eq!(got.limit_cents, None);
+        assert!(!got.has_any(), "missing cap must not read as 0% used");
+    }
+
+    #[test]
+    fn cursor_disabled_quota_block_never_becomes_zero_percent() {
+        let got = parse_cursor_usage(&json!({
+            "membershipType": "enterprise",
+            "isUnlimited": false,
+            "individualUsage": {
+                "plan": { "enabled": false, "used": 0, "limit": 10000, "totalPercentUsed": 0 }
+            }
+        }))
+        .unwrap();
+        assert_eq!(got.used_percent, None);
+        assert!(!got.has_any(), "a disabled block is not an unused quota");
+    }
+
+    #[test]
+    fn cursor_unlimited_is_visible_without_a_fake_percentage() {
+        let got = parse_cursor_usage(&json!({
+            "membershipType": "enterprise",
+            "isUnlimited": true,
+            "individualUsage": {
+                "plan": {
+                    "enabled": true,
+                    "used": 2000,
+                    "limit": 10000,
+                    "totalPercentUsed": 20
+                }
+            }
+        }))
+        .unwrap();
+        assert_eq!(got.used_percent, None);
+        assert!(got.has_any());
+        let lines = Limits {
+            claude: Err("not under test".into()),
+            codex: Err("not under test".into()),
+            cursor: Ok(got),
+            kiro: Err("not under test".into()),
+        }
+        .summary_lines();
+        assert!(lines[3].contains("unlimited"), "{lines:?}");
+        assert!(!lines[3].contains("0.0%"), "{lines:?}");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_fixture_home_never_reaches_the_cursor_keychain() {
+        let fixture =
+            std::env::temp_dir().join(format!("mp-cursor-fixture-home-{}", std::process::id()));
+        let err = cursor_access_token(&fixture).unwrap_err();
+        assert!(err.contains("non-user home"), "{err}");
+    }
+
+    #[test]
+    fn hostile_cursor_cookie_text_cannot_inject_a_curl_directive() {
+        let cfg = cursor_curl_config("safe\"\nurl = \"http://evil");
+        let urls: Vec<_> = cfg
+            .lines()
+            .filter(|line| line.trim_start().starts_with("url ="))
+            .collect();
+        assert_eq!(urls, [format!("url = \"{CURSOR_USAGE_URL}\"")]);
+        let cookie_lines: Vec<_> = cfg
+            .lines()
+            .filter(|line| line.contains("http://evil"))
+            .collect();
+        assert_eq!(cookie_lines.len(), 1, "{cfg}");
+        assert!(cookie_lines[0].starts_with("header ="), "{cfg}");
+    }
+
+    #[test]
+    fn cursor_cookie_is_derived_from_a_live_jwt_without_reaching_argv() {
+        let payload = base64url_encode_for_test(br#"{"sub":"auth0|user-123","exp":4102444800}"#);
+        let token = format!("header.{payload}.signature");
+        let cookie = cursor_cookie_from_access_token(&token).expect("valid token derives a cookie");
+        assert_eq!(
+            cookie,
+            format!("WorkosCursorSessionToken=auth0|user-123%3A%3A{token}")
+        );
+        let cfg = cursor_curl_config(&cookie);
+        assert!(cfg.contains(CURSOR_USAGE_URL));
+        assert!(
+            cfg.contains(&cookie),
+            "cookie is staged in the private config"
+        );
+        assert!(!cfg.lines().any(|line| line.trim() == "location"));
+        assert_eq!(curl_args(), ["-q", "--config"]);
+    }
+
+    fn base64url_encode_for_test(input: &[u8]) -> String {
+        const TABLE: &[u8; 64] =
+            b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+        let mut out = String::new();
+        for chunk in input.chunks(3) {
+            let a = chunk[0];
+            let b = chunk.get(1).copied().unwrap_or(0);
+            let c = chunk.get(2).copied().unwrap_or(0);
+            out.push(TABLE[(a >> 2) as usize] as char);
+            out.push(TABLE[(((a & 0x03) << 4) | (b >> 4)) as usize] as char);
+            if chunk.len() > 1 {
+                out.push(TABLE[(((b & 0x0f) << 2) | (c >> 6)) as usize] as char);
+            }
+            if chunk.len() > 2 {
+                out.push(TABLE[(c & 0x3f) as usize] as char);
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn kiro_usage_reads_plan_credits_from_the_cli_report() {
+        let report = r#"
+Error: user defined default infra not found. Falling back to in-memory default
+Estimated Usage | resets on 2026-10-01 | KIRO POWER
+Credits (185.50 of 10000 covered in plan)
+████████████████████████████████████████████████████████ 1.9%
+Since your account is through your organization, contact your administrator.
+"#;
+        let got = parse_kiro_usage(report).expect("current kiro-cli report parses");
+        assert_eq!(got.plan_name.as_deref(), Some("KIRO POWER"));
+        assert_eq!(got.credits_used, Some(185.5));
+        assert_eq!(got.credits_total, Some(10_000.0));
+        assert_eq!(got.used_percent, Some(1.855));
+        assert_eq!(got.reset_date.as_deref(), Some("2026-10-01"));
+        assert!(got.has_any());
+    }
+
+    #[test]
+    fn kiro_usage_strips_ansi_before_parsing_credit_metrics() {
+        let report = "\x1b[1mEstimated Usage\x1b[0m | resets on 2026-10-01 | \x1b[38;2;123;200;255mKIRO POWER\x1b[0m\n\x1b[1mCredits\x1b[0m (185.50 of 10000 covered in plan)\n";
+        let got = parse_kiro_usage(report).expect("colored kiro-cli report parses");
+        assert_eq!(got.plan_name.as_deref(), Some("KIRO POWER"));
+        assert_eq!(got.credits_used, Some(185.5));
+        assert_eq!(got.credits_total, Some(10_000.0));
+        assert_eq!(got.used_percent, Some(1.855));
+        assert_eq!(got.reset_date.as_deref(), Some("2026-10-01"));
+    }
+    #[test]
+    fn kiro_usage_rejects_a_false_zero_when_no_credit_metrics_exist() {
+        let report = "Estimated Usage | KIRO ENTERPRISE | managed by organization";
+        let got = parse_kiro_usage(report).expect("plan-only report is still valid");
+        assert_eq!(got.plan_name.as_deref(), Some("KIRO ENTERPRISE"));
+        assert_eq!(got.credits_used, None);
+        assert_eq!(got.credits_total, None);
+        assert_eq!(got.used_percent, None);
+        assert!(!got.has_any(), "missing metrics must not become zero usage");
+    }
+
+    #[test]
+    fn kiro_usage_is_a_third_limits_row() {
+        let limits = Limits {
+            claude: Ok(ClaudeLimits::default()),
+            codex: Ok(CodexLimits::default()),
+            cursor: Err("not under test".into()),
+            kiro: Ok(parse_kiro_usage(
+                "Estimated Usage | resets on 2026-10-01 | KIRO POWER\nCredits (185.50 of 10000 covered in plan)",
+            )
+            .unwrap()),
+        };
+        let rows = limits.summary_rows();
+        assert_eq!(rows.len(), 4);
+        assert_eq!(
+            rows[2],
+            ("kiro  1.9%  185.5/10000 cr  reset 2026-10-01".into(), true)
+        );
+    }
+
+    #[test]
     fn claude_windows_are_read_as_percentages_with_resets() {
         let body = json!({
             "five_hour": { "utilization": 42.5, "resets_at": 1785766495 },
@@ -653,6 +1700,8 @@ mod tests {
         let line = &Limits {
             claude: Ok(ClaudeLimits::default()),
             codex: Ok(parse_codex_rate_limits(&rl)),
+            cursor: Err("not under test".into()),
+            kiro: Err("not under test".into()),
         }
         .summary_lines()[1];
         assert!(line.contains("weekly 40%"), "{line}");
@@ -687,10 +1736,12 @@ mod tests {
                 ..ClaudeLimits::default()
             }),
             codex: Err("no codex rollouts found".into()),
+            cursor: Err("not under test".into()),
+            kiro: Err("no local Kiro profile".into()),
         };
         assert!(mixed.has_any(), "aggregate is true — the old trap");
         let rows = mixed.summary_rows();
-        assert_eq!(rows.len(), 2);
+        assert_eq!(rows.len(), 4);
         assert!(rows[0].0.contains("5h 42%"), "{:?}", rows[0]);
         assert!(rows[0].1, "claude produced a number");
         assert!(rows[1].0.contains("no codex rollouts"), "{:?}", rows[1]);
@@ -705,6 +1756,8 @@ mod tests {
             codex: Ok(parse_codex_rate_limits(
                 &json!({ "credits": { "unlimited": true } }),
             )),
+            cursor: Err("not under test".into()),
+            kiro: Err("not under test".into()),
         };
         let rows = flipped.summary_rows();
         assert!(!rows[0].1, "claude errored");
@@ -717,6 +1770,8 @@ mod tests {
         let line = &Limits {
             claude: Ok(ClaudeLimits::default()),
             codex: Ok(parse_codex_rate_limits(&rl)),
+            cursor: Err("not under test".into()),
+            kiro: Err("not under test".into()),
         }
         .summary_lines()[1];
         assert!(line.contains("window 7%"), "{line}");
@@ -798,6 +1853,8 @@ mod tests {
         let limits = Limits {
             claude: Err("no subscription OAuth token found".into()),
             codex: Ok(got),
+            cursor: Err("not under test".into()),
+            kiro: Err("no local Kiro profile".into()),
         };
         assert!(!limits.has_any());
         let lines = limits.summary_lines();
@@ -831,6 +1888,8 @@ mod tests {
         let limits = Limits {
             claude: Err("not under test".into()),
             codex: Ok(got),
+            cursor: Err("not under test".into()),
+            kiro: Err("not under test".into()),
         };
         let line = &limits.summary_lines()[1];
         assert!(line.contains("workspace limit reached"), "{line}");
@@ -852,6 +1911,8 @@ mod tests {
         let limits = Limits {
             claude: Err("not under test".into()),
             codex: Ok(parse_codex_rate_limits(&rl)),
+            cursor: Err("not under test".into()),
+            kiro: Err("not under test".into()),
         };
         let line = &limits.summary_lines()[1];
         assert!(line.contains("credits 25571"), "{line}");
@@ -868,6 +1929,8 @@ mod tests {
         let limits = Limits {
             claude: Err("not under test".into()),
             codex: Ok(parse_codex_rate_limits(&rl)),
+            cursor: Err("not under test".into()),
+            kiro: Err("not under test".into()),
         };
         let line = &limits.summary_lines()[1];
         assert!(line.contains("some future limit reached"), "{line}");
@@ -882,6 +1945,8 @@ mod tests {
         let lines = Limits {
             claude: Ok(ClaudeLimits::default()),
             codex: Ok(got),
+            cursor: Err("not under test".into()),
+            kiro: Err("not under test".into()),
         }
         .summary_lines();
         assert!(lines[1].contains("unlimited"), "{lines:?}");
@@ -1009,4 +2074,49 @@ mod tests {
         let err = codex_limits(&empty).unwrap_err();
         assert!(err.contains("no codex rollouts"), "{err}");
     }
+}
+
+#[test]
+fn provider_fetches_overlap_so_kiro_is_not_starved_by_slow_predecessors() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    fn observe(active: &AtomicUsize, peak: &AtomicUsize) {
+        let now = active.fetch_add(1, Ordering::SeqCst) + 1;
+        peak.fetch_max(now, Ordering::SeqCst);
+        std::thread::sleep(Duration::from_millis(80));
+        active.fetch_sub(1, Ordering::SeqCst);
+    }
+
+    let active = Arc::new(AtomicUsize::new(0));
+    let peak = Arc::new(AtomicUsize::new(0));
+    let claude_probe = (active.clone(), peak.clone());
+    let codex_probe = (active.clone(), peak.clone());
+    let kiro_probe = (active.clone(), peak.clone());
+    let cursor_probe = (active, peak.clone());
+
+    let _ = fetch_parallel(
+        move || {
+            observe(&claude_probe.0, &claude_probe.1);
+            Err::<ClaudeLimits, _>("synthetic".to_string())
+        },
+        move || {
+            observe(&codex_probe.0, &codex_probe.1);
+            Err::<CodexLimits, _>("synthetic".to_string())
+        },
+        move || {
+            observe(&kiro_probe.0, &kiro_probe.1);
+            Err::<KiroLimits, _>("synthetic".to_string())
+        },
+        move || {
+            observe(&cursor_probe.0, &cursor_probe.1);
+            Err::<CursorLimits, _>("synthetic".to_string())
+        },
+    );
+
+    assert_eq!(
+        peak.load(Ordering::SeqCst),
+        4,
+        "all provider probes must be in flight together"
+    );
 }

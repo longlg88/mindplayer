@@ -9,11 +9,174 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex};
 use std::thread;
+use std::time::{Duration, Instant};
 
 const DEFAULT_SCROLLBACK_LINES: usize = 2_000;
 const MIN_SCROLLBACK_LINES: usize = 200;
 const MAX_SCROLLBACK_LINES: usize = 5_000;
 const WRITE_QUEUE_CAP: usize = 128;
+const TERMINAL_REPLY_GRACE: Duration = Duration::from_millis(250);
+const TERMINAL_REPLY_TAIL_GRACE: Duration = Duration::from_millis(40);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TerminalReplyPrefix {
+    Prefix,
+    Complete,
+    Invalid,
+}
+
+#[derive(Default)]
+struct TerminalReplyGuard {
+    pending: Vec<u8>,
+    since: Option<Instant>,
+}
+
+impl TerminalReplyGuard {
+    /// Accept one encoded key event. A lone ESC is held briefly because a CPR
+    /// split at that byte otherwise arrives as ordinary keys (`ESC`, `[`,
+    /// digits...) and is forwarded into the child prompt. Non-CPR input is
+    /// released byte-for-byte; a complete CPR is consumed.
+    fn push(&mut self, bytes: &[u8], now: Instant) -> Vec<Vec<u8>> {
+        let mut out = Vec::new();
+        if self
+            .since
+            .is_some_and(|since| now.saturating_duration_since(since) >= self.pending_grace())
+        {
+            if let Some(pending) = self.take_pending() {
+                out.push(pending);
+            }
+        }
+
+        if self.pending.is_empty() {
+            if bytes == b"\x1b" || bytes == b"[" || bytes == b";" {
+                self.pending.extend_from_slice(bytes);
+                self.since = Some(now);
+            } else {
+                out.push(bytes.to_vec());
+            }
+            return out;
+        }
+
+        self.pending.extend_from_slice(bytes);
+        match terminal_reply_prefix(&self.pending) {
+            TerminalReplyPrefix::Prefix => {}
+            TerminalReplyPrefix::Complete => {
+                self.pending.clear();
+                self.since = None;
+            }
+            TerminalReplyPrefix::Invalid => {
+                if let Some(pending) = self.take_pending() {
+                    out.push(pending);
+                }
+            }
+        }
+        out
+    }
+
+    fn flush_due(&mut self, now: Instant) -> Option<Vec<u8>> {
+        let since = self.since?;
+        (now.saturating_duration_since(since) >= self.pending_grace())
+            .then(|| self.take_pending())
+            .flatten()
+    }
+
+    fn pending_grace(&self) -> Duration {
+        if matches!(self.pending.first(), Some(b'[' | b';')) {
+            TERMINAL_REPLY_TAIL_GRACE
+        } else {
+            TERMINAL_REPLY_GRACE
+        }
+    }
+
+    fn take_pending(&mut self) -> Option<Vec<u8>> {
+        self.since = None;
+        (!self.pending.is_empty()).then(|| std::mem::take(&mut self.pending))
+    }
+}
+
+/// Recognize standard and DEC-private cursor position reports:
+/// `CSI row ; col R` / `CSI ? row ; col R`. Coordinates are u16-sized in the
+/// terminal protocols, so a longer candidate is not a reply and is released.
+fn terminal_reply_prefix(bytes: &[u8]) -> TerminalReplyPrefix {
+    if bytes.len() > 16 {
+        return TerminalReplyPrefix::Invalid;
+    }
+    if bytes.starts_with(b";") {
+        let mut i = 1;
+        let col_start = i;
+        while bytes.get(i).is_some_and(u8::is_ascii_digit) {
+            i += 1;
+        }
+        if i == col_start {
+            return if bytes.len() == i {
+                TerminalReplyPrefix::Prefix
+            } else {
+                TerminalReplyPrefix::Invalid
+            };
+        }
+        if bytes.len() == i {
+            return TerminalReplyPrefix::Prefix;
+        }
+        return if bytes[i] == b'R' && bytes.len() == i + 1 {
+            TerminalReplyPrefix::Complete
+        } else {
+            TerminalReplyPrefix::Invalid
+        };
+    }
+
+    let mut i = if bytes.starts_with(b"\x1b[") {
+        2
+    } else if bytes.starts_with(b"[") {
+        1
+    } else if b"\x1b[".starts_with(bytes) {
+        return TerminalReplyPrefix::Prefix;
+    } else {
+        return TerminalReplyPrefix::Invalid;
+    };
+    if bytes.len() == i {
+        return TerminalReplyPrefix::Prefix;
+    }
+
+    if bytes.get(i) == Some(&b'?') {
+        i += 1;
+        if bytes.len() == i {
+            return TerminalReplyPrefix::Prefix;
+        }
+    }
+    let row_start = i;
+    while bytes.get(i).is_some_and(u8::is_ascii_digit) {
+        i += 1;
+    }
+    if i == row_start {
+        return TerminalReplyPrefix::Invalid;
+    }
+    if bytes.len() == i {
+        return TerminalReplyPrefix::Prefix;
+    }
+    if bytes[i] != b';' {
+        return TerminalReplyPrefix::Invalid;
+    }
+    i += 1;
+    let col_start = i;
+    while bytes.get(i).is_some_and(u8::is_ascii_digit) {
+        i += 1;
+    }
+    if i == col_start {
+        return if bytes.len() == i {
+            TerminalReplyPrefix::Prefix
+        } else {
+            TerminalReplyPrefix::Invalid
+        };
+    }
+    if bytes.len() == i {
+        return TerminalReplyPrefix::Prefix;
+    }
+    if bytes[i] == b'R' && bytes.len() == i + 1 {
+        TerminalReplyPrefix::Complete
+    } else {
+        TerminalReplyPrefix::Invalid
+    }
+}
 
 /// A live child process attached to a PTY, rendered in the right pane.
 pub struct PtySession {
@@ -28,6 +191,9 @@ pub struct PtySession {
     seq: Arc<AtomicU64>,
     master: Box<dyn MasterPty + Send>,
     writer: PtyWriter,
+    /// Filters terminal protocol replies that crossterm can expose as ordinary
+    /// key events when the leading ESC arrives in a separate read.
+    terminal_reply_guard: TerminalReplyGuard,
     child: Box<dyn Child + Send + Sync>,
     /// Set once we observe the child has exited. `try_wait()` reaps the child on
     /// unix, freeing its PID for OS reuse; `portable_pty::Child::process_id()`
@@ -200,6 +366,7 @@ impl PtySession {
             seq,
             master: pair.master,
             writer,
+            terminal_reply_guard: TerminalReplyGuard::default(),
             child,
             exited: false,
             pgid,
@@ -267,11 +434,33 @@ impl PtySession {
         }
     }
 
-    /// Forward raw bytes (encoded keystrokes) to the child. Typing jumps the
-    /// view back to the live bottom (like a normal terminal).
+    /// Forward raw bytes to the child. Programmatic input uses this path and is
+    /// never interpreted as terminal protocol traffic.
     pub fn send(&mut self, bytes: &[u8]) -> bool {
         self.scroll_reset();
         self.writer.enqueue(bytes.to_vec())
+    }
+
+    /// Forward one encoded user key to the child, consuming only a fragmented
+    /// cursor-position report from the outer terminal. A complete CPR is hidden
+    /// by crossterm itself; this guard covers the split-ESC edge shown by real
+    /// terminals without treating arbitrary pasted text as protocol traffic.
+    pub fn send_key(&mut self, bytes: &[u8]) -> bool {
+        self.scroll_reset();
+        let chunks = self.terminal_reply_guard.push(bytes, Instant::now());
+        if chunks.is_empty() {
+            return true;
+        }
+        chunks.into_iter().all(|chunk| self.writer.enqueue(chunk))
+    }
+
+    /// Release a genuine standalone Escape once the short CPR ambiguity window
+    /// has elapsed. Called from the normal event-loop tick, never a timer thread,
+    /// so all writes preserve their order through the same PTY queue.
+    pub fn flush_terminal_reply_guard(&mut self) -> bool {
+        self.terminal_reply_guard
+            .flush_due(Instant::now())
+            .is_some_and(|bytes| self.writer.enqueue(bytes))
     }
 
     /// Forward pasted text to the child. If the child has enabled bracketed
@@ -823,6 +1012,101 @@ pub(crate) fn stderr_log_path(session_id: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_bare_cursor_position_suffix_never_reaches_the_child() {
+        let start = Instant::now();
+        let mut guard = TerminalReplyGuard::default();
+        let mut forwarded = Vec::new();
+        for (i, byte) in b";1R".iter().enumerate() {
+            forwarded.extend(guard.push(
+                std::slice::from_ref(byte),
+                start + Duration::from_millis(i as u64),
+            ));
+        }
+        assert!(forwarded.is_empty(), "CPR suffix leaked: {forwarded:?}");
+    }
+
+    #[test]
+    fn an_ordinary_semicolon_sequence_is_preserved_byte_for_byte() {
+        let start = Instant::now();
+        let mut guard = TerminalReplyGuard::default();
+        let mut forwarded = guard.push(b";", start);
+        forwarded.extend(guard.push(b"x", start + Duration::from_millis(1)));
+        assert_eq!(forwarded.concat(), b";x");
+    }
+
+    #[test]
+    fn a_bare_fragmented_cursor_position_tail_never_reaches_the_child() {
+        let start = Instant::now();
+        let mut guard = TerminalReplyGuard::default();
+        let mut forwarded = Vec::new();
+        for (i, byte) in b"[4;1R".iter().enumerate() {
+            forwarded.extend(guard.push(
+                std::slice::from_ref(byte),
+                start + Duration::from_millis(i as u64),
+            ));
+        }
+        assert!(forwarded.is_empty(), "bare CPR tail leaked: {forwarded:?}");
+        assert_eq!(guard.flush_due(start + TERMINAL_REPLY_GRACE * 2), None);
+    }
+
+    #[test]
+    fn an_ordinary_open_bracket_is_released_after_the_short_tail_grace() {
+        let start = Instant::now();
+        let mut guard = TerminalReplyGuard::default();
+        assert!(guard.push(b"[", start).is_empty());
+        assert_eq!(
+            guard.flush_due(start + TERMINAL_REPLY_TAIL_GRACE),
+            Some(b"[".to_vec())
+        );
+    }
+
+    #[test]
+    fn an_ordinary_open_bracket_sequence_is_preserved_byte_for_byte() {
+        let start = Instant::now();
+        let mut guard = TerminalReplyGuard::default();
+        let mut forwarded = guard.push(b"[", start);
+        forwarded.extend(guard.push(b"x", start + Duration::from_millis(1)));
+        assert_eq!(forwarded.concat(), b"[x");
+    }
+
+    #[test]
+    fn a_fragmented_cursor_position_report_never_reaches_the_child() {
+        let start = Instant::now();
+        let mut guard = TerminalReplyGuard::default();
+        let mut forwarded = Vec::new();
+        forwarded.extend(guard.push(b"\x1b", start));
+        for (i, byte) in b"[80;1R".iter().enumerate() {
+            forwarded.extend(guard.push(
+                std::slice::from_ref(byte),
+                start + Duration::from_millis(150 + i as u64),
+            ));
+        }
+        assert!(forwarded.is_empty(), "CPR bytes leaked: {forwarded:?}");
+        assert_eq!(guard.flush_due(start + TERMINAL_REPLY_GRACE * 2), None);
+    }
+
+    #[test]
+    fn a_real_escape_key_is_forwarded_after_the_reply_grace() {
+        let start = Instant::now();
+        let mut guard = TerminalReplyGuard::default();
+        assert!(guard.push(b"\x1b", start).is_empty());
+        assert_eq!(
+            guard.flush_due(start + TERMINAL_REPLY_GRACE),
+            Some(b"\x1b".to_vec())
+        );
+    }
+
+    #[test]
+    fn a_non_cpr_escape_sequence_is_preserved_byte_for_byte() {
+        let start = Instant::now();
+        let mut guard = TerminalReplyGuard::default();
+        let mut forwarded = guard.push(b"\x1b", start);
+        forwarded.extend(guard.push(b"[", start + Duration::from_millis(1)));
+        forwarded.extend(guard.push(b"A", start + Duration::from_millis(2)));
+        assert_eq!(forwarded.concat(), b"\x1b[A");
+    }
 
     #[test]
     fn claude_v2_thinking_status_reads_busy() {

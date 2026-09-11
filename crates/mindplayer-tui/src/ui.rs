@@ -46,6 +46,7 @@ fn agent_tag(agent: Agent) -> (&'static str, Color) {
         Agent::Codex => ("codex ", ACCENT),
         Agent::Claude => ("claude", Color::Magenta),
         Agent::Kiro => ("kiro  ", Color::Cyan),
+        Agent::Cursor => ("cursor", Color::Rgb(242, 170, 76)),
     }
 }
 
@@ -87,6 +88,79 @@ fn usage_bar_spans(app: &App) -> Vec<Span<'static>> {
     spans
 }
 
+/// Cells in an account's remaining-quota gauge.
+const QUOTA_GAUGE_CELLS: usize = 6;
+
+/// The colour a used-percentage earns. Three steps rather than a gradient, so
+/// it still reads on a 16-colour terminal and nobody has to judge a hue.
+fn quota_tier(used: f64) -> Color {
+    if used <= 70.0 {
+        Color::Rgb(125, 187, 132)
+    } else if used <= 90.0 {
+        ZOOM
+    } else {
+        ERROR
+    }
+}
+
+fn quota_label_color(label: &str) -> Color {
+    match label.split_whitespace().next().unwrap_or("") {
+        "codex" => ACCENT,
+        "claude" => Color::Magenta,
+        "kiro" => Color::Cyan,
+        _ => Color::Rgb(180, 142, 240),
+    }
+}
+
+/// One footer row per account window: name, gauge, percentage, then the figure
+/// behind it. A row whose provider reported no window gets an em dash where the
+/// gauge would be — an empty gauge would read as "plenty left".
+fn quota_row_spans(
+    row: &mindplayer_core::limits::QuotaRow,
+    name_width: usize,
+) -> Vec<Span<'static>> {
+    let mut spans = vec![Span::styled(
+        format!("  {:<name_width$} ", row.label),
+        Style::default().fg(quota_label_color(&row.label)),
+    )];
+    match row.used_percent {
+        Some(used) => {
+            let filled = ((used / 100.0) * QUOTA_GAUGE_CELLS as f64).round() as usize;
+            let filled = filled.min(QUOTA_GAUGE_CELLS);
+            let tier = quota_tier(used);
+            spans.push(Span::styled(
+                format!(
+                    "{}{}",
+                    "▰".repeat(filled),
+                    "▱".repeat(QUOTA_GAUGE_CELLS - filled)
+                ),
+                Style::default().fg(tier),
+            ));
+            spans.push(Span::styled(
+                format!("  {used:>5.1}%"),
+                Style::default().fg(tier).add_modifier(Modifier::BOLD),
+            ));
+        }
+        None => spans.push(Span::styled(
+            format!("{:<width$}        ", "—", width = QUOTA_GAUGE_CELLS),
+            Style::default().fg(DIM),
+        )),
+    }
+    if !row.detail.is_empty() {
+        spans.push(Span::styled(
+            format!("  {}", row.detail),
+            Style::default().fg(DIM),
+        ));
+    }
+    if let Some(resets) = row.resets.as_deref() {
+        spans.push(Span::styled(
+            format!("  resets {resets}"),
+            Style::default().fg(DIM),
+        ));
+    }
+    spans
+}
+
 fn plural_session(count: usize) -> &'static str {
     if count == 1 {
         "session"
@@ -115,7 +189,7 @@ fn title_bar(area: Rect, f: &mut Frame) {
             Style::default().fg(DIM),
         ),
         Span::styled(
-            "  Codex / Claude / Kiro session manager",
+            "  Codex / Claude / Kiro / Cursor session manager",
             Style::default().fg(DIM),
         ),
     ]);
@@ -562,7 +636,7 @@ fn scanning(f: &mut Frame, app: &App) {
             Style::default().fg(ACCENT),
         )),
         Line::from(Span::styled(
-            "reading ~/.codex, ~/.claude, and ~/.kiro sessions",
+            "reading ~/.codex, ~/.claude, ~/.kiro, and ~/.cursor sessions",
             Style::default().fg(DIM),
         )),
     ])
@@ -622,6 +696,8 @@ fn scan_summary(f: &mut Frame, app: &App) {
             Span::raw(format!("{:>3}", a.claude_count)),
             Span::styled("   kiro  ", Style::default().fg(Color::Cyan)),
             Span::raw(format!("{:>3}", a.kiro_count)),
+            Span::styled("   cursor  ", Style::default().fg(Color::Rgb(242, 170, 76))),
+            Span::raw(format!("{:>3}", a.cursor_count)),
         ])),
         rows[2],
     );
@@ -641,10 +717,11 @@ fn scan_summary(f: &mut Frame, app: &App) {
             ),
             Span::styled(
                 format!(
-                    "   (codex {} · claude {} · kiro {})",
+                    "   (codex {} · claude {} · kiro {} · cursor {})",
                     human_tokens(a.codex.total),
                     human_tokens(a.claude.total),
                     if a.kiro_count > 0 { "—" } else { "0" },
+                    if a.cursor_count > 0 { "—" } else { "0" },
                 ),
                 Style::default().fg(DIM),
             ),
@@ -662,7 +739,38 @@ fn main_view(f: &mut Frame, app: &mut App) {
     // only the plain list gets a second footer row.
     let show_more_keys =
         app.focus == Focus::List && !app.multi_select && app.search_query.is_none();
-    let footer_h: u16 = if show_more_keys { 2 } else { 1 };
+    // Built before the layout because its width decides how tall the footer is.
+    // The status carries counts, a usage bar, per-account quotas and the working
+    // directory; sharing one row with the key hints truncated it mid-number, and
+    // a clipped "$0.06/$20" reads as a $2 limit. It gets the full width and wraps.
+    let mut status: Vec<Span> = Vec::new();
+    if !app.status.is_empty() {
+        status.push(Span::styled(
+            format!("{}  ·  ", app.status),
+            Style::default().fg(DIM),
+        ));
+    }
+    status.push(Span::styled(app.summary_head(), Style::default().fg(DIM)));
+    status.extend(usage_bar_spans(app));
+    status.push(Span::styled(app.summary_tail(), Style::default().fg(DIM)));
+    let status_line = Line::from(status);
+    // Two rows is the ceiling: past that the footer would eat the list it exists
+    // to describe, and anything still over is the scope label, which repeats
+    // what the title bar already says.
+    let status_h = (status_line.width() as u16)
+        .div_ceil(f.area().width.max(1))
+        .clamp(1, 2);
+    // One row per account window. Each is gauged, so they cannot share a line
+    // the way plain numbers did — and giving each its own row is what lets the
+    // names align vertically enough to scan.
+    let quota_rows = app.quota_rows();
+    let name_width = quota_rows
+        .iter()
+        .map(|r| r.label.chars().count())
+        .max()
+        .unwrap_or(0);
+    let quota_h = quota_rows.len() as u16;
+    let footer_h: u16 = status_h + quota_h + 1 + u16::from(show_more_keys);
     let outer = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -712,32 +820,34 @@ fn main_view(f: &mut Frame, app: &mut App) {
         }
         }
     };
-    let mut status: Vec<Span> = Vec::new();
-    if !app.status.is_empty() {
-        status.push(Span::styled(
-            format!("{}  ·  ", app.status),
-            Style::default().fg(DIM),
-        ));
-    }
-    status.push(Span::styled(app.summary_head(), Style::default().fg(DIM)));
-    status.extend(usage_bar_spans(app));
-    status.push(Span::styled(app.summary_tail(), Style::default().fg(DIM)));
-    // Row 2 (Min(0), so it collapses to nothing when show_more_keys is false)
-    // surfaces a couple of the most-reached-for hidden shortcuts plus an
-    // honest count of the rest, instead of hiding all of them silently.
+    // The status owns its own full-width row(s); the key hints get the next one.
+    // The last row (Min(0), collapsing to nothing when `show_more_keys` is false)
+    // surfaces a couple of the most-reached-for hidden shortcuts plus an honest
+    // count of the rest, instead of hiding all of them silently.
     let footer_rows = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(1), Constraint::Min(0)])
+        .constraints([
+            Constraint::Length(status_h),
+            Constraint::Length(quota_h),
+            Constraint::Length(1),
+            Constraint::Min(0),
+        ])
         .split(outer[2]);
-    let footer_line = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(60), Constraint::Percentage(40)])
-        .split(footer_rows[0]);
-    f.render_widget(Paragraph::new(Line::from(status)), footer_line[0]);
+    f.render_widget(
+        Paragraph::new(status_line).wrap(Wrap { trim: false }),
+        footer_rows[0],
+    );
+    if quota_h > 0 {
+        let lines: Vec<Line> = quota_rows
+            .iter()
+            .map(|row| Line::from(quota_row_spans(row, name_width)))
+            .collect();
+        f.render_widget(Paragraph::new(lines), footer_rows[1]);
+    }
     f.render_widget(
         Paragraph::new(Line::from(Span::styled(keys, Style::default().fg(DIM))))
             .alignment(Alignment::Right),
-        footer_line[1],
+        footer_rows[2],
     );
     if show_more_keys {
         f.render_widget(
@@ -746,7 +856,7 @@ fn main_view(f: &mut Frame, app: &mut App) {
                 Style::default().fg(Color::Rgb(90, 95, 108)),
             )))
             .alignment(Alignment::Right),
-            footer_rows[1],
+            footer_rows[3],
         );
     }
 
@@ -1374,13 +1484,15 @@ fn session_list(f: &mut Frame, app: &mut App, area: Rect, now: DateTime<Utc>) {
             spans.push(Span::styled(
                 // Kiro records no token totals; show its context-window
                 // occupancy (e.g. "15%") instead, or "—" if unknown.
-                if s.agent == Agent::Kiro {
-                    match s.context_pct {
+                match s.agent {
+                    Agent::Kiro => match s.context_pct {
                         Some(p) => format!("  {p:.0}%"),
                         None => "  —".to_string(),
+                    },
+                    Agent::Cursor => "  —".to_string(),
+                    Agent::Codex | Agent::Claude => {
+                        format!("  {}", human_tokens(s.tokens.total))
                     }
-                } else {
-                    format!("  {}", human_tokens(s.tokens.total))
                 },
                 Style::default().fg(DIM),
             ));
@@ -1454,7 +1566,7 @@ fn session_list(f: &mut Frame, app: &mut App, area: Rect, now: DateTime<Utc>) {
                         Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
                     ),
                     Span::styled(
-                        " to start your first Codex, Claude, or Kiro session.",
+                        " to start your first Codex, Claude, Kiro, or Cursor session.",
                         Style::default().fg(DIM),
                     ),
                 ]),
@@ -1462,7 +1574,7 @@ fn session_list(f: &mut Frame, app: &mut App, area: Rect, now: DateTime<Utc>) {
         } else {
             (
                 Line::from(Span::styled(
-                    "Run many Codex · Claude · Kiro sessions like tabs",
+                    "Run many Codex · Claude · Kiro · Cursor sessions like tabs",
                     Style::default().fg(DIM),
                 )),
                 Line::from(vec![
@@ -1581,7 +1693,7 @@ fn live_pane(f: &mut Frame, app: &mut App, area: Rect) {
                 Style::default().fg(DIM),
             )),
             Line::from(Span::styled(
-                "Press n to start a new Codex, Claude, or Kiro session.",
+                "Press n to start a new Codex, Claude, Kiro, or Cursor session.",
                 Style::default().fg(DIM),
             )),
         ])
@@ -1912,7 +2024,7 @@ fn new_session_popup(f: &mut Frame, choice: usize) {
         .borders(Borders::ALL)
         .border_style(Style::default().fg(ACCENT))
         .title(" New session ");
-    let opts = ["codex", "claude", "kiro"];
+    let opts = ["codex", "claude", "kiro", "cursor"];
     let lines: Vec<Line> = opts
         .iter()
         .enumerate()
@@ -1942,7 +2054,7 @@ fn handoff_popup(f: &mut Frame, choice: usize, source: Option<Agent>) {
         .borders(Borders::ALL)
         .border_style(Style::default().fg(ACCENT))
         .title(" Handoff ");
-    let opts = [Agent::Codex, Agent::Claude, Agent::Kiro];
+    let opts = [Agent::Codex, Agent::Claude, Agent::Kiro, Agent::Cursor];
     let mut lines: Vec<Line> = opts
         .iter()
         .enumerate()

@@ -893,10 +893,19 @@ impl App {
         }
         if let Some(id) = self.focused_pane().map(str::to_string) {
             if let Some(pty) = self.ptys.get_mut(&id) {
-                if pty.send(bytes) && input_submits_turn(bytes) {
+                if pty.send_key(bytes) && input_submits_turn(bytes) {
                     self.turn_submitted.insert(id);
                 }
             }
+        }
+    }
+
+    /// Release a standalone Escape held briefly to distinguish it from a
+    /// fragmented outer-terminal CPR. Each pane owns its own guard, so changing
+    /// focus while Escape is pending can never deliver it to another agent.
+    pub fn flush_terminal_reply_guards(&mut self) {
+        for pty in self.ptys.values_mut() {
+            pty.flush_terminal_reply_guard();
         }
     }
 

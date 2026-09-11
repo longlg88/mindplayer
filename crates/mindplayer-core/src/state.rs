@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 /// has activity, so resolution happens on a later scan.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PendingLabel {
-    pub agent: String, // Agent::as_str(): "codex" | "claude" | "kiro"
+    pub agent: String, // Agent::as_str(): "codex" | "claude" | "kiro" | "cursor"
     pub cwd: PathBuf,
     pub after: DateTime<Utc>,
     pub label: String,

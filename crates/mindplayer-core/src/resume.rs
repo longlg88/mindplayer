@@ -4,7 +4,8 @@
 //! - Codex resume:  `codex resume <uuid>`            (run in the session cwd)
 //! - Claude resume: `claude --resume <id>`           (run in the session cwd)
 //! - Kiro resume:   `kiro-cli chat --resume-id <id>` (run in the session cwd)
-//! - New session:   `codex` / `claude` / `kiro-cli chat` (run in the scope dir)
+//! - Cursor resume: `agent --resume <chatId>`        (run in the session cwd)
+//! - New session:   `codex` / `claude` / `kiro-cli chat` / `agent`
 
 use crate::session::{Agent, Session};
 use std::path::PathBuf;
@@ -29,6 +30,7 @@ pub fn resume(session: &Session) -> Command {
             id,
             KIRO_TRUST_FLAG.to_string(),
         ],
+        Agent::Cursor => vec!["--resume".to_string(), id],
     };
     Command {
         program: session.agent.program().to_string(),
@@ -48,7 +50,7 @@ pub fn new_session(agent: Agent, cwd: PathBuf) -> Command {
     let args = match agent {
         // Kiro's chat lives under a subcommand; codex/claude launch bare.
         Agent::Kiro => vec!["chat".to_string(), KIRO_TRUST_FLAG.to_string()],
-        Agent::Codex | Agent::Claude => Vec::new(),
+        Agent::Codex | Agent::Claude | Agent::Cursor => Vec::new(),
     };
     Command {
         program: agent.program().to_string(),
@@ -123,5 +125,20 @@ mod tests {
             vec!["chat", "--trust-all-tools"],
             "a brand-new kiro session must start in trust mode too"
         );
+    }
+
+    #[test]
+    fn cursor_resume_uses_agent_resume_flag() {
+        let c = resume(&session(Agent::Cursor, "cursor-chat-4", "/work"));
+        assert_eq!(c.program, "agent");
+        assert_eq!(c.args, vec!["--resume", "cursor-chat-4"]);
+        assert_eq!(c.cwd, PathBuf::from("/work"));
+    }
+
+    #[test]
+    fn cursor_new_session_launches_bare_agent() {
+        let c = new_session(Agent::Cursor, PathBuf::from("/here"));
+        assert_eq!(c.program, "agent");
+        assert!(c.args.is_empty());
     }
 }

@@ -134,6 +134,7 @@ impl Mp {
         let codex_dir = tmp.join("codex"); // MINDPLAYER_CODEX_DIR
         let claude_dir = tmp.join("claude"); // empty
         let kiro_dir = tmp.join("kiro"); // empty
+        let cursor_dir = tmp.join("cursor"); // empty
         let state_dir = tmp.join("state");
         let audit_dir = tmp.join("audit");
         let prompts_dir = tmp.join("prompts");
@@ -144,6 +145,7 @@ impl Mp {
             &codex_dir,
             &claude_dir,
             &kiro_dir,
+            &cursor_dir,
             &state_dir,
             &audit_dir,
             &prompts_dir,
@@ -206,6 +208,7 @@ impl Mp {
         cmd.env("MINDPLAYER_CODEX_DIR", &codex_dir);
         cmd.env("MINDPLAYER_CLAUDE_DIR", &claude_dir);
         cmd.env("MINDPLAYER_KIRO_DIR", &kiro_dir);
+        cmd.env("MINDPLAYER_CURSOR_DIR", &cursor_dir);
         cmd.env("MINDPLAYER_STATE", &state_dir);
         cmd.env("MINDPLAYER_AUDIT", &audit_dir);
         cmd.env("MINDPLAYER_PROMPTS_DIR", &prompts_dir);
@@ -581,4 +584,25 @@ fn ctrl_p_typed_path_opens_in_the_browser() {
          ---- screen ----\n{}\n----------------",
         mp.screen()
     );
+}
+
+#[test]
+fn cursor_is_available_in_new_and_handoff_pickers() {
+    {
+        let mut mp = Mp::launch();
+        mp.start_into_main_list();
+        mp.send(b"n");
+        mp.expect("New session", STEP_TIMEOUT, "new-session picker opened");
+        mp.expect(
+            "cursor",
+            STEP_TIMEOUT,
+            "Cursor appears in new-session picker",
+        );
+    }
+
+    let mut mp = Mp::launch();
+    mp.start_into_main_list();
+    mp.send(b"h");
+    mp.expect("Handoff", STEP_TIMEOUT, "handoff picker opened");
+    mp.expect("cursor", STEP_TIMEOUT, "Cursor appears in handoff picker");
 }

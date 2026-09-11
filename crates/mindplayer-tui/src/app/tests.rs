@@ -3763,17 +3763,113 @@ fn an_agent_with_no_token_counts_is_named_but_never_drawn() {
     let mut app = App::new();
     app.visible_aggregate.claude.total = 1_000;
     app.visible_aggregate.claude_count = 1;
-    // Kiro logs carry no token counts: sessions exist, usage reads as zero.
+    // Kiro and Cursor stores carry no comparable token totals.
     app.visible_aggregate.kiro_count = 3;
+    app.visible_aggregate.cursor_count = 2;
 
     let segs = app.usage_segments();
     assert_eq!(segs.len(), 1, "kiro has no share to draw: {segs:?}");
     assert_eq!(segs[0].cells, crate::app::USAGE_BAR_CELLS);
+    // Account quotas are rows of their own now, so the summary line carries
+    // only where the counts came from.
     assert!(
-        app.summary_tail().contains("kiro —"),
-        "the gap must stay visible: {}",
+        !app.summary_tail().contains("kiro"),
+        "{}",
         app.summary_tail()
     );
+    assert!(
+        !app.summary_tail().contains("cursor"),
+        "{}",
+        app.summary_tail()
+    );
+    assert!(app.quota_rows().is_empty(), "no reading, no rows");
+}
+
+/// Every account gets a row, and only a row with a real percentage gets a
+/// gauge: an empty gauge would read as "plenty left" when the truth is that
+/// the provider reported no window at all.
+#[test]
+fn each_account_gets_a_row_and_only_real_readings_get_a_gauge() {
+    let mut app = App::new();
+    app.limits = Some(mindplayer_core::limits::Limits {
+        claude: Ok(mindplayer_core::limits::ClaudeLimits {
+            five_hour: Some(12.0),
+            seven_day: Some(31.0),
+            ..Default::default()
+        }),
+        // A business plan reports no window at all — only a balance.
+        codex: Ok(mindplayer_core::limits::CodexLimits {
+            credit_balance: Some(0.0),
+            plan_type: Some("business".into()),
+            ..Default::default()
+        }),
+        kiro: Ok(mindplayer_core::limits::KiroLimits {
+            plan_name: Some("KIRO POWER".into()),
+            credits_used: Some(185.5),
+            credits_total: Some(10_000.0),
+            used_percent: Some(1.855),
+            reset_date: Some("2026-10-01".into()),
+        }),
+        cursor: Ok(mindplayer_core::limits::CursorLimits {
+            used_percent: Some(30.0),
+            used_cents: Some(1500),
+            limit_cents: Some(5000),
+            remaining_cents: Some(3500),
+            billing_cycle_end: Some("2026-10-01T00:00:00.000Z".into()),
+            source: Some(mindplayer_core::limits::CursorQuotaSource::Plan),
+            ..Default::default()
+        }),
+    });
+
+    let rows = app.quota_rows();
+    let labels: Vec<&str> = rows.iter().map(|r| r.label.as_str()).collect();
+    assert_eq!(
+        labels,
+        vec!["claude 5h", "claude wk", "codex", "kiro", "cursor"],
+        "claude reports two windows, so it gets two rows"
+    );
+
+    let gauged: Vec<&str> = rows
+        .iter()
+        .filter(|r| r.has_gauge())
+        .map(|r| r.label.as_str())
+        .collect();
+    assert_eq!(
+        gauged,
+        vec!["claude 5h", "claude wk", "kiro", "cursor"],
+        "codex reported no window, so it must not be gauged"
+    );
+
+    let codex = rows.iter().find(|r| r.label == "codex").unwrap();
+    assert!(
+        codex.detail.contains("credits 0"),
+        "the balance is still named: {codex:?}"
+    );
+    let kiro = rows.iter().find(|r| r.label == "kiro").unwrap();
+    assert_eq!(kiro.detail, "185.5/10000 cr");
+    assert_eq!(kiro.resets.as_deref(), Some("2026-10-01"));
+    let cursor = rows.iter().find(|r| r.label == "cursor").unwrap();
+    assert_eq!(cursor.detail, "$15.00/$50");
+}
+
+/// A provider that failed still gets a row saying why, so an agent never
+/// silently disappears from the footer.
+#[test]
+fn a_failed_reading_becomes_a_row_that_explains_itself() {
+    let mut app = App::new();
+    app.limits = Some(mindplayer_core::limits::Limits {
+        claude: Err("keychain item has no claudeAiOauth token".into()),
+        codex: Err("no codex rollouts found".into()),
+        kiro: Err("no local Kiro profile".into()),
+        cursor: Err("no Cursor Agent access token in macOS Keychain".into()),
+    });
+    let rows = app.quota_rows();
+    assert_eq!(rows.len(), 4, "one row per provider even when all failed");
+    assert!(
+        rows.iter().all(|r| !r.has_gauge()),
+        "a failure must never be drawn as a gauge: {rows:?}"
+    );
+    assert!(rows[0].detail.contains("claudeAiOauth"), "{rows:?}");
 }
 
 #[test]

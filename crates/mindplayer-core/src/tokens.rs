@@ -10,9 +10,11 @@ pub struct Aggregate {
     pub codex: TokenUsage,
     pub claude: TokenUsage,
     pub kiro: TokenUsage,
+    pub cursor: TokenUsage,
     pub codex_count: usize,
     pub claude_count: usize,
     pub kiro_count: usize,
+    pub cursor_count: usize,
 }
 
 impl Aggregate {
@@ -41,13 +43,17 @@ impl Aggregate {
                     a.kiro.add(&s.tokens);
                     a.kiro_count += 1;
                 }
+                Agent::Cursor => {
+                    a.cursor.add(&s.tokens);
+                    a.cursor_count += 1;
+                }
             }
         }
         a
     }
 
     pub fn session_count(&self) -> usize {
-        self.codex_count + self.claude_count + self.kiro_count
+        self.codex_count + self.claude_count + self.kiro_count + self.cursor_count
     }
 }
 

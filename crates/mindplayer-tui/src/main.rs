@@ -34,7 +34,7 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 const HELP: &str = "\
-mindplayer — a session manager for Codex / Claude / Kiro
+mindplayer — a session manager for Codex / Claude / Kiro / Cursor
 
 USAGE:
     mindplayer [DIR]
@@ -265,6 +265,10 @@ fn run(terminal: &mut Terminal<CrosstermBackend<FrameSink>>, app: &mut App) -> R
     let mut needs_draw = true;
 
     while !app.should_quit {
+        // A lone Escape is held briefly by each PTY to distinguish a real key
+        // from a fragmented cursor-position report. Release genuine Escapes on
+        // the normal event-loop clock even when no further key arrives.
+        app.flush_terminal_reply_guards();
         if needs_draw {
             // `FrameSink` (see `render_writer`) buffers this in memory and
             // hands it to a background writer thread on flush, so a
@@ -717,7 +721,7 @@ fn handle_main_key(app: &mut App, key: KeyEvent) {
     if let Some(choice) = app.handoff_picker {
         match key.code {
             KeyCode::Up => app.handoff_picker = Some(choice.saturating_sub(1)),
-            KeyCode::Down => app.handoff_picker = Some((choice + 1).min(2)),
+            KeyCode::Down => app.handoff_picker = Some((choice + 1).min(3)),
             KeyCode::Enter => {
                 let target = handoff::target_for_choice(choice);
                 app.confirm_handoff(target);
@@ -732,12 +736,13 @@ fn handle_main_key(app: &mut App, key: KeyEvent) {
     if let Some(choice) = app.new_picker {
         match key.code {
             KeyCode::Up => app.new_picker = Some(choice.saturating_sub(1)),
-            KeyCode::Down => app.new_picker = Some((choice + 1).min(2)),
+            KeyCode::Down => app.new_picker = Some((choice + 1).min(3)),
             KeyCode::Enter => {
                 let agent = match choice {
                     0 => Agent::Codex,
                     1 => Agent::Claude,
-                    _ => Agent::Kiro,
+                    2 => Agent::Kiro,
+                    _ => Agent::Cursor,
                 };
                 app.choose_new_agent(agent);
             }

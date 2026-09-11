@@ -11,6 +11,7 @@ use tempfile::tempdir;
 const CODEX_ID: &str = "11111111-2222-7333-8444-555566667777";
 const CLAUDE_ID: &str = "99999999-8888-7777-6666-555544443333";
 const KIRO_ID: &str = "44444444-4444-7444-8444-444444444444";
+const CURSOR_ID: &str = "55555555-5555-7555-8555-555555555555";
 
 fn write(path: &Path, lines: &[&str]) {
     fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -93,21 +94,87 @@ fn fixture() -> (tempfile::TempDir, ScanConfig) {
         ],
     );
 
+    // Cursor agent stores one meta.json under chats/<workspace-hash>/<chat-id>/.
+    // Only chats with a persisted conversation belong in the resumable list.
+    let cursor_dir = dir.path().join("cursor");
+    write(
+        &cursor_dir
+            .join("workspace-a")
+            .join(CURSOR_ID)
+            .join("meta.json"),
+        &[
+            r#"{"schemaVersion":1,"createdAtMs":1767513600000,"hasConversation":true,"updatedAtMs":1767513900000,"cwd":"/work","title":"review the release"}"#,
+        ],
+    );
+    write(
+        &cursor_dir
+            .join("workspace-a")
+            .join("66666666-6666-7666-8666-666666666666")
+            .join("meta.json"),
+        &[
+            r#"{"schemaVersion":1,"createdAtMs":1767514000000,"hasConversation":false,"updatedAtMs":1767514000000,"cwd":"/work"}"#,
+        ],
+    );
+    write(
+        &cursor_dir
+            .join("workspace-b")
+            .join("77777777-7777-7777-8777-777777777777")
+            .join("meta.json"),
+        &[
+            r#"{"schemaVersion":1,"createdAtMs":1767514200000,"hasConversation":true,"updatedAtMs":1767514300000,"cwd":"/other","isSubagent":true}"#,
+        ],
+    );
+
     (
         dir,
         ScanConfig {
             codex_dir,
             claude_dir,
             kiro_dir,
+            cursor_dir,
         },
     )
 }
 
 #[test]
-fn global_scope_finds_all_three() {
+fn global_scope_finds_all_four_agents() {
     let (_d, cfg) = fixture();
     let sessions = scan(&Scope::Global, &cfg);
-    assert_eq!(sessions.len(), 6, "expected 2 codex + 1 claude + 3 kiro");
+    assert_eq!(
+        sessions.len(),
+        8,
+        "expected 2 codex + 1 claude + 3 kiro + 2 non-empty cursor chats"
+    );
+}
+
+#[test]
+fn cursor_sessions_are_read_from_meta_sidecars() {
+    let (_d, cfg) = fixture();
+    let sessions = scan(&Scope::Global, &cfg);
+    let cursor = sessions
+        .iter()
+        .find(|s| s.id == CURSOR_ID)
+        .expect("cursor conversation discovered");
+    assert_eq!(cursor.agent, Agent::Cursor);
+    assert_eq!(cursor.cwd, Path::new("/work"));
+    assert_eq!(cursor.title, "review the release");
+    assert!(cursor.started_at.is_some() && cursor.last_active.is_some());
+    assert_eq!(cursor.tokens.total, 0, "Cursor meta has no token usage");
+    assert_eq!(cursor.context_pct, None);
+    assert!(!cursor.is_subagent);
+
+    assert!(
+        sessions
+            .iter()
+            .all(|s| s.id != "66666666-6666-7666-8666-666666666666"),
+        "empty chats must be excluded like Cursor's own session selector"
+    );
+    let subagent = sessions
+        .iter()
+        .find(|s| s.id == "77777777-7777-7777-8777-777777777777")
+        .expect("Cursor subagent metadata remains discoverable for hidden-view support");
+    assert!(subagent.is_subagent);
+    assert_eq!(subagent.title, "(cursor session)");
 }
 
 #[test]
@@ -158,8 +225,8 @@ fn kiro_fan_out_worker_is_hidden_by_parent_session_id_even_with_a_novel_title() 
 fn working_dir_scope_filters_by_cwd() {
     let (_d, cfg) = fixture();
     let sessions = scan(&Scope::WorkingDir("/work".into()), &cfg);
-    // codex + claude + kiro are in /work; the /other codex & kiro are excluded.
-    assert_eq!(sessions.len(), 3);
+    // codex + claude + kiro + cursor are in /work; /other sessions are excluded.
+    assert_eq!(sessions.len(), 4);
     assert!(sessions.iter().all(|s| s.cwd == Path::new("/work")));
 }
 
@@ -174,6 +241,8 @@ fn tokens_are_parsed_per_agent() {
     assert_eq!(agg.total.total, 1050 + (per_msg * 2) as u64);
     assert_eq!(agg.codex_count, 2);
     assert_eq!(agg.claude_count, 1);
+    assert_eq!(agg.cursor_count, 2);
+    assert_eq!(agg.cursor.total, 0, "Cursor meta exposes no token totals");
 }
 
 #[test]
@@ -247,6 +316,7 @@ fn codex_tail_finds_token_after_huge_line() {
         codex_dir,
         claude_dir,
         kiro_dir: dir.path().join("kiro"),
+        cursor_dir: dir.path().join("cursor"),
     };
     let sessions = scan(&Scope::WorkingDir("/work".into()), &cfg);
     let s = sessions
@@ -370,6 +440,7 @@ fn claude_subagent_transcript_gets_its_own_id_not_the_parents() {
         codex_dir: dir.path().join("codex"),
         claude_dir,
         kiro_dir: dir.path().join("kiro"),
+        cursor_dir: dir.path().join("cursor"),
     };
     let sessions = scan(&Scope::Global, &cfg);
     assert_eq!(
@@ -421,6 +492,7 @@ fn claude_agent_name_marks_an_externally_orchestrated_subagent_with_a_novel_titl
         codex_dir: dir.path().join("codex"),
         claude_dir,
         kiro_dir: dir.path().join("kiro"),
+        cursor_dir: dir.path().join("cursor"),
     };
     let sessions = scan(&Scope::Global, &cfg);
     let worker = sessions
@@ -461,6 +533,7 @@ fn codex_last_prompt_at_ignores_the_tool_round_trip_that_follows_it() {
         codex_dir,
         claude_dir: dir.path().join("claude"),
         kiro_dir: dir.path().join("kiro"),
+        cursor_dir: dir.path().join("cursor"),
     };
     let sessions = scan(&Scope::WorkingDir("/work".into()), &cfg);
     let s = sessions.iter().find(|s| s.id == ID).expect("session found");
@@ -497,6 +570,7 @@ fn claude_last_prompt_at_ignores_tool_result_feedback() {
         codex_dir: dir.path().join("codex"),
         claude_dir,
         kiro_dir: dir.path().join("kiro"),
+        cursor_dir: dir.path().join("cursor"),
     };
     let sessions = scan(&Scope::WorkingDir("/work".into()), &cfg);
     let s = sessions.iter().find(|s| s.id == ID).expect("session found");

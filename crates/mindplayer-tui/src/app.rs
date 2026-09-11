@@ -233,6 +233,7 @@ fn agent_rank(agent: Agent) -> u8 {
         Agent::Codex => 0,
         Agent::Claude => 1,
         Agent::Kiro => 2,
+        Agent::Cursor => 3,
     }
 }
 
@@ -863,21 +864,21 @@ impl App {
 
     /// Everything after the usage bar and its labels.
     ///
-    /// Kiro is named here rather than given a bar segment: its logs carry no
-    /// token counts, so it has no share to draw. Saying "kiro —" keeps that gap
-    /// visible instead of letting the bar imply it accounts for every session.
+    /// Account quotas used to be crammed in here as text. They now get a row
+    /// each below this one ([`Self::quota_rows`]) so each is gauged rather than
+    /// read, which leaves this line to say only where the counts came from.
     pub fn summary_tail(&self) -> String {
-        let kiro = if self.visible_aggregate.kiro_count > 0 {
-            " · kiro —"
-        } else {
-            ""
-        };
-        format!(
-            "{} · {}{}",
-            kiro,
-            self.scope_label_short(),
-            self.limits_suffix()
-        )
+        format!(" · {}", self.scope_label_short())
+    }
+
+    /// One row per account window for the footer, or empty before the first
+    /// reading lands. Sessions of an agent that reports no quota still get a
+    /// row, so a configured agent never silently vanishes from the footer.
+    pub fn quota_rows(&self) -> Vec<mindplayer_core::limits::QuotaRow> {
+        self.limits
+            .as_ref()
+            .map(mindplayer_core::limits::Limits::quota_rows)
+            .unwrap_or_default()
     }
 
     /// The share of measured tokens each agent holds, as bar cells.
@@ -892,7 +893,6 @@ impl App {
         let measured: Vec<(&'static str, char, u64)> = [
             ("claude", '█', a.claude.total),
             ("codex", '▓', a.codex.total),
-            ("kiro", '▒', a.kiro.total),
         ]
         .into_iter()
         .filter(|(_, _, total)| *total > 0)
@@ -912,27 +912,6 @@ impl App {
                 percent: percents[i],
             })
             .collect()
-    }
-
-    /// Subscription windows, appended to the summary line once a reading has
-    /// come back. This is the only place they surface: the popup that used to
-    /// show them is gone, and a reading nobody can see is a reading not worth
-    /// fetching.
-    fn limits_suffix(&self) -> String {
-        let Some(limits) = self.limits.as_ref() else {
-            return String::new();
-        };
-        let parts: Vec<String> = limits
-            .summary_rows()
-            .into_iter()
-            .filter(|(_, has_value)| *has_value)
-            .map(|(line, _)| line.split_whitespace().collect::<Vec<_>>().join(" "))
-            .collect();
-        if parts.is_empty() {
-            String::new()
-        } else {
-            format!("  ·  {}", parts.join(" · "))
-        }
     }
 }
 

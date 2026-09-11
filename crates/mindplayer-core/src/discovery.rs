@@ -1,5 +1,5 @@
-//! Session discovery: scan the Codex and Claude session stores and parse each
-//! `.jsonl` file into a [`Session`].
+//! Session discovery: scan the Codex, Claude, Kiro, and Cursor session stores
+//! and parse each provider's verified local metadata into a [`Session`].
 //!
 //! Parsing is line-by-line best-effort: a malformed or unknown line is skipped
 //! rather than discarding the whole session. Data shapes were verified against
@@ -10,6 +10,10 @@
 //! - Claude: `~/.claude/projects/<encoded-cwd>/<sessionId>.jsonl`, per-message
 //!   `usage` summed across `assistant` messages. The directory name encodes the
 //!   cwd (`/` and `.` replaced by `-`).
+//! - Kiro: `~/.kiro/sessions/cli/<uuid>.json`, with cwd, timestamps, title, and
+//!   context-window occupancy but no usable cumulative token total.
+//! - Cursor: `~/.cursor/chats/<workspace-hash>/<chat-id>/meta.json`, with cwd,
+//!   timestamps, optional title/subagent state, and no token/context/quota data.
 //!
 //! Performance: the real store is multi-GB with individual Codex files up to
 //! hundreds of MB. We never read a whole file just to discover it. Codex cwd is
@@ -72,6 +76,8 @@ pub struct ScanConfig {
     /// Kiro CLI session store: `~/.kiro/sessions/cli/` holding `<uuid>.json`
     /// metadata sidecars (plus `<uuid>.jsonl` conversation logs).
     pub kiro_dir: PathBuf,
+    /// Cursor agent chat store: `~/.cursor/chats/<workspace-hash>/<chat-id>/meta.json`.
+    pub cursor_dir: PathBuf,
 }
 
 impl ScanConfig {
@@ -82,6 +88,7 @@ impl ScanConfig {
             codex_dir: env_dir("MINDPLAYER_CODEX_DIR", &[".codex", "sessions"]),
             claude_dir: env_dir("MINDPLAYER_CLAUDE_DIR", &[".claude", "projects"]),
             kiro_dir: env_dir("MINDPLAYER_KIRO_DIR", &[".kiro", "sessions", "cli"]),
+            cursor_dir: env_dir("MINDPLAYER_CURSOR_DIR", &[".cursor", "chats"]),
         }
     }
 }
@@ -113,6 +120,7 @@ pub fn scan(scope: &Scope, cfg: &ScanConfig) -> Vec<Session> {
     let claude_items = gather_claude_items(&cfg.claude_dir, scope);
 
     let kiro_paths = gather_kiro(&cfg.kiro_dir);
+    let cursor_paths = gather_cursor(&cfg.cursor_dir);
 
     let mut sessions = parallel_filter_map(&codex_paths, |path| parse_codex_file(path, scope));
     let claude = parallel_filter_map(&claude_items, |(path, cwd_override)| {
@@ -121,6 +129,8 @@ pub fn scan(scope: &Scope, cfg: &ScanConfig) -> Vec<Session> {
     sessions.extend(claude);
     let kiro = parallel_filter_map(&kiro_paths, |path| parse_kiro_file(path, scope));
     sessions.extend(kiro);
+    let cursor = parallel_filter_map(&cursor_paths, |path| parse_cursor_file(path, scope));
+    sessions.extend(cursor);
     // Normalize the recency key to file mtime here (off the UI thread) — the
     // SAME source the periodic refresh uses. Parsers derive last_active from the
     // in-file transcript timestamp, which can disagree with mtime for a live
@@ -178,7 +188,7 @@ pub fn refresh_activity_and_usage(sessions: &mut [Session]) {
         s.last_active = Some(active);
 
         let changed = old_active.is_none_or(|prev| active > prev);
-        let missing_usage = s.tokens.total == 0 && s.agent != Agent::Kiro;
+        let missing_usage = s.tokens.total == 0 && matches!(s.agent, Agent::Codex | Agent::Claude);
         let missing_context = s.agent == Agent::Kiro && s.context_pct.is_none();
         if !changed && !missing_usage && !missing_context {
             continue;
@@ -208,6 +218,7 @@ pub fn refresh_activity_and_usage(sessions: &mut [Session]) {
                     s.context_pct = Some(context_pct);
                 }
             }
+            Agent::Cursor => {}
         }
     }
     sort_by_recency(sessions);
@@ -317,6 +328,23 @@ fn gather_kiro(root: &Path) -> Vec<PathBuf> {
         .filter_map(Result::ok)
         .map(walkdir::DirEntry::into_path)
         .filter(|p| p.is_file() && p.extension().and_then(|e| e.to_str()) == Some("json"))
+        .collect()
+}
+
+/// Cursor agent writes `meta.json` under one workspace-hash and chat-id
+/// directory. The official selector recursively scans all workspace buckets,
+/// so global and working-directory scopes share the same candidate set and
+/// filter by the sidecar's `cwd` during parsing.
+fn gather_cursor(root: &Path) -> Vec<PathBuf> {
+    if !root.exists() {
+        return Vec::new();
+    }
+    WalkDir::new(root)
+        .max_depth(3)
+        .into_iter()
+        .filter_map(Result::ok)
+        .map(walkdir::DirEntry::into_path)
+        .filter(|p| p.is_file() && p.file_name().and_then(|n| n.to_str()) == Some("meta.json"))
         .collect()
 }
 
@@ -1002,6 +1030,86 @@ fn parse_kiro_file(path: &Path, scope: &Scope) -> Option<Session> {
         is_subagent,
         context_pct,
     })
+}
+
+// --- Cursor ---------------------------------------------------------------
+
+/// Parse Cursor agent's local `meta.json` sidecar.
+///
+/// Three discovery surfaces were compared before choosing this one:
+/// - `agent ls` is an interactive selector with no machine-readable format;
+/// - remote chat APIs would widen authentication/network scope;
+/// - this local sidecar is the source the installed selector itself scans.
+///
+/// Cursor's selector requires `hasConversation`, so empty chats created by
+/// `agent create-chat` are deliberately excluded. The sidecar provides title,
+/// cwd, timestamps, and a structural subagent bit, but no token/context/quota
+/// fields; those remain unavailable rather than being invented as usage.
+fn parse_cursor_file(path: &Path, scope: &Scope) -> Option<Session> {
+    let mut buf = String::new();
+    File::open(path)
+        .ok()?
+        .take(256 * 1024)
+        .read_to_string(&mut buf)
+        .ok()?;
+    let v: Value = serde_json::from_str(&buf).ok()?;
+    if !v
+        .get("hasConversation")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        return None;
+    }
+
+    let cwd = v
+        .get("cwd")
+        .and_then(Value::as_str)
+        .map(PathBuf::from)
+        .unwrap_or_default();
+    if !scope.matches(&cwd) {
+        return None;
+    }
+
+    let id = path
+        .parent()
+        .and_then(Path::file_name)
+        .and_then(|s| s.to_str())
+        .filter(|s| !s.is_empty())?
+        .to_string();
+    let started_at = cursor_ms(&v, "createdAtMs");
+    let last_active = cursor_ms(&v, "updatedAtMs").or(started_at);
+    let title = v
+        .get("title")
+        .and_then(Value::as_str)
+        .filter(|t| !t.trim().is_empty())
+        .map(clean_title)
+        .unwrap_or_else(|| "(cursor session)".to_string());
+    let is_subagent = v
+        .get("isSubagent")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+
+    Some(Session {
+        id,
+        agent: Agent::Cursor,
+        cwd,
+        file: path.to_path_buf(),
+        started_at,
+        last_active,
+        last_prompt_at: None,
+        tokens: TokenUsage::default(),
+        title,
+        archived: false,
+        is_subagent,
+        context_pct: None,
+    })
+}
+
+fn cursor_ms(v: &Value, key: &str) -> Option<DateTime<Utc>> {
+    let millis = v.get(key)?.as_i64()?;
+    (millis >= 0)
+        .then(|| DateTime::<Utc>::from_timestamp_millis(millis))
+        .flatten()
 }
 
 // --- shared ---------------------------------------------------------------

@@ -39,7 +39,11 @@ const ROLLOUT_TAIL_BYTES: u64 = 1 << 20;
 const CLAUDE_USAGE_URL: &str = "https://api.anthropic.com/api/oauth/usage";
 const CLAUDE_BETA_HEADER: &str = "anthropic-beta: oauth-2025-04-20";
 const CURSOR_USAGE_URL: &str = "https://cursor.com/api/usage-summary";
+/// Where Cursor Agent stores its token. Only the macOS lookup reads these, so
+/// they carry its gate too — otherwise a Linux build has them as dead code.
+#[cfg(target_os = "macos")]
 const CURSOR_KEYCHAIN_SERVICE: &str = "cursor-access-token";
+#[cfg(target_os = "macos")]
 const CURSOR_KEYCHAIN_ACCOUNT: &str = "cursor-user";
 
 /// Seconds before the `curl` call is abandoned. The readout is decoration; it
@@ -49,6 +53,9 @@ const CURL_TIMEOUT_SECS: u32 = 8;
 /// printing a complete report. The readout is optional, so bound the whole
 /// child and let the next refresh try again.
 const KIRO_USAGE_TIMEOUT: Duration = Duration::from_secs(15);
+/// Same reason as the keychain constants above: only macOS shells out to
+/// `security(1)`, so elsewhere this bound has nothing to bound.
+#[cfg(target_os = "macos")]
 const KEYCHAIN_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Claude's two subscription windows, as percentages already (not fractions).

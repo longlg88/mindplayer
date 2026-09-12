@@ -1121,6 +1121,9 @@ impl App {
         };
         self.limits_rx = None;
         self.limits_started = None;
+        // Written before the reading is stored so the next start shows this one
+        // rather than waiting seconds for its own.
+        mindplayer_core::limits::save_quota_cache(&limits.quota_rows());
         self.limits = Some(limits);
         true
     }

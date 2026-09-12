@@ -518,6 +518,8 @@ pub struct App {
     /// first fetch lands; the fetch does network I/O so it never blocks a keypress.
     pub limits: Option<mindplayer_core::limits::Limits>,
     pub(crate) limits_rx: Option<Receiver<mindplayer_core::limits::Limits>>,
+    /// The previous run's account reading, shown until this run has its own.
+    pub(crate) quota_cache: Option<(Vec<mindplayer_core::limits::QuotaRow>, DateTime<Utc>)>,
     /// When the in-flight fetch started, so a wedged one can be abandoned.
     pub(crate) limits_started: Option<Instant>,
     /// Keyboard shortcut help overlay opened by `?`.
@@ -692,6 +694,7 @@ impl App {
             prompts_dir: prompts_dir_for_app(),
             limits: None,
             limits_rx: None,
+            quota_cache: mindplayer_core::limits::load_quota_cache(),
             limits_started: None,
             help_visible: false,
             search_query: None,
@@ -852,14 +855,31 @@ impl App {
         format!(" · {}", self.scope_label_short())
     }
 
-    /// One row per account window for the footer, or empty before the first
-    /// reading lands. Sessions of an agent that reports no quota still get a
-    /// row, so a configured agent never silently vanishes from the footer.
+    /// One row per account window for the footer. Sessions of an agent that
+    /// reports no quota still get a row, so a configured agent never silently
+    /// vanishes from the footer.
+    ///
+    /// Until this run's own reading lands, the previous run's is shown instead
+    /// of nothing — see [`Self::quota_cached_at`], which the footer uses to say
+    /// so rather than let a stale number pass for current.
     pub fn quota_rows(&self) -> Vec<mindplayer_core::limits::QuotaRow> {
-        self.limits
-            .as_ref()
-            .map(mindplayer_core::limits::Limits::quota_rows)
-            .unwrap_or_default()
+        match self.limits.as_ref() {
+            Some(limits) => limits.quota_rows(),
+            None => self
+                .quota_cache
+                .as_ref()
+                .map(|(rows, _)| rows.clone())
+                .unwrap_or_default(),
+        }
+    }
+
+    /// When the rows on screen were read, but only while they came from the
+    /// cache. `None` once this run has its own reading.
+    pub fn quota_cached_at(&self) -> Option<DateTime<Utc>> {
+        if self.limits.is_some() {
+            return None;
+        }
+        self.quota_cache.as_ref().map(|(_, at)| *at)
     }
 }
 

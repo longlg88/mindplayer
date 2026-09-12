@@ -258,6 +258,10 @@ fn run(terminal: &mut Terminal<CrosstermBackend<FrameSink>>, app: &mut App) -> R
     let mut summary_since: Option<Instant> = None;
     let mut last_anim = Instant::now();
     let mut last_refresh = Instant::now();
+    // Kicked off here rather than on the first three-second tick: reading the
+    // accounts takes seconds of its own, and waiting for a tick before even
+    // starting adds that delay to it.
+    app.spawn_limits_fetch();
     // Render only when something actually changed (input, PTY output, list
     // re-order, animation). This is the key to smoothness: an idle screen or a
     // live session with no new bytes costs zero redraws instead of 60fps of

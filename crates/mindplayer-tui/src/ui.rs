@@ -714,6 +714,18 @@ fn main_view(f: &mut Frame, app: &mut App) {
     }
     status.push(Span::styled(app.summary_head(), Style::default().fg(DIM)));
     status.push(Span::styled(app.summary_tail(), Style::default().fg(DIM)));
+    // Says so while the account rows below are the previous run's. It clears
+    // itself the moment this run's own reading lands, so a stale number never
+    // passes for a current one.
+    if let Some(at) = app.quota_cached_at() {
+        status.push(Span::styled(
+            format!(
+                "  ·  accounts as of {}",
+                at.with_timezone(&chrono::Local).format("%H:%M")
+            ),
+            Style::default().fg(DIM).add_modifier(Modifier::DIM),
+        ));
+    }
     let status_line = Line::from(status);
     // Two rows is the ceiling: past that the footer would eat the list it exists
     // to describe, and anything still over is the scope label, which repeats

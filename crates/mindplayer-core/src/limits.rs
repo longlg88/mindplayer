@@ -166,7 +166,7 @@ impl CursorLimits {
 }
 
 /// One account window for the footer, as values rather than a rendered line.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct QuotaRow {
     /// `claude 5h`, `kiro`, `cursor` — what the row is about.
     pub label: String,
@@ -193,6 +193,57 @@ impl QuotaRow {
     pub fn has_gauge(&self) -> bool {
         self.used_percent.is_some()
     }
+}
+
+/// The last reading, kept on disk so a fresh start has something to show.
+///
+/// Reading the accounts takes seconds — Kiro alone runs its whole CLI — and a
+/// footer that is blank until then teaches people to ignore it. The cache is
+/// shown immediately and replaced the moment a live reading lands; the caller
+/// is handed the time it was written so a stale number can say so rather than
+/// pass for current.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct QuotaCache {
+    written_at: i64,
+    rows: Vec<QuotaRow>,
+}
+
+fn quota_cache_path() -> PathBuf {
+    crate::private::data_root().join("limits-cache.json")
+}
+
+/// Store a reading. Failure is silent on purpose: a cache that cannot be
+/// written must never interfere with the reading it was meant to speed up.
+pub fn save_quota_cache(rows: &[QuotaRow]) {
+    // An empty reading is not a reading. Writing it would replace the last
+    // good one with nothing, so the next start would be blank — exactly what
+    // the cache exists to prevent.
+    if rows.is_empty() {
+        return;
+    }
+    let cache = QuotaCache {
+        written_at: chrono::Utc::now().timestamp(),
+        rows: rows.to_vec(),
+    };
+    let Ok(body) = serde_json::to_vec(&cache) else {
+        return;
+    };
+    let path = quota_cache_path();
+    if let Ok(mut f) = crate::private::open_private(&path, false) {
+        use std::io::Write;
+        let _ = f.write_all(&body);
+    }
+}
+
+/// The stored reading and when it was taken, or `None` when there isn't one.
+pub fn load_quota_cache() -> Option<(Vec<QuotaRow>, chrono::DateTime<chrono::Utc>)> {
+    let body = std::fs::read(quota_cache_path()).ok()?;
+    let cache: QuotaCache = serde_json::from_slice(&body).ok()?;
+    if cache.rows.is_empty() {
+        return None;
+    }
+    let at = chrono::DateTime::from_timestamp(cache.written_at, 0)?;
+    Some((cache.rows, at))
 }
 
 /// Shorten a reset epoch: a clock for windows that roll over within a day, a
@@ -1941,6 +1992,61 @@ Since your account is through your organization, contact your administrator.
         };
         let line = &limits.summary_lines()[1];
         assert!(line.contains("some future limit reached"), "{line}");
+    }
+
+    /// The cache exists so a fresh start is not blank for the seconds a real
+    /// reading takes. It must survive the round trip and keep its timestamp.
+    #[test]
+    fn a_saved_reading_comes_back_with_the_time_it_was_taken() {
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("HOME", dir.path());
+
+        assert!(load_quota_cache().is_none(), "nothing saved yet");
+
+        let rows = vec![
+            QuotaRow {
+                label: "kiro".into(),
+                used_percent: Some(6.4),
+                detail: "639.7/10000 cr".into(),
+                resets: Some("2026-10-01".into()),
+            },
+            QuotaRow::reason("codex", "no window reported"),
+        ];
+        let before = chrono::Utc::now().timestamp();
+        save_quota_cache(&rows);
+
+        let (back, at) = load_quota_cache().expect("the reading comes back");
+        assert_eq!(back, rows);
+        assert!(at.timestamp() >= before, "the time it was taken is kept");
+
+        // The file records account usage, so it is owner-only like the rest of
+        // what mindplayer writes.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(quota_cache_path())
+                .unwrap()
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o077, 0, "group/other can read it: {mode:o}");
+        }
+
+        // An empty reading is not worth showing on the next start, and a
+        // corrupt file must not stop the app from running. Checked here rather
+        // than in a test of its own: both need `HOME`, and two tests mutating
+        // it race under the default parallel runner.
+        save_quota_cache(&[]);
+        assert_eq!(
+            load_quota_cache().map(|(rows, _)| rows),
+            Some(rows),
+            "an empty save must not erase the last real reading"
+        );
+
+        std::fs::write(quota_cache_path(), b"{ not json").unwrap();
+        assert!(
+            load_quota_cache().is_none(),
+            "a corrupt cache is just absent"
+        );
     }
 
     #[test]

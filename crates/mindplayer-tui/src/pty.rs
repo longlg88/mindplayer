@@ -59,7 +59,10 @@ impl TerminalReplyGuard {
 
         self.pending.extend_from_slice(bytes);
         match terminal_reply_prefix(&self.pending) {
-            TerminalReplyPrefix::Prefix => {}
+            // The grace is a gap between bytes, not a budget for the whole
+            // reply: measured from the first byte, a CPR that merely arrives
+            // slowly outlives it and is dumped into the child's prompt.
+            TerminalReplyPrefix::Prefix => self.since = Some(now),
             TerminalReplyPrefix::Complete => {
                 self.pending.clear();
                 self.since = None;
@@ -1025,6 +1028,32 @@ mod tests {
             ));
         }
         assert!(forwarded.is_empty(), "CPR suffix leaked: {forwarded:?}");
+    }
+
+    /// A cursor position report that merely arrives slowly is still a reply.
+    ///
+    /// The grace used to be measured from the first byte held, so a CPR whose
+    /// bytes trickled in over more than `TERMINAL_REPLY_GRACE` outlived it and
+    /// was dumped into the child's prompt — which is how `66666666` appeared in
+    /// a live codex session. It is a gap between bytes now.
+    #[test]
+    fn a_slowly_arriving_cursor_position_report_still_never_reaches_the_child() {
+        for gap in [1u64, 30, 45, 120] {
+            let start = Instant::now();
+            let mut guard = TerminalReplyGuard::default();
+            let mut forwarded = Vec::new();
+            for (i, byte) in b"\x1b[66;1R".iter().enumerate() {
+                forwarded.extend(guard.push(
+                    std::slice::from_ref(byte),
+                    start + Duration::from_millis(i as u64 * gap),
+                ));
+            }
+            assert!(
+                forwarded.is_empty(),
+                "gap {gap}ms leaked {:?}",
+                String::from_utf8_lossy(&forwarded.concat())
+            );
+        }
     }
 
     #[test]

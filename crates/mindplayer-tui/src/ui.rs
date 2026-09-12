@@ -50,44 +50,6 @@ fn agent_tag(agent: Agent) -> (&'static str, Color) {
     }
 }
 
-/// The usage bar: each agent's share of the measured tokens as one run of
-/// cells, followed by the same shares as labels.
-///
-/// The agents keep the colors [`agent_tag`] already gives them elsewhere, so
-/// the bar reads as the same vocabulary as the session list rather than a
-/// second, private color scheme.
-fn usage_bar_spans(app: &App) -> Vec<Span<'static>> {
-    let segments = app.usage_segments();
-    if segments.is_empty() {
-        return Vec::new();
-    }
-    let color = |label: &str| match label {
-        "codex" => ACCENT,
-        "claude" => Color::Magenta,
-        _ => Color::Cyan,
-    };
-    let mut spans: Vec<Span> = segments
-        .iter()
-        .map(|seg| {
-            Span::styled(
-                seg.glyph.to_string().repeat(seg.cells),
-                Style::default().fg(color(seg.label)),
-            )
-        })
-        .collect();
-    for (i, seg) in segments.iter().enumerate() {
-        spans.push(Span::styled(
-            if i == 0 {
-                format!("  {} {}%", seg.label, seg.percent)
-            } else {
-                format!(" · {} {}%", seg.label, seg.percent)
-            },
-            Style::default().fg(color(seg.label)),
-        ));
-    }
-    spans
-}
-
 /// Cells in an account's remaining-quota gauge.
 const QUOTA_GAUGE_CELLS: usize = 6;
 
@@ -751,7 +713,6 @@ fn main_view(f: &mut Frame, app: &mut App) {
         ));
     }
     status.push(Span::styled(app.summary_head(), Style::default().fg(DIM)));
-    status.extend(usage_bar_spans(app));
     status.push(Span::styled(app.summary_tail(), Style::default().fg(DIM)));
     let status_line = Line::from(status);
     // Two rows is the ceiling: past that the footer would eat the list it exists

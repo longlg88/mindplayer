@@ -188,7 +188,8 @@ pub fn refresh_activity_and_usage(sessions: &mut [Session]) {
         s.last_active = Some(active);
 
         let changed = old_active.is_none_or(|prev| active > prev);
-        let missing_usage = s.tokens.total == 0 && matches!(s.agent, Agent::Codex | Agent::Claude);
+        let missing_usage =
+            s.tokens.total == 0 && matches!(s.agent, Agent::Codex | Agent::Claude | Agent::Cursor);
         let missing_context = s.agent == Agent::Kiro && s.context_pct.is_none();
         if !changed && !missing_usage && !missing_context {
             continue;
@@ -218,7 +219,12 @@ pub fn refresh_activity_and_usage(sessions: &mut [Session]) {
                     s.context_pct = Some(context_pct);
                 }
             }
-            Agent::Cursor => {}
+            Agent::Cursor => {
+                let estimate = cursor_token_estimate(&s.file, &s.id);
+                if estimate.total > 0 {
+                    s.tokens = estimate;
+                }
+            }
         }
     }
     sort_by_recency(sessions);
@@ -1044,7 +1050,8 @@ fn parse_kiro_file(path: &Path, scope: &Scope) -> Option<Session> {
 /// Cursor's selector requires `hasConversation`, so empty chats created by
 /// `agent create-chat` are deliberately excluded. The sidecar provides title,
 /// cwd, timestamps, and a structural subagent bit, but no token/context/quota
-/// fields; those remain unavailable rather than being invented as usage.
+/// fields. Usage for the row is estimated separately from the transcript — see
+/// [`cursor_token_estimate`] — and marked as an estimate where it is drawn.
 fn parse_cursor_file(path: &Path, scope: &Scope) -> Option<Session> {
     let mut buf = String::new();
     File::open(path)
@@ -1105,6 +1112,74 @@ fn parse_cursor_file(path: &Path, scope: &Scope) -> Option<Session> {
     })
 }
 
+/// Characters to a token. Cursor publishes no tokenizer, so this is the usual
+/// English-prose rule of thumb, and it is why the figure is drawn as `~`.
+const CURSOR_CHARS_PER_TOKEN: u64 = 4;
+
+/// Estimated token usage for a cursor session, read off its transcript.
+///
+/// Cursor stores no counts anywhere local: `meta.json` holds timestamps and a
+/// title, the chat `store.db` holds conversation content, and
+/// `ai-code-tracking.db` holds edit attribution — all content, never usage. So
+/// this charges four characters to a token and bills each answer for the
+/// conversation ahead of it, since that is what a turn resends and what the
+/// per-request numbers codex and claude report add up to. It is an estimate,
+/// not a measurement, and the column marks it as one.
+fn cursor_token_estimate(meta: &Path, id: &str) -> TokenUsage {
+    let Some(path) = cursor_transcript(meta, id) else {
+        return TokenUsage::default();
+    };
+    let Ok(file) = File::open(path) else {
+        return TokenUsage::default();
+    };
+    let mut tokens = TokenUsage::default();
+    let mut conversation_so_far: u64 = 0;
+    for line in BufReader::new(file.take(MAX_CLAUDE_BYTES))
+        .lines()
+        .map_while(Result::ok)
+    {
+        let Ok(v) = serde_json::from_str::<Value>(line.trim()) else {
+            continue;
+        };
+        let Some(message) = v.get("message") else {
+            continue;
+        };
+        let chars = serde_json::to_string(message)
+            .map(|json| json.chars().count() as u64)
+            .unwrap_or(0);
+        let turn = chars / CURSOR_CHARS_PER_TOKEN;
+        if v.get("role").and_then(Value::as_str) == Some("assistant") {
+            tokens.input = tokens.input.saturating_add(conversation_so_far);
+            tokens.output = tokens.output.saturating_add(turn);
+        }
+        conversation_so_far = conversation_so_far.saturating_add(turn);
+    }
+    tokens.total = tokens.input.saturating_add(tokens.output);
+    tokens
+}
+
+/// Path to the transcript for cursor chat `id`, if one was written.
+///
+/// The chat store gives `<root>/chats/<workspace-hash>/<id>/meta.json`, while
+/// the transcript sits in a sibling tree at
+/// `<root>/projects/<cwd-slug>/agent-transcripts/<id>/<id>.jsonl`. The slug is
+/// some transform of the cwd that we would have to guess at, so the search goes
+/// by chat id, which is unique across projects.
+fn cursor_transcript(meta: &Path, id: &str) -> Option<PathBuf> {
+    let root = meta.ancestors().nth(4)?;
+    let transcript = |project: PathBuf| {
+        project
+            .join("agent-transcripts")
+            .join(id)
+            .join(format!("{id}.jsonl"))
+    };
+    std::fs::read_dir(root.join("projects"))
+        .ok()?
+        .flatten()
+        .map(|entry| transcript(entry.path()))
+        .find(|path| path.is_file())
+}
+
 fn cursor_ms(v: &Value, key: &str) -> Option<DateTime<Utc>> {
     let millis = v.get(key)?.as_i64()?;
     (millis >= 0)
@@ -1151,6 +1226,71 @@ fn clean_title(raw: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Build a cursor chat and its transcript, and return the `meta.json` path
+    /// discovery would have found. Messages are sized so the serialized
+    /// `message` object is exactly 112 characters — 28 tokens at four
+    /// characters each — which keeps the arithmetic below hand-checkable.
+    fn cursor_chat(dir: &Path, id: &str, roles: &[&str]) -> PathBuf {
+        let meta = dir
+            .join("chats")
+            .join("workspace-a")
+            .join(id)
+            .join("meta.json");
+        std::fs::create_dir_all(meta.parent().unwrap()).unwrap();
+        std::fs::write(&meta, r#"{"schemaVersion":1,"hasConversation":true}"#).unwrap();
+        let transcript = dir
+            .join("projects")
+            .join("Users-someone-work")
+            .join("agent-transcripts")
+            .join(id)
+            .join(format!("{id}.jsonl"));
+        std::fs::create_dir_all(transcript.parent().unwrap()).unwrap();
+        let body = "A".repeat(98);
+        let lines: Vec<String> = roles
+            .iter()
+            .map(|role| format!(r#"{{"role":"{role}","message":{{"content":"{body}"}}}}"#))
+            .collect();
+        std::fs::write(&transcript, lines.join("\n")).unwrap();
+        meta
+    }
+
+    /// Cursor records no usage of its own, so the row had nothing to show. The
+    /// transcript is the only account of what was sent, and each turn resends
+    /// the conversation ahead of it — the quantity codex and claude report per
+    /// request, and therefore the one this column already holds.
+    #[test]
+    fn a_cursor_session_estimates_its_tokens_from_the_transcript() {
+        let dir = tempfile::tempdir().unwrap();
+        let id = "e9301055-fe00-4c36-b718-1fdf3b083210";
+        let meta = cursor_chat(dir.path(), id, &["user", "assistant", "user", "assistant"]);
+
+        let got = cursor_token_estimate(&meta, id);
+
+        // 28 tokens a message. The first answer was asked with one message
+        // ahead of it (28), the second with three (84).
+        assert_eq!(got.input, 112, "prompt tokens across both turns: {got:?}");
+        assert_eq!(got.output, 56, "two answers: {got:?}");
+        assert_eq!(got.total, 168, "{got:?}");
+    }
+
+    /// No transcript, no estimate: the row says "—" rather than zero, which
+    /// would read as a session that spent nothing.
+    #[test]
+    fn a_cursor_session_with_no_transcript_estimates_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let id = "11111111-2222-7333-8444-555566667777";
+        let meta = dir
+            .path()
+            .join("chats")
+            .join("w")
+            .join(id)
+            .join("meta.json");
+        std::fs::create_dir_all(meta.parent().unwrap()).unwrap();
+        std::fs::write(&meta, "{}").unwrap();
+
+        assert_eq!(cursor_token_estimate(&meta, id), TokenUsage::default());
+    }
 
     #[test]
     fn codex_usage_reads_all_fields() {

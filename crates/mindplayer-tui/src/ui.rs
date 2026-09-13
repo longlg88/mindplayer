@@ -8,7 +8,7 @@ use crate::text_input;
 use crate::walker;
 use chrono::{DateTime, Utc};
 use mindplayer_core::tokens::human_tokens;
-use mindplayer_core::Agent;
+use mindplayer_core::{Agent, Session};
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -1455,18 +1455,7 @@ fn session_list(f: &mut Frame, app: &mut App, area: Rect, now: DateTime<Utc>) {
                 ));
             }
             spans.push(Span::styled(
-                // Kiro records no token totals; show its context-window
-                // occupancy (e.g. "15%") instead, or "—" if unknown.
-                match s.agent {
-                    Agent::Kiro => match s.context_pct {
-                        Some(p) => format!("  {p:.0}%"),
-                        None => "  —".to_string(),
-                    },
-                    Agent::Cursor => "  —".to_string(),
-                    Agent::Codex | Agent::Claude => {
-                        format!("  {}", human_tokens(s.tokens.total))
-                    }
-                },
+                format!("  {}", usage_cell(s)),
                 Style::default().fg(DIM),
             ));
             items.push(ListItem::new(Line::from(spans)));
@@ -2385,6 +2374,26 @@ fn short(id: &str) -> String {
     id.chars().take(8).collect()
 }
 
+/// The usage column for one session row.
+///
+/// Each agent records something different and the column shows what it has:
+/// codex and claude count tokens per request, kiro reports only how full its
+/// context window is, and cursor records nothing at all — its figure is
+/// estimated from the transcript, so it carries a `~` to keep it from reading
+/// as a count. Nothing to show reads "—", never `0`, which would claim the
+/// session spent nothing.
+fn usage_cell(s: &Session) -> String {
+    match s.agent {
+        Agent::Kiro => match s.context_pct {
+            Some(p) => format!("{p:.0}%"),
+            None => "—".to_string(),
+        },
+        Agent::Cursor if s.tokens.total == 0 => "—".to_string(),
+        Agent::Cursor => format!("~{}", human_tokens(s.tokens.total)),
+        Agent::Codex | Agent::Claude => human_tokens(s.tokens.total),
+    }
+}
+
 fn cwd_leaf(cwd: &Path) -> String {
     cwd.file_name()
         .and_then(|name| name.to_str())
@@ -2413,6 +2422,43 @@ fn relative_time(t: Option<DateTime<Utc>>, now: DateTime<Utc>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn session(agent: Agent, total: u64) -> Session {
+        Session {
+            id: "id".into(),
+            agent,
+            cwd: PathBuf::from("/work"),
+            file: PathBuf::from("/work/session"),
+            started_at: None,
+            last_active: None,
+            last_prompt_at: None,
+            tokens: mindplayer_core::TokenUsage {
+                total,
+                ..Default::default()
+            },
+            title: "t".into(),
+            archived: false,
+            is_subagent: false,
+            context_pct: None,
+        }
+    }
+
+    /// A measured count and an estimate share one column, so the estimate is
+    /// marked: cursor keeps no usage of its own and its figure is inferred from
+    /// the transcript, which must not read as the number the other agents
+    /// actually reported.
+    #[test]
+    fn an_estimated_total_is_marked_and_a_measured_one_is_not() {
+        assert_eq!(usage_cell(&session(Agent::Cursor, 6_200_000)), "~6.2M");
+        assert_eq!(usage_cell(&session(Agent::Claude, 6_200_000)), "6.2M");
+    }
+
+    /// Zero here means "nothing on disk to estimate from", and a session that
+    /// spent nothing is a different claim than one we cannot read.
+    #[test]
+    fn a_cursor_session_with_nothing_to_estimate_shows_no_number() {
+        assert_eq!(usage_cell(&session(Agent::Cursor, 0)), "—");
+    }
 
     /// A line that fits costs one row; one that overflows costs as many as it
     /// wraps into. The old sizing counted entries, so long descriptions were

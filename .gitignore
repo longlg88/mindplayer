@@ -17,3 +17,9 @@ app/src-tauri/gen/
 # OMC / agent runtime state (never publish)
 .omc/
 **/.omc/
+
+# A Claude Code session's git worktree lives here: a second checkout of this
+# same repo, plus its own `target/`. Nested inside the main worktree it shows up
+# as one untracked directory, so a `git add .` would commit hundreds of
+# megabytes of a branch that is already in the history.
+.claude/worktrees/

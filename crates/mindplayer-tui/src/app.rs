@@ -694,7 +694,7 @@ impl App {
             prompts_dir: prompts_dir_for_app(),
             limits: None,
             limits_rx: None,
-            quota_cache: mindplayer_core::limits::load_quota_cache(),
+            quota_cache: mindplayer_core::limits::load_quota_cache(&limits_home_for_app()),
             limits_started: None,
             help_visible: false,
             search_query: None,

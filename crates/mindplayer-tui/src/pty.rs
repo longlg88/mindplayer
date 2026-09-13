@@ -754,7 +754,12 @@ const BLOCKED_STRUCTURAL: &[&str] = &[
 const BLOCKED_ASKS: &[&str] = &[
     "do you want",
     "do you wish",
-    "would you like",
+    // Narrowed from a bare "would you like": Cursor Agent greets an idle
+    // session with "What would you like to work on?", which is an invitation
+    // to start, not a request to approve something. The approval form names
+    // the agent doing it, and "would you like to proceed/continue?" is still
+    // caught by those entries.
+    "would you like me to",
     "proceed",
     "continue",
     "confirm",
@@ -1098,6 +1103,39 @@ mod tests {
     /// A child asks the terminal several questions when it starts, and every
     /// answer comes back on the same path as keystrokes. Recognizing only the
     /// cursor report left the other four to be typed into the prompt.
+    /// Cursor Agent greets an idle session with "What would you like to work
+    /// on?". That is an invitation to start, not a request to approve
+    /// something, and reading it as an approval prompt parked a finished
+    /// session on Blocked — which also bubbles it to the front of the grid.
+    #[test]
+    fn an_invitation_to_start_is_not_an_approval_prompt() {
+        for ready in [
+            "Hi. What would you like to work on?",
+            "What would you like me to look at next? (nothing pending)",
+        ] {
+            assert!(
+                !text_looks_blocked(&format!("{ready}\n")),
+                "{ready:?} read as blocked"
+            );
+        }
+    }
+
+    /// The other half: an agent asking to do a specific thing still blocks.
+    #[test]
+    fn an_agent_asking_to_act_still_blocks() {
+        for ask in [
+            "Would you like me to apply this patch?",
+            "Do you want to proceed?",
+            "Continue?",
+            "Shall I overwrite the file?",
+        ] {
+            assert!(
+                text_looks_blocked(&format!("{ask}\n")),
+                "{ask:?} was not read as blocked"
+            );
+        }
+    }
+
     #[test]
     fn no_terminal_answer_reaches_the_child() {
         for reply in [

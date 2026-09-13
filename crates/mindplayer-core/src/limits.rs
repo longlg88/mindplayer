@@ -386,18 +386,19 @@ impl Limits {
         match &self.codex {
             Ok(c) if c.has_any() => {
                 let windowed = [
-                    (c.primary, c.primary_window_minutes),
-                    (c.secondary, c.secondary_window_minutes),
+                    (c.primary, c.primary_window_minutes, c.primary_reset),
+                    (c.secondary, c.secondary_window_minutes, c.secondary_reset),
                 ];
                 let mut any_window = false;
-                for (used, window) in windowed {
+                for (used, window, reset) in windowed {
                     if let Some(p) = used {
                         any_window = true;
+                        let clock = !window.is_some_and(|m| m >= CODEX_DAY_MINUTES);
                         out.push(QuotaRow {
                             label: format!("codex {}", window_label(window)),
                             used_percent: Some(p),
                             detail: String::new(),
-                            resets: None,
+                            resets: reset.and_then(|e| epoch_label(e, clock)),
                         });
                     }
                 }
@@ -627,13 +628,16 @@ fn compact_decimal(value: f64) -> String {
     text
 }
 
+/// One day of window length, in minutes. Codex labels anything this long or
+/// longer as weekly, and those resets are shown as a date rather than a clock.
+const CODEX_DAY_MINUTES: f64 = 1440.0;
+
 /// Name a codex window by its length rather than by which slot it arrived in.
 /// A day or longer reads as weekly; shorter windows are shown in hours.
 fn window_label(window_minutes: Option<f64>) -> String {
-    const DAY: f64 = 1440.0;
     const HOUR: f64 = 60.0;
     match window_minutes {
-        Some(m) if m >= DAY => "weekly".to_string(),
+        Some(m) if m >= CODEX_DAY_MINUTES => "weekly".to_string(),
         Some(m) if m >= HOUR => format!("{:.0}h", m / HOUR),
         // Sub-hour windows stay in minutes; dividing them by 60 and rounding
         // rendered everything under 45 minutes as a meaningless "0h".
@@ -2057,6 +2061,40 @@ Since your account is through your organization, contact your administrator.
         assert_eq!(got.secondary_reset, None);
         assert_eq!(got.primary_window_minutes, Some(300.0));
         assert_eq!(got.secondary_window_minutes, Some(10080.0));
+    }
+
+    /// Claude's rows already carry the reset; Codex parsed the same epoch and
+    /// then dropped it, so the weekly gauge had no date next to it.
+    #[test]
+    fn a_codex_window_keeps_the_reset_it_reported() {
+        let rl = json!({
+            "primary": { "used_percent": 10.0, "window_minutes": 300, "resets_at": 1785800000 },
+            "secondary": { "used_percent": 93.0, "window_minutes": 10080, "resets_at": 1786406400 },
+            "plan_type": "plus"
+        });
+        let rows = Limits {
+            claude: Err("not under test".into()),
+            codex: Ok(parse_codex_rate_limits(&rl)),
+            cursor: Err("not under test".into()),
+            kiro: Err("not under test".into()),
+        }
+        .quota_rows();
+        let weekly = rows
+            .iter()
+            .find(|r| r.label == "codex weekly")
+            .expect("weekly row");
+        assert_eq!(weekly.used_percent, Some(93.0));
+        assert_eq!(
+            weekly.resets.as_deref(),
+            epoch_label(1786406400, false).as_deref(),
+            "{weekly:?}"
+        );
+        let five_h = rows.iter().find(|r| r.label == "codex 5h").expect("5h row");
+        assert_eq!(
+            five_h.resets.as_deref(),
+            epoch_label(1785800000, true).as_deref(),
+            "{five_h:?}"
+        );
     }
 
     /// The label used to be hard-coded to slot order ("secondary" = weekly).

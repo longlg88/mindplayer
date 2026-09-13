@@ -195,6 +195,31 @@ impl QuotaRow {
     }
 }
 
+/// Replace each failed provider row with every last-good window for that provider.
+pub fn merge_with_last_good(fresh: &[QuotaRow], stored: &[QuotaRow]) -> (Vec<QuotaRow>, bool) {
+    let mut used_cache = false;
+    let mut rows = Vec::new();
+    for row in fresh {
+        if row.has_gauge() {
+            rows.push(row.clone());
+            continue;
+        }
+        let provider = row.label.split_whitespace().next();
+        let fallback: Vec<_> = stored
+            .iter()
+            .filter(|old| old.has_gauge() && old.label.split_whitespace().next() == provider)
+            .cloned()
+            .collect();
+        if fallback.is_empty() {
+            rows.push(row.clone());
+        } else {
+            used_cache = true;
+            rows.extend(fallback);
+        }
+    }
+    (rows, used_cache)
+}
+
 /// The last reading, kept on disk so a fresh start has something to show.
 ///
 /// Reading the accounts takes seconds — Kiro alone runs its whole CLI — and a
@@ -218,12 +243,23 @@ pub fn save_quota_cache(home: &Path, rows: &[QuotaRow]) {
     // An empty reading is not a reading. Writing it would replace the last
     // good one with nothing, so the next start would be blank — exactly what
     // the cache exists to prevent.
-    if rows.is_empty() {
+    if rows.is_empty() || !rows.iter().any(QuotaRow::has_gauge) {
         return;
     }
+    let stored = load_quota_cache(home);
+    let (stored_rows, stored_at) = stored
+        .as_ref()
+        .map(|(rows, at)| (rows.as_slice(), Some(*at)))
+        .unwrap_or((&[], None));
+    let (rows, used_cache) = merge_with_last_good(rows, stored_rows);
+    let now = chrono::Utc::now().timestamp();
     let cache = QuotaCache {
-        written_at: chrono::Utc::now().timestamp(),
-        rows: rows.to_vec(),
+        written_at: if used_cache {
+            stored_at.map_or(now, |at| at.timestamp())
+        } else {
+            now
+        },
+        rows,
     };
     let Ok(body) = serde_json::to_vec(&cache) else {
         return;
@@ -285,6 +321,17 @@ impl Limits {
             || self.codex.as_ref().is_ok_and(CodexLimits::has_any)
             || self.kiro.as_ref().is_ok_and(KiroLimits::has_any)
             || self.cursor.as_ref().is_ok_and(CursorLimits::has_any)
+    }
+
+    /// Whether either direct HTTP account probe was rate-limited.
+    pub fn network_rate_limited(&self) -> bool {
+        let is_429 = |error: &String| {
+            error
+                .split(|c: char| !c.is_ascii_digit())
+                .any(|part| part == "429")
+        };
+        self.claude.as_ref().err().is_some_and(is_429)
+            || self.cursor.as_ref().err().is_some_and(is_429)
     }
 
     /// One row per account window, as values rather than a formatted line, so
@@ -1045,9 +1092,21 @@ fn cursor_curl_json(cookie: &str) -> Result<String, String> {
     let _ = std::fs::remove_file(&path);
     let output = output.map_err(|e| format!("cannot run curl for Cursor usage: {e}"))?;
     if !output.status.success() {
-        return Err(format!("Cursor usage request failed ({})", output.status));
+        return Err(cursor_curl_failure(
+            &output.status.to_string(),
+            &output.stderr,
+        ));
     }
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+fn cursor_curl_failure(status: &str, stderr: &[u8]) -> String {
+    let detail = String::from_utf8_lossy(stderr);
+    let rate_limited = detail
+        .split(|c: char| !c.is_ascii_digit())
+        .any(|part| part == "429");
+    let suffix = if rate_limited { ": HTTP 429" } else { "" };
+    format!("Cursor usage request failed ({status}){suffix}")
 }
 
 fn cursor_curl_config(cookie: &str) -> String {
@@ -1622,6 +1681,22 @@ mod tests {
     }
 
     #[test]
+    fn cursor_429_survives_curl_failure_formatting_and_triggers_backoff() {
+        let error = cursor_curl_failure(
+            "exit status: 22",
+            b"curl: (22) The requested URL returned error: 429",
+        );
+        assert!(error.contains("429"), "{error}");
+        let limits = Limits {
+            claude: Ok(Default::default()),
+            codex: Ok(Default::default()),
+            kiro: Ok(Default::default()),
+            cursor: Err(error),
+        };
+        assert!(limits.network_rate_limited());
+    }
+
+    #[test]
     fn cursor_cookie_is_derived_from_a_live_jwt_without_reaching_argv() {
         let payload = base64url_encode_for_test(br#"{"sub":"auth0|user-123","exp":4102444800}"#);
         let token = format!("header.{payload}.signature");
@@ -2083,8 +2158,14 @@ Since your account is through your organization, contact your administrator.
         save_quota_cache(home, &[]);
         assert_eq!(
             load_quota_cache(home).map(|(rows, _)| rows),
-            Some(rows),
+            Some(rows.clone()),
             "an empty save must not erase the last real reading"
+        );
+        save_quota_cache(home, &[QuotaRow::reason("cursor", "HTTP 429")]);
+        assert_eq!(
+            load_quota_cache(home).map(|(rows, _)| rows),
+            Some(rows),
+            "an all-failure save must not refresh or erase the last real reading"
         );
 
         std::fs::write(quota_cache_path(home), b"{ not json").unwrap();

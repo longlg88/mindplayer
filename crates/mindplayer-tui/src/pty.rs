@@ -47,29 +47,37 @@ impl TerminalReplyGuard {
             }
         }
 
-        if self.pending.is_empty() {
-            if bytes == b"\x1b" || bytes == b"[" || bytes == b";" {
-                self.pending.extend_from_slice(bytes);
-                self.since = Some(now);
-            } else {
-                out.push(bytes.to_vec());
+        for &byte in bytes {
+            if self.pending.is_empty() {
+                if matches!(byte, 0x1b | b'[' | b';') {
+                    self.pending.push(byte);
+                    self.since = Some(now);
+                } else if let Some(chunk) = out.last_mut() {
+                    chunk.push(byte);
+                } else {
+                    out.push(vec![byte]);
+                }
+                continue;
             }
-            return out;
-        }
 
-        self.pending.extend_from_slice(bytes);
-        match terminal_reply_prefix(&self.pending) {
-            // The grace is a gap between bytes, not a budget for the whole
-            // reply: measured from the first byte, a CPR that merely arrives
-            // slowly outlives it and is dumped into the child's prompt.
-            TerminalReplyPrefix::Prefix => self.since = Some(now),
-            TerminalReplyPrefix::Complete => {
-                self.pending.clear();
-                self.since = None;
-            }
-            TerminalReplyPrefix::Invalid => {
-                if let Some(pending) = self.take_pending() {
-                    out.push(pending);
+            self.pending.push(byte);
+            match terminal_reply_prefix(&self.pending) {
+                // The grace is a gap between bytes, not a budget for the whole
+                // reply: measured from the first byte, a CPR that merely arrives
+                // slowly outlives it and is dumped into the child's prompt.
+                TerminalReplyPrefix::Prefix => self.since = Some(now),
+                TerminalReplyPrefix::Complete => {
+                    self.pending.clear();
+                    self.since = None;
+                }
+                TerminalReplyPrefix::Invalid => {
+                    if let Some(pending) = self.take_pending() {
+                        if let Some(chunk) = out.last_mut() {
+                            chunk.extend_from_slice(&pending);
+                        } else {
+                            out.push(pending);
+                        }
+                    }
                 }
             }
         }
@@ -1152,6 +1160,32 @@ mod tests {
                 "{:?} leaked {:?}",
                 String::from_utf8_lossy(reply),
                 String::from_utf8_lossy(&leaked)
+            );
+        }
+    }
+
+    #[test]
+    fn terminal_answers_are_consumed_regardless_of_event_chunking() {
+        let cases: &[&[&[u8]]] = &[
+            &[b"\x1b[", b"66", b";1R"],
+            &[b"\x1b[66;1R"],
+            &[b"\x1b]", b"11;rgb:1e1e/1e1e/2e2e\x1b\\"],
+            &[b"\x1b]11;rgb:1e1e/1e1e/2e2e\x1b\\"],
+        ];
+        for chunks in cases {
+            let start = Instant::now();
+            let mut guard = TerminalReplyGuard::default();
+            let mut leaked = Vec::new();
+            for (i, chunk) in chunks.iter().enumerate() {
+                leaked.extend(guard.push(chunk, start + Duration::from_millis(i as u64)));
+            }
+            if let Some(rest) = guard.flush_due(start + TERMINAL_REPLY_GRACE * 3) {
+                leaked.push(rest);
+            }
+            assert!(
+                leaked.is_empty(),
+                "terminal reply leaked under chunking {chunks:?}: {:?}",
+                String::from_utf8_lossy(&leaked.concat())
             );
         }
     }

@@ -235,6 +235,8 @@ const WORKING_HOLD: Duration = Duration::from_secs(6);
 const BUSY_TRUST: Duration = Duration::from_secs(20);
 const INITIAL_INPUT_OUTPUT_TIMEOUT: Duration = Duration::from_secs(3);
 const INITIAL_INPUT_ABSOLUTE_TIMEOUT: Duration = Duration::from_secs(10);
+const LIMITS_REFRESH_INTERVAL: Duration = Duration::from_secs(5 * 60);
+const LIMITS_MAX_BACKOFF: Duration = Duration::from_secs(60 * 60);
 /// Whether a session counts as working, given when it last produced output.
 /// Demotion is delayed by `hold` (see [`WORKING_HOLD`]); promotion is instant
 /// because `last_output` is stamped to "now" the moment any output arrives.
@@ -522,6 +524,10 @@ pub struct App {
     pub(crate) quota_cache: Option<(Vec<mindplayer_core::limits::QuotaRow>, DateTime<Utc>)>,
     /// When the in-flight fetch started, so a wedged one can be abandoned.
     pub(crate) limits_started: Option<Instant>,
+    /// Earliest time another account fetch may start.
+    pub(crate) limits_retry_at: Option<Instant>,
+    /// Current delay after a rate-limited response.
+    pub(crate) limits_backoff: Duration,
     /// Keyboard shortcut help overlay opened by `?`.
     pub help_visible: bool,
     /// When `Some`, the session list is filtered as the user types after `/`.
@@ -696,6 +702,8 @@ impl App {
             limits_rx: None,
             quota_cache: mindplayer_core::limits::load_quota_cache(&limits_home_for_app()),
             limits_started: None,
+            limits_retry_at: None,
+            limits_backoff: LIMITS_REFRESH_INTERVAL,
             help_visible: false,
             search_query: None,
             new_counter: 0,
@@ -863,23 +871,34 @@ impl App {
     /// of nothing — see [`Self::quota_cached_at`], which the footer uses to say
     /// so rather than let a stale number pass for current.
     pub fn quota_rows(&self) -> Vec<mindplayer_core::limits::QuotaRow> {
-        match self.limits.as_ref() {
-            Some(limits) => limits.quota_rows(),
-            None => self
-                .quota_cache
-                .as_ref()
-                .map(|(rows, _)| rows.clone())
-                .unwrap_or_default(),
-        }
+        self.quota_view().0
     }
 
-    /// When the rows on screen were read, but only while they came from the
-    /// cache. `None` once this run has its own reading.
+    /// When the rows on screen were read, for as long as any of them is the
+    /// stored reading rather than this run's own. `None` once every row on
+    /// screen is current.
     pub fn quota_cached_at(&self) -> Option<DateTime<Utc>> {
-        if self.limits.is_some() {
-            return None;
-        }
-        self.quota_cache.as_ref().map(|(_, at)| *at)
+        let (_, from_cache) = self.quota_view();
+        from_cache.then(|| self.quota_cache.as_ref().map(|(_, at)| *at))?
+    }
+
+    /// The rows to draw, and whether any of them came from the cache.
+    ///
+    /// A provider that fails — rate-limited, offline, a token that expired —
+    /// produces a row with no gauge. Showing that in place of a number that was
+    /// true minutes ago loses information for nothing, so a failed row yields
+    /// to the last good reading for the same account and the footer says how
+    /// old it is.
+    fn quota_view(&self) -> (Vec<mindplayer_core::limits::QuotaRow>, bool) {
+        let cached = self.quota_cache.as_ref().map(|(rows, _)| rows);
+        let Some(limits) = self.limits.as_ref() else {
+            return (cached.cloned().unwrap_or_default(), cached.is_some());
+        };
+        let live = limits.quota_rows();
+        let Some(cached) = cached else {
+            return (live, false);
+        };
+        mindplayer_core::limits::merge_with_last_good(&live, cached)
     }
 }
 

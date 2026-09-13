@@ -812,12 +812,24 @@ fn strip_ansi(input: &str) -> String {
     out
 }
 
+/// Run a probe to completion with nothing of the user's terminal on its stdio.
+///
+/// A command handed the parent's tty on fd 0 can write to it — `kiro-cli` sends
+/// a cursor position query there — and the terminal's answer arrives in the
+/// parent's own input, where it reads as typed keys.
+fn probe_output(command: &mut Command) -> std::io::Result<std::process::Output> {
+    command.stdin(Stdio::null()).output()
+}
+
 fn run_bounded(
     mut command: Command,
     timeout: Duration,
     label: &str,
 ) -> Result<(std::process::ExitStatus, String, String), String> {
-    command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
     let mut child = command
         .spawn()
         .map_err(|e| format!("cannot start {label}: {e}"))?;
@@ -1114,7 +1126,7 @@ fn cursor_curl_json(cookie: &str) -> Result<String, String> {
     ));
     write_private(&path, &cursor_curl_config(cookie))
         .map_err(|e| format!("cannot stage Cursor curl config: {e}"))?;
-    let output = Command::new("curl").args(curl_args()).arg(&path).output();
+    let output = probe_output(Command::new("curl").args(curl_args()).arg(&path));
     let _ = std::fs::remove_file(&path);
     let output = output.map_err(|e| format!("cannot run curl for Cursor usage: {e}"))?;
     if !output.status.success() {
@@ -1340,9 +1352,7 @@ fn claude_token(home: &Path) -> Result<String, String> {
         let user = std::env::var("USER").ok();
         let mut blobs = Vec::new();
         for args in keychain_lookups(user.as_deref()) {
-            let out = std::process::Command::new("security")
-                .args(&args)
-                .output()
+            let out = probe_output(std::process::Command::new("security").args(&args))
                 .map_err(|e| format!("cannot run security(1): {e}"))?;
             if out.status.success() {
                 blobs.push(String::from_utf8_lossy(&out.stdout).into_owned());
@@ -1456,10 +1466,11 @@ fn curl_json(url: &str, token: &str) -> Result<String, String> {
     ));
     write_private(&path, &curl_config(url, token))
         .map_err(|e| format!("cannot stage curl config: {e}"))?;
-    let out = std::process::Command::new("curl")
-        .args(curl_args())
-        .arg(&path)
-        .output();
+    let out = probe_output(
+        std::process::Command::new("curl")
+            .args(curl_args())
+            .arg(&path),
+    );
     let _ = std::fs::remove_file(&path);
     let out = out.map_err(|e| format!("cannot run curl: {e}"))?;
     if !out.status.success() {
@@ -1893,6 +1904,35 @@ Since your account is through your organization, contact your administrator.
         let got = parse_claude_usage(&body);
         assert_eq!(got.five_hour, Some(5.0));
         assert_eq!(got.five_hour_reset, None);
+    }
+
+    /// A probe must not be handed the user's terminal on stdin.
+    ///
+    /// `kiro-cli chat --no-interactive /usage` writes `\r\x1b[6n` — a cursor
+    /// position query — to fd 0, because a tty is readable and writable. With
+    /// the parent's terminal inherited there, the terminal answers
+    /// `CSI <row>;<col> R` into the *parent's* input, where it is delivered as
+    /// keystrokes: that is how `66;1R` fragments were typed into a live pane.
+    /// Measured with a pty: inherited, the query reaches the terminal; with
+    /// `/dev/null` on stdin, nothing is written to it at all.
+    #[test]
+    fn a_probe_is_spawned_with_no_terminal_on_stdin() {
+        let mut command = Command::new("sh");
+        command.args(["-c", "test -t 0 && echo tty; wc -c"]);
+
+        let (status, stdout, stderr) = run_bounded(command, Duration::from_secs(5), "sh")
+            .expect("a probe reading stdin must not block on a terminal");
+
+        assert!(status.success(), "{stdout:?} {stderr:?}");
+        assert!(
+            !stdout.contains("tty"),
+            "a probe that can see a terminal can query it: {stdout:?}"
+        );
+        assert_eq!(
+            stdout.split_whitespace().last(),
+            Some("0"),
+            "stdin is at end of file, not a stream to read: {stdout:?}"
+        );
     }
 
     /// Only claude failed, so the other three say so rather than being absent.

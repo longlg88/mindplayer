@@ -1273,7 +1273,11 @@ fn claude_token(home: &Path) -> Result<String, String> {
     Err("no subscription OAuth token found".into())
 }
 
-/// The keychain service Claude Code stores its credential JSON under.
+/// The keychain service name Claude Code files its login JSON under.
+///
+/// Gated like its only reader: on a build without the macOS lookup this is
+/// dead code, and `clippy -D warnings` refuses that.
+#[cfg(any(target_os = "macos", test))]
 const KEYCHAIN_SERVICE: &str = "Claude Code-credentials";
 
 /// How to ask `security(1)` for the credential, most specific first.

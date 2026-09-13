@@ -1102,7 +1102,22 @@ impl App {
         if self.limits_rx.is_some() {
             return;
         }
-        self.limits_started = Some(Instant::now());
+        let now = Instant::now();
+        if self.limits_retry_at.is_some_and(|at| now < at) {
+            return;
+        }
+        if self.limits.is_none()
+            && self.quota_cache.as_ref().is_some_and(|(_, written_at)| {
+                Utc::now()
+                    .signed_duration_since(*written_at)
+                    .to_std()
+                    .unwrap_or(Duration::ZERO)
+                    < LIMITS_REFRESH_INTERVAL
+            })
+        {
+            return;
+        }
+        self.limits_started = Some(now);
         let home = super::limits_home_for_app();
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
@@ -1121,12 +1136,23 @@ impl App {
         };
         self.limits_rx = None;
         self.limits_started = None;
+        if limits.network_rate_limited() {
+            self.limits_backoff = self
+                .limits_backoff
+                .saturating_mul(2)
+                .min(LIMITS_MAX_BACKOFF);
+        } else {
+            self.limits_backoff = LIMITS_REFRESH_INTERVAL;
+        }
+        self.limits_retry_at = Some(Instant::now() + self.limits_backoff);
         // Written before the reading is stored so the next start shows this one
         // rather than waiting seconds for its own.
         mindplayer_core::limits::save_quota_cache(
             &crate::app::limits_home_for_app(),
             &limits.quota_rows(),
         );
+        self.quota_cache =
+            mindplayer_core::limits::load_quota_cache(&crate::app::limits_home_for_app());
         self.limits = Some(limits);
         true
     }

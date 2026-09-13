@@ -3820,6 +3820,160 @@ fn each_account_gets_a_row_and_only_real_readings_get_a_gauge() {
     assert_eq!(cursor.detail, "$15.00/$50");
 }
 
+/// A reading that fails must not wipe a number that was true minutes ago.
+///
+/// The account APIs rate-limit — cursor answers 429 under the refresh cadence —
+/// and replacing a good figure with "request failed" loses information for
+/// nothing. The failed row yields to the stored one and the footer says how old
+/// it is.
+#[test]
+fn a_failed_reading_falls_back_to_the_last_good_one() {
+    let mut app = App::new();
+    let taken = Utc::now() - chrono::Duration::minutes(7);
+    app.quota_cache = Some((
+        vec![
+            mindplayer_core::limits::QuotaRow {
+                label: "cursor".into(),
+                used_percent: Some(12.5),
+                detail: "$2.50/$20".into(),
+                resets: Some("2026-10-04".into()),
+            },
+            mindplayer_core::limits::QuotaRow {
+                label: "kiro".into(),
+                used_percent: Some(6.4),
+                detail: "639.7/10000 cr".into(),
+                resets: None,
+            },
+        ],
+        taken,
+    ));
+    // This run: cursor is rate-limited, kiro answered.
+    app.limits = Some(mindplayer_core::limits::Limits {
+        claude: Err("not under test".into()),
+        codex: Err("not under test".into()),
+        kiro: Ok(mindplayer_core::limits::KiroLimits {
+            used_percent: Some(9.9),
+            credits_used: Some(990.0),
+            credits_total: Some(10_000.0),
+            ..Default::default()
+        }),
+        cursor: Err("curl: (56) The requested URL returned error: 429".into()),
+    });
+
+    let rows = app.quota_rows();
+    let cursor = rows.iter().find(|r| r.label == "cursor").unwrap();
+    assert_eq!(
+        cursor.used_percent,
+        Some(12.5),
+        "the rate-limited row keeps the last good reading: {cursor:?}"
+    );
+    let kiro = rows.iter().find(|r| r.label == "kiro").unwrap();
+    assert_eq!(
+        kiro.used_percent,
+        Some(9.9),
+        "a provider that answered is current, not cached: {kiro:?}"
+    );
+    assert_eq!(
+        app.quota_cached_at(),
+        Some(taken),
+        "the footer says how old the stale half is"
+    );
+}
+
+#[test]
+fn a_failed_claude_probe_restores_both_cached_windows() {
+    let mut app = isolated_app();
+    app.quota_cache = Some((
+        vec![
+            mindplayer_core::limits::QuotaRow {
+                label: "claude 5h".into(),
+                used_percent: Some(42.0),
+                detail: String::new(),
+                resets: Some("14:30".into()),
+            },
+            mindplayer_core::limits::QuotaRow {
+                label: "claude wk".into(),
+                used_percent: Some(7.0),
+                detail: String::new(),
+                resets: Some("09-20".into()),
+            },
+        ],
+        Utc::now() - chrono::Duration::minutes(7),
+    ));
+    app.limits = Some(mindplayer_core::limits::Limits {
+        claude: Err("curl failed: HTTP 429".into()),
+        codex: Err("not under test".into()),
+        kiro: Err("not under test".into()),
+        cursor: Err("not under test".into()),
+    });
+
+    let rows = app.quota_rows();
+
+    assert!(
+        rows.iter()
+            .any(|row| row.label == "claude 5h" && row.used_percent == Some(42.0)),
+        "{rows:?}"
+    );
+    assert!(
+        rows.iter()
+            .any(|row| row.label == "claude wk" && row.used_percent == Some(7.0)),
+        "{rows:?}"
+    );
+    assert!(
+        rows.iter().all(|row| row.label != "claude"),
+        "the failure placeholder must yield to both stored windows: {rows:?}"
+    );
+}
+
+#[test]
+fn a_recent_account_cache_prevents_an_immediate_duplicate_fetch() {
+    let mut app = isolated_app();
+    app.quota_cache = Some((
+        vec![mindplayer_core::limits::QuotaRow {
+            label: "cursor".into(),
+            used_percent: Some(12.5),
+            detail: "$2.50/$20".into(),
+            resets: None,
+        }],
+        Utc::now(),
+    ));
+
+    app.spawn_limits_fetch();
+
+    assert!(
+        app.limits_rx.is_none(),
+        "a second process starting against a fresh shared cache must not hit the account APIs again"
+    );
+}
+
+#[test]
+fn a_429_account_response_defers_the_next_fetch() {
+    let mut app = isolated_app();
+    let (tx, rx) = mpsc::channel();
+    tx.send(mindplayer_core::limits::Limits {
+        claude: Ok(Default::default()),
+        codex: Ok(Default::default()),
+        kiro: Ok(Default::default()),
+        cursor: Err("curl failed: response status 429".into()),
+    })
+    .unwrap();
+    app.limits_rx = Some(rx);
+    app.limits_started = Some(Instant::now());
+    assert!(app.poll_limits(), "the completed response is adopted");
+    assert_eq!(
+        app.limits_backoff,
+        LIMITS_REFRESH_INTERVAL * 2,
+        "the first 429 doubles the ordinary account refresh delay"
+    );
+
+    app.spawn_limits_fetch();
+
+    assert!(
+        app.limits_rx.is_none(),
+        "a rate-limited response must back off instead of retrying on the next three-second tick"
+    );
+}
+
 /// A provider that failed still gets a row saying why, so an agent never
 /// silently disappears from the footer.
 #[test]

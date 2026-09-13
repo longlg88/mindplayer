@@ -346,9 +346,7 @@ fn run(terminal: &mut Terminal<CrosstermBackend<FrameSink>>, app: &mut App) -> R
             }
             if last_refresh.elapsed() >= Duration::from_secs(3) {
                 app.start_refresh();
-                // The subscription readout lives in the status line now, so it
-                // has to be fetched on the same tick rather than when a popup
-                // opened.
+                // Account fetches enforce their own slower cadence and 429 backoff.
                 app.spawn_limits_fetch();
                 last_refresh = Instant::now();
             }

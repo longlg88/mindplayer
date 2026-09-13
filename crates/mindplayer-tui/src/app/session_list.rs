@@ -1106,15 +1106,14 @@ impl App {
         if self.limits_retry_at.is_some_and(|at| now < at) {
             return;
         }
-        if self.limits.is_none()
-            && self.quota_cache.as_ref().is_some_and(|(_, written_at)| {
-                Utc::now()
-                    .signed_duration_since(*written_at)
-                    .to_std()
-                    .unwrap_or(Duration::ZERO)
-                    < LIMITS_REFRESH_INTERVAL
-            })
-        {
+        // The limit is per account, not per process, so every pane's own timer adds to the same budget.
+        if self.quota_cache.as_ref().is_some_and(|(_, written_at)| {
+            Utc::now()
+                .signed_duration_since(*written_at)
+                .to_std()
+                .unwrap_or(Duration::ZERO)
+                < LIMITS_REFRESH_INTERVAL
+        }) {
             return;
         }
         self.limits_started = Some(now);

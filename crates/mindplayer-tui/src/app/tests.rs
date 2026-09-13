@@ -3946,6 +3946,38 @@ fn a_recent_account_cache_prevents_an_immediate_duplicate_fetch() {
     );
 }
 
+/// Every pane runs its own `App`, and the account limit is per account, not per
+/// process: two instances on independent five-minute timers ask twice as often
+/// as one, which is how claude ends up answering 429 while cursor and kiro are
+/// fine. The cache on disk is the only record that a sibling just asked, so a
+/// reading already in hand does not license a fetch of its own.
+#[test]
+fn a_sibling_refresh_holds_back_an_instance_that_already_has_a_reading() {
+    let mut app = isolated_app();
+    app.limits = Some(mindplayer_core::limits::Limits {
+        claude: Err("curl failed: curl: (56) The requested URL returned error: 429".into()),
+        codex: Err("not under test".into()),
+        kiro: Err("not under test".into()),
+        cursor: Err("not under test".into()),
+    });
+    app.quota_cache = Some((
+        vec![mindplayer_core::limits::QuotaRow {
+            label: "claude wk".into(),
+            used_percent: Some(98.0),
+            detail: String::new(),
+            resets: Some("09-20".into()),
+        }],
+        Utc::now(),
+    ));
+
+    app.spawn_limits_fetch();
+
+    assert!(
+        app.limits_rx.is_none(),
+        "a sibling's fresh reading must satisfy this instance instead of doubling the request rate"
+    );
+}
+
 #[test]
 fn a_429_account_response_defers_the_next_fetch() {
     let mut app = isolated_app();

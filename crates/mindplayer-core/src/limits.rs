@@ -1437,12 +1437,26 @@ fn curl_json(url: &str, token: &str) -> Result<String, String> {
     let _ = std::fs::remove_file(&path);
     let out = out.map_err(|e| format!("cannot run curl: {e}"))?;
     if !out.status.success() {
-        return Err(format!(
-            "curl failed: {}",
-            String::from_utf8_lossy(&out.stderr).trim()
-        ));
+        return Err(curl_failure(&out.stderr));
     }
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+/// Why a probe failed, in the reader's terms.
+///
+/// A 429 is not a broken request — it is the account's own limit answering, and
+/// saying so keeps a reader from debugging curl. The number stays in the text
+/// because [`Limits::network_rate_limited`] reads it to set the backoff.
+fn curl_failure(stderr: &[u8]) -> String {
+    let detail = String::from_utf8_lossy(stderr);
+    let detail = detail.trim();
+    if detail
+        .split(|c: char| !c.is_ascii_digit())
+        .any(|part| part == "429")
+    {
+        return "rate limited by the account API (HTTP 429)".to_string();
+    }
+    format!("curl failed: {detail}")
 }
 
 /// A curl config.
@@ -1678,6 +1692,38 @@ mod tests {
             .collect();
         assert_eq!(cookie_lines.len(), 1, "{cfg}");
         assert!(cookie_lines[0].starts_with("header ="), "{cfg}");
+    }
+
+    /// "curl failed: curl: (56) The requested URL returned error: 429" tells a
+    /// reader to go looking for a broken request when nothing is broken: the
+    /// account simply asked too often. The row says that instead, and still
+    /// carries the number the backoff matches on.
+    #[test]
+    fn a_rate_limited_probe_reads_as_a_limit_rather_than_a_curl_error() {
+        let error = curl_failure(b"curl: (56) The requested URL returned error: 429\n");
+        assert!(
+            !error.contains("curl"),
+            "curl's own wording is not the reason a reader needs: {error}"
+        );
+        let limits = Limits {
+            claude: Err(error.clone()),
+            codex: Ok(Default::default()),
+            kiro: Ok(Default::default()),
+            cursor: Ok(Default::default()),
+        };
+        assert!(
+            limits.network_rate_limited(),
+            "the backoff still recognises it: {error}"
+        );
+    }
+
+    /// Anything that is not a rate limit keeps curl's detail, which is the only
+    /// clue for a DNS failure or a timeout.
+    #[test]
+    fn a_probe_that_failed_for_another_reason_keeps_the_curl_detail() {
+        let error = curl_failure(b"curl: (6) Could not resolve host: api.anthropic.com");
+        assert!(error.contains("Could not resolve host"), "{error}");
+        assert!(!error.contains("429"), "{error}");
     }
 
     #[test]

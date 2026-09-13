@@ -4006,6 +4006,37 @@ fn a_429_account_response_defers_the_next_fetch() {
     );
 }
 
+/// Doubling has to stop somewhere, and where it stops decides how long a row
+/// keeps saying "rate limited" after the account's budget has reopened. The
+/// endpoint's own answer carries `retry-after: 0`, so nothing tells us when to
+/// come back; the cap is the only promise that we will look again soon enough.
+#[test]
+fn a_run_of_429s_stops_growing_the_wait_at_a_cap_that_still_looks_again_within_the_hour() {
+    let mut app = isolated_app();
+    for _ in 0..8 {
+        let (tx, rx) = mpsc::channel();
+        tx.send(mindplayer_core::limits::Limits {
+            claude: Err("rate limited by the account API (HTTP 429)".into()),
+            codex: Ok(Default::default()),
+            kiro: Ok(Default::default()),
+            cursor: Ok(Default::default()),
+        })
+        .unwrap();
+        app.limits_rx = Some(rx);
+        app.limits_started = Some(Instant::now());
+        assert!(app.poll_limits());
+    }
+
+    assert_eq!(
+        app.limits_backoff, LIMITS_MAX_BACKOFF,
+        "the wait grows to the cap and no further"
+    );
+    assert!(
+        LIMITS_MAX_BACKOFF * 4 <= Duration::from_secs(60 * 60),
+        "a refused reading is still retried several times an hour: {LIMITS_MAX_BACKOFF:?}"
+    );
+}
+
 /// A provider that failed still gets a row saying why, so an agent never
 /// silently disappears from the footer.
 #[test]

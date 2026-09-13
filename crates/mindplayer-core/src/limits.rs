@@ -165,6 +165,18 @@ impl CursorLimits {
     }
 }
 
+/// Whether a window is one the account is actually running.
+///
+/// `/api/oauth/usage` answers for every window it knows, including ones this
+/// plan is not metered by: those come back `utilization: 0.0` with
+/// `resets_at: null`, which the same response's `limits[]` confirms by marking
+/// them `is_active: false`. Drawn anyway, such a window is a row that says "0%"
+/// forever next to the figure that is the real constraint. A reset time or any
+/// usage at all is what separates an untouched allowance from an absent one.
+fn window_is_open(used: Option<f64>, reset: Option<i64>) -> bool {
+    reset.is_some() || used.is_some_and(|p| p > 0.0)
+}
+
 /// One account window for the footer, as values rather than a rendered line.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct QuotaRow {
@@ -345,11 +357,12 @@ impl Limits {
         let mut out = Vec::new();
         match &self.claude {
             Ok(c) if c.has_any() => {
+                let before = out.len();
                 for (label, used, reset, clock) in [
                     ("claude 5h", c.five_hour, c.five_hour_reset, true),
                     ("claude wk", c.seven_day, c.seven_day_reset, false),
                 ] {
-                    if let Some(p) = used {
+                    if let Some(p) = used.filter(|_| window_is_open(used, reset)) {
                         out.push(QuotaRow {
                             label: label.into(),
                             used_percent: Some(p),
@@ -357,6 +370,9 @@ impl Limits {
                             resets: reset.and_then(|e| epoch_label(e, clock)),
                         });
                     }
+                }
+                if out.len() == before {
+                    out.push(QuotaRow::reason("claude", "no windows reported"));
                 }
             }
             Ok(_) => out.push(QuotaRow::reason("claude", "no windows reported")),
@@ -472,13 +488,23 @@ impl Limits {
         match &self.claude {
             Ok(c) if c.has_any() => {
                 let mut parts = Vec::new();
-                if let Some(p) = c.five_hour {
+                if let Some(p) = c
+                    .five_hour
+                    .filter(|_| window_is_open(c.five_hour, c.five_hour_reset))
+                {
                     parts.push(format!("5h {p:.0}%"));
                 }
-                if let Some(p) = c.seven_day {
+                if let Some(p) = c
+                    .seven_day
+                    .filter(|_| window_is_open(c.seven_day, c.seven_day_reset))
+                {
                     parts.push(format!("week {p:.0}%"));
                 }
-                out.push(format!("claude  {}", parts.join("  ")));
+                if parts.is_empty() {
+                    out.push("claude  no windows reported".into());
+                } else {
+                    out.push(format!("claude  {}", parts.join("  ")));
+                }
             }
             Ok(_) => out.push("claude  no windows reported".into()),
             Err(e) => out.push(format!("claude  — {e}")),
@@ -1867,6 +1893,87 @@ Since your account is through your organization, contact your administrator.
         let got = parse_claude_usage(&body);
         assert_eq!(got.five_hour, Some(5.0));
         assert_eq!(got.five_hour_reset, None);
+    }
+
+    /// Only claude failed, so the other three say so rather than being absent.
+    fn only_claude(claude: ClaudeLimits) -> Limits {
+        Limits {
+            claude: Ok(claude),
+            codex: Err("not under test".into()),
+            kiro: Err("not under test".into()),
+            cursor: Err("not under test".into()),
+        }
+    }
+
+    /// The shape observed on an account whose weekly allowance is spent: the
+    /// five-hour window comes back `0.0` with `resets_at: null`, and the same
+    /// response's `limits[]` marks its `session` entry `is_active: false`. A row
+    /// reading "5h 0%" forever is not a reading, it is furniture — and it sits
+    /// next to the weekly figure that is the real constraint.
+    #[test]
+    fn a_window_with_no_usage_and_no_reset_is_not_drawn() {
+        let body = json!({
+            "five_hour": { "utilization": 0.0, "resets_at": null },
+            "seven_day": { "utilization": 98.0, "resets_at": "2026-09-14T17:00:00.426423+00:00" }
+        });
+        let limits = only_claude(parse_claude_usage(&body));
+
+        let rows = limits.quota_rows();
+
+        assert!(
+            rows.iter().all(|row| row.label != "claude 5h"),
+            "a window the account is not running has no row: {rows:?}"
+        );
+        assert!(
+            rows.iter()
+                .any(|row| row.label == "claude wk" && row.used_percent == Some(98.0)),
+            "{rows:?}"
+        );
+        assert!(
+            !limits.summary_lines()[0].contains("5h"),
+            "{:?}",
+            limits.summary_lines()[0]
+        );
+    }
+
+    /// The window being open is what makes `0%` worth saying: it means the
+    /// allowance is untouched, not that nothing is being tracked.
+    #[test]
+    fn an_open_window_still_shows_zero() {
+        let body = json!({
+            "five_hour": { "utilization": 0.0, "resets_at": 1785766495 },
+            "seven_day": { "utilization": 98.0, "resets_at": 1785766495 }
+        });
+
+        let rows = only_claude(parse_claude_usage(&body)).quota_rows();
+
+        assert!(
+            rows.iter()
+                .any(|row| row.label == "claude 5h" && row.used_percent == Some(0.0)),
+            "{rows:?}"
+        );
+    }
+
+    /// Dropping every window must not drop the account: a provider that
+    /// disappears from the footer reads as "not configured".
+    #[test]
+    fn an_account_with_no_open_window_keeps_a_row_that_says_so() {
+        let body = json!({ "five_hour": { "utilization": 0.0, "resets_at": null } });
+
+        let rows = only_claude(parse_claude_usage(&body)).quota_rows();
+        let claude: Vec<_> = rows
+            .iter()
+            .filter(|r| r.label.starts_with("claude"))
+            .collect();
+
+        assert_eq!(claude.len(), 1, "{rows:?}");
+        assert_eq!(claude[0].label, "claude");
+        assert_eq!(claude[0].used_percent, None, "no gauge without a number");
+        assert!(
+            !claude[0].detail.is_empty(),
+            "the row says why: {:?}",
+            claude[0]
+        );
     }
 
     /// The exact shape observed on this machine: business plan, no windows.

@@ -236,6 +236,10 @@ const BUSY_TRUST: Duration = Duration::from_secs(20);
 const INITIAL_INPUT_OUTPUT_TIMEOUT: Duration = Duration::from_secs(3);
 const INITIAL_INPUT_ABSOLUTE_TIMEOUT: Duration = Duration::from_secs(10);
 const LIMITS_REFRESH_INTERVAL: Duration = Duration::from_secs(5 * 60);
+/// This binary's release string, as `--version` reports it. Panes share one
+/// quota cache, so it is stamped with this: rows an older pane wrote are rows
+/// this build cannot vouch for, and it takes its own reading instead.
+pub(crate) const BUILD: &str = env!("MINDPLAYER_VERSION");
 /// Measured: the claude usage endpoint answered, then refused 25 minutes later with `retry-after: 0`, so its budget reopens on a minutes scale and an hour-long wait would leave a stale refusal on screen long after a number was available again.
 const LIMITS_MAX_BACKOFF: Duration = Duration::from_secs(15 * 60);
 /// Whether a session counts as working, given when it last produced output.
@@ -701,7 +705,7 @@ impl App {
             prompts_dir: prompts_dir_for_app(),
             limits: None,
             limits_rx: None,
-            quota_cache: mindplayer_core::limits::load_quota_cache(&limits_home_for_app()),
+            quota_cache: mindplayer_core::limits::load_quota_cache(&limits_home_for_app(), BUILD),
             limits_started: None,
             limits_retry_at: None,
             limits_backoff: LIMITS_REFRESH_INTERVAL,

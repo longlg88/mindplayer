@@ -1149,9 +1149,12 @@ impl App {
         mindplayer_core::limits::save_quota_cache(
             &crate::app::limits_home_for_app(),
             &limits.quota_rows(),
+            crate::app::BUILD,
         );
-        self.quota_cache =
-            mindplayer_core::limits::load_quota_cache(&crate::app::limits_home_for_app());
+        self.quota_cache = mindplayer_core::limits::load_quota_cache(
+            &crate::app::limits_home_for_app(),
+            crate::app::BUILD,
+        );
         self.limits = Some(limits);
         true
     }

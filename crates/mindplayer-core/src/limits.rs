@@ -239,26 +239,35 @@ pub fn merge_with_last_good(fresh: &[QuotaRow], stored: &[QuotaRow]) -> (Vec<Quo
 /// shown immediately and replaced the moment a live reading lands; the caller
 /// is handed the time it was written so a stale number can say so rather than
 /// pass for current.
+/// Every pane reads and writes this one file, so the rows in it are only
+/// interpretable by the build that produced them: which windows are drawn at
+/// all, and which fields a row carries, change between releases. The writer
+/// stamps itself here and a reader that does not match it starts over.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct QuotaCache {
     written_at: i64,
     rows: Vec<QuotaRow>,
+    /// Absent in files written before the stamp existed, which is itself a
+    /// build that does not match.
+    #[serde(default)]
+    build: String,
 }
 
 fn quota_cache_path(home: &Path) -> PathBuf {
     home.join(".mindplayer").join("limits-cache.json")
 }
 
-/// Store a reading. Failure is silent on purpose: a cache that cannot be
-/// written must never interfere with the reading it was meant to speed up.
-pub fn save_quota_cache(home: &Path, rows: &[QuotaRow]) {
+/// Store a reading, stamped with the `build` that took it. Failure is silent on
+/// purpose: a cache that cannot be written must never interfere with the
+/// reading it was meant to speed up.
+pub fn save_quota_cache(home: &Path, rows: &[QuotaRow], build: &str) {
     // An empty reading is not a reading. Writing it would replace the last
     // good one with nothing, so the next start would be blank — exactly what
     // the cache exists to prevent.
     if rows.is_empty() || !rows.iter().any(QuotaRow::has_gauge) {
         return;
     }
-    let stored = load_quota_cache(home);
+    let stored = load_quota_cache(home, build);
     let (stored_rows, stored_at) = stored
         .as_ref()
         .map(|(rows, at)| (rows.as_slice(), Some(*at)))
@@ -272,6 +281,7 @@ pub fn save_quota_cache(home: &Path, rows: &[QuotaRow]) {
             now
         },
         rows,
+        build: build.to_string(),
     };
     let Ok(body) = serde_json::to_vec(&cache) else {
         return;
@@ -283,11 +293,15 @@ pub fn save_quota_cache(home: &Path, rows: &[QuotaRow]) {
     }
 }
 
-/// The stored reading and when it was taken, or `None` when there isn't one.
-pub fn load_quota_cache(home: &Path) -> Option<(Vec<QuotaRow>, chrono::DateTime<chrono::Utc>)> {
+/// The stored reading and when it was taken, or `None` when there isn't one
+/// this `build` can read.
+pub fn load_quota_cache(
+    home: &Path,
+    build: &str,
+) -> Option<(Vec<QuotaRow>, chrono::DateTime<chrono::Utc>)> {
     let body = std::fs::read(quota_cache_path(home)).ok()?;
     let cache: QuotaCache = serde_json::from_slice(&body).ok()?;
-    if cache.rows.is_empty() {
+    if cache.rows.is_empty() || cache.build != build {
         return None;
     }
     let at = chrono::DateTime::from_timestamp(cache.written_at, 0)?;
@@ -1577,6 +1591,9 @@ fn parse_epoch(v: &Value) -> Option<i64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Stand-in for the binary's release string, which only the TUI crate has.
+    const BUILD: &str = "0.34.0-test";
     use serde_json::json;
 
     #[test]
@@ -2352,7 +2369,7 @@ Since your account is through your organization, contact your administrator.
         let dir = tempfile::tempdir().unwrap();
         let home = dir.path();
 
-        assert!(load_quota_cache(home).is_none(), "nothing saved yet");
+        assert!(load_quota_cache(home, BUILD).is_none(), "nothing saved yet");
 
         let rows = vec![
             QuotaRow {
@@ -2364,9 +2381,9 @@ Since your account is through your organization, contact your administrator.
             QuotaRow::reason("codex", "no window reported"),
         ];
         let before = chrono::Utc::now().timestamp();
-        save_quota_cache(home, &rows);
+        save_quota_cache(home, &rows, BUILD);
 
-        let (back, at) = load_quota_cache(home).expect("the reading comes back");
+        let (back, at) = load_quota_cache(home, BUILD).expect("the reading comes back");
         assert_eq!(back, rows);
         assert!(at.timestamp() >= before, "the time it was taken is kept");
 
@@ -2386,24 +2403,82 @@ Since your account is through your organization, contact your administrator.
         // corrupt file must not stop the app from running. Checked here rather
         // than in a test of its own: both need `HOME`, and two tests mutating
         // it race under the default parallel runner.
-        save_quota_cache(home, &[]);
+        save_quota_cache(home, &[], BUILD);
         assert_eq!(
-            load_quota_cache(home).map(|(rows, _)| rows),
+            load_quota_cache(home, BUILD).map(|(rows, _)| rows),
             Some(rows.clone()),
             "an empty save must not erase the last real reading"
         );
-        save_quota_cache(home, &[QuotaRow::reason("cursor", "HTTP 429")]);
+        save_quota_cache(home, &[QuotaRow::reason("cursor", "HTTP 429")], BUILD);
         assert_eq!(
-            load_quota_cache(home).map(|(rows, _)| rows),
+            load_quota_cache(home, BUILD).map(|(rows, _)| rows),
             Some(rows),
             "an all-failure save must not refresh or erase the last real reading"
         );
 
         std::fs::write(quota_cache_path(home), b"{ not json").unwrap();
         assert!(
-            load_quota_cache(home).is_none(),
+            load_quota_cache(home, BUILD).is_none(),
             "a corrupt cache is just absent"
         );
+    }
+
+    /// Panes share this file, so an older build writing it is an older build
+    /// deciding what a newer one draws. That is how a pane on the current
+    /// release kept showing a window this build stopped drawing and a gauge
+    /// without the reset this build now reads: it never fetched, because the
+    /// sibling's file was fresh, and then drew the sibling's rows.
+    #[test]
+    fn a_reading_from_another_build_is_neither_shown_nor_merged() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path();
+        let theirs = vec![QuotaRow {
+            label: "codex weekly".into(),
+            used_percent: Some(96.0),
+            detail: String::new(),
+            resets: None,
+        }];
+        save_quota_cache(home, &theirs, "0.33.0");
+
+        assert!(
+            load_quota_cache(home, "0.34.0").is_none(),
+            "another build's rows must not pass for this build's"
+        );
+        assert_eq!(
+            load_quota_cache(home, "0.33.0").map(|(rows, _)| rows),
+            Some(theirs),
+            "the build that wrote them still reads them"
+        );
+
+        // Nor may they survive by being merged into what this build writes.
+        let mine = vec![QuotaRow {
+            label: "codex weekly".into(),
+            used_percent: Some(96.0),
+            detail: String::new(),
+            resets: Some("09-19".into()),
+        }];
+        save_quota_cache(home, &mine, "0.34.0");
+        assert_eq!(
+            load_quota_cache(home, "0.34.0").map(|(rows, _)| rows),
+            Some(mine)
+        );
+    }
+
+    /// A file from before the stamp existed carries no build at all, and a row
+    /// whose writer cannot be named cannot be interpreted either.
+    #[test]
+    fn an_unstamped_reading_is_treated_as_another_builds() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path();
+        let path = quota_cache_path(home);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &path,
+            br#"{"written_at":1789300000,"rows":[{"label":"claude 5h","used_percent":0.0,"detail":"","resets":null}]}"#,
+        )
+        .unwrap();
+
+        assert!(load_quota_cache(home, BUILD).is_none(), "{path:?}");
     }
 
     #[test]

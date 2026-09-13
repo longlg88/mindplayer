@@ -100,84 +100,105 @@ impl TerminalReplyGuard {
 /// Recognize standard and DEC-private cursor position reports:
 /// `CSI row ; col R` / `CSI ? row ; col R`. Coordinates are u16-sized in the
 /// terminal protocols, so a longer candidate is not a reply and is released.
+/// Recognize a reply the terminal sent back, as opposed to something a person
+/// typed.
+///
+/// A child asks the terminal several questions at startup — cursor position,
+/// foreground and background colour, keyboard protocol, device attributes —
+/// and every answer arrives on the same path as keystrokes. An answer that is
+/// not recognized is forwarded, which is how `rgb:1e1e/…` and `?62;4c` ended up
+/// typed into a live prompt.
+///
+/// What is swallowed is only what a person cannot produce from a keyboard:
+///
+/// * `OSC … ST`/`BEL` and `DCS … ST` in full — colour, title and version
+///   answers have no typed equivalent at all.
+/// * `CSI <digits>;<digits> R`, the cursor position report.
+/// * `CSI ? … <letter>`, the private answers (device attributes, keyboard
+///   flags, mode reports).
+///
+/// Everything else is released byte for byte. Arrow and function keys are CSI
+/// too — `CSI A`, `CSI 15~` — and swallowing those would break the keyboard.
 fn terminal_reply_prefix(bytes: &[u8]) -> TerminalReplyPrefix {
-    if bytes.len() > 16 {
-        return TerminalReplyPrefix::Invalid;
+    match bytes.first() {
+        None => return TerminalReplyPrefix::Prefix,
+        // A bare `;`-prefixed tail is what remains when the `CSI` ahead of a
+        // cursor report was already consumed elsewhere.
+        Some(b';') => return cursor_report_tail(bytes),
+        _ => {}
     }
-    if bytes.starts_with(b";") {
-        let mut i = 1;
-        let col_start = i;
-        while bytes.get(i).is_some_and(u8::is_ascii_digit) {
-            i += 1;
-        }
-        if i == col_start {
-            return if bytes.len() == i {
-                TerminalReplyPrefix::Prefix
-            } else {
-                TerminalReplyPrefix::Invalid
-            };
-        }
-        if bytes.len() == i {
-            return TerminalReplyPrefix::Prefix;
-        }
-        return if bytes[i] == b'R' && bytes.len() == i + 1 {
-            TerminalReplyPrefix::Complete
-        } else {
-            TerminalReplyPrefix::Invalid
-        };
-    }
-
-    let mut i = if bytes.starts_with(b"\x1b[") {
-        2
-    } else if bytes.starts_with(b"[") {
-        1
-    } else if b"\x1b[".starts_with(bytes) {
+    if b"\x1b".starts_with(bytes) {
         return TerminalReplyPrefix::Prefix;
-    } else {
-        return TerminalReplyPrefix::Invalid;
+    }
+    let body = match bytes {
+        [0x1b, b'[', rest @ ..] | [b'[', rest @ ..] => return csi_reply(rest),
+        [0x1b, b']', rest @ ..] => rest,
+        [0x1b, b'P', rest @ ..] => rest,
+        [0x1b] => return TerminalReplyPrefix::Prefix,
+        _ => return TerminalReplyPrefix::Invalid,
     };
-    if bytes.len() == i {
-        return TerminalReplyPrefix::Prefix;
-    }
+    string_reply(body)
+}
 
-    if bytes.get(i) == Some(&b'?') {
-        i += 1;
-        if bytes.len() == i {
-            return TerminalReplyPrefix::Prefix;
-        }
-    }
-    let row_start = i;
-    while bytes.get(i).is_some_and(u8::is_ascii_digit) {
-        i += 1;
-    }
-    if i == row_start {
+/// `OSC`/`DCS` run until a string terminator. They carry arbitrary text, so the
+/// ceiling is generous — a clipboard answer is long — but not unbounded.
+fn string_reply(body: &[u8]) -> TerminalReplyPrefix {
+    const STRING_REPLY_MAX: usize = 512;
+    if body.len() > STRING_REPLY_MAX {
         return TerminalReplyPrefix::Invalid;
     }
-    if bytes.len() == i {
-        return TerminalReplyPrefix::Prefix;
+    if body.last() == Some(&0x07) || body.ends_with(b"\x1b\\") {
+        return TerminalReplyPrefix::Complete;
     }
-    if bytes[i] != b';' {
+    TerminalReplyPrefix::Prefix
+}
+
+/// The part of a CSI sequence after `CSI`: parameters, then one final letter.
+fn csi_reply(body: &[u8]) -> TerminalReplyPrefix {
+    const CSI_REPLY_MAX: usize = 32;
+    if body.len() > CSI_REPLY_MAX {
         return TerminalReplyPrefix::Invalid;
     }
-    i += 1;
-    let col_start = i;
-    while bytes.get(i).is_some_and(u8::is_ascii_digit) {
-        i += 1;
-    }
-    if i == col_start {
-        return if bytes.len() == i {
-            TerminalReplyPrefix::Prefix
-        } else {
-            TerminalReplyPrefix::Invalid
-        };
-    }
-    if bytes.len() == i {
+    let private = body.first() == Some(&b'?');
+    let params = if private { &body[1..] } else { body };
+    let end = params
+        .iter()
+        .position(|b| !(b.is_ascii_digit() || *b == b';'));
+    let Some(end) = end else {
+        // Still inside the parameters, so it may yet become a reply.
         return TerminalReplyPrefix::Prefix;
+    };
+    let final_byte = params[end];
+    if end + 1 != params.len() || !final_byte.is_ascii_alphabetic() {
+        return TerminalReplyPrefix::Invalid;
     }
-    if bytes[i] == b'R' && bytes.len() == i + 1 {
+    // A private answer is never something a keyboard produces. A public one is
+    // a reply only when it is a cursor position report: `CSI A`..`CSI S` and
+    // `CSI 15~` are arrow and function keys and must reach the child.
+    let is_reply = if private {
+        true
+    } else {
+        final_byte == b'R' && params[..end].iter().any(u8::is_ascii_digit)
+    };
+    if is_reply {
         TerminalReplyPrefix::Complete
     } else {
         TerminalReplyPrefix::Invalid
+    }
+}
+
+/// `;<digits>R` — a cursor report whose `CSI` and row were already released.
+fn cursor_report_tail(bytes: &[u8]) -> TerminalReplyPrefix {
+    const TAIL_MAX: usize = 16;
+    if bytes.len() > TAIL_MAX {
+        return TerminalReplyPrefix::Invalid;
+    }
+    let rest = &bytes[1..];
+    let digits = rest.iter().take_while(|b| b.is_ascii_digit()).count();
+    match rest.get(digits) {
+        None => TerminalReplyPrefix::Prefix,
+        Some(b'R') if digits > 0 && digits + 1 == rest.len() => TerminalReplyPrefix::Complete,
+        _ => TerminalReplyPrefix::Invalid,
     }
 }
 
@@ -1052,6 +1073,69 @@ mod tests {
                 forwarded.is_empty(),
                 "gap {gap}ms leaked {:?}",
                 String::from_utf8_lossy(&forwarded.concat())
+            );
+        }
+    }
+
+    /// Drive the guard one byte at a time, the way a reply actually arrives.
+    #[cfg(test)]
+    fn forwarded(seq: &[u8]) -> Vec<u8> {
+        let start = Instant::now();
+        let mut guard = TerminalReplyGuard::default();
+        let mut out = Vec::new();
+        for (i, b) in seq.iter().enumerate() {
+            out.extend(guard.push(
+                std::slice::from_ref(b),
+                start + Duration::from_millis(i as u64),
+            ));
+        }
+        if let Some(rest) = guard.flush_due(start + TERMINAL_REPLY_GRACE * 3) {
+            out.push(rest);
+        }
+        out.concat()
+    }
+
+    /// A child asks the terminal several questions when it starts, and every
+    /// answer comes back on the same path as keystrokes. Recognizing only the
+    /// cursor report left the other four to be typed into the prompt.
+    #[test]
+    fn no_terminal_answer_reaches_the_child() {
+        for reply in [
+            &b"\x1b[66;1R"[..],                  // cursor position
+            b"\x1b[?62;4c",                      // device attributes
+            b"\x1b[?11u",                        // keyboard flags
+            b"\x1b]10;rgb:c4c4/caca/d5d5\x1b\\", // foreground
+            b"\x1b]11;rgb:1e1e/1e1e/2e2e\x07",   // background, BEL-ended
+            b"\x1bP>|codex 1.0\x1b\\",           // version
+        ] {
+            let leaked = forwarded(reply);
+            assert!(
+                leaked.is_empty(),
+                "{:?} leaked {:?}",
+                String::from_utf8_lossy(reply),
+                String::from_utf8_lossy(&leaked)
+            );
+        }
+    }
+
+    /// The other half of the same rule: arrow and function keys are CSI too,
+    /// and a guard that swallowed those would break the keyboard.
+    #[test]
+    fn every_real_key_still_reaches_the_child() {
+        for key in [
+            &b"\x1b[A"[..], // up
+            b"\x1b[1;2A",   // shift-up
+            b"\x1b[15~",    // F5
+            b"\x1b[H",      // home
+            b"\x1bOP",      // F1
+            b"\x1b",        // a bare Escape
+            b"hello",
+        ] {
+            assert_eq!(
+                forwarded(key),
+                key.to_vec(),
+                "{:?} was swallowed",
+                String::from_utf8_lossy(key)
             );
         }
     }

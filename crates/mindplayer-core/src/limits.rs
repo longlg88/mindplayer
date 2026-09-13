@@ -208,13 +208,13 @@ struct QuotaCache {
     rows: Vec<QuotaRow>,
 }
 
-fn quota_cache_path() -> PathBuf {
-    crate::private::data_root().join("limits-cache.json")
+fn quota_cache_path(home: &Path) -> PathBuf {
+    home.join(".mindplayer").join("limits-cache.json")
 }
 
 /// Store a reading. Failure is silent on purpose: a cache that cannot be
 /// written must never interfere with the reading it was meant to speed up.
-pub fn save_quota_cache(rows: &[QuotaRow]) {
+pub fn save_quota_cache(home: &Path, rows: &[QuotaRow]) {
     // An empty reading is not a reading. Writing it would replace the last
     // good one with nothing, so the next start would be blank — exactly what
     // the cache exists to prevent.
@@ -228,7 +228,7 @@ pub fn save_quota_cache(rows: &[QuotaRow]) {
     let Ok(body) = serde_json::to_vec(&cache) else {
         return;
     };
-    let path = quota_cache_path();
+    let path = quota_cache_path(home);
     if let Ok(mut f) = crate::private::open_private(&path, false) {
         use std::io::Write;
         let _ = f.write_all(&body);
@@ -236,8 +236,8 @@ pub fn save_quota_cache(rows: &[QuotaRow]) {
 }
 
 /// The stored reading and when it was taken, or `None` when there isn't one.
-pub fn load_quota_cache() -> Option<(Vec<QuotaRow>, chrono::DateTime<chrono::Utc>)> {
-    let body = std::fs::read(quota_cache_path()).ok()?;
+pub fn load_quota_cache(home: &Path) -> Option<(Vec<QuotaRow>, chrono::DateTime<chrono::Utc>)> {
+    let body = std::fs::read(quota_cache_path(home)).ok()?;
     let cache: QuotaCache = serde_json::from_slice(&body).ok()?;
     if cache.rows.is_empty() {
         return None;
@@ -1999,9 +1999,9 @@ Since your account is through your organization, contact your administrator.
     #[test]
     fn a_saved_reading_comes_back_with_the_time_it_was_taken() {
         let dir = tempfile::tempdir().unwrap();
-        std::env::set_var("HOME", dir.path());
+        let home = dir.path();
 
-        assert!(load_quota_cache().is_none(), "nothing saved yet");
+        assert!(load_quota_cache(home).is_none(), "nothing saved yet");
 
         let rows = vec![
             QuotaRow {
@@ -2013,9 +2013,9 @@ Since your account is through your organization, contact your administrator.
             QuotaRow::reason("codex", "no window reported"),
         ];
         let before = chrono::Utc::now().timestamp();
-        save_quota_cache(&rows);
+        save_quota_cache(home, &rows);
 
-        let (back, at) = load_quota_cache().expect("the reading comes back");
+        let (back, at) = load_quota_cache(home).expect("the reading comes back");
         assert_eq!(back, rows);
         assert!(at.timestamp() >= before, "the time it was taken is kept");
 
@@ -2024,7 +2024,7 @@ Since your account is through your organization, contact your administrator.
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let mode = std::fs::metadata(quota_cache_path())
+            let mode = std::fs::metadata(quota_cache_path(home))
                 .unwrap()
                 .permissions()
                 .mode();
@@ -2035,16 +2035,16 @@ Since your account is through your organization, contact your administrator.
         // corrupt file must not stop the app from running. Checked here rather
         // than in a test of its own: both need `HOME`, and two tests mutating
         // it race under the default parallel runner.
-        save_quota_cache(&[]);
+        save_quota_cache(home, &[]);
         assert_eq!(
-            load_quota_cache().map(|(rows, _)| rows),
+            load_quota_cache(home).map(|(rows, _)| rows),
             Some(rows),
             "an empty save must not erase the last real reading"
         );
 
-        std::fs::write(quota_cache_path(), b"{ not json").unwrap();
+        std::fs::write(quota_cache_path(home), b"{ not json").unwrap();
         assert!(
-            load_quota_cache().is_none(),
+            load_quota_cache(home).is_none(),
             "a corrupt cache is just absent"
         );
     }

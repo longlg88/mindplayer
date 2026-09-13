@@ -236,7 +236,8 @@ const BUSY_TRUST: Duration = Duration::from_secs(20);
 const INITIAL_INPUT_OUTPUT_TIMEOUT: Duration = Duration::from_secs(3);
 const INITIAL_INPUT_ABSOLUTE_TIMEOUT: Duration = Duration::from_secs(10);
 const LIMITS_REFRESH_INTERVAL: Duration = Duration::from_secs(5 * 60);
-const LIMITS_MAX_BACKOFF: Duration = Duration::from_secs(60 * 60);
+/// Measured: the claude usage endpoint answered, then refused 25 minutes later with `retry-after: 0`, so its budget reopens on a minutes scale and an hour-long wait would leave a stale refusal on screen long after a number was available again.
+const LIMITS_MAX_BACKOFF: Duration = Duration::from_secs(15 * 60);
 /// Whether a session counts as working, given when it last produced output.
 /// Demotion is delayed by `hold` (see [`WORKING_HOLD`]); promotion is instant
 /// because `last_output` is stamped to "now" the moment any output arrives.

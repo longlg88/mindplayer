@@ -24,7 +24,7 @@ pub use discovery::{
     ScanConfig, Scope,
 };
 pub use prompts::{default_prompts_dir, load_prompt, load_prompt_from};
-pub use resume::{new_session, resume, Command};
+pub use resume::{login, new_session, resume, Command};
 pub use session::{Agent, Session, TokenUsage};
 pub use state::{Category, State};
 pub use tokens::Aggregate;

@@ -175,6 +175,15 @@ impl Account {
         matches!(self.slot, Slot::Inherited)
     }
 
+    /// The directory holding this account's login, empty for the inherited one
+    /// (whose login is wherever the CLI already keeps it).
+    pub fn slot_path(&self) -> PathBuf {
+        match &self.slot {
+            Slot::Inherited => PathBuf::new(),
+            Slot::Isolated { path } => path.clone(),
+        }
+    }
+
     /// The environment that makes this provider's CLI read this account.
     ///
     /// The inherited login is reached by changing nothing, so it returns an

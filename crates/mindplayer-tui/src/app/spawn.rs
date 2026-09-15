@@ -5,6 +5,56 @@ use super::*;
 const CLOSED_EXTRA_GRACE: chrono::Duration = chrono::Duration::minutes(5);
 
 impl App {
+    /// Open a pane that signs `account` in.
+    ///
+    /// It gets a row like any other pane so it is visible and closable, but it
+    /// is never reconciled to a session — see `adopt_match`.
+    pub fn request_login(&mut self, account: &mindplayer_core::accounts::Account) {
+        let dir = match &self.scope {
+            Scope::WorkingDir(p) => p.clone(),
+            Scope::Global => self.cwd.clone(),
+        };
+        let agent = account.provider;
+        let command = mindplayer_core::login(agent, dir.clone(), account);
+        let session_id = format!(
+            "{}{}:{}",
+            super::accounts_panel::LOGIN_PREFIX,
+            agent.as_str(),
+            account.name
+        );
+        let now = Utc::now();
+        let synthetic = Session {
+            id: session_id.clone(),
+            agent,
+            cwd: dir,
+            file: PathBuf::new(),
+            started_at: Some(now),
+            last_active: Some(now),
+            last_prompt_at: None,
+            tokens: Default::default(),
+            title: format!("🔑 sign in {} {}", agent.as_str(), account.name),
+            archived: false,
+            is_subagent: false,
+            context_pct: None,
+        };
+        // Re-opening a login for the same account reuses its row rather than
+        // stacking a second one that looks like a second attempt.
+        self.extra_sessions.retain(|s| s.id != session_id);
+        self.all_sessions.retain(|s| s.id != session_id);
+        self.extra_sessions.push(synthetic.clone());
+        self.all_sessions.push(synthetic);
+        self.rebuild_visible();
+        self.pending = Some(PendingSpawn {
+            command,
+            session_id: session_id.clone(),
+            initial_input: None,
+            focus_after_spawn: true,
+        });
+        self.accounts_panel = None;
+        self.focus_or_add_pane(&session_id);
+        self.status = format!("signing in {} {}", agent.as_str(), account.name);
+    }
+
     /// Spawn a new Codex/Claude session in the current scope dir, optionally
     /// tagging the resulting session with a user label.
     pub fn request_new(&mut self, agent: Agent, label: &str) {
@@ -248,6 +298,13 @@ impl App {
     /// The real disk session a synthetic new-session row should become, if it
     /// has appeared yet. `claimed` holds ids already taken this pass.
     fn adopt_match(&self, extra: &Session, claimed: &HashSet<String>) -> Option<String> {
+        // Signing in writes no transcript, so a login pane has nothing of its
+        // own to become. Without this it carries no baseline, and a pane with
+        // no baseline adopts any new session of its agent and cwd — which
+        // would be some other pane's work.
+        if extra.id.starts_with(super::accounts_panel::LOGIN_PREFIX) {
+            return None;
+        }
         let after = extra
             .started_at
             .map(|t| t - chrono::Duration::seconds(30))

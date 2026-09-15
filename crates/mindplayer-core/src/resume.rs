@@ -70,6 +70,27 @@ pub fn new_session(agent: Agent, cwd: PathBuf, account: &Account) -> Command {
     }
 }
 
+/// Command that signs `account` in, run in its own pane.
+///
+/// Signing in is the provider's own flow — a browser round trip for most of
+/// them — so it runs as a pane rather than something MindPlayer reimplements.
+/// Taken from each CLI's own `--help`: `codex login`, `claude auth login`,
+/// `kiro-cli user login`, `agent login`.
+pub fn login(agent: Agent, cwd: PathBuf, account: &Account) -> Command {
+    let args = match agent {
+        Agent::Codex => vec!["login".to_string()],
+        Agent::Claude => vec!["auth".to_string(), "login".to_string()],
+        Agent::Kiro => vec!["user".to_string(), "login".to_string()],
+        Agent::Cursor => vec!["login".to_string()],
+    };
+    Command {
+        program: agent.program().to_string(),
+        args,
+        cwd,
+        env: account.launch_env(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -176,6 +197,36 @@ mod tests {
         );
         assert_eq!(c.program, "agent");
         assert!(c.args.is_empty());
+    }
+
+    #[test]
+    fn signing_in_happens_inside_the_slot_it_is_for() {
+        let home = PathBuf::from("/tmp/mp-login-test");
+        let account = Account::isolated(&home, Agent::Claude, "second").unwrap();
+        let c = login(Agent::Claude, PathBuf::from("/here"), &account);
+        assert_eq!(c.program, "claude");
+        assert_eq!(c.args, vec!["auth", "login"]);
+        assert_eq!(
+            c.env,
+            account.launch_env(),
+            "signing in without the slot's environment would overwrite the existing login"
+        );
+    }
+
+    #[test]
+    fn each_cli_is_signed_in_with_its_own_words() {
+        let home = PathBuf::from("/tmp/mp-login-test");
+        let expected = [
+            (Agent::Codex, "codex", vec!["login"]),
+            (Agent::Kiro, "kiro-cli", vec!["user", "login"]),
+            (Agent::Cursor, "agent", vec!["login"]),
+        ];
+        for (agent, program, args) in expected {
+            let c = login(agent, PathBuf::from("/here"), &Account::inherited(agent));
+            assert_eq!(c.program, program);
+            assert_eq!(c.args, args, "{} login args", agent.as_str());
+        }
+        let _ = home;
     }
 
     #[test]

@@ -4,6 +4,7 @@
 //! session discovery, token aggregation, sidecar archive state, and resume
 //! command building.
 
+pub mod accounts;
 pub mod audit;
 pub mod discovery;
 pub mod limits;

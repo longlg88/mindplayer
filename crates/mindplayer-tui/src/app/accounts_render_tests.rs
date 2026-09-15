@@ -337,3 +337,64 @@ fn the_readme_describes_the_screen_that_exists() {
         "the README does not say where a second login's home lives"
     );
 }
+
+/// The reported regression: the exhausted Codex login vanished from the footer
+/// because it had been switched away from, while the fresh one it was switched
+/// to had no reading at all.
+#[test]
+fn an_exhausted_login_stays_on_the_footer_after_switching_away_from_it() {
+    use mindplayer_core::limits::QuotaRow;
+    let mut app = app_on_main();
+    let mut spent = Account::isolated(&std::env::temp_dir(), Agent::Codex, "sendbird-kr").unwrap();
+    let fresh = Account::isolated(&std::env::temp_dir(), Agent::Codex, "sendbird-com").unwrap();
+    // As reported: the exhausted login was put in reserve and the fresh one
+    // made the account new sessions take.
+    spent.role = mindplayer_core::accounts::Role::Fallback;
+    app.accounts = vec![
+        spent.clone(),
+        fresh.clone(),
+        Account::inherited(Agent::Claude),
+    ];
+    app.limits = Some(vec![
+        QuotaRow {
+            label: "codex weekly".into(),
+            agent: Agent::Codex,
+            account: spent.name.clone(),
+            used_percent: Some(100.0),
+            ..Default::default()
+        },
+        QuotaRow {
+            label: "codex".into(),
+            agent: Agent::Codex,
+            account: fresh.name.clone(),
+            detail: "no codex rollouts found".into(),
+            ..Default::default()
+        },
+        QuotaRow {
+            label: "claude 5h".into(),
+            agent: Agent::Claude,
+            account: "default".into(),
+            used_percent: Some(37.0),
+            ..Default::default()
+        },
+    ]);
+
+    let screen = painted(&mut app, 110, 30);
+    assert!(
+        screen.contains("100.0%"),
+        "the exhausted login is not on the footer:\n{screen}"
+    );
+    assert!(
+        screen.contains("codex weekly sendbird-kr"),
+        "two logins of one provider are not told apart:\n{screen}"
+    );
+    assert!(
+        screen.contains("codex sendbird-com"),
+        "the fresh login has no row at all:\n{screen}"
+    );
+    // One login means nothing extra on the line.
+    assert!(
+        screen.contains("claude 5h ") && !screen.contains("claude 5h default"),
+        "a provider with one login was labelled anyway:\n{screen}"
+    );
+}

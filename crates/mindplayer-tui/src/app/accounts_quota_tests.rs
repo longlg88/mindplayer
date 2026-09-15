@@ -45,10 +45,11 @@ fn every_login_that_could_serve_is_read_and_the_ones_that_cannot_are_not() {
     );
 }
 
-/// The footer has room for one line per provider, and the question it answers
-/// is how much is left where the next session goes.
+/// Showing only the account a new session would take hid the one that was
+/// actually exhausted — the account switched away from stays at 100% while the
+/// fresh one it was switched to has no reading until it has run something.
 #[test]
-fn the_footer_shows_only_the_login_a_new_session_would_use() {
+fn the_footer_shows_every_signed_in_login() {
     let (mut app, second) = app_with_two_codex();
     app.limits = Some(vec![
         row(Agent::Codex, "default", "codex", 10.0),
@@ -56,29 +57,44 @@ fn the_footer_shows_only_the_login_a_new_session_would_use() {
     ]);
 
     let footer = app.quota_rows();
-    assert_eq!(footer.len(), 1, "{footer:?}");
-    assert_eq!(footer[0].used_percent, Some(10.0));
-
-    let everything = app.quota_rows_all();
-    assert_eq!(everything.len(), 2, "the Accounts screen needs them all");
+    assert_eq!(
+        footer.len(),
+        2,
+        "a configured login went missing: {footer:?}"
+    );
+    let seen: Vec<Option<f64>> = footer.iter().map(|r| r.used_percent).collect();
+    assert!(
+        seen.contains(&Some(10.0)) && seen.contains(&Some(90.0)),
+        "{footer:?}"
+    );
+    assert_eq!(app.quota_rows_all().len(), footer.len());
 }
 
+/// Which login is in use decides where a new session goes, not which figures
+/// are worth seeing — switching must not make an allowance disappear.
 #[test]
-fn switching_the_login_switches_which_reading_the_footer_shows() {
+fn switching_the_login_leaves_every_reading_on_screen() {
     let (mut app, second) = app_with_two_codex();
     app.limits = Some(vec![
         row(Agent::Codex, "default", "codex", 10.0),
         row(Agent::Codex, &second.name, "codex", 90.0),
     ]);
+    let before = app.quota_rows().len();
+
     app.open_accounts();
     app.accounts_panel.as_mut().unwrap().selected = 2;
     app.accounts_make_primary();
 
     let footer = app.quota_rows();
     assert_eq!(
-        footer.first().and_then(|r| r.used_percent),
-        Some(90.0),
-        "the footer kept showing the account no longer in use: {footer:?}"
+        footer.len(),
+        before,
+        "switching dropped a reading: {footer:?}"
+    );
+    let seen: Vec<Option<f64>> = footer.iter().map(|r| r.used_percent).collect();
+    assert!(
+        seen.contains(&Some(10.0)) && seen.contains(&Some(90.0)),
+        "{footer:?}"
     );
 }
 

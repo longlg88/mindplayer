@@ -691,6 +691,37 @@ fn handle_main_key(app: &mut App, key: KeyEvent) {
         return;
     }
 
+    // Accounts screen (`A`). Owns every key while open, and while typing a
+    // name the letters are text rather than shortcuts.
+    if app.accounts_panel.is_some() {
+        let typing = app
+            .accounts_panel
+            .as_ref()
+            .is_some_and(|p| p.new_name.is_some());
+        if typing {
+            match key.code {
+                KeyCode::Enter => app.accounts_confirm_add(),
+                KeyCode::Esc => app.accounts_cancel_add(),
+                KeyCode::Backspace => app.accounts_name_backspace(),
+                KeyCode::Char(c) => app.accounts_name_push(c),
+                _ => {}
+            }
+        } else {
+            match key.code {
+                KeyCode::Esc | KeyCode::Char('q') => app.close_accounts(),
+                KeyCode::Up | KeyCode::Char('k') => app.accounts_move(-1),
+                KeyCode::Down | KeyCode::Char('j') => app.accounts_move(1),
+                KeyCode::Char('a') => app.accounts_start_add(),
+                KeyCode::Char('l') => app.accounts_relogin(),
+                KeyCode::Char('w') => app.accounts_toggle_role(),
+                KeyCode::Char('d') => app.accounts_toggle_disabled(),
+                KeyCode::Char('x') => app.accounts_remove(),
+                _ => {}
+            }
+        }
+        return;
+    }
+
     // Category picker (`t`). Owns every key while open — including `q`, which
     // must not quit the app mid-pick — and while typing a new name the letters
     // are text, not shortcuts.
@@ -1057,6 +1088,10 @@ fn handle_main_key(app: &mut App, key: KeyEvent) {
                 }
                 KeyCode::Char('t') => app.begin_category_pick(),
                 KeyCode::Char('n') => app.new_picker = Some(0),
+                // Not a capital: `normalize_shortcut` folds those to lowercase
+                // on purpose, so `A` would arrive here as `a` and toggle the
+                // archived view instead.
+                KeyCode::Char('u') => app.open_accounts(),
                 KeyCode::Char('i') => app.toggle_in_progress(),
                 KeyCode::Char('c') => app.begin_catchup(),
                 code if is_help_key(code, key.modifiers) => app.toggle_help(),
@@ -1233,6 +1268,69 @@ mod tests {
         }];
         app.visible = vec![app::Row::Session(0)];
         app
+    }
+
+    /// `u` has to reach the Accounts screen, and the screen has to own every
+    /// key while it is open — `q` there must close it, not quit MindPlayer.
+    ///
+    /// A capital cannot be the key: `normalize_shortcut` folds uppercase to
+    /// lowercase so Caps Lock does not break the single-letter commands, which
+    /// means `A` arrives as `a` and toggles the archived view.
+    #[test]
+    fn u_opens_the_accounts_screen_which_then_owns_the_keys() {
+        let mut app = main_app();
+        assert!(app.accounts_panel.is_none());
+
+        handle_main_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('A'), KeyModifiers::NONE),
+        );
+        assert!(
+            app.accounts_panel.is_none(),
+            "a capital reaches the list folded to lowercase, so it cannot be this key"
+        );
+
+        handle_main_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('u'), KeyModifiers::NONE),
+        );
+        assert!(app.accounts_panel.is_some(), "u did not open the screen");
+
+        handle_main_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE),
+        );
+        assert_eq!(
+            app.accounts_panel.as_ref().and_then(|p| p.new_name.clone()),
+            Some(String::new()),
+            "a did not start a new account"
+        );
+
+        // Typing a name: the letters are text, not shortcuts.
+        for c in "work".chars() {
+            handle_main_key(
+                &mut app,
+                KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE),
+            );
+        }
+        assert_eq!(
+            app.accounts_panel.as_ref().and_then(|p| p.new_name.clone()),
+            Some("work".to_string())
+        );
+        assert!(!app.should_quit, "a typed q would have quit the app");
+
+        handle_main_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(app
+            .accounts_panel
+            .as_ref()
+            .is_some_and(|p| p.new_name.is_none()));
+
+        handle_main_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE),
+        );
+        assert!(app.accounts_panel.is_none(), "q did not close the screen");
+        assert!(!app.should_quit, "q closed the app instead of the screen");
     }
 
     /// The list's single-letter shortcuts have to survive a Korean IME, which

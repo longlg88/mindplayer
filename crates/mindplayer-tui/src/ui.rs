@@ -835,6 +835,8 @@ fn main_view(f: &mut Frame, app: &mut App) {
 
     if app.help_visible {
         help_popup(f);
+    } else if app.accounts_panel.is_some() {
+        accounts_popup(f, app);
     } else if app.category_menu.is_some() {
         category_menu_popup(f, app);
     } else if app.category_picker.is_some() {
@@ -2103,6 +2105,7 @@ fn help_lines() -> Vec<Line<'static>> {
         ),
         item("space", "mark/unmark session — multi-select mode only"),
         item("n", "start a new session"),
+        item("u", "accounts: which login each provider starts a session on"),
         item("h", "handoff selected session to another provider"),
         item("e", "edit selected session label"),
         item("x", "close/archive selected session"),
@@ -2417,6 +2420,134 @@ fn relative_time(t: Option<DateTime<Utc>>, now: DateTime<Utc>) -> String {
         s if s < 86_400 * 365 => format!("{}mo", s / (86_400 * 30)),
         s => format!("{}y", s / (86_400 * 365)),
     }
+}
+
+/// The Accounts screen (`A`): which logins exist per provider, and what each
+/// one is for. Management lives here rather than in the footer, which has to
+/// stay small enough to leave the panes room.
+fn accounts_popup(f: &mut Frame, app: &App) {
+    use crate::app::accounts_panel::AccountRow;
+
+    let Some(panel) = app.accounts_panel.as_ref() else {
+        return;
+    };
+
+    // Typing a name replaces the list — one thing to look at at a time.
+    if let Some(name) = &panel.new_name {
+        let provider = panel
+            .adding_to
+            .map(|a| a.as_str())
+            .unwrap_or("this provider");
+        let area = centered(f.area(), 58, 6);
+        f.render_widget(Clear, area);
+        f.render_widget(
+            Paragraph::new(vec![
+                Line::from(Span::styled(
+                    format!("Name for the new {provider} account:"),
+                    Style::default().fg(DIM),
+                )),
+                Line::from(Span::styled(
+                    format!("{name}▏"),
+                    Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+                )),
+                Line::from(Span::styled(
+                    "letters, digits, - and _",
+                    Style::default().fg(DIM).add_modifier(Modifier::ITALIC),
+                )),
+            ])
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(ACCENT))
+                    .title(" Add account "),
+            ),
+            area,
+        );
+        return;
+    }
+
+    let rows = app.account_rows();
+    let name_width = app
+        .accounts
+        .iter()
+        .map(|a| a.name.chars().count())
+        .max()
+        .unwrap_or(7)
+        .clamp(7, 20);
+
+    let mut lines: Vec<Line> = Vec::with_capacity(rows.len());
+    for (i, row) in rows.iter().enumerate() {
+        let selected = i == panel.selected;
+        match row {
+            AccountRow::Header(agent) => lines.push(Line::from(Span::styled(
+                format!(" {}", agent.as_str().to_uppercase()),
+                Style::default().fg(CATEGORY).add_modifier(Modifier::BOLD),
+            ))),
+            AccountRow::Entry(idx) => {
+                let Some(account) = app.accounts.get(*idx) else {
+                    continue;
+                };
+                let panes = app.pane_count_on(account);
+                // What the account is, in the order a reader needs it: is it
+                // reachable, what is it called, and what is it doing.
+                let state = if account.disabled {
+                    ("off", ERROR)
+                } else if account.role == mindplayer_core::accounts::Role::Fallback {
+                    ("fallback", DIM)
+                } else {
+                    ("ready", IDLE)
+                };
+                let activity = match panes {
+                    0 => "idle".to_string(),
+                    1 => "1 pane".to_string(),
+                    n => format!("{n} panes"),
+                };
+                let origin = if account.is_inherited() {
+                    " (this machine's own login)"
+                } else {
+                    ""
+                };
+                let style = if selected {
+                    Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(DIM)
+                };
+                lines.push(Line::from(vec![
+                    Span::styled(if selected { "  ▶ " } else { "    " }, style),
+                    Span::styled(format!("{:<name_width$}  ", account.name), style),
+                    Span::styled(format!("{:<8}  ", state.0), Style::default().fg(state.1)),
+                    Span::styled(format!("{activity}{origin}"), Style::default().fg(DIM)),
+                ]));
+            }
+        }
+    }
+
+    if let Some(error) = &panel.error {
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            error.clone(),
+            Style::default().fg(ERROR),
+        )));
+    }
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        " a add   l sign in   w primary/fallback   d off   x remove   esc close",
+        Style::default().fg(DIM),
+    )));
+
+    let width = 72.min(f.area().width);
+    let height = (lines.len() as u16 + 2).min(f.area().height);
+    let area = centered(f.area(), width, height);
+    f.render_widget(Clear, area);
+    f.render_widget(
+        Paragraph::new(lines).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(ACCENT))
+                .title(" Accounts "),
+        ),
+        area,
+    );
 }
 
 #[cfg(test)]

@@ -530,6 +530,8 @@ pub struct App {
     /// The logins available per provider. Always holds the one this machine
     /// already had, so a pane can always be started.
     pub(crate) accounts: Vec<mindplayer_core::accounts::Account>,
+    /// The Accounts screen, while it is open.
+    pub accounts_panel: Option<accounts_panel::AccountsPanel>,
     /// When the in-flight fetch started, so a wedged one can be abandoned.
     pub(crate) limits_started: Option<Instant>,
     /// Earliest time another account fetch may start.
@@ -710,6 +712,7 @@ impl App {
             limits_rx: None,
             quota_cache: mindplayer_core::limits::load_quota_cache(&limits_home_for_app(), BUILD),
             accounts: mindplayer_core::accounts::load_accounts(&limits_home_for_app()),
+            accounts_panel: None,
             limits_started: None,
             limits_retry_at: None,
             limits_backoff: LIMITS_REFRESH_INTERVAL,
@@ -1081,6 +1084,11 @@ fn trim_submit(bytes: &mut Vec<u8>) {
     }
 }
 
+pub mod accounts_panel;
+#[cfg(test)]
+mod accounts_panel_tests;
+#[cfg(test)]
+mod accounts_render_tests;
 mod convo_ingest;
 mod handoff_sync;
 mod link_copy;

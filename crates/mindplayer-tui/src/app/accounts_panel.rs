@@ -107,6 +107,23 @@ impl App {
         })
     }
 
+    /// The logins a usage refresh should read, which is every one that could
+    /// serve a turn.
+    ///
+    /// An account that is off is skipped: it cannot be reached, and asking
+    /// anyway spends a request budget that is per account, not per process.
+    /// Cursor holds no second account but still has a reading.
+    pub(crate) fn probe_accounts(&self) -> Vec<Account> {
+        let mut out: Vec<Account> = self
+            .accounts
+            .iter()
+            .filter(|a| !a.disabled)
+            .cloned()
+            .collect();
+        out.push(Account::inherited(Agent::Cursor));
+        out
+    }
+
     /// The Accounts screen's lines, providers in a fixed order so the list does
     /// not reshuffle between redraws.
     pub(crate) fn account_rows(&self) -> Vec<AccountRow> {

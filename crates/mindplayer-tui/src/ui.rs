@@ -2550,6 +2550,7 @@ fn accounts_popup(f: &mut Frame, app: &App) {
         .unwrap_or(7)
         .clamp(7, 20);
 
+    let all_rows = app.quota_rows_all();
     let build = |show_origin: bool| {
         let mut lines: Vec<Line> = Vec::with_capacity(rows.len());
         for (i, row) in rows.iter().enumerate() {
@@ -2580,6 +2581,12 @@ fn accounts_popup(f: &mut Frame, app: &App) {
                         1 => "1 pane".to_string(),
                         n => format!("{n} panes"),
                     };
+                    // The usage this login has left, where the decision to
+                    // switch accounts is actually made.
+                    let usage: Vec<&mindplayer_core::limits::QuotaRow> = all_rows
+                        .iter()
+                        .filter(|r| r.agent == account.provider && r.account == account.name)
+                        .collect();
                     let origin = if show_origin && account.is_inherited() {
                         " (this machine's own login)"
                     } else {
@@ -2590,12 +2597,32 @@ fn accounts_popup(f: &mut Frame, app: &App) {
                     } else {
                         Style::default().fg(DIM)
                     };
-                    lines.push(Line::from(vec![
+                    let mut spans = vec![
                         Span::styled(if selected { "  ▶ " } else { "    " }, style),
                         Span::styled(format!("{:<name_width$}  ", account.name), style),
                         Span::styled(format!("{:<8}  ", state.0), Style::default().fg(state.1)),
-                        Span::styled(format!("{activity}{origin}"), Style::default().fg(DIM)),
-                    ]));
+                    ];
+                    match usage.first() {
+                        Some(row) => spans.extend(quota_row_spans(row, 9)),
+                        None => spans.push(Span::styled(
+                            format!("{:<9}   ─", ""),
+                            Style::default().fg(DIM),
+                        )),
+                    }
+                    spans.push(Span::styled(
+                        format!("   {activity}{origin}"),
+                        Style::default().fg(DIM),
+                    ));
+                    lines.push(Line::from(spans));
+                    // A provider can meter more than one window (Claude's five
+                    // hour and weekly), and hiding the second would hide the
+                    // one that is actually binding.
+                    for row in usage.iter().skip(1) {
+                        let mut extra =
+                            vec![Span::raw(format!("    {:<name_width$}  {:<8}  ", "", ""))];
+                        extra.extend(quota_row_spans(row, 9));
+                        lines.push(Line::from(extra));
+                    }
                 }
             }
         }

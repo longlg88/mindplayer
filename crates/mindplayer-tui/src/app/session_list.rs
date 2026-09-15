@@ -1118,9 +1118,16 @@ impl App {
         }
         self.limits_started = Some(now);
         let home = super::limits_home_for_app();
+        // One reading per login, since the numbers are per account and an
+        // account with its own home keeps its own state.
+        let accounts = self.probe_accounts();
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
-            let _ = tx.send(mindplayer_core::limits::fetch(&home));
+            let mut rows = Vec::new();
+            for account in &accounts {
+                rows.extend(mindplayer_core::limits::account_quota_rows(account, &home));
+            }
+            let _ = tx.send(rows);
         });
         self.limits_rx = Some(rx);
     }
@@ -1130,12 +1137,12 @@ impl App {
         let Some(rx) = &self.limits_rx else {
             return false;
         };
-        let Ok(limits) = rx.try_recv() else {
+        let Ok(rows) = rx.try_recv() else {
             return false;
         };
         self.limits_rx = None;
         self.limits_started = None;
-        if limits.network_rate_limited() {
+        if mindplayer_core::limits::rows_are_rate_limited(&rows) {
             self.limits_backoff = self
                 .limits_backoff
                 .saturating_mul(2)
@@ -1148,14 +1155,14 @@ impl App {
         // rather than waiting seconds for its own.
         mindplayer_core::limits::save_quota_cache(
             &crate::app::limits_home_for_app(),
-            &limits.quota_rows(),
+            &rows,
             crate::app::BUILD,
         );
         self.quota_cache = mindplayer_core::limits::load_quota_cache(
             &crate::app::limits_home_for_app(),
             crate::app::BUILD,
         );
-        self.limits = Some(limits);
+        self.limits = Some(rows);
         true
     }
 

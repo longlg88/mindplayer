@@ -3759,35 +3759,38 @@ fn an_agent_with_no_token_counts_is_named_but_never_drawn() {
 #[test]
 fn each_account_gets_a_row_and_only_real_readings_get_a_gauge() {
     let mut app = App::new();
-    app.limits = Some(mindplayer_core::limits::Limits {
-        claude: Ok(mindplayer_core::limits::ClaudeLimits {
-            five_hour: Some(12.0),
-            seven_day: Some(31.0),
-            ..Default::default()
-        }),
-        // A business plan reports no window at all — only a balance.
-        codex: Ok(mindplayer_core::limits::CodexLimits {
-            credit_balance: Some(0.0),
-            plan_type: Some("business".into()),
-            ..Default::default()
-        }),
-        kiro: Ok(mindplayer_core::limits::KiroLimits {
-            plan_name: Some("KIRO POWER".into()),
-            credits_used: Some(185.5),
-            credits_total: Some(10_000.0),
-            used_percent: Some(1.855),
-            reset_date: Some("2026-10-01".into()),
-        }),
-        cursor: Ok(mindplayer_core::limits::CursorLimits {
-            used_percent: Some(30.0),
-            used_cents: Some(1500),
-            limit_cents: Some(5000),
-            remaining_cents: Some(3500),
-            billing_cycle_end: Some("2026-10-01T00:00:00.000Z".into()),
-            source: Some(mindplayer_core::limits::CursorQuotaSource::Plan),
-            ..Default::default()
-        }),
-    });
+    app.limits = Some(
+        mindplayer_core::limits::Limits {
+            claude: Ok(mindplayer_core::limits::ClaudeLimits {
+                five_hour: Some(12.0),
+                seven_day: Some(31.0),
+                ..Default::default()
+            }),
+            // A business plan reports no window at all — only a balance.
+            codex: Ok(mindplayer_core::limits::CodexLimits {
+                credit_balance: Some(0.0),
+                plan_type: Some("business".into()),
+                ..Default::default()
+            }),
+            kiro: Ok(mindplayer_core::limits::KiroLimits {
+                plan_name: Some("KIRO POWER".into()),
+                credits_used: Some(185.5),
+                credits_total: Some(10_000.0),
+                used_percent: Some(1.855),
+                reset_date: Some("2026-10-01".into()),
+            }),
+            cursor: Ok(mindplayer_core::limits::CursorLimits {
+                used_percent: Some(30.0),
+                used_cents: Some(1500),
+                limit_cents: Some(5000),
+                remaining_cents: Some(3500),
+                billing_cycle_end: Some("2026-10-01T00:00:00.000Z".into()),
+                source: Some(mindplayer_core::limits::CursorQuotaSource::Plan),
+                ..Default::default()
+            }),
+        }
+        .quota_rows(),
+    );
 
     let rows = app.quota_rows();
     let labels: Vec<&str> = rows.iter().map(|r| r.label.as_str()).collect();
@@ -3837,28 +3840,33 @@ fn a_failed_reading_falls_back_to_the_last_good_one() {
                 used_percent: Some(12.5),
                 detail: "$2.50/$20".into(),
                 resets: Some("2026-10-04".into()),
+                ..Default::default()
             },
             mindplayer_core::limits::QuotaRow {
                 label: "kiro".into(),
                 used_percent: Some(6.4),
                 detail: "639.7/10000 cr".into(),
                 resets: None,
+                ..Default::default()
             },
         ],
         taken,
     ));
     // This run: cursor is rate-limited, kiro answered.
-    app.limits = Some(mindplayer_core::limits::Limits {
-        claude: Err("not under test".into()),
-        codex: Err("not under test".into()),
-        kiro: Ok(mindplayer_core::limits::KiroLimits {
-            used_percent: Some(9.9),
-            credits_used: Some(990.0),
-            credits_total: Some(10_000.0),
-            ..Default::default()
-        }),
-        cursor: Err("curl: (56) The requested URL returned error: 429".into()),
-    });
+    app.limits = Some(
+        mindplayer_core::limits::Limits {
+            claude: Err("not under test".into()),
+            codex: Err("not under test".into()),
+            kiro: Ok(mindplayer_core::limits::KiroLimits {
+                used_percent: Some(9.9),
+                credits_used: Some(990.0),
+                credits_total: Some(10_000.0),
+                ..Default::default()
+            }),
+            cursor: Err("curl: (56) The requested URL returned error: 429".into()),
+        }
+        .quota_rows(),
+    );
 
     let rows = app.quota_rows();
     let cursor = rows.iter().find(|r| r.label == "cursor").unwrap();
@@ -3890,22 +3898,27 @@ fn a_failed_claude_probe_restores_both_cached_windows() {
                 used_percent: Some(42.0),
                 detail: String::new(),
                 resets: Some("14:30".into()),
+                ..Default::default()
             },
             mindplayer_core::limits::QuotaRow {
                 label: "claude wk".into(),
                 used_percent: Some(7.0),
                 detail: String::new(),
                 resets: Some("09-20".into()),
+                ..Default::default()
             },
         ],
         Utc::now() - chrono::Duration::minutes(7),
     ));
-    app.limits = Some(mindplayer_core::limits::Limits {
-        claude: Err("curl failed: HTTP 429".into()),
-        codex: Err("not under test".into()),
-        kiro: Err("not under test".into()),
-        cursor: Err("not under test".into()),
-    });
+    app.limits = Some(
+        mindplayer_core::limits::Limits {
+            claude: Err("curl failed: HTTP 429".into()),
+            codex: Err("not under test".into()),
+            kiro: Err("not under test".into()),
+            cursor: Err("not under test".into()),
+        }
+        .quota_rows(),
+    );
 
     let rows = app.quota_rows();
 
@@ -3934,6 +3947,7 @@ fn a_recent_account_cache_prevents_an_immediate_duplicate_fetch() {
             used_percent: Some(12.5),
             detail: "$2.50/$20".into(),
             resets: None,
+            ..Default::default()
         }],
         Utc::now(),
     ));
@@ -3954,18 +3968,22 @@ fn a_recent_account_cache_prevents_an_immediate_duplicate_fetch() {
 #[test]
 fn a_sibling_refresh_holds_back_an_instance_that_already_has_a_reading() {
     let mut app = isolated_app();
-    app.limits = Some(mindplayer_core::limits::Limits {
-        claude: Err("curl failed: curl: (56) The requested URL returned error: 429".into()),
-        codex: Err("not under test".into()),
-        kiro: Err("not under test".into()),
-        cursor: Err("not under test".into()),
-    });
+    app.limits = Some(
+        mindplayer_core::limits::Limits {
+            claude: Err("curl failed: curl: (56) The requested URL returned error: 429".into()),
+            codex: Err("not under test".into()),
+            kiro: Err("not under test".into()),
+            cursor: Err("not under test".into()),
+        }
+        .quota_rows(),
+    );
     app.quota_cache = Some((
         vec![mindplayer_core::limits::QuotaRow {
             label: "claude wk".into(),
             used_percent: Some(98.0),
             detail: String::new(),
             resets: Some("09-20".into()),
+            ..Default::default()
         }],
         Utc::now(),
     ));
@@ -3982,12 +4000,15 @@ fn a_sibling_refresh_holds_back_an_instance_that_already_has_a_reading() {
 fn a_429_account_response_defers_the_next_fetch() {
     let mut app = isolated_app();
     let (tx, rx) = mpsc::channel();
-    tx.send(mindplayer_core::limits::Limits {
-        claude: Ok(Default::default()),
-        codex: Ok(Default::default()),
-        kiro: Ok(Default::default()),
-        cursor: Err("curl failed: response status 429".into()),
-    })
+    tx.send(
+        mindplayer_core::limits::Limits {
+            claude: Ok(Default::default()),
+            codex: Ok(Default::default()),
+            kiro: Ok(Default::default()),
+            cursor: Err("curl failed: response status 429".into()),
+        }
+        .quota_rows(),
+    )
     .unwrap();
     app.limits_rx = Some(rx);
     app.limits_started = Some(Instant::now());
@@ -4015,12 +4036,15 @@ fn a_run_of_429s_stops_growing_the_wait_at_a_cap_that_still_looks_again_within_t
     let mut app = isolated_app();
     for _ in 0..8 {
         let (tx, rx) = mpsc::channel();
-        tx.send(mindplayer_core::limits::Limits {
-            claude: Err("rate limited by the account API (HTTP 429)".into()),
-            codex: Ok(Default::default()),
-            kiro: Ok(Default::default()),
-            cursor: Ok(Default::default()),
-        })
+        tx.send(
+            mindplayer_core::limits::Limits {
+                claude: Err("rate limited by the account API (HTTP 429)".into()),
+                codex: Ok(Default::default()),
+                kiro: Ok(Default::default()),
+                cursor: Ok(Default::default()),
+            }
+            .quota_rows(),
+        )
         .unwrap();
         app.limits_rx = Some(rx);
         app.limits_started = Some(Instant::now());
@@ -4042,12 +4066,15 @@ fn a_run_of_429s_stops_growing_the_wait_at_a_cap_that_still_looks_again_within_t
 #[test]
 fn a_failed_reading_becomes_a_row_that_explains_itself() {
     let mut app = App::new();
-    app.limits = Some(mindplayer_core::limits::Limits {
-        claude: Err("keychain item has no claudeAiOauth token".into()),
-        codex: Err("no codex rollouts found".into()),
-        kiro: Err("no local Kiro profile".into()),
-        cursor: Err("no Cursor Agent access token in macOS Keychain".into()),
-    });
+    app.limits = Some(
+        mindplayer_core::limits::Limits {
+            claude: Err("keychain item has no claudeAiOauth token".into()),
+            codex: Err("no codex rollouts found".into()),
+            kiro: Err("no local Kiro profile".into()),
+            cursor: Err("no Cursor Agent access token in macOS Keychain".into()),
+        }
+        .quota_rows(),
+    );
     let rows = app.quota_rows();
     assert_eq!(rows.len(), 4, "one row per provider even when all failed");
     assert!(

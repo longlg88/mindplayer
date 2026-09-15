@@ -523,8 +523,8 @@ pub struct App {
     pub(crate) prompts_dir: PathBuf,
     /// Subscription rate-limit windows for the usage popup. `None` until the
     /// first fetch lands; the fetch does network I/O so it never blocks a keypress.
-    pub limits: Option<mindplayer_core::limits::Limits>,
-    pub(crate) limits_rx: Option<Receiver<mindplayer_core::limits::Limits>>,
+    pub limits: Option<Vec<mindplayer_core::limits::QuotaRow>>,
+    pub(crate) limits_rx: Option<Receiver<Vec<mindplayer_core::limits::QuotaRow>>>,
     /// The previous run's account reading, shown until this run has its own.
     pub(crate) quota_cache: Option<(Vec<mindplayer_core::limits::QuotaRow>, DateTime<Utc>)>,
     /// The logins available per provider. Always holds the one this machine
@@ -938,6 +938,17 @@ impl App {
     /// of nothing — see [`Self::quota_cached_at`], which the footer uses to say
     /// so rather than let a stale number pass for current.
     pub fn quota_rows(&self) -> Vec<mindplayer_core::limits::QuotaRow> {
+        let rows = self.quota_view().0;
+        // The footer answers "how much is left where my next session goes", so
+        // it shows the account in use and nothing else — the rest live on the
+        // Accounts screen, which has room for them.
+        rows.into_iter()
+            .filter(|row| row.account.is_empty() || self.account_for(row.agent).name == row.account)
+            .collect()
+    }
+
+    /// Every account's rows, for the Accounts screen.
+    pub(crate) fn quota_rows_all(&self) -> Vec<mindplayer_core::limits::QuotaRow> {
         self.quota_view().0
     }
 
@@ -958,10 +969,9 @@ impl App {
     /// old it is.
     fn quota_view(&self) -> (Vec<mindplayer_core::limits::QuotaRow>, bool) {
         let cached = self.quota_cache.as_ref().map(|(rows, _)| rows);
-        let Some(limits) = self.limits.as_ref() else {
+        let Some(live) = self.limits.clone() else {
             return (cached.cloned().unwrap_or_default(), cached.is_some());
         };
-        let live = limits.quota_rows();
         let Some(cached) = cached else {
             return (live, false);
         };
@@ -1089,6 +1099,8 @@ mod accounts_cross_tests;
 pub mod accounts_panel;
 #[cfg(test)]
 mod accounts_panel_tests;
+#[cfg(test)]
+mod accounts_quota_tests;
 #[cfg(test)]
 mod accounts_render_tests;
 mod convo_ingest;

@@ -433,3 +433,56 @@ fn such_a_pane_never_turns_into_a_session() {
         "the genuine session was swallowed"
     );
 }
+
+/// Reported from a pane's own log:
+/// `ERROR: No saved session found with ID login:codex:sendbird-com`.
+/// A sign-in pane has no transcript, so asking its provider to resume it makes
+/// the provider answer that no such session exists.
+mod a_row_we_invented_is_never_resumed {
+    use super::*;
+    use mindplayer_core::session::is_synthetic_id;
+
+    #[test]
+    fn every_invented_prefix_is_refused() {
+        for id in [
+            "new:codex:1",
+            "handoff:codex:claude:2",
+            "login:codex:sendbird-com",
+        ] {
+            assert!(is_synthetic_id(id), "`{id}` would be handed to `resume`");
+        }
+        assert!(
+            !is_synthetic_id("01a095a0-af64-7cc2-94ac-f9c5ab5f0eb6"),
+            "a real session id must still resume"
+        );
+    }
+
+    #[test]
+    fn a_sign_in_row_does_not_queue_a_resume() {
+        let mut app = open();
+        let home = limits_home_for_app();
+        let account = Account::isolated(&home, Agent::Codex, "second").unwrap();
+        app.accounts.push(account.clone());
+        app.request_login(&account);
+        // The pane it opened is what a later keypress would act on.
+        app.pending = None;
+
+        let row = app
+            .all_sessions
+            .iter()
+            .find(|s| s.id.starts_with(LOGIN_PREFIX))
+            .cloned()
+            .expect("the sign-in pane has no row");
+        app.all_sessions = vec![row.clone()];
+        app.visible = vec![crate::app::Row::Session(0)];
+        app.selected = 0;
+
+        app.request_resume();
+
+        assert!(
+            app.pending.is_none(),
+            "the sign-in row was queued for `resume`, which its provider refuses: {:?}",
+            app.pending.as_ref().map(|p| p.command.args.clone())
+        );
+    }
+}

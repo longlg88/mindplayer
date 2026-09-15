@@ -282,6 +282,29 @@ pub fn load_accounts(home: &Path) -> Vec<Account> {
     out
 }
 
+/// Which account wrote `file`, judged by where it sits.
+///
+/// Resuming has to land on the account that started the session, because the
+/// transcript only exists under that account's home. The path is the evidence
+/// for that, and it stays right for sessions that predate any of this.
+///
+/// The longest matching root wins, so a slot nested inside another store
+/// cannot be mistaken for the store containing it. Nothing matching means the
+/// inherited login: that is where every session lived before slots existed.
+pub fn owner_of(accounts: &[Account], agent: Agent, file: &Path, fallback_home: &Path) -> Account {
+    accounts
+        .iter()
+        .filter(|account| account.provider == agent)
+        .filter_map(|account| {
+            let root = account.session_root(fallback_home);
+            file.starts_with(&root)
+                .then(|| (root.components().count(), account))
+        })
+        .max_by_key(|(depth, _)| *depth)
+        .map(|(_, account)| account.clone())
+        .unwrap_or_else(|| Account::inherited(agent))
+}
+
 /// Replace the stored list. The inherited accounts are stored too, so a role
 /// or disabled flag set on one survives a restart.
 pub fn save_accounts(home: &Path, accounts: &[Account]) -> std::io::Result<()> {
@@ -486,6 +509,74 @@ mod tests {
                 .map(|a| a.role),
             Some(Role::Fallback)
         );
+    }
+
+    #[test]
+    fn a_session_is_owned_by_the_account_whose_store_it_sits_in() {
+        let home = tmp();
+        let work = Account::isolated(&home, Agent::Codex, "work").unwrap();
+        let accounts = vec![Account::inherited(Agent::Codex), work.clone()];
+
+        let in_work = work.session_root(&home).join("2026/09/15/rollout-a.jsonl");
+        assert_eq!(
+            owner_of(&accounts, Agent::Codex, &in_work, &home).name,
+            "work"
+        );
+
+        let inherited = home.join(".codex/sessions/2026/09/15/rollout-b.jsonl");
+        assert_eq!(
+            owner_of(&accounts, Agent::Codex, &inherited, &home).name,
+            DEFAULT_ACCOUNT
+        );
+    }
+
+    #[test]
+    fn a_session_from_before_any_slot_existed_still_resolves() {
+        let home = tmp();
+        let stray = PathBuf::from("/somewhere/else/rollout-c.jsonl");
+        let owner = owner_of(&[], Agent::Claude, &stray, &home);
+        assert!(owner.is_inherited());
+        assert!(owner.launch_env().is_empty());
+    }
+
+    #[test]
+    fn a_store_nested_inside_another_is_not_mistaken_for_it() {
+        let home = tmp();
+        let outer = Account {
+            provider: Agent::Codex,
+            name: "outer".into(),
+            slot: Slot::Isolated {
+                path: home.join("slots"),
+            },
+            role: Role::Primary,
+            disabled: false,
+        };
+        let inner = Account {
+            provider: Agent::Codex,
+            name: "inner".into(),
+            slot: Slot::Isolated {
+                path: home.join("slots/sessions/deep"),
+            },
+            role: Role::Primary,
+            disabled: false,
+        };
+        let accounts = vec![outer, inner.clone()];
+        let file = inner.session_root(&home).join("rollout-d.jsonl");
+        assert_eq!(
+            owner_of(&accounts, Agent::Codex, &file, &home).name,
+            "inner",
+            "the shallower store swallowed a session that is not its own"
+        );
+    }
+
+    #[test]
+    fn one_provider_cannot_claim_another_providers_session() {
+        let home = tmp();
+        let codex = Account::isolated(&home, Agent::Codex, "work").unwrap();
+        let file = codex.session_root(&home).join("rollout-e.jsonl");
+        let owner = owner_of(&[codex], Agent::Claude, &file, &home);
+        assert!(owner.is_inherited());
+        assert_eq!(owner.provider, Agent::Claude);
     }
 
     #[test]

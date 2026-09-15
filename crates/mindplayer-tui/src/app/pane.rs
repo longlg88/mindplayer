@@ -484,7 +484,7 @@ impl App {
         // peers there at all.
         self.spawn_category_sync_for(&session, false);
         self.pending = Some(PendingSpawn {
-            command: resume(&session, &self.account_for(session.agent)),
+            command: resume(&session, &self.account_of_session(&session)),
             session_id: session.id.clone(),
             initial_input: None,
             focus_after_spawn: true,
@@ -757,7 +757,7 @@ impl App {
                 continue;
             }
             self.enqueue_spawn(PendingSpawn {
-                command: resume(&session, &self.account_for(session.agent)),
+                command: resume(&session, &self.account_of_session(&session)),
                 session_id: session.id.clone(),
                 initial_input: None,
                 focus_after_spawn: true,

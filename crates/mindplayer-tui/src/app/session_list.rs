@@ -28,10 +28,10 @@ impl App {
     /// Spawn a scan of the current scope on a background thread.
     pub(crate) fn spawn_scan(&self) -> Receiver<Vec<Session>> {
         let scope = self.scope.clone();
-        let cfg = self.cfg.clone();
+        let roots = self.scan_roots();
         let (tx, rx) = mpsc::channel();
         thread::spawn(move || {
-            let _ = tx.send(scan(&scope, &cfg));
+            let _ = tx.send(mindplayer_core::discovery::scan_roots(&scope, &roots));
         });
         rx
     }

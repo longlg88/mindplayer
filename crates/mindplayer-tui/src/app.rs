@@ -4,8 +4,8 @@
 use crate::{handoff, pty::PtySession, text_input};
 use chrono::{DateTime, Utc};
 use mindplayer_core::{
-    refresh_activity_and_usage, resume, scan, sort_by_recency, tokens::human_tokens,
-    touched_recently, Agent, Aggregate, ScanConfig, Scope, Session, State, TokenUsage,
+    refresh_activity_and_usage, resume, sort_by_recency, tokens::human_tokens, touched_recently,
+    Agent, Aggregate, ScanConfig, Scope, Session, State, TokenUsage,
 };
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
@@ -870,6 +870,42 @@ impl App {
     /// read, which leaves this line to say only where the counts came from.
     pub fn summary_tail(&self) -> String {
         format!(" · {}", self.scope_label_short())
+    }
+
+    /// Every store to scan: the four default ones, plus a store for each
+    /// account that keeps its own.
+    ///
+    /// The defaults come from [`ScanConfig`] rather than from the inherited
+    /// accounts, so the `MINDPLAYER_*_DIR` overrides keep working and Cursor —
+    /// which holds no second account yet — is still scanned.
+    pub(crate) fn scan_roots(&self) -> Vec<mindplayer_core::discovery::SessionRoot> {
+        use mindplayer_core::discovery::SessionRoot;
+        let home = limits_home_for_app();
+        let mut roots = self.cfg.roots();
+        for account in &self.accounts {
+            if account.is_inherited() {
+                continue;
+            }
+            roots.push(SessionRoot {
+                agent: account.provider,
+                dir: account.session_root(&home),
+            });
+        }
+        roots
+    }
+
+    /// The login that started `session`, which is the only one that can resume
+    /// it: the transcript exists nowhere else.
+    pub(crate) fn account_of_session(
+        &self,
+        session: &Session,
+    ) -> mindplayer_core::accounts::Account {
+        mindplayer_core::accounts::owner_of(
+            &self.accounts,
+            session.agent,
+            &session.file,
+            &limits_home_for_app(),
+        )
     }
 
     /// The login a new pane of `agent` starts on.

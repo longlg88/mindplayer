@@ -4175,3 +4175,79 @@ fn the_walk_stops_at_its_entry_ceiling() {
         "the walk never returns more than it is allowed to visit"
     );
 }
+
+/// A pane must run on the account that owns the session, not on whichever one
+/// a new pane of that agent would have started on.
+mod account_selection {
+    use super::*;
+    use mindplayer_core::accounts::{Account, Role, DEFAULT_ACCOUNT};
+
+    fn app_with_two_codex_accounts(home: &std::path::Path) -> (App, Account) {
+        let mut app = App::new();
+        let second = Account::isolated(home, Agent::Codex, "overflow").unwrap();
+        app.accounts = vec![Account::inherited(Agent::Codex), second.clone()];
+        (app, second)
+    }
+
+    #[test]
+    fn a_new_pane_takes_the_primary_account() {
+        let home = std::env::temp_dir().join("mp-account-pick");
+        let (app, _) = app_with_two_codex_accounts(&home);
+        assert_eq!(app.account_for(Agent::Codex).name, DEFAULT_ACCOUNT);
+    }
+
+    #[test]
+    fn a_disabled_primary_is_passed_over() {
+        let home = std::env::temp_dir().join("mp-account-pick");
+        let (mut app, second) = app_with_two_codex_accounts(&home);
+        app.accounts[0].disabled = true;
+        assert_eq!(app.account_for(Agent::Codex).name, second.name);
+    }
+
+    #[test]
+    fn a_fallback_account_waits_for_the_primaries_to_run_out() {
+        let home = std::env::temp_dir().join("mp-account-pick");
+        let (mut app, second) = app_with_two_codex_accounts(&home);
+        app.accounts[1].role = Role::Fallback;
+        assert_eq!(app.account_for(Agent::Codex).name, DEFAULT_ACCOUNT);
+        app.accounts[0].disabled = true;
+        assert_eq!(app.account_for(Agent::Codex).name, second.name);
+    }
+
+    #[test]
+    fn resuming_uses_the_account_whose_store_holds_the_session() {
+        let home = super::super::limits_home_for_app();
+        let (app, second) = app_with_two_codex_accounts(&home);
+
+        let mut owned = session("sid-1", Agent::Codex, false);
+        owned.file = second
+            .session_root(&home)
+            .join("2026/09/15/rollout-z.jsonl");
+        assert_eq!(
+            app.account_of_session(&owned).name,
+            second.name,
+            "a session in the second account's store would have resumed on the first"
+        );
+        assert_ne!(
+            app.account_for(Agent::Codex).name,
+            second.name,
+            "this test proves nothing unless the two answers differ"
+        );
+    }
+
+    #[test]
+    fn a_second_account_adds_its_store_to_the_scan() {
+        let home = super::super::limits_home_for_app();
+        let (app, second) = app_with_two_codex_accounts(&home);
+        let roots = app.scan_roots();
+        assert!(
+            roots.iter().any(|r| r.dir == second.session_root(&home)),
+            "the second account's store is never scanned: {roots:?}"
+        );
+        assert_eq!(
+            roots.iter().filter(|r| r.agent == Agent::Cursor).count(),
+            1,
+            "cursor holds no second account but must still be scanned"
+        );
+    }
+}

@@ -91,6 +91,34 @@ impl ScanConfig {
             cursor_dir: env_dir("MINDPLAYER_CURSOR_DIR", &[".cursor", "chats"]),
         }
     }
+
+    /// These stores as scan roots, all belonging to the login this machine
+    /// already had.
+    pub fn roots(&self) -> Vec<SessionRoot> {
+        [
+            (Agent::Codex, &self.codex_dir),
+            (Agent::Claude, &self.claude_dir),
+            (Agent::Kiro, &self.kiro_dir),
+            (Agent::Cursor, &self.cursor_dir),
+        ]
+        .into_iter()
+        .map(|(agent, dir)| SessionRoot {
+            agent,
+            dir: dir.clone(),
+        })
+        .collect()
+    }
+}
+
+/// One store to scan: an agent's session directory for one account.
+///
+/// Which account a session belongs to is read back from its path rather than
+/// recorded on it, so a session found before accounts existed still resolves
+/// and there is only ever one answer to keep correct.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionRoot {
+    pub agent: Agent,
+    pub dir: PathBuf,
 }
 
 fn env_dir(var: &str, under_home: &[&str]) -> PathBuf {
@@ -114,13 +142,37 @@ fn home() -> PathBuf {
 /// numbers) is computed over this. The UI applies its own archived / sub-agent
 /// view filters on top.
 pub fn scan(scope: &Scope, cfg: &ScanConfig) -> Vec<Session> {
+    scan_roots(scope, &cfg.roots())
+}
+
+/// Scan every given store and return every session in `scope`.
+///
+/// Each root contributes only its own files, so scanning one account costs
+/// what scanning the single store used to. Roots that name the same directory
+/// twice are walked once: a duplicate would otherwise surface every session in
+/// it twice over.
+pub fn scan_roots(scope: &Scope, roots: &[SessionRoot]) -> Vec<Session> {
+    let mut seen: Vec<&SessionRoot> = Vec::with_capacity(roots.len());
+    for root in roots {
+        if !seen.contains(&root) {
+            seen.push(root);
+        }
+    }
+
     // Discovery is I/O- and parse-bound and embarrassingly parallel. We first
     // gather the candidate paths (cheap), then parse them across threads.
-    let codex_paths = gather_jsonl(&cfg.codex_dir);
-    let claude_items = gather_claude_items(&cfg.claude_dir, scope);
-
-    let kiro_paths = gather_kiro(&cfg.kiro_dir);
-    let cursor_paths = gather_cursor(&cfg.cursor_dir);
+    let mut codex_paths = Vec::new();
+    let mut claude_items = Vec::new();
+    let mut kiro_paths = Vec::new();
+    let mut cursor_paths = Vec::new();
+    for root in seen {
+        match root.agent {
+            Agent::Codex => codex_paths.extend(gather_jsonl(&root.dir)),
+            Agent::Claude => claude_items.extend(gather_claude_items(&root.dir, scope)),
+            Agent::Kiro => kiro_paths.extend(gather_kiro(&root.dir)),
+            Agent::Cursor => cursor_paths.extend(gather_cursor(&root.dir)),
+        }
+    }
 
     let mut sessions = parallel_filter_map(&codex_paths, |path| parse_codex_file(path, scope));
     let claude = parallel_filter_map(&claude_items, |(path, cwd_override)| {

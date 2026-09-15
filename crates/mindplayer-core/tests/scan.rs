@@ -580,3 +580,80 @@ fn claude_last_prompt_at_ignores_tool_result_feedback() {
         "last_prompt_at must be the genuine prompt's timestamp, not the later tool_result feedback"
     );
 }
+
+/// A second account keeps its own store, so discovery has to look in more than
+/// one place per agent and must not double-count when two roots coincide.
+mod several_accounts {
+    use super::*;
+    use mindplayer_core::discovery::{scan_roots, SessionRoot};
+
+    const SECOND_ID: &str = "22222222-3333-7444-8555-666677778888";
+
+    /// A codex store holding exactly one session, standing in for a second
+    /// account's slot.
+    fn second_store(dir: &Path) -> SessionRoot {
+        write(
+            &dir.join("2026/01/04")
+                .join(format!("rollout-2026-01-04T10-00-00-{SECOND_ID}.jsonl")),
+            &[
+                &format!(
+                    r#"{{"timestamp":"2026-01-04T10:00:00Z","type":"session_meta","payload":{{"id":"{SECOND_ID}","timestamp":"2026-01-04T10:00:00Z","cwd":"/work"}}}}"#
+                ),
+                r#"{"timestamp":"2026-01-04T10:01:00Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"second account"}]}}"#,
+            ],
+        );
+        SessionRoot {
+            agent: Agent::Codex,
+            dir: dir.to_path_buf(),
+        }
+    }
+
+    #[test]
+    fn sessions_from_every_account_are_found() {
+        let (d, cfg) = fixture();
+        let second = second_store(&d.path().join("codex-second"));
+
+        let one = scan(&Scope::Global, &cfg);
+        let mut roots = cfg.roots();
+        roots.push(second);
+        let both = scan_roots(&Scope::Global, &roots);
+
+        assert_eq!(
+            both.len(),
+            one.len() + 1,
+            "the second account's session never surfaced"
+        );
+        assert!(
+            both.iter().any(|s| s.id == SECOND_ID),
+            "found {:?}",
+            both.iter().map(|s| &s.id).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn two_accounts_naming_one_store_do_not_double_it() {
+        let (_d, cfg) = fixture();
+        let once = scan(&Scope::Global, &cfg);
+
+        let mut roots = cfg.roots();
+        roots.extend(cfg.roots());
+        let twice = scan_roots(&Scope::Global, &roots);
+
+        assert_eq!(
+            twice.len(),
+            once.len(),
+            "the same store was walked twice, so every session appeared twice"
+        );
+    }
+
+    #[test]
+    fn scanning_one_account_still_finds_what_it_always_did() {
+        let (_d, cfg) = fixture();
+        let via_cfg = scan(&Scope::Global, &cfg);
+        let via_roots = scan_roots(&Scope::Global, &cfg.roots());
+        assert_eq!(
+            via_cfg.iter().map(|s| &s.id).collect::<Vec<_>>(),
+            via_roots.iter().map(|s| &s.id).collect::<Vec<_>>()
+        );
+    }
+}

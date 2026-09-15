@@ -154,7 +154,7 @@ impl App {
             return false;
         }
         self.enqueue_spawn(PendingSpawn {
-            command: resume(session, &self.account_for(session.agent)),
+            command: resume(session, &self.account_of_session(session)),
             session_id: session.id.clone(),
             initial_input: Some(input),
             focus_after_spawn: false,

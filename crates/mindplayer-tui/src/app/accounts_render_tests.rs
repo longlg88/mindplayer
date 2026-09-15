@@ -126,6 +126,36 @@ fn a_refusal_is_shown_where_the_action_was_taken() {
     );
 }
 
+/// The hint ran off the end of a fixed-width popup, so `x remove` and
+/// `esc close` were simply not on screen. A key the user cannot see is the
+/// same as a key that does not exist.
+#[test]
+fn every_key_stays_on_screen_at_any_width() {
+    for width in [40, 60, 72, 88, 100, 140] {
+        let mut app = app_on_main();
+        app.accounts
+            .push(Account::isolated(&std::env::temp_dir(), Agent::Codex, "work").unwrap());
+        app.open_accounts();
+        let screen = painted(&mut app, width, 30);
+
+        for hint in [
+            "w use this one",
+            "enter session on it",
+            "x remove",
+            "esc close",
+        ] {
+            assert!(
+                screen.contains(hint),
+                "`{hint}` is cut off at {width} columns:\n{screen}"
+            );
+        }
+        assert!(
+            screen.contains("sendbird") || screen.contains("work"),
+            "an account name is cut off at {width} columns:\n{screen}"
+        );
+    }
+}
+
 #[test]
 fn the_screen_still_fits_a_narrow_terminal() {
     let mut app = app_on_main();
@@ -157,4 +187,32 @@ fn a_second_account_sits_under_its_provider_and_the_cursor_marks_one() {
         screen.contains("▶ overflow"),
         "nothing marks where the cursor is:\n{screen}"
     );
+}
+
+/// A name or a state cut in half is unreadable; the note saying an account is
+/// this machine's own login is only a nicety, so that is what gives way.
+#[test]
+fn a_narrow_terminal_drops_the_note_rather_than_the_columns() {
+    let mut app = app_on_main();
+    app.accounts
+        .push(Account::isolated(&std::env::temp_dir(), Agent::Codex, "sendbird-com").unwrap());
+    app.open_accounts();
+
+    let wide = painted(&mut app, 96, 24);
+    assert!(
+        wide.contains("this machine's own login"),
+        "the note is missing where there is room for it:\n{wide}"
+    );
+
+    let narrow = painted(&mut app, 56, 24);
+    assert!(
+        !narrow.contains("machine's own"),
+        "the note stayed and pushed the columns off the edge:\n{narrow}"
+    );
+    for whole in ["sendbird-com", "in use", "reserve", "idle"] {
+        assert!(
+            narrow.contains(whole),
+            "`{whole}` did not survive a narrow terminal:\n{narrow}"
+        );
+    }
 }

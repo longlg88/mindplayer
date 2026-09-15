@@ -2422,9 +2422,39 @@ fn relative_time(t: Option<DateTime<Utc>>, now: DateTime<Utc>) -> String {
     }
 }
 
-/// The Accounts screen (`A`): which logins exist per provider, and what each
-/// one is for. Management lives here rather than in the footer, which has to
-/// stay small enough to leave the panes room.
+/// What the Accounts screen can do, in the order a reader needs it: pick one,
+/// use one now, then the rarer housekeeping.
+const ACCOUNT_HINTS: &[&str] = &[
+    "w use this one",
+    "enter session on it",
+    "a add",
+    "l sign in",
+    "d off",
+    "x remove",
+    "esc close",
+];
+
+/// Pack hints into rows of at most `width` columns, keeping each whole.
+///
+/// Truncation is not an option here: the last hint is `esc close`, and a user
+/// who cannot see it has no way out that the screen admits to.
+fn fold_hints(hints: &[&str], width: usize) -> Vec<String> {
+    let mut rows: Vec<String> = Vec::new();
+    for hint in hints {
+        match rows.last_mut() {
+            Some(row) if row.chars().count() + 3 + hint.chars().count() <= width => {
+                row.push_str("   ");
+                row.push_str(hint);
+            }
+            _ => rows.push((*hint).to_string()),
+        }
+    }
+    rows
+}
+
+/// The Accounts screen (`u`): which logins exist per provider, and which one
+/// the next session takes. Management lives here rather than in the footer,
+/// which has to stay small enough to leave the panes room.
 fn accounts_popup(f: &mut Frame, app: &App) {
     use crate::app::accounts_panel::AccountRow;
 
@@ -2475,53 +2505,65 @@ fn accounts_popup(f: &mut Frame, app: &App) {
         .unwrap_or(7)
         .clamp(7, 20);
 
-    let mut lines: Vec<Line> = Vec::with_capacity(rows.len());
-    for (i, row) in rows.iter().enumerate() {
-        let selected = i == panel.selected;
-        match row {
-            AccountRow::Header(agent) => lines.push(Line::from(Span::styled(
-                format!(" {}", agent.as_str().to_uppercase()),
-                Style::default().fg(CATEGORY).add_modifier(Modifier::BOLD),
-            ))),
-            AccountRow::Entry(idx) => {
-                let Some(account) = app.accounts.get(*idx) else {
-                    continue;
-                };
-                let panes = app.pane_count_on(account);
-                // The one question this screen exists to answer is which
-                // account the next session takes, so that is the column, not a
-                // role name the reader has to translate.
-                let in_use = app.account_for(account.provider).name == account.name;
-                let state = if account.disabled {
-                    ("off", ERROR)
-                } else if in_use {
-                    ("in use", IDLE)
-                } else {
-                    ("reserve", DIM)
-                };
-                let activity = match panes {
-                    0 => "idle".to_string(),
-                    1 => "1 pane".to_string(),
-                    n => format!("{n} panes"),
-                };
-                let origin = if account.is_inherited() {
-                    " (this machine's own login)"
-                } else {
-                    ""
-                };
-                let style = if selected {
-                    Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)
-                } else {
-                    Style::default().fg(DIM)
-                };
-                lines.push(Line::from(vec![
-                    Span::styled(if selected { "  ▶ " } else { "    " }, style),
-                    Span::styled(format!("{:<name_width$}  ", account.name), style),
-                    Span::styled(format!("{:<8}  ", state.0), Style::default().fg(state.1)),
-                    Span::styled(format!("{activity}{origin}"), Style::default().fg(DIM)),
-                ]));
+    let build = |show_origin: bool| {
+        let mut lines: Vec<Line> = Vec::with_capacity(rows.len());
+        for (i, row) in rows.iter().enumerate() {
+            let selected = i == panel.selected;
+            match row {
+                AccountRow::Header(agent) => lines.push(Line::from(Span::styled(
+                    format!(" {}", agent.as_str().to_uppercase()),
+                    Style::default().fg(CATEGORY).add_modifier(Modifier::BOLD),
+                ))),
+                AccountRow::Entry(idx) => {
+                    let Some(account) = app.accounts.get(*idx) else {
+                        continue;
+                    };
+                    let panes = app.pane_count_on(account);
+                    // The one question this screen exists to answer is which
+                    // account the next session takes, so that is the column,
+                    // not a role name the reader has to translate.
+                    let in_use = app.account_for(account.provider).name == account.name;
+                    let state = if account.disabled {
+                        ("off", ERROR)
+                    } else if in_use {
+                        ("in use", IDLE)
+                    } else {
+                        ("reserve", DIM)
+                    };
+                    let activity = match panes {
+                        0 => "idle".to_string(),
+                        1 => "1 pane".to_string(),
+                        n => format!("{n} panes"),
+                    };
+                    let origin = if show_origin && account.is_inherited() {
+                        " (this machine's own login)"
+                    } else {
+                        ""
+                    };
+                    let style = if selected {
+                        Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default().fg(DIM)
+                    };
+                    lines.push(Line::from(vec![
+                        Span::styled(if selected { "  ▶ " } else { "    " }, style),
+                        Span::styled(format!("{:<name_width$}  ", account.name), style),
+                        Span::styled(format!("{:<8}  ", state.0), Style::default().fg(state.1)),
+                        Span::styled(format!("{activity}{origin}"), Style::default().fg(DIM)),
+                    ]));
+                }
             }
         }
+        lines
+    };
+
+    // The note saying an account is this machine's own login is the first
+    // thing to go when the terminal is narrow: a name or a state cut in half
+    // is unreadable, while losing the note only loses a nicety.
+    let widest = |lines: &[Line]| lines.iter().map(|line| line.width()).max().unwrap_or(0);
+    let mut lines = build(true);
+    if widest(&lines) as u16 + 3 > f.area().width {
+        lines = build(false);
     }
 
     if let Some(error) = &panel.error {
@@ -2531,15 +2573,34 @@ fn accounts_popup(f: &mut Frame, app: &App) {
             Style::default().fg(ERROR),
         )));
     }
-    lines.push(Line::from(""));
-    lines.push(Line::from(Span::styled(
-        " w use this one   enter session on it   a add   l sign in   d off   x remove   esc close",
-        Style::default().fg(DIM),
-    )));
+    // The widest row decides the popup, and the hint is folded to whatever
+    // width is left rather than being cut off — a key the user cannot see is
+    // the same as a key that does not exist.
+    let listed = lines
+        .iter()
+        .map(|line| line.width())
+        .max()
+        .unwrap_or(0)
+        .max(
+            ACCOUNT_HINTS
+                .iter()
+                .map(|h| h.chars().count())
+                .max()
+                .unwrap_or(0),
+        );
+    let outer = (listed as u16 + 3).min(f.area().width);
+    let inner = outer.saturating_sub(3) as usize;
 
-    let width = 72.min(f.area().width);
+    lines.push(Line::from(""));
+    for row in fold_hints(ACCOUNT_HINTS, inner) {
+        lines.push(Line::from(Span::styled(
+            format!(" {row}"),
+            Style::default().fg(DIM),
+        )));
+    }
+
     let height = (lines.len() as u16 + 2).min(f.area().height);
-    let area = centered(f.area(), width, height);
+    let area = centered(f.area(), outer, height);
     f.render_widget(Clear, area);
     f.render_widget(
         Paragraph::new(lines).block(

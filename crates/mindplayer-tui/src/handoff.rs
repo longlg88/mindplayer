@@ -1,5 +1,6 @@
 //! Cross-agent handoff helpers.
 
+use mindplayer_core::accounts::Account;
 use mindplayer_core::{new_session, Agent, Command, Session};
 use serde_json::Value;
 use std::fs::File;
@@ -24,10 +25,10 @@ pub fn target_for_choice(choice: usize) -> Agent {
     }
 }
 
-pub fn command_for(source: &Session, target: Agent) -> Command {
+pub fn command_for(source: &Session, target: Agent, account: &Account) -> Command {
     // `new_session` already pre-trusts every tool for a kiro target (every way
     // a kiro session can start does), so a handoff needs no extra handling here.
-    new_session(target, source.cwd.clone())
+    new_session(target, source.cwd.clone(), account)
 }
 
 pub fn title_for(source: &Session, target: Agent) -> String {
@@ -1154,7 +1155,7 @@ mod tests {
     #[test]
     fn handoff_into_kiro_pretrusts_all_tools() {
         let src = session(PathBuf::from("/work/project/claude.jsonl"));
-        let kiro = command_for(&src, Agent::Kiro);
+        let kiro = command_for(&src, Agent::Kiro, &Account::inherited(Agent::Kiro));
         assert_eq!(kiro.program, "kiro-cli");
         assert!(
             kiro.args.iter().any(|a| a == "--trust-all-tools"),
@@ -1162,9 +1163,9 @@ mod tests {
             kiro.args
         );
         // A non-kiro handoff target gets no trust flag injected here.
-        let codex = command_for(&src, Agent::Codex);
+        let codex = command_for(&src, Agent::Codex, &Account::inherited(Agent::Codex));
         assert!(!codex.args.iter().any(|a| a == "--trust-all-tools"));
-        let cursor = command_for(&src, Agent::Cursor);
+        let cursor = command_for(&src, Agent::Cursor, &Account::inherited(Agent::Cursor));
         assert_eq!(cursor.program, "agent");
         assert!(cursor.args.is_empty());
     }

@@ -1587,7 +1587,7 @@ fn handoff_queues_target_agent_with_initial_prompt() {
 
     app.begin_handoff();
     assert_eq!(app.handoff_picker, Some(0));
-    app.confirm_handoff(Agent::Codex);
+    app.confirm_handoff_on(&mindplayer_core::accounts::Account::inherited(Agent::Codex));
 
     let pending = app.pending.as_ref().expect("handoff queues PTY spawn");
     assert!(pending.session_id.starts_with("handoff:claude:codex:"));
@@ -1629,7 +1629,7 @@ fn handoff_into_kiro_sends_context_as_first_input_argument() {
     source.file = transcript;
     let mut app = app_with(vec![source]);
 
-    app.confirm_handoff(Agent::Kiro);
+    app.confirm_handoff_on(&mindplayer_core::accounts::Account::inherited(Agent::Kiro));
 
     let pending = app.pending.as_ref().expect("handoff queues PTY spawn");
     assert!(pending.session_id.starts_with("handoff:claude:kiro:"));
@@ -1675,7 +1675,7 @@ fn kiro_handoff_to_codex_creates_child_lane() {
     app.begin_handoff();
     assert_eq!(app.handoff_picker, Some(0));
     assert!(app.status.contains("choose target"));
-    app.confirm_handoff(Agent::Codex);
+    app.confirm_handoff_on(&mindplayer_core::accounts::Account::inherited(Agent::Codex));
 
     let pending = app.pending.as_ref().expect("handoff queues PTY spawn");
     assert!(pending.session_id.starts_with("handoff:kiro:codex:"));

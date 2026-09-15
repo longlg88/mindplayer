@@ -1084,6 +1084,8 @@ fn trim_submit(bytes: &mut Vec<u8>) {
     }
 }
 
+#[cfg(test)]
+mod accounts_cross_tests;
 pub mod accounts_panel;
 #[cfg(test)]
 mod accounts_panel_tests;

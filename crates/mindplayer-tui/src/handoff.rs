@@ -16,15 +16,6 @@ const MAX_SOURCE_BYTES: u64 = 16 * 1024 * 1024;
 #[cfg(test)]
 pub(crate) static TEST_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-pub fn target_for_choice(choice: usize) -> Agent {
-    match choice {
-        0 => Agent::Codex,
-        1 => Agent::Claude,
-        2 => Agent::Kiro,
-        _ => Agent::Cursor,
-    }
-}
-
 pub fn command_for(source: &Session, target: Agent, account: &Account) -> Command {
     // `new_session` already pre-trusts every tool for a kiro target (every way
     // a kiro session can start does), so a handoff needs no extra handling here.

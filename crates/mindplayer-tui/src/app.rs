@@ -937,17 +937,18 @@ impl App {
     /// Until this run's own reading lands, the previous run's is shown instead
     /// of nothing — see [`Self::quota_cached_at`], which the footer uses to say
     /// so rather than let a stale number pass for current.
+    /// Every signed-in login's usage, which is what the footer draws.
+    ///
+    /// Showing only the account a new session would take hid the one that was
+    /// actually exhausted: an account switched away from keeps burning nothing
+    /// but stays at 100%, while the fresh account it was switched to has no
+    /// reading at all until it has run something. A login that is configured
+    /// is a login whose usage matters.
     pub fn quota_rows(&self) -> Vec<mindplayer_core::limits::QuotaRow> {
-        let rows = self.quota_view().0;
-        // The footer answers "how much is left where my next session goes", so
-        // it shows the account in use and nothing else — the rest live on the
-        // Accounts screen, which has room for them.
-        rows.into_iter()
-            .filter(|row| row.account.is_empty() || self.account_for(row.agent).name == row.account)
-            .collect()
+        self.quota_view().0
     }
 
-    /// Every account's rows, for the Accounts screen.
+    /// The same rows, for the Accounts screen.
     pub(crate) fn quota_rows_all(&self) -> Vec<mindplayer_core::limits::QuotaRow> {
         self.quota_view().0
     }

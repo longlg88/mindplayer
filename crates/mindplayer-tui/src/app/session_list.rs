@@ -1088,6 +1088,12 @@ impl App {
     /// Refresh the rate-limit readout on a worker thread. Skipped when one is
     /// already in flight; the popup shows the previous values until it lands.
     pub(crate) fn spawn_limits_fetch(&mut self) {
+        self.spawn_limits_fetch_from(super::limits_home_for_app());
+    }
+
+    /// The fetch path with its cache home explicit, so the cross-process gate
+    /// can be tested without mutating the process-wide `HOME`.
+    pub(crate) fn spawn_limits_fetch_from(&mut self, home: PathBuf) {
         // A fetch that never returns — `security(1)` can block on an interactive
         // Keychain prompt — would otherwise hold `limits_rx` for the rest of the
         // process and leave the popup stuck on "…" with no way to retry. After
@@ -1102,11 +1108,29 @@ impl App {
         if self.limits_rx.is_some() {
             return;
         }
+
+        // Another process may have refreshed the shared cache since this App
+        // started. The in-memory copy alone stays stale for the process's whole
+        // lifetime and would make every long-running pane fetch on its own
+        // timer. Adopt a newer disk reading before deciding whether this
+        // process needs to spend the account's request budget.
+        if let Some(shared) = mindplayer_core::limits::load_quota_cache(&home, crate::app::BUILD) {
+            let newer = self
+                .quota_cache
+                .as_ref()
+                .is_none_or(|(_, local_at)| shared.1 > *local_at);
+            if newer {
+                self.quota_cache = Some(shared);
+                self.limits = None;
+            }
+        }
+
         let now = Instant::now();
         if self.limits_retry_at.is_some_and(|at| now < at) {
             return;
         }
-        // The limit is per account, not per process, so every pane's own timer adds to the same budget.
+        // The limit is per account, not per process, so every pane's own timer
+        // adds to the same budget unless a sibling's recent cache satisfies it.
         if self.quota_cache.as_ref().is_some_and(|(_, written_at)| {
             Utc::now()
                 .signed_duration_since(*written_at)
@@ -1117,7 +1141,6 @@ impl App {
             return;
         }
         self.limits_started = Some(now);
-        let home = super::limits_home_for_app();
         // One reading per login, since the numbers are per account and an
         // account with its own home keeps its own state.
         let accounts = self.probe_accounts();

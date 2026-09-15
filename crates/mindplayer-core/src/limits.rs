@@ -132,9 +132,7 @@ impl KiroLimits {
     }
 }
 
-/// Which first-party usage-summary block supplied the Cursor account quota.
-/// `OnDemand` is deliberately absent: spend billing must not silently replace
-/// the included-plan allowance.
+/// Which first-party usage-summary block supplied the included Cursor quota.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CursorQuotaSource {
     Plan,
@@ -142,16 +140,23 @@ pub enum CursorQuotaSource {
     TeamPooled,
 }
 
-/// Cursor account-level quota from `/api/usage-summary`.
+/// Cursor account-level quotas from `/api/usage-summary`.
 ///
-/// Monetary values remain in the endpoint's cents unit. They are not context
-/// tokens, per-session tokens, or the on-demand spend meter.
+/// The included total, Auto, API, and on-demand cap are independent signals and
+/// must remain separate. Monetary values stay in the endpoint's cents unit.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct CursorLimits {
+    /// Included-plan total, or the personal/team fallback when no plan total exists.
     pub used_percent: Option<f64>,
     pub used_cents: Option<i64>,
     pub limit_cents: Option<i64>,
     pub remaining_cents: Option<i64>,
+    pub auto_percent_used: Option<f64>,
+    pub api_percent_used: Option<f64>,
+    pub on_demand_percent_used: Option<f64>,
+    pub on_demand_used_cents: Option<i64>,
+    pub on_demand_limit_cents: Option<i64>,
+    pub on_demand_remaining_cents: Option<i64>,
     pub billing_cycle_start: Option<String>,
     pub billing_cycle_end: Option<String>,
     pub membership_type: Option<String>,
@@ -162,7 +167,7 @@ pub struct CursorLimits {
 
 impl CursorLimits {
     pub fn has_any(&self) -> bool {
-        self.used_percent.is_some() || self.is_unlimited
+        self.used_percent.is_some() || self.on_demand_percent_used.is_some() || self.is_unlimited
     }
 }
 
@@ -503,23 +508,52 @@ impl Limits {
         tag_rows(&mut out, mark, Agent::Kiro);
         let mark = out.len();
         match &self.cursor {
-            Ok(c) if c.has_any() => out.push(QuotaRow {
-                label: "cursor".into(),
-                agent: default_row_agent(),
-                account: String::new(),
-                used_percent: c.used_percent,
-                detail: match (c.used_cents, c.limit_cents) {
-                    (Some(u), Some(l)) => {
-                        format!("${:.2}/${}", u as f64 / 100.0, l / 100)
-                    }
-                    _ => String::new(),
-                },
-                resets: c
+            Ok(c) if c.has_any() => {
+                let resets = c
                     .billing_cycle_end
                     .as_deref()
                     .and_then(cursor_date_label)
-                    .map(str::to_string),
-            }),
+                    .map(str::to_string);
+                if c.source == Some(CursorQuotaSource::Plan) {
+                    if let Some(percent) = c.used_percent {
+                        out.push(QuotaRow {
+                            label: "cursor included".into(),
+                            used_percent: Some(percent),
+                            detail: cursor_money_detail(c.used_cents, c.limit_cents),
+                            resets: resets.clone(),
+                            ..Default::default()
+                        });
+                    }
+                } else if let Some(percent) = c.used_percent {
+                    out.push(QuotaRow {
+                        label: "cursor".into(),
+                        used_percent: Some(percent),
+                        detail: cursor_money_detail(c.used_cents, c.limit_cents),
+                        resets: resets.clone(),
+                        ..Default::default()
+                    });
+                } else if c.is_unlimited {
+                    out.push(QuotaRow {
+                        label: "cursor".into(),
+                        used_percent: None,
+                        detail: "unlimited".into(),
+                        resets: resets.clone(),
+                        ..Default::default()
+                    });
+                }
+                if let Some(percent) = c.on_demand_percent_used {
+                    out.push(QuotaRow {
+                        label: "cursor on-demand".into(),
+                        used_percent: Some(percent),
+                        detail: cursor_money_detail(
+                            c.on_demand_used_cents,
+                            c.on_demand_limit_cents,
+                        ),
+                        resets,
+                        ..Default::default()
+                    });
+                }
+            }
             Ok(_) => out.push(QuotaRow::reason("cursor", "no usage reported")),
             Err(e) => out.push(QuotaRow::reason("cursor", e)),
         }
@@ -639,17 +673,19 @@ impl Limits {
                 if c.source == Some(CursorQuotaSource::TeamPooled) {
                     parts.push("team".to_string());
                 }
-                if let Some(percent) = c.used_percent {
+                if c.source == Some(CursorQuotaSource::Plan) {
+                    if let Some(percent) = c.used_percent {
+                        parts.push(format!("included {percent:.1}%"));
+                    }
+                } else if let Some(percent) = c.used_percent {
                     parts.push(format!("{percent:.1}%"));
                 } else if c.is_unlimited {
                     parts.push("unlimited".to_string());
                 }
-                if let (Some(used), Some(limit)) = (c.used_cents, c.limit_cents) {
-                    parts.push(format!(
-                        "${}/${}",
-                        compact_decimal(used as f64 / 100.0),
-                        compact_decimal(limit as f64 / 100.0)
-                    ));
+                if let Some(percent) = c.on_demand_percent_used {
+                    let detail =
+                        cursor_money_detail(c.on_demand_used_cents, c.on_demand_limit_cents);
+                    parts.push(format!("on-demand {percent:.1}% {detail}"));
                 }
                 if let Some(reset) = c.billing_cycle_end.as_deref().and_then(cursor_date_label) {
                     parts.push(format!("reset {reset}"));
@@ -669,6 +705,17 @@ impl Limits {
 fn cursor_date_label(raw: &str) -> Option<&str> {
     chrono::DateTime::parse_from_rfc3339(raw).ok()?;
     raw.get(..10)
+}
+
+fn cursor_money_detail(used_cents: Option<i64>, limit_cents: Option<i64>) -> String {
+    match (used_cents, limit_cents) {
+        (Some(used), Some(limit)) => format!(
+            "${:.2}/${}",
+            used as f64 / 100.0,
+            compact_decimal(limit as f64 / 100.0)
+        ),
+        _ => String::new(),
+    }
 }
 
 fn compact_decimal(value: f64) -> String {
@@ -1088,13 +1135,28 @@ pub fn parse_cursor_usage(body: &Value) -> Result<CursorLimits, String> {
     let plan_remaining = cents(plan.and_then(|v| v.get("remaining")));
     let auto = percent(plan.and_then(|v| v.get("autoPercentUsed")));
     let api = percent(plan.and_then(|v| v.get("apiPercentUsed")));
-    let plan_percent =
-        percent(plan.and_then(|v| v.get("totalPercentUsed"))).or_else(|| match (auto, api) {
-            (Some(auto), Some(api)) => Some((auto + api) / 2.0),
-            (Some(auto), None) => Some(auto),
-            (None, Some(api)) => Some(api),
-            (None, None) => ratio(plan_used, plan_limit),
-        });
+    let plan_percent = percent(plan.and_then(|v| v.get("totalPercentUsed")))
+        .or_else(|| ratio(plan_used, plan_limit));
+
+    let personal_on_demand = body
+        .pointer("/individualUsage/onDemand")
+        .filter(|block| block.get("enabled").and_then(Value::as_bool) != Some(false));
+    let team_on_demand = body
+        .pointer("/teamUsage/onDemand")
+        .filter(|block| block.get("enabled").and_then(Value::as_bool) != Some(false));
+    let on_demand = if cents(personal_on_demand.and_then(|v| v.get("limit")))
+        .is_some_and(|limit| limit > 0)
+    {
+        personal_on_demand
+    } else if cents(team_on_demand.and_then(|v| v.get("limit"))).is_some_and(|limit| limit > 0) {
+        team_on_demand
+    } else {
+        None
+    };
+    let on_demand_used = cents(on_demand.and_then(|v| v.get("used")));
+    let on_demand_limit = cents(on_demand.and_then(|v| v.get("limit")));
+    let on_demand_remaining = cents(on_demand.and_then(|v| v.get("remaining")));
+    let on_demand_percent = ratio(on_demand_used, on_demand_limit);
 
     let overall = body
         .pointer("/individualUsage/overall")
@@ -1114,7 +1176,7 @@ pub fn parse_cursor_usage(body: &Value) -> Result<CursorLimits, String> {
 
     let (used_percent, used_cents, limit_cents, remaining_cents, source) = if is_unlimited {
         (None, None, None, None, None)
-    } else if plan_percent.is_some() {
+    } else if plan_percent.is_some() || auto.is_some() || api.is_some() {
         (
             plan_percent,
             plan_used,
@@ -1147,6 +1209,12 @@ pub fn parse_cursor_usage(body: &Value) -> Result<CursorLimits, String> {
         used_cents,
         limit_cents,
         remaining_cents,
+        auto_percent_used: auto,
+        api_percent_used: api,
+        on_demand_percent_used: on_demand_percent,
+        on_demand_used_cents: on_demand_used,
+        on_demand_limit_cents: on_demand_limit,
+        on_demand_remaining_cents: on_demand_remaining,
         billing_cycle_start: string(body, "billingCycleStart"),
         billing_cycle_end: string(body, "billingCycleEnd"),
         membership_type: string(body, "membershipType"),
@@ -1775,6 +1843,8 @@ mod tests {
         assert_eq!(got.used_percent, Some(30.0));
         assert_eq!(got.used_cents, Some(1500));
         assert_eq!(got.limit_cents, Some(5000));
+        assert_eq!(got.auto_percent_used, Some(20.0));
+        assert_eq!(got.api_percent_used, Some(40.0));
         assert_eq!(got.source, Some(CursorQuotaSource::Plan));
         assert_eq!(
             got.billing_cycle_end.as_deref(),
@@ -1784,9 +1854,82 @@ mod tests {
     }
 
     #[test]
-    fn cursor_plan_ratio_is_used_when_percent_fields_are_absent() {
+    fn cursor_included_and_on_demand_are_the_only_displayed_categories() {
         let got = parse_cursor_usage(&json!({
-            "individualUsage": { "plan": { "used": 4900, "limit": 50000 } }
+            "billingCycleStart": "2026-09-01T00:00:00.000Z",
+            "billingCycleEnd": "2026-10-01T00:00:00.000Z",
+            "membershipType": "pro",
+            "limitType": "user",
+            "isUnlimited": false,
+            "individualUsage": {
+                "plan": {
+                    "enabled": true,
+                    "used": 2350,
+                    "limit": 10000,
+                    "remaining": 7650,
+                    "autoPercentUsed": 9.0,
+                    "apiPercentUsed": 100.0,
+                    "totalPercentUsed": 23.5
+                },
+                "onDemand": {
+                    "enabled": true,
+                    "used": 8096,
+                    "limit": 8000,
+                    "remaining": 0
+                }
+            }
+        }))
+        .unwrap();
+
+        assert_eq!(got.used_percent, Some(23.5));
+        assert_eq!(got.auto_percent_used, Some(9.0));
+        assert_eq!(got.api_percent_used, Some(100.0));
+        assert_eq!(got.on_demand_percent_used, Some(100.0));
+        assert_eq!(got.on_demand_used_cents, Some(8096));
+        assert_eq!(got.on_demand_limit_cents, Some(8000));
+        assert_eq!(got.on_demand_remaining_cents, Some(0));
+
+        let limits = Limits {
+            claude: Err("not under test".into()),
+            codex: Err("not under test".into()),
+            kiro: Err("not under test".into()),
+            cursor: Ok(got),
+        };
+        let cursor_rows: Vec<_> = limits
+            .quota_rows()
+            .into_iter()
+            .filter(|row| row.label.starts_with("cursor"))
+            .collect();
+        assert_eq!(
+            cursor_rows
+                .iter()
+                .map(|row| row.label.as_str())
+                .collect::<Vec<_>>(),
+            ["cursor included", "cursor on-demand"]
+        );
+        assert_eq!(cursor_rows[0].used_percent, Some(23.5));
+        assert_eq!(cursor_rows[1].used_percent, Some(100.0));
+        assert_eq!(cursor_rows[1].detail, "$80.96/$80");
+
+        let summary = limits.summary_lines();
+        assert!(summary[3].contains("included 23.5%"), "{summary:?}");
+        assert!(
+            summary[3].contains("on-demand 100.0% $80.96/$80"),
+            "{summary:?}"
+        );
+        assert!(!summary[3].contains("auto"), "{summary:?}");
+        assert!(!summary[3].contains("api"), "{summary:?}");
+    }
+
+    #[test]
+    fn cursor_plan_ratio_is_used_when_total_percent_is_absent() {
+        let got = parse_cursor_usage(&json!({
+            "individualUsage": { "plan": {
+                "used": 4900,
+                "limit": 50000,
+                "autoPercentUsed": 9.0,
+                "apiPercentUsed": 100.0
+            } }
         }))
         .unwrap();
         assert_eq!(got.used_percent, Some(9.8));

@@ -43,7 +43,70 @@ pub struct AccountsPanel {
     pub error: Option<String>,
 }
 
+/// Which account each session belongs to, worked out once for a redraw.
+///
+/// The session list can hold thousands of rows, and resolving an account means
+/// a path comparison per account — cheap once, wasteful per row per frame.
+pub(crate) struct AccountMarks {
+    home: PathBuf,
+    accounts: Vec<Account>,
+    /// The account each provider currently starts sessions on.
+    in_use: Vec<(Agent, String)>,
+}
+
+impl AccountMarks {
+    /// The account this session belongs to, when that is not the one its
+    /// provider starts new sessions on.
+    ///
+    /// Saying so on every row would repeat one fact thousands of times; saying
+    /// it only where it differs makes the row that is elsewhere the one that
+    /// stands out — which is the question a reader actually has.
+    pub(crate) fn label_for(&self, session: &Session) -> Option<&str> {
+        let owner = mindplayer_core::accounts::owner_of(
+            &self.accounts,
+            session.agent,
+            &session.file,
+            &self.home,
+        );
+        let current = self
+            .in_use
+            .iter()
+            .find(|(agent, _)| *agent == session.agent)
+            .map(|(_, name)| name.as_str())?;
+        if owner.name == current {
+            return None;
+        }
+        self.accounts
+            .iter()
+            .find(|a| a.provider == session.agent && a.name == owner.name)
+            .map(|a| a.name.as_str())
+    }
+}
+
 impl App {
+    /// Account labels for the session list, or `None` when no provider has a
+    /// second account — then every row would carry the same answer.
+    pub(crate) fn account_marks(&self) -> Option<AccountMarks> {
+        let has_a_choice = MULTI_ACCOUNT_AGENTS.iter().any(|agent| {
+            self.accounts
+                .iter()
+                .filter(|a| a.provider == *agent)
+                .count()
+                > 1
+        });
+        if !has_a_choice {
+            return None;
+        }
+        Some(AccountMarks {
+            home: limits_home_for_app(),
+            accounts: self.accounts.clone(),
+            in_use: MULTI_ACCOUNT_AGENTS
+                .iter()
+                .map(|agent| (*agent, self.account_for(*agent).name))
+                .collect(),
+        })
+    }
+
     /// The Accounts screen's lines, providers in a fixed order so the list does
     /// not reshuffle between redraws.
     pub(crate) fn account_rows(&self) -> Vec<AccountRow> {

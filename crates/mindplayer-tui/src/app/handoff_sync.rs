@@ -22,6 +22,29 @@ pub(crate) fn deltas_for(marks: Vec<(Session, u64)>) -> Vec<handoff::PeerDelta> 
 }
 
 impl App {
+    /// Every login a handoff can land on, grouped by provider in a fixed
+    /// order.
+    ///
+    /// Cursor holds no second account yet but is still a target, so it
+    /// contributes the login this machine already had.
+    pub(crate) fn handoff_targets(&self) -> Vec<mindplayer_core::accounts::Account> {
+        use mindplayer_core::accounts::{Account, MULTI_ACCOUNT_AGENTS};
+        let mut out = Vec::new();
+        for agent in [Agent::Codex, Agent::Claude, Agent::Kiro, Agent::Cursor] {
+            if MULTI_ACCOUNT_AGENTS.contains(&agent) {
+                out.extend(
+                    self.accounts
+                        .iter()
+                        .filter(|a| a.provider == agent && !a.disabled)
+                        .cloned(),
+                );
+            } else {
+                out.push(Account::inherited(agent));
+            }
+        }
+        out
+    }
+
     pub fn begin_handoff(&mut self) {
         if self.selected_session().is_none() {
             return;
@@ -40,14 +63,27 @@ impl App {
         }
     }
 
-    pub fn confirm_handoff(&mut self, target: Agent) {
+    /// Hand the selected session's context to a new one on `account`.
+    ///
+    /// The account matters as much as the provider here: a session cannot be
+    /// resumed on an account whose home never held it, so handing it over is
+    /// the only way to carry a conversation to another login.
+    pub fn confirm_handoff_on(&mut self, account: &mindplayer_core::accounts::Account) {
+        let target = account.provider;
         let Some(source) = self.selected_session().cloned() else {
             self.handoff_picker = None;
             return;
         };
         self.handoff_picker = None;
-        if source.agent == target {
-            self.status = format!("handoff target is already {}", target.as_str());
+        // Same provider is fine as long as it is a different login — that is
+        // what carrying a conversation to another account means. Only landing
+        // back where it started is refused.
+        if source.agent == target && self.account_of_session(&source).name == account.name {
+            self.status = format!(
+                "this session is already on {} {}",
+                target.as_str(),
+                account.name
+            );
             return;
         }
 
@@ -59,7 +95,7 @@ impl App {
             }
         };
         mindplayer_core::log_event_to(&self.audit_path, mindplayer_core::AuditEvent::Handoff);
-        let command = handoff::command_for(&source, target, &self.account_for(target));
+        let command = handoff::command_for(&source, target, account);
         let parent_id = self.state.thread_root(&source.id).to_string();
         let now = Utc::now();
         self.new_counter += 1;

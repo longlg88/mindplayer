@@ -842,7 +842,7 @@ fn main_view(f: &mut Frame, app: &mut App) {
     } else if app.category_picker.is_some() {
         category_popup(f, app);
     } else if let Some(choice) = app.handoff_picker {
-        handoff_popup(f, choice, app.selected_session().map(|s| s.agent));
+        handoff_popup(f, choice, app.selected_session().cloned().as_ref(), app);
     } else if let Some(choice) = app.new_picker {
         new_session_popup(f, choice);
     } else if let Some(label) = &app.new_label {
@@ -1194,6 +1194,9 @@ fn label_input_popup(f: &mut Frame, agent: Option<Agent>, label: &str) {
 }
 
 fn session_list(f: &mut Frame, app: &mut App, area: Rect, now: DateTime<Utc>) {
+    // Worked out once: resolving a session's account is a path comparison per
+    // account, and this list runs to thousands of rows.
+    let account_marks = app.account_marks();
     let focused = app.focus == Focus::List;
     let tab = if app.show_archived {
         "archived"
@@ -1444,6 +1447,14 @@ fn session_list(f: &mut Frame, app: &mut App, area: Rect, now: DateTime<Utc>) {
                     title_style,
                 ),
             ];
+            // Only where it differs from the account this provider starts on,
+            // so the row that is somewhere else is the one that stands out.
+            if let Some(name) = account_marks.as_ref().and_then(|m| m.label_for(s)) {
+                spans.push(Span::styled(
+                    format!("  {name}"),
+                    Style::default().fg(CATEGORY),
+                ));
+            }
             if show_id {
                 spans.push(Span::styled(
                     format!("  {}", short(&s.id)),
@@ -2011,41 +2022,66 @@ fn new_session_popup(f: &mut Frame, choice: usize) {
     );
 }
 
-fn handoff_popup(f: &mut Frame, choice: usize, source: Option<Agent>) {
-    let area = centered(f.area(), 48, 8);
-    f.render_widget(Clear, area);
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(ACCENT))
-        .title(" Handoff ");
-    let opts = [Agent::Codex, Agent::Claude, Agent::Kiro, Agent::Cursor];
-    let mut lines: Vec<Line> = opts
-        .iter()
-        .enumerate()
-        .map(|(i, agent)| {
-            let selected = i == choice;
-            let same = source == Some(*agent);
-            let marker = if selected { "▶ " } else { "  " };
-            let suffix = if same { " (source)" } else { "" };
-            let mut style = if same {
-                Style::default().fg(DIM)
-            } else {
-                Style::default()
-            };
-            if selected {
-                style = style.fg(ACCENT).add_modifier(Modifier::BOLD);
-            }
-            Line::from(Span::styled(
-                format!("{marker}{}{suffix}", agent.as_str()),
-                style,
-            ))
-        })
-        .collect();
+/// Handing a conversation over is the only way to carry it to another login,
+/// since a session cannot be resumed on an account whose home never held it —
+/// so the target is an account, not just a provider.
+fn handoff_popup(f: &mut Frame, choice: usize, source: Option<&Session>, app: &App) {
+    let targets = app.handoff_targets();
+    let source_account = source.map(|s| app.account_of_session(s));
+
+    let mut lines: Vec<Line> = Vec::new();
+    let mut last_provider: Option<Agent> = None;
+    for (i, account) in targets.iter().enumerate() {
+        if last_provider != Some(account.provider) {
+            lines.push(Line::from(Span::styled(
+                account.provider.as_str().to_uppercase(),
+                Style::default().fg(CATEGORY).add_modifier(Modifier::BOLD),
+            )));
+            last_provider = Some(account.provider);
+        }
+        let selected = i == choice;
+        // Only the login it is already on is a no-op; another account of the
+        // same provider is a genuine target.
+        let same = source.map(|s| s.agent) == Some(account.provider)
+            && source_account.as_ref().map(|a| a.name.as_str()) == Some(account.name.as_str());
+        let marker = if selected { "  ▶ " } else { "    " };
+        let suffix = if same { " (this session)" } else { "" };
+        let mut style = if same {
+            Style::default().fg(DIM)
+        } else {
+            Style::default()
+        };
+        if selected {
+            style = style.fg(ACCENT).add_modifier(Modifier::BOLD);
+        }
+        lines.push(Line::from(Span::styled(
+            format!("{marker}{}{suffix}", account.name),
+            style,
+        )));
+    }
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
         "enter start with handoff prompt   esc cancel",
         Style::default().fg(DIM),
     )));
+
+    let width = lines
+        .iter()
+        .map(|line| line.width())
+        .max()
+        .unwrap_or(44)
+        .max(44) as u16
+        + 3;
+    let area = centered(
+        f.area(),
+        width.min(f.area().width),
+        (lines.len() as u16 + 2).min(f.area().height),
+    );
+    f.render_widget(Clear, area);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(ACCENT))
+        .title(" Handoff ");
     f.render_widget(
         Paragraph::new(lines)
             .block(block)

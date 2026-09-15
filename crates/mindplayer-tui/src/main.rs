@@ -754,12 +754,15 @@ fn handle_main_key(app: &mut App, key: KeyEvent) {
 
     // Cross-agent handoff picker.
     if let Some(choice) = app.handoff_picker {
+        let targets = app.handoff_targets();
+        let last = targets.len().saturating_sub(1);
         match key.code {
             KeyCode::Up => app.handoff_picker = Some(choice.saturating_sub(1)),
-            KeyCode::Down => app.handoff_picker = Some((choice + 1).min(3)),
+            KeyCode::Down => app.handoff_picker = Some((choice + 1).min(last)),
             KeyCode::Enter => {
-                let target = handoff::target_for_choice(choice);
-                app.confirm_handoff(target);
+                if let Some(target) = targets.get(choice).cloned() {
+                    app.confirm_handoff_on(&target);
+                }
             }
             KeyCode::Esc => app.cancel_handoff(),
             _ => {}

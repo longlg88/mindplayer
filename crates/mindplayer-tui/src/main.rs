@@ -711,9 +711,10 @@ fn handle_main_key(app: &mut App, key: KeyEvent) {
                 KeyCode::Esc | KeyCode::Char('q') => app.close_accounts(),
                 KeyCode::Up | KeyCode::Char('k') => app.accounts_move(-1),
                 KeyCode::Down | KeyCode::Char('j') => app.accounts_move(1),
+                KeyCode::Enter => app.accounts_start_session(),
                 KeyCode::Char('a') => app.accounts_start_add(),
                 KeyCode::Char('l') => app.accounts_relogin(),
-                KeyCode::Char('w') => app.accounts_toggle_role(),
+                KeyCode::Char('w') => app.accounts_make_primary(),
                 KeyCode::Char('d') => app.accounts_toggle_disabled(),
                 KeyCode::Char('x') => app.accounts_remove(),
                 _ => {}

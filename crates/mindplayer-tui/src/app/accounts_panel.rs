@@ -118,18 +118,49 @@ impl App {
         self.persist_accounts();
     }
 
-    /// Move an account between the ones tried first and the ones kept in
-    /// reserve.
-    pub fn accounts_toggle_role(&mut self) {
+    /// Make this the account new sessions of its provider start on.
+    ///
+    /// Exactly one account per provider is primary. Two of them left the
+    /// choice to whichever came first in the list, which is an order nobody
+    /// can see or change — so picking one puts the rest in reserve.
+    pub fn accounts_make_primary(&mut self) {
         self.clear_error();
         let Some(i) = self.selected_account() else {
             return;
         };
-        self.accounts[i].role = match self.accounts[i].role {
-            Role::Primary => Role::Fallback,
-            Role::Fallback => Role::Primary,
-        };
+        if self.accounts[i].disabled {
+            self.set_error("this account is off — turn it back on with d first");
+            return;
+        }
+        let provider = self.accounts[i].provider;
+        for (j, account) in self.accounts.iter_mut().enumerate() {
+            if account.provider == provider {
+                account.role = if j == i {
+                    Role::Primary
+                } else {
+                    Role::Fallback
+                };
+            }
+        }
         self.persist_accounts();
+        let name = self.accounts[i].name.clone();
+        self.status = format!("new {} sessions will use {name}", provider.as_str());
+    }
+
+    /// Start a session on the highlighted account now, without changing which
+    /// one the next session takes.
+    pub fn accounts_start_session(&mut self) {
+        self.clear_error();
+        let Some(i) = self.selected_account() else {
+            return;
+        };
+        let account = self.accounts[i].clone();
+        if account.disabled {
+            self.set_error("this account is off — turn it back on with d first");
+            return;
+        }
+        self.accounts_panel = None;
+        self.request_new_on(&account, "");
     }
 
     /// Forget an account. The login this machine already had is not ours to
@@ -246,6 +277,13 @@ impl App {
         self.accounts_cancel_add();
         self.clear_error();
         self.request_login(&account);
+        // Signing in does not decide anything by itself, and a pane that just
+        // says "logged in" leaves the next step to be guessed. Say it.
+        self.status = format!(
+            "signing in {} {} — when it finishes, close this pane and press u then w to use it",
+            account.provider.as_str(),
+            account.name
+        );
     }
 
     /// Sign the highlighted account in again, for one whose login has lapsed.

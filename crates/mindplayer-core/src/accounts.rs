@@ -288,7 +288,28 @@ pub fn load_accounts(home: &Path) -> Vec<Account> {
         }
     }
     out.extend(saved.into_iter().filter(|a| check_name(&a.name).is_ok()));
+    one_primary_per_provider(&mut out);
     out
+}
+
+/// Leave exactly one primary per provider, keeping the first.
+///
+/// Two primaries make the choice depend on list order, which is an order
+/// nobody can see or change — the second account then can never be reached.
+/// A file written before this rule existed is repaired on the way in.
+fn one_primary_per_provider(accounts: &mut [Account]) {
+    for agent in MULTI_ACCOUNT_AGENTS {
+        let mut seen = false;
+        for account in accounts.iter_mut().filter(|a| a.provider == agent) {
+            if account.role != Role::Primary {
+                continue;
+            }
+            if seen {
+                account.role = Role::Fallback;
+            }
+            seen = true;
+        }
+    }
 }
 
 /// Which account wrote `file`, judged by where it sits.

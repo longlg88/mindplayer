@@ -41,6 +41,11 @@ the sessions you already have.
   context occupancy, and account plan usage for Kiro and Cursor. Cursor session
   metadata still exposes no per-session token or context metric; its account
   quota is a separate first-party reading, not inferred from chat files.
+- 👥 **Several logins per provider** — keep a work and a personal Codex account
+  (or two Claude plans) side by side and pick which one a new session starts
+  on, with <kbd>u</kbd>. The login already on this machine keeps working and is
+  listed like any other; a second one gets a home of its own, so signing it in
+  never disturbs the first. Nothing is copied between them.
 - 🪟 **Many sessions at once** — resume or start several; each keeps running in
   the background. **Mark several** in the list (<kbd>Space</kbd>) and launch them
   together as live panes with one <kbd>Enter</kbd>.
@@ -221,7 +226,7 @@ make test                                          # cargo test --all
 | <kbd>Ctrl‑p</kbd> | open a local `.html` the focused pane just produced, in your browser — pick from the detected files (the badge shows how many), or <kbd>Tab</kbd> to type a path |
 | <kbd>Ctrl‑x</kbd> | back to the list (the session keeps running) |
 | <kbd>n</kbd> | new session — pick codex/claude/kiro/cursor, then an optional label |
-| <kbd>h</kbd> | handoff the selected session to another provider |
+| <kbd>h</kbd> | handoff the selected session — pick the **login** it should continue on, which may be another provider or another account of the same one |
 | <kbd>d</kbd> | change the working directory (blank = global) and rescan in place |
 | <kbd>e</kbd> | label the selected session (tag an existing one, or edit/clear its label) |
 | <kbd>i</kbd> | toggle the **in-progress** mark on the selected session (see above) |
@@ -231,7 +236,7 @@ make test                                          # cargo test --all
 | <kbd>/</kbd> | search / filter the visible sessions |
 | <kbd>x</kbd> | close (archive) & stop the selected session |
 | <kbd>a</kbd> | toggle archived view · <kbd>g</kbd> toggle sub‑agents · <kbd>r</kbd> rescan |
-| <kbd>u</kbd> | show usage stats (active time, sessions opened, handoffs, catch-ups) |
+| <kbd>u</kbd> | **accounts** — which login each provider starts a session on, with its usage. See below |
 | <kbd>?</kbd> | show the full keyboard-shortcut list |
 | <kbd>q</kbd> | quit (stops all sessions) |
 
@@ -244,6 +249,46 @@ text** to the system clipboard (via OSC 52) — so a side‑by‑side split neve
 copies the neighbor pane too. (For panes running a full‑screen mouse app like
 Codex, the drag goes to that app; use your terminal's <kbd>Shift</kbd>+drag
 native selection there.)
+
+### 👥 Accounts
+
+<kbd>u</kbd> opens the one screen that answers *which login does my next
+session run on*:
+
+```
+┌ Accounts ──────────────────────────────────────────────────────────┐
+│ CODEX                                                              │
+│    work          in use      codex     ▰▰▰▰▰▱   83.0%  resets Mon  │
+│  ▶ personal      reserve     codex     ▰▱▱▱▱▱   12.0%  resets Mon  │
+│ CLAUDE                                                             │
+│    default       in use      claude 5h ▰▰▱▱▱▱   41.0%  resets 14:20│
+│                              claude wk ▰▰▰▰▰▰   96.0%  resets Thu  │
+└────────────────────────────────────────────────────────────────────┘
+```
+
+| Key | Action |
+| --- | --- |
+| <kbd>w</kbd> | **use this one** — new sessions of that provider start here; the rest of its accounts drop to reserve |
+| <kbd>Enter</kbd> | start a session on the highlighted account **now**, without changing which one the next session takes |
+| <kbd>a</kbd> | add an account — name it, then its provider's own sign‑in runs in a pane, inside the new account's home |
+| <kbd>r</kbd> | rename (the login moves with the name) · <kbd>l</kbd> sign in again · <kbd>d</kbd> off · <kbd>x</kbd> remove |
+
+Exactly one account per provider is *in use*, so the choice never depends on
+list order. The footer keeps one line per provider — the account a new session
+would take — and the rest live here.
+
+**Sessions stay with the login that made them.** A transcript only exists in
+that account's home, so resuming always goes back to it, and the list marks a
+session with its account name only when that is *not* the one in use. To carry
+a conversation to another login, hand it over with <kbd>h</kbd> — that starts a
+new session there with the previous context.
+
+**Two caveats.** Claude and Cursor keep their usage credential in the macOS
+Keychain, one per machine, and that one belongs to the login this machine came
+with — so a second account of either runs its sessions normally but shows no
+usage figure rather than borrowing the first one's. And nothing is ever copied
+between accounts: a duplicated login refreshes its token and locks the original
+holder out, which is a failure neither side can explain.
 
 ## 🧠 How it works
 
@@ -275,14 +320,19 @@ What MindPlayer writes, all under `~/.mindplayer/`:
 | Path | Contents |
 | --- | --- |
 | `state.json` | sidecar state — archived ids, labels, in-progress marks, topic categories, your walking-buddy pick |
-| `audit.jsonl` | append-only usage log for the <kbd>u</kbd> popup: counts and timestamps only, no session id, title, or cwd |
+| `audit.jsonl` | append-only usage log: counts and timestamps only, no session id, title, or cwd |
+| `accounts.json` | the accounts per provider — names, which one is in use, nothing secret |
+| `accounts/<provider>/<name>/` | a second login's own home. The provider's CLI writes its credentials here; MindPlayer only points the CLI at it |
 | `convo/` | the conversation log — `index.json` plus one append-only `<session-id>.jsonl` per session |
 | `prompts/` | editable canned prompts (see below) |
 | `hooks/` | per-pane status readings written by the agents' own lifecycle hooks |
 | `logs/` | per-session stderr |
 
 The source data under `~/.codex`, `~/.claude`, `~/.kiro`, and `~/.cursor` is
-only ever read.
+only ever read. A second account's home under `~/.mindplayer/accounts/` is
+created empty and then written by that provider's own CLI when you sign in
+there; MindPlayer stores no credential of its own, and never reads one
+account's to answer for another.
 
 **Live status, in more detail.** Codex and Claude Code status comes from
 their own official lifecycle hooks (`UserPromptSubmit`, `PreToolUse`,

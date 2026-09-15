@@ -252,10 +252,13 @@ pub fn merge_with_last_good(fresh: &[QuotaRow], stored: &[QuotaRow]) -> (Vec<Quo
             rows.push(row.clone());
             continue;
         }
-        let provider = row.label.split_whitespace().next();
+        // The stand-in has to be the same login's own older reading. Matching
+        // on the provider alone handed one account's figure to another: a
+        // second Codex login with nothing to report was replaced by the first
+        // login's row, which then appeared twice while the second vanished.
         let fallback: Vec<_> = stored
             .iter()
-            .filter(|old| old.has_gauge() && old.label.split_whitespace().next() == provider)
+            .filter(|old| old.has_gauge() && old.agent == row.agent && old.account == row.account)
             .cloned()
             .collect();
         if fallback.is_empty() {
@@ -3026,4 +3029,75 @@ fn provider_fetches_overlap_so_kiro_is_not_starved_by_slow_predecessors() {
         4,
         "all provider probes must be in flight together"
     );
+}
+
+#[cfg(test)]
+mod fallback_stays_with_its_login {
+    use super::*;
+
+    fn row(agent: Agent, account: &str, label: &str, used: Option<f64>) -> QuotaRow {
+        QuotaRow {
+            label: label.into(),
+            agent,
+            account: account.into(),
+            used_percent: used,
+            ..Default::default()
+        }
+    }
+
+    /// Reported: a second Codex login with nothing to report was replaced by
+    /// the first login's reading, so that one appeared twice and the second
+    /// was nowhere on the footer.
+    #[test]
+    fn a_login_with_no_reading_is_not_given_another_logins() {
+        let fresh = vec![
+            row(Agent::Codex, "sendbird-kr", "codex weekly", Some(100.0)),
+            row(Agent::Codex, "sendbird-com", "codex", None),
+        ];
+        let stored = vec![row(
+            Agent::Codex,
+            "sendbird-kr",
+            "codex weekly",
+            Some(100.0),
+        )];
+
+        let (rows, used_cache) = merge_with_last_good(&fresh, &stored);
+
+        assert_eq!(
+            rows.iter().filter(|r| r.account == "sendbird-kr").count(),
+            1,
+            "the first login's reading was drawn twice: {rows:?}"
+        );
+        assert!(
+            rows.iter().any(|r| r.account == "sendbird-com"),
+            "the second login has no row at all: {rows:?}"
+        );
+        assert!(
+            !used_cache,
+            "a cache entry for another login must not count as this one's"
+        );
+    }
+
+    #[test]
+    fn a_logins_own_older_reading_still_stands_in() {
+        let fresh = vec![row(Agent::Claude, "default", "claude", None)];
+        let stored = vec![row(Agent::Claude, "default", "claude wk", Some(42.0))];
+
+        let (rows, used_cache) = merge_with_last_good(&fresh, &stored);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].used_percent, Some(42.0));
+        assert!(used_cache, "the row on screen is the stored one, so say so");
+    }
+
+    /// A cache written before readings carried an account cannot be attributed
+    /// to any login, so it never stands in for one.
+    #[test]
+    fn a_reading_from_before_accounts_is_not_claimed_by_a_named_login() {
+        let fresh = vec![row(Agent::Kiro, "team", "kiro", None)];
+        let stored = vec![row(Agent::Kiro, "", "kiro", Some(52.0))];
+
+        let (rows, used_cache) = merge_with_last_good(&fresh, &stored);
+        assert_eq!(rows[0].used_percent, None, "{rows:?}");
+        assert!(!used_cache);
+    }
 }

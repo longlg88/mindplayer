@@ -3837,6 +3837,7 @@ fn a_failed_reading_falls_back_to_the_last_good_one() {
         vec![
             mindplayer_core::limits::QuotaRow {
                 label: "cursor".into(),
+                agent: Agent::Cursor,
                 used_percent: Some(12.5),
                 detail: "$2.50/$20".into(),
                 resets: Some("2026-10-04".into()),
@@ -3844,6 +3845,7 @@ fn a_failed_reading_falls_back_to_the_last_good_one() {
             },
             mindplayer_core::limits::QuotaRow {
                 label: "kiro".into(),
+                agent: Agent::Kiro,
                 used_percent: Some(6.4),
                 detail: "639.7/10000 cr".into(),
                 resets: None,
@@ -3944,6 +3946,7 @@ fn a_recent_account_cache_prevents_an_immediate_duplicate_fetch() {
     app.quota_cache = Some((
         vec![mindplayer_core::limits::QuotaRow {
             label: "cursor".into(),
+            agent: Agent::Cursor,
             used_percent: Some(12.5),
             detail: "$2.50/$20".into(),
             resets: None,
@@ -4012,6 +4015,7 @@ fn a_sibling_refresh_replaces_a_stale_in_memory_cache_before_fetching() {
     app.quota_cache = Some((
         vec![mindplayer_core::limits::QuotaRow {
             label: "cursor".into(),
+            agent: Agent::Cursor,
             used_percent: Some(12.5),
             detail: "$2.50/$20".into(),
             resets: None,
@@ -4030,6 +4034,7 @@ fn a_sibling_refresh_replaces_a_stale_in_memory_cache_before_fetching() {
     );
     let sibling_rows = vec![mindplayer_core::limits::QuotaRow {
         label: "cursor".into(),
+        agent: Agent::Cursor,
         used_percent: Some(27.5),
         detail: "$5.50/$20".into(),
         resets: Some("2026-10-04".into()),

@@ -207,7 +207,7 @@ impl App {
             }
             return true;
         }
-        if session.id.starts_with("new:") || session.id.starts_with("handoff:") {
+        if mindplayer_core::session::is_synthetic_id(&session.id) {
             return false;
         }
         self.enqueue_spawn(PendingSpawn {

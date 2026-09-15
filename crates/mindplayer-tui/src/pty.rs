@@ -338,6 +338,15 @@ impl PtySession {
         // to set unconditionally: an agent with no such hook installed just
         // never reads it.
         builder.env("MINDPLAYER_PANE_ID", session_id);
+        // Which login this pane runs on. Clearing comes first: a variable the
+        // slot also sets must end up with the slot's value, not be removed
+        // after it was set.
+        for name in &cmd.env.unset {
+            builder.env_remove(name);
+        }
+        for (name, value) in &cmd.env.set {
+            builder.env(name, value);
+        }
 
         let child = pair.slave.spawn_command(builder)?;
         // Slave handle no longer needed in the parent; closing it lets the
@@ -1763,5 +1772,67 @@ mod vt100_reflow {
         assert_eq!(painted(&p).len(), 4);
         p.set_scrollback(1000);
         assert_eq!(painted(&p).len(), 4);
+    }
+}
+
+// The account a pane runs on is decided by the environment its child is
+// spawned with, so this drives a real PTY and reads back what the child saw.
+
+#[cfg(test)]
+mod account_env {
+    use super::*;
+    use mindplayer_core::accounts::LaunchEnv;
+    use std::path::PathBuf;
+
+    const LEAK: &str = "HOME";
+    const SLOT: &str = "MINDPLAYER_ACCOUNT_ENV_TEST_SLOT";
+
+    fn read_pane(session: &PtySession, deadline: Duration) -> String {
+        let start = Instant::now();
+        loop {
+            let text = {
+                let parser = session.parser().lock().unwrap();
+                parser.screen().contents()
+            };
+            if text.contains("done") || start.elapsed() >= deadline {
+                return text;
+            }
+            thread::sleep(Duration::from_millis(25));
+        }
+    }
+
+    #[test]
+    fn the_child_runs_with_the_account_environment_and_without_an_ambient_one() {
+        // HOME stands in for an ambient credential: it is inherited, the shell
+        // does not need it, and using it keeps this test off `set_var`, which
+        // races every other thread's `getenv` in a parallel run.
+        assert!(
+            std::env::var_os(LEAK).is_some(),
+            "{LEAK} is not inherited here"
+        );
+        let cmd = MpCommand {
+            program: "sh".to_string(),
+            args: vec![
+                "-c".to_string(),
+                format!("printf 'slot=[%s] leak=[%s] done' \"${SLOT}\" \"${LEAK}\""),
+            ],
+            cwd: PathBuf::from("/tmp"),
+            env: LaunchEnv {
+                set: vec![(SLOT.to_string(), "/slot/for/this/account".to_string())],
+                unset: vec![LEAK.to_string()],
+            },
+        };
+
+        let session = PtySession::spawn(&cmd, "mp-account-env-test", 10, 120).unwrap();
+        let text = read_pane(&session, Duration::from_secs(10));
+
+        assert!(
+            text.contains("slot=[/slot/for/this/account]"),
+            "the slot's variable never reached the child: {text:?}"
+        );
+        assert!(
+            text.contains("leak=[]"),
+            "an ambient variable survived into the pane, so the slot does not decide the account: {text:?}"
+        );
     }
 }

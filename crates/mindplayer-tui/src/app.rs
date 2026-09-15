@@ -527,6 +527,9 @@ pub struct App {
     pub(crate) limits_rx: Option<Receiver<mindplayer_core::limits::Limits>>,
     /// The previous run's account reading, shown until this run has its own.
     pub(crate) quota_cache: Option<(Vec<mindplayer_core::limits::QuotaRow>, DateTime<Utc>)>,
+    /// The logins available per provider. Always holds the one this machine
+    /// already had, so a pane can always be started.
+    pub(crate) accounts: Vec<mindplayer_core::accounts::Account>,
     /// When the in-flight fetch started, so a wedged one can be abandoned.
     pub(crate) limits_started: Option<Instant>,
     /// Earliest time another account fetch may start.
@@ -706,6 +709,7 @@ impl App {
             limits: None,
             limits_rx: None,
             quota_cache: mindplayer_core::limits::load_quota_cache(&limits_home_for_app(), BUILD),
+            accounts: mindplayer_core::accounts::load_accounts(&limits_home_for_app()),
             limits_started: None,
             limits_retry_at: None,
             limits_backoff: LIMITS_REFRESH_INTERVAL,
@@ -866,6 +870,25 @@ impl App {
     /// read, which leaves this line to say only where the counts came from.
     pub fn summary_tail(&self) -> String {
         format!(" · {}", self.scope_label_short())
+    }
+
+    /// The login a new pane of `agent` starts on.
+    ///
+    /// An account marked fallback is reached only when no primary one can
+    /// serve, and a disabled account never is. A provider with nothing usable
+    /// still gets the login this machine already had rather than refusing to
+    /// start: a pane that will not open is worse than one on a busy account.
+    pub(crate) fn account_for(&self, agent: Agent) -> mindplayer_core::accounts::Account {
+        use mindplayer_core::accounts::{Account, Role};
+        let usable = |role: Role| {
+            self.accounts
+                .iter()
+                .find(|a| a.provider == agent && !a.disabled && a.role == role)
+        };
+        usable(Role::Primary)
+            .or_else(|| usable(Role::Fallback))
+            .cloned()
+            .unwrap_or_else(|| Account::inherited(agent))
     }
 
     /// One row per account window for the footer. Sessions of an agent that

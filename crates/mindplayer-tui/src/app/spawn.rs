@@ -18,7 +18,7 @@ impl App {
                 agent: agent.as_str().to_string(),
             },
         );
-        let command = mindplayer_core::new_session(agent, dir.clone());
+        let command = mindplayer_core::new_session(agent, dir.clone(), &self.account_for(agent));
         // Synthetic, unique id so it never collides with a real session or a
         // previous new session of the same agent.
         self.new_counter += 1;
@@ -154,7 +154,7 @@ impl App {
             return false;
         }
         self.enqueue_spawn(PendingSpawn {
-            command: resume(session),
+            command: resume(session, &self.account_for(session.agent)),
             session_id: session.id.clone(),
             initial_input: Some(input),
             focus_after_spawn: false,

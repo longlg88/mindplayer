@@ -59,7 +59,7 @@ impl App {
             }
         };
         mindplayer_core::log_event_to(&self.audit_path, mindplayer_core::AuditEvent::Handoff);
-        let command = handoff::command_for(&source, target);
+        let command = handoff::command_for(&source, target, &self.account_for(target));
         let parent_id = self.state.thread_root(&source.id).to_string();
         let now = Utc::now();
         self.new_counter += 1;

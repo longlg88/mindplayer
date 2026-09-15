@@ -22,6 +22,7 @@
 //! Every failure carries its reason so the UI can say WHY a number is absent.
 //! A missing window is never rendered as `0%` — that would read as "plenty left".
 
+use crate::session::Agent;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -182,6 +183,14 @@ fn window_is_open(used: Option<f64>, reset: Option<i64>) -> bool {
 pub struct QuotaRow {
     /// `claude 5h`, `kiro`, `cursor` — what the row is about.
     pub label: String,
+    /// Which CLI the row is about, so a caller can pick out one provider's
+    /// rows without parsing the label.
+    #[serde(default = "default_row_agent")]
+    pub agent: Agent,
+    /// The login the reading is for. Empty on a row read back from a cache
+    /// written before accounts existed.
+    #[serde(default)]
+    pub account: String,
     /// Percent USED. `None` means no window was reported; draw no gauge.
     pub used_percent: Option<f64>,
     /// The figure behind the percentage, or the reason there isn't one.
@@ -190,11 +199,33 @@ pub struct QuotaRow {
     pub resets: Option<String>,
 }
 
+/// What a row read back from a cache written before providers were recorded
+/// belongs to. Such a row carries no account either, so it is only ever shown,
+/// never matched to a login.
+fn default_row_agent() -> Agent {
+    Agent::Claude
+}
+
+impl Default for QuotaRow {
+    fn default() -> Self {
+        Self {
+            label: String::new(),
+            agent: default_row_agent(),
+            account: String::new(),
+            used_percent: None,
+            detail: String::new(),
+            resets: None,
+        }
+    }
+}
+
 impl QuotaRow {
     /// A row that explains an absent reading instead of implying a full one.
     fn reason(label: &str, why: &str) -> Self {
         Self {
             label: label.to_string(),
+            agent: default_row_agent(),
+            account: String::new(),
             used_percent: None,
             detail: why.to_string(),
             resets: None,
@@ -369,6 +400,7 @@ impl Limits {
     /// an empty gauge reads as "plenty left" when the truth is "not reported".
     pub fn quota_rows(&self) -> Vec<QuotaRow> {
         let mut out = Vec::new();
+        let mark = out.len();
         match &self.claude {
             Ok(c) if c.has_any() => {
                 let before = out.len();
@@ -379,6 +411,8 @@ impl Limits {
                     if let Some(p) = used.filter(|_| window_is_open(used, reset)) {
                         out.push(QuotaRow {
                             label: label.into(),
+                            agent: default_row_agent(),
+                            account: String::new(),
                             used_percent: Some(p),
                             detail: String::new(),
                             resets: reset.and_then(|e| epoch_label(e, clock)),
@@ -392,6 +426,8 @@ impl Limits {
             Ok(_) => out.push(QuotaRow::reason("claude", "no windows reported")),
             Err(e) => out.push(QuotaRow::reason("claude", e)),
         }
+        tag_rows(&mut out, mark, Agent::Claude);
+        let mark = out.len();
         // Codex reports `primary`/`secondary` only on plans metered by windows.
         // On a business plan both are null and the monthly figure its own
         // `/status` shows is never written to the rollout, so there is no
@@ -410,6 +446,8 @@ impl Limits {
                         let clock = !window.is_some_and(|m| m >= CODEX_DAY_MINUTES);
                         out.push(QuotaRow {
                             label: format!("codex {}", window_label(window)),
+                            agent: default_row_agent(),
+                            account: String::new(),
                             used_percent: Some(p),
                             detail: String::new(),
                             resets: reset.and_then(|e| epoch_label(e, clock)),
@@ -426,6 +464,8 @@ impl Limits {
                     };
                     out.push(QuotaRow {
                         label: "codex".into(),
+                        agent: default_row_agent(),
+                        account: String::new(),
                         used_percent: None,
                         detail,
                         resets: None,
@@ -441,9 +481,13 @@ impl Limits {
             )),
             Err(e) => out.push(QuotaRow::reason("codex", e)),
         }
+        tag_rows(&mut out, mark, Agent::Codex);
+        let mark = out.len();
         match &self.kiro {
             Ok(k) if k.has_any() => out.push(QuotaRow {
                 label: "kiro".into(),
+                agent: default_row_agent(),
+                account: String::new(),
                 used_percent: k.used_percent,
                 detail: match (k.credits_used, k.credits_total) {
                     (Some(u), Some(t)) => {
@@ -456,9 +500,13 @@ impl Limits {
             Ok(_) => out.push(QuotaRow::reason("kiro", "no usage reported")),
             Err(e) => out.push(QuotaRow::reason("kiro", e)),
         }
+        tag_rows(&mut out, mark, Agent::Kiro);
+        let mark = out.len();
         match &self.cursor {
             Ok(c) if c.has_any() => out.push(QuotaRow {
                 label: "cursor".into(),
+                agent: default_row_agent(),
+                account: String::new(),
                 used_percent: c.used_percent,
                 detail: match (c.used_cents, c.limit_cents) {
                     (Some(u), Some(l)) => {
@@ -475,6 +523,7 @@ impl Limits {
             Ok(_) => out.push(QuotaRow::reason("cursor", "no usage reported")),
             Err(e) => out.push(QuotaRow::reason("cursor", e)),
         }
+        tag_rows(&mut out, mark, Agent::Cursor);
         out
     }
 
@@ -658,6 +707,76 @@ fn window_label(window_minutes: Option<f64>) -> String {
         Some(m) if m > 0.0 => format!("{m:.0}m"),
         _ => "window".to_string(),
     }
+}
+
+/// Whether any row was refused for asking too often.
+///
+/// The same judgement as [`Limits::network_rate_limited`], made from rows
+/// because a reading now comes per account rather than per machine. Only the
+/// providers reached over the network can answer this way; Codex reads a local
+/// file and Kiro runs its own CLI.
+pub fn rows_are_rate_limited(rows: &[QuotaRow]) -> bool {
+    rows.iter()
+        .filter(|row| matches!(row.agent, Agent::Claude | Agent::Cursor))
+        .filter(|row| row.used_percent.is_none())
+        .any(|row| {
+            row.detail
+                .split(|c: char| !c.is_ascii_digit())
+                .any(|part| part == "429")
+        })
+}
+
+/// Stamp a provider onto the rows a section just produced.
+fn tag_rows(rows: &mut [QuotaRow], from: usize, agent: Agent) {
+    for row in rows.iter_mut().skip(from) {
+        row.agent = agent;
+    }
+}
+
+/// The usage reading for one login, looking only where that login keeps its
+/// own state.
+///
+/// An account with its own home must never fall back to a machine-global
+/// source: the Keychain holds the login this machine came with, and reporting
+/// its numbers under another account's name is worse than reporting none — it
+/// is a wrong answer that looks right.
+pub fn account_quota_rows(
+    account: &crate::accounts::Account,
+    fallback_home: &Path,
+) -> Vec<QuotaRow> {
+    use crate::accounts::Slot;
+    // Only this account's provider is probed; the rest carry a reason no one
+    // sees, because the rows for them are dropped below.
+    const SKIPPED: &str = "not probed";
+    let mut limits = Limits {
+        claude: Err(SKIPPED.into()),
+        codex: Err(SKIPPED.into()),
+        kiro: Err(SKIPPED.into()),
+        cursor: Err(SKIPPED.into()),
+    };
+    match (&account.slot, account.provider) {
+        // The login this machine came with: exactly what was probed before.
+        (Slot::Inherited, Agent::Claude) => limits.claude = claude_limits(fallback_home),
+        (Slot::Inherited, Agent::Codex) => limits.codex = codex_limits(fallback_home),
+        (Slot::Inherited, Agent::Kiro) => limits.kiro = kiro_limits(fallback_home),
+        (Slot::Inherited, Agent::Cursor) => limits.cursor = cursor_limits(fallback_home),
+        // `CLAUDE_CONFIG_DIR` replaces `~/.claude`, so the slot is that
+        // directory rather than a home containing one.
+        (Slot::Isolated { path }, Agent::Claude) => {
+            limits.claude = claude_limits_in(path, KeychainFallback::Refuse)
+        }
+        // `CODEX_HOME` replaces `~/.codex` the same way.
+        (Slot::Isolated { path }, Agent::Codex) => limits.codex = codex_limits_in(path),
+        // Kiro derives everything from HOME, so the slot is the home.
+        (Slot::Isolated { path }, Agent::Kiro) => limits.kiro = kiro_limits(path),
+        (Slot::Isolated { .. }, Agent::Cursor) => {}
+    }
+    let mut rows = limits.quota_rows();
+    rows.retain(|row| row.agent == account.provider);
+    for row in &mut rows {
+        row.account.clone_from(&account.name);
+    }
+    rows
 }
 
 /// Read all providers concurrently. Each source has independent latency and
@@ -1181,7 +1300,14 @@ fn cursor_curl_config(cookie: &str) -> String {
 
 /// Newest rollout's last `rate_limits` snapshot.
 pub fn codex_limits(home: &Path) -> Result<CodexLimits, String> {
-    let root = home.join(".codex").join("sessions");
+    codex_limits_in(&home.join(".codex"))
+}
+
+/// The same reading, given the directory Codex calls `CODEX_HOME` — which is
+/// `~/.codex` for the login this machine came with, and the slot itself for an
+/// account of its own.
+pub fn codex_limits_in(codex_home: &Path) -> Result<CodexLimits, String> {
+    let root = codex_home.join("sessions");
     let newest = newest_rollout(&root).ok_or_else(|| "no codex rollouts found".to_string())?;
     let tail = read_tail(&newest, ROLLOUT_TAIL_BYTES)
         .map_err(|e| format!("cannot read newest rollout: {e}"))?;
@@ -1335,8 +1461,27 @@ fn parse_number(v: &Value) -> Option<f64> {
 // ── Claude ─────────────────────────────────────────────────────────────────
 
 /// Live utilization for the subscription windows.
+/// Whether a probe may reach the machine-global Keychain when the config
+/// directory holds no credentials of its own.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeychainFallback {
+    /// The login this machine came with; the Keychain is genuinely its store.
+    Allow,
+    /// An account with its own home. The Keychain belongs to a different
+    /// login, so an absent reading is the only honest answer.
+    Refuse,
+}
+
 pub fn claude_limits(home: &Path) -> Result<ClaudeLimits, String> {
-    let token = claude_token(home)?;
+    claude_limits_in(&home.join(".claude"), KeychainFallback::Allow)
+}
+
+/// The same reading, given the directory Claude calls `CLAUDE_CONFIG_DIR`.
+pub fn claude_limits_in(
+    config_dir: &Path,
+    fallback: KeychainFallback,
+) -> Result<ClaudeLimits, String> {
+    let token = claude_token_in(config_dir, fallback)?;
     let body = curl_json(CLAUDE_USAGE_URL, &token)?;
     let v: Value = serde_json::from_str(&body)
         .map_err(|e| format!("unparsable response from /api/oauth/usage: {e}"))?;
@@ -1354,19 +1499,23 @@ pub fn claude_limits(home: &Path) -> Result<ClaudeLimits, String> {
 /// Both are searched for `claudeAiOauth.accessToken` specifically. The same
 /// Keychain item also holds unrelated `mcpOAuth` entries for MCP servers; those
 /// are not subscription tokens and must not be sent to `/api/oauth/usage`.
-fn claude_token(home: &Path) -> Result<String, String> {
-    let file = home.join(".claude").join(".credentials.json");
+fn claude_token_in(config_dir: &Path, fallback: KeychainFallback) -> Result<String, String> {
+    let file = config_dir.join(".credentials.json");
     if let Ok(raw) = std::fs::read_to_string(&file) {
         if let Some(t) = token_from_credentials(&raw) {
             return Ok(t);
         }
     }
+    if fallback == KeychainFallback::Refuse {
+        return Err("this account keeps no credentials of its own yet".into());
+    }
     // The login Keychain is machine-global, so it is the right fallback only
-    // when `home` really is the user's home. A caller pointing at a fixture home
-    // — tests do — must never reach into the developer's Keychain, which could
-    // also raise an interactive approval dialog in the middle of a test run.
+    // when this really is the user's own config directory. A caller pointing at
+    // a fixture home — tests do — must never reach into the developer's
+    // Keychain, which could also raise an interactive approval dialog in the
+    // middle of a test run.
     #[cfg(target_os = "macos")]
-    if is_real_home(home) {
+    if config_dir.parent().is_some_and(is_real_home) {
         let user = std::env::var("USER").ok();
         let mut blobs = Vec::new();
         for args in keychain_lookups(user.as_deref()) {
@@ -2267,8 +2416,21 @@ Since your account is through your organization, contact your administrator.
         // rather than consulting the login Keychain (which `is_real_home` gates).
         let empty = std::env::temp_dir().join(format!("mp-limits-home-{}", std::process::id()));
         std::fs::create_dir_all(&empty).unwrap();
-        let err = claude_token(&empty).unwrap_err();
+        let err = claude_token_in(&empty.join(".claude"), KeychainFallback::Allow).unwrap_err();
         assert_eq!(err, "no subscription OAuth token found", "{err}");
+    }
+
+    /// An account with its own home must never be shown the machine-global
+    /// login's numbers: that is a wrong answer wearing the right name.
+    #[test]
+    fn an_account_of_its_own_never_reaches_the_machine_keychain() {
+        let slot = std::env::temp_dir().join(format!("mp-slot-{}", std::process::id()));
+        std::fs::create_dir_all(&slot).unwrap();
+        let err = claude_token_in(&slot, KeychainFallback::Refuse).unwrap_err();
+        assert_eq!(
+            err, "this account keeps no credentials of its own yet",
+            "{err}"
+        );
     }
 
     #[test]
@@ -2374,6 +2536,8 @@ Since your account is through your organization, contact your administrator.
         let rows = vec![
             QuotaRow {
                 label: "kiro".into(),
+                agent: default_row_agent(),
+                account: String::new(),
                 used_percent: Some(6.4),
                 detail: "639.7/10000 cr".into(),
                 resets: Some("2026-10-01".into()),
@@ -2434,6 +2598,8 @@ Since your account is through your organization, contact your administrator.
         let home = dir.path();
         let theirs = vec![QuotaRow {
             label: "codex weekly".into(),
+            agent: default_row_agent(),
+            account: String::new(),
             used_percent: Some(96.0),
             detail: String::new(),
             resets: None,
@@ -2453,6 +2619,8 @@ Since your account is through your organization, contact your administrator.
         // Nor may they survive by being merged into what this build writes.
         let mine = vec![QuotaRow {
             label: "codex weekly".into(),
+            agent: default_row_agent(),
+            account: String::new(),
             used_percent: Some(96.0),
             detail: String::new(),
             resets: Some("09-19".into()),

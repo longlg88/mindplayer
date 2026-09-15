@@ -216,3 +216,70 @@ fn a_narrow_terminal_drops_the_note_rather_than_the_columns() {
         );
     }
 }
+
+/// The decision this screen exists for is which login to use next, so each
+/// one has to carry its own usage — and a provider that meters two windows
+/// must show both, since the second is often the binding one.
+#[test]
+fn each_login_carries_its_own_usage() {
+    use mindplayer_core::limits::QuotaRow;
+    let mut app = app_on_main();
+    let second = Account::isolated(&std::env::temp_dir(), Agent::Codex, "sendbird-com").unwrap();
+    app.accounts.push(second.clone());
+    app.limits = Some(vec![
+        QuotaRow {
+            label: "codex".into(),
+            agent: Agent::Codex,
+            account: "default".into(),
+            used_percent: Some(83.0),
+            ..Default::default()
+        },
+        QuotaRow {
+            label: "codex".into(),
+            agent: Agent::Codex,
+            account: second.name.clone(),
+            used_percent: Some(12.0),
+            ..Default::default()
+        },
+        QuotaRow {
+            label: "claude 5h".into(),
+            agent: Agent::Claude,
+            account: "default".into(),
+            used_percent: Some(41.0),
+            ..Default::default()
+        },
+        QuotaRow {
+            label: "claude wk".into(),
+            agent: Agent::Claude,
+            account: "default".into(),
+            used_percent: Some(96.0),
+            ..Default::default()
+        },
+        QuotaRow {
+            label: "kiro".into(),
+            agent: Agent::Kiro,
+            account: "default".into(),
+            detail: "no local Kiro profile".into(),
+            ..Default::default()
+        },
+    ]);
+    app.open_accounts();
+    let screen = painted(&mut app, 100, 26);
+
+    assert!(
+        screen.contains("83.0%"),
+        "the first login has no figure:\n{screen}"
+    );
+    assert!(
+        screen.contains("12.0%"),
+        "the second login shows the first one's usage, or none:\n{screen}"
+    );
+    assert!(
+        screen.contains("claude 5h") && screen.contains("claude wk"),
+        "a provider metering two windows showed only one:\n{screen}"
+    );
+    assert!(
+        screen.contains("no local Kiro profile"),
+        "a reading that failed says nothing about why:\n{screen}"
+    );
+}

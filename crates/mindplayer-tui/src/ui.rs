@@ -2488,14 +2488,16 @@ fn accounts_popup(f: &mut Frame, app: &App) {
                     continue;
                 };
                 let panes = app.pane_count_on(account);
-                // What the account is, in the order a reader needs it: is it
-                // reachable, what is it called, and what is it doing.
+                // The one question this screen exists to answer is which
+                // account the next session takes, so that is the column, not a
+                // role name the reader has to translate.
+                let in_use = app.account_for(account.provider).name == account.name;
                 let state = if account.disabled {
                     ("off", ERROR)
-                } else if account.role == mindplayer_core::accounts::Role::Fallback {
-                    ("fallback", DIM)
+                } else if in_use {
+                    ("in use", IDLE)
                 } else {
-                    ("ready", IDLE)
+                    ("reserve", DIM)
                 };
                 let activity = match panes {
                     0 => "idle".to_string(),
@@ -2531,7 +2533,7 @@ fn accounts_popup(f: &mut Frame, app: &App) {
     }
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
-        " a add   l sign in   w primary/fallback   d off   x remove   esc close",
+        " w use this one   enter session on it   a add   l sign in   d off   x remove   esc close",
         Style::default().fg(DIM),
     )));
 

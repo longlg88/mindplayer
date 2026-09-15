@@ -115,7 +115,7 @@ fn the_login_this_machine_already_had_cannot_be_dropped() {
 }
 
 #[test]
-fn an_account_can_be_turned_off_and_moved_to_reserve() {
+fn an_account_can_be_turned_off_and_back_on() {
     let mut app = open();
     select(&mut app, Agent::Kiro);
     let i = app
@@ -128,10 +128,96 @@ fn an_account_can_be_turned_off_and_moved_to_reserve() {
     assert!(app.accounts[i].disabled);
     app.accounts_toggle_disabled();
     assert!(!app.accounts[i].disabled);
+}
 
-    assert_eq!(app.accounts[i].role, Role::Primary);
-    app.accounts_toggle_role();
-    assert_eq!(app.accounts[i].role, Role::Fallback);
+/// The bug this screen shipped with: two primaries left the choice to list
+/// order, so a freshly signed-in account could never be reached.
+#[test]
+fn choosing_one_account_puts_the_others_of_that_provider_in_reserve() {
+    let mut app = open();
+    let home = limits_home_for_app();
+    let second = Account::isolated(&home, Agent::Codex, "work").unwrap();
+    app.accounts.push(second.clone());
+
+    assert_eq!(
+        app.account_for(Agent::Codex).name,
+        DEFAULT_ACCOUNT,
+        "the first account starts out in use"
+    );
+
+    let at = app
+        .account_rows()
+        .iter()
+        .position(|row| match row {
+            AccountRow::Entry(i) => app.accounts[*i].name == second.name,
+            AccountRow::Header(_) => false,
+        })
+        .unwrap();
+    app.accounts_panel.as_mut().unwrap().selected = at;
+    app.accounts_make_primary();
+
+    assert_eq!(
+        app.account_for(Agent::Codex).name,
+        second.name,
+        "picking an account did not change which one a new session takes"
+    );
+    assert_eq!(
+        app.accounts
+            .iter()
+            .filter(|a| a.provider == Agent::Codex && a.role == Role::Primary)
+            .count(),
+        1,
+        "two primaries leave the choice to list order again"
+    );
+    // Another provider's choice is not disturbed by this one.
+    assert_eq!(app.account_for(Agent::Claude).name, DEFAULT_ACCOUNT);
+}
+
+#[test]
+fn an_account_that_is_off_cannot_be_chosen_or_started() {
+    let mut app = open();
+    select(&mut app, Agent::Kiro);
+    app.accounts_toggle_disabled();
+
+    app.accounts_make_primary();
+    assert!(app.accounts_panel.as_ref().unwrap().error.is_some());
+
+    app.accounts_start_session();
+    assert!(
+        app.pending.is_none(),
+        "a session started on an account that is off"
+    );
+}
+
+#[test]
+fn enter_starts_a_session_on_the_highlighted_account() {
+    let mut app = open();
+    let home = limits_home_for_app();
+    let second = Account::isolated(&home, Agent::Codex, "work").unwrap();
+    app.accounts.push(second.clone());
+    let at = app
+        .account_rows()
+        .iter()
+        .position(|row| match row {
+            AccountRow::Entry(i) => app.accounts[*i].name == second.name,
+            AccountRow::Header(_) => false,
+        })
+        .unwrap();
+    app.accounts_panel.as_mut().unwrap().selected = at;
+
+    app.accounts_start_session();
+
+    let pending = app.pending.as_ref().expect("no session was queued");
+    assert_eq!(
+        pending.command.env,
+        second.launch_env(),
+        "the session started on a different account than the one highlighted"
+    );
+    assert_eq!(
+        app.account_for(Agent::Codex).name,
+        DEFAULT_ACCOUNT,
+        "starting one session must not change which account the next one takes"
+    );
 }
 
 #[test]
@@ -141,9 +227,11 @@ fn a_heading_is_not_an_account_to_act_on() {
     assert!(matches!(app.account_rows()[0], AccountRow::Header(_)));
     let before = app.accounts.clone();
     app.accounts_toggle_disabled();
-    app.accounts_toggle_role();
+    app.accounts_make_primary();
     app.accounts_remove();
+    app.accounts_start_session();
     assert_eq!(app.accounts, before, "a heading changed an account");
+    assert!(app.pending.is_none(), "a heading started a session");
 }
 
 #[test]

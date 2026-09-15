@@ -5,7 +5,7 @@
 //! existing and the screen being legible.
 
 use super::*;
-use mindplayer_core::accounts::{Account, Role, MULTI_ACCOUNT_AGENTS};
+use mindplayer_core::accounts::{Account, MULTI_ACCOUNT_AGENTS};
 use ratatui::backend::TestBackend;
 use ratatui::Terminal;
 
@@ -57,25 +57,34 @@ fn the_screen_shows_every_provider_and_its_logins() {
     );
 }
 
+/// The screen has to answer "which account does my next session use" without
+/// the reader translating a role name into that answer.
 #[test]
-fn an_account_that_is_off_or_in_reserve_reads_as_such() {
+fn the_account_a_new_session_takes_is_the_one_marked_in_use() {
     let mut app = app_on_main();
-    app.accounts[0].disabled = true;
-    app.accounts[1].role = Role::Fallback;
+    let second = Account::isolated(&std::env::temp_dir(), Agent::Codex, "work").unwrap();
+    app.accounts.push(second);
+    app.accounts[1].disabled = true;
     app.open_accounts();
     let screen = painted(&mut app, 100, 30);
 
     assert!(
         screen.contains("off"),
-        "a disabled account looks ready:\n{screen}"
+        "a disabled account looks usable:\n{screen}"
     );
     assert!(
-        screen.contains("fallback"),
-        "a reserve account looks like a primary one:\n{screen}"
+        screen.contains("reserve"),
+        "the account not in use looks the same as the one that is:\n{screen}"
     );
     assert!(
-        screen.contains("ready"),
-        "no account reads as usable:\n{screen}"
+        screen.contains("in use"),
+        "nothing says which account a new session takes:\n{screen}"
+    );
+    assert_eq!(
+        screen.matches("in use").count(),
+        // One per provider that still has a usable account.
+        MULTI_ACCOUNT_AGENTS.len() - 1,
+        "more than one account of a provider reads as the one in use:\n{screen}"
     );
 }
 

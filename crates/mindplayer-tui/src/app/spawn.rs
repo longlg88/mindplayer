@@ -58,6 +58,13 @@ impl App {
     /// Spawn a new Codex/Claude session in the current scope dir, optionally
     /// tagging the resulting session with a user label.
     pub fn request_new(&mut self, agent: Agent, label: &str) {
+        self.request_new_on(&self.account_for(agent).clone(), label)
+    }
+
+    /// The same, on a named account rather than whichever one this provider
+    /// currently starts on.
+    pub fn request_new_on(&mut self, account: &mindplayer_core::accounts::Account, label: &str) {
+        let agent = account.provider;
         let dir = match &self.scope {
             Scope::WorkingDir(p) => p.clone(),
             Scope::Global => self.cwd.clone(),
@@ -68,7 +75,7 @@ impl App {
                 agent: agent.as_str().to_string(),
             },
         );
-        let command = mindplayer_core::new_session(agent, dir.clone(), &self.account_for(agent));
+        let command = mindplayer_core::new_session(agent, dir.clone(), account);
         // Synthetic, unique id so it never collides with a real session or a
         // previous new session of the same agent.
         self.new_counter += 1;

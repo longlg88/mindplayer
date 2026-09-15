@@ -2428,6 +2428,7 @@ const ACCOUNT_HINTS: &[&str] = &[
     "w use this one",
     "enter session on it",
     "a add",
+    "r rename",
     "l sign in",
     "d off",
     "x remove",
@@ -2464,18 +2465,26 @@ fn accounts_popup(f: &mut Frame, app: &App) {
 
     // Typing a name replaces the list — one thing to look at at a time.
     if let Some(name) = &panel.new_name {
-        let provider = panel
-            .adding_to
-            .map(|a| a.as_str())
-            .unwrap_or("this provider");
+        use crate::app::accounts_panel::NameFor;
+        let (title, prompt) = match panel.naming {
+            Some(NameFor::Rename(i)) => (
+                " Rename account ",
+                match app.accounts.get(i) {
+                    Some(account) => format!("New name for {}:", account.name),
+                    None => "New name:".to_string(),
+                },
+            ),
+            Some(NameFor::NewAccount(agent)) => (
+                " Add account ",
+                format!("Name for the new {} account:", agent.as_str()),
+            ),
+            None => (" Add account ", "Name:".to_string()),
+        };
         let area = centered(f.area(), 58, 6);
         f.render_widget(Clear, area);
         f.render_widget(
             Paragraph::new(vec![
-                Line::from(Span::styled(
-                    format!("Name for the new {provider} account:"),
-                    Style::default().fg(DIM),
-                )),
+                Line::from(Span::styled(prompt, Style::default().fg(DIM))),
                 Line::from(Span::styled(
                     format!("{name}▏"),
                     Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
@@ -2489,7 +2498,7 @@ fn accounts_popup(f: &mut Frame, app: &App) {
                 Block::default()
                     .borders(Borders::ALL)
                     .border_style(Style::default().fg(ACCENT))
-                    .title(" Add account "),
+                    .title(title),
             ),
             area,
         );

@@ -125,6 +125,19 @@ fn check_name(name: &str) -> Result<(), AccountError> {
     }
 }
 
+/// Accepts a name for an account, or says why it cannot be one.
+///
+/// # Errors
+/// [`AccountError::BadName`] when the name could not be a directory component.
+pub fn check_account_name(name: &str) -> Result<(), AccountError> {
+    check_name(name)
+}
+
+/// The directory an isolated account of this name would keep its login in.
+pub fn slot_dir(home: &Path, provider: Agent, name: &str) -> PathBuf {
+    accounts_dir(home, provider).join(name)
+}
+
 /// Where a provider's isolated slots live: `<home>/.mindplayer/accounts/<provider>/`.
 pub fn accounts_dir(home: &Path, provider: Agent) -> PathBuf {
     home.join(".mindplayer")

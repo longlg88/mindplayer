@@ -220,6 +220,137 @@ fn enter_starts_a_session_on_the_highlighted_account() {
     );
 }
 
+/// A misspelled account has to be fixable, and for an isolated one the name
+/// is its directory — the two cannot drift apart or a later account of the old
+/// name lands on this one's login.
+mod renaming {
+    use super::*;
+    use mindplayer_core::accounts::{slot_dir, Slot};
+
+    /// An app whose isolated slots live somewhere this test owns.
+    fn with_slot(name: &str) -> (App, std::path::PathBuf) {
+        let mut app = open();
+        let home = limits_home_for_app();
+        let account = Account::isolated(&home, Agent::Codex, name).unwrap();
+        let dir = account.slot_path();
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("auth.json"), "{}").unwrap();
+        app.accounts.push(account);
+        let at = app
+            .account_rows()
+            .iter()
+            .position(|row| match row {
+                AccountRow::Entry(i) => app.accounts[*i].name == name,
+                AccountRow::Header(_) => false,
+            })
+            .unwrap();
+        app.accounts_panel.as_mut().unwrap().selected = at;
+        (app, dir)
+    }
+
+    fn type_name(app: &mut App, name: &str) {
+        app.accounts_start_rename();
+        // The buffer starts at the current name so a typo is a correction.
+        app.accounts_panel.as_mut().unwrap().new_name = Some(String::new());
+        for c in name.chars() {
+            app.accounts_name_push(c);
+        }
+        app.accounts_confirm_add();
+    }
+
+    #[test]
+    fn renaming_starts_from_the_name_it_has_now() {
+        let (mut app, dir) = with_slot("rn-start");
+        app.accounts_start_rename();
+        assert_eq!(
+            app.accounts_panel.as_ref().unwrap().new_name.as_deref(),
+            Some("rn-start")
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn the_login_moves_with_the_name() {
+        let (mut app, old) = with_slot("rn-move-from");
+        type_name(&mut app, "rn-move-to");
+
+        let renamed = app
+            .accounts
+            .iter()
+            .find(|a| a.name == "rn-move-to")
+            .unwrap_or_else(|| {
+                panic!(
+                    "the account kept its old name; error was {:?}",
+                    app.accounts_panel.as_ref().and_then(|p| p.error.clone())
+                )
+            });
+        let Slot::Isolated { path } = &renamed.slot else {
+            panic!("an isolated account lost its slot");
+        };
+        assert_eq!(
+            path,
+            &slot_dir(&limits_home_for_app(), Agent::Codex, "rn-move-to"),
+            "the stored path still points at the old directory"
+        );
+        assert!(
+            path.join("auth.json").is_file(),
+            "the login did not come along: {path:?}"
+        );
+        assert!(!old.exists(), "the old directory was left behind: {old:?}");
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn the_inherited_account_is_only_relabelled() {
+        let mut app = open();
+        app.accounts_panel.as_mut().unwrap().selected = 1;
+        assert!(app.accounts[0].is_inherited());
+        type_name(&mut app, "personal");
+
+        assert_eq!(app.accounts[0].name, "personal");
+        assert!(
+            app.accounts[0].is_inherited(),
+            "relabelling turned it into a slot of its own"
+        );
+        assert!(
+            app.accounts[0].launch_env().is_empty(),
+            "the existing login gained an environment it must not have"
+        );
+    }
+
+    #[test]
+    fn a_name_that_is_not_safe_or_already_taken_is_refused() {
+        let (mut app, dir) = with_slot("rn-refuse");
+        for bad in ["../escape", DEFAULT_ACCOUNT] {
+            type_name(&mut app, bad);
+            assert!(
+                app.accounts_panel.as_ref().unwrap().error.is_some(),
+                "`{bad}` was accepted as a new name"
+            );
+            assert!(
+                app.accounts.iter().any(|a| a.name == "rn-refuse"),
+                "`{bad}` renamed the account anyway"
+            );
+        }
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn an_account_a_pane_is_running_on_is_not_renamed_underneath_it() {
+        let (mut app, dir) = with_slot("rn-busy");
+        let account = app.accounts.last().unwrap().clone();
+        let mut live = super::super::tests::session("live-1", Agent::Codex, false);
+        live.file = account.session_root(&limits_home_for_app()).join("r.jsonl");
+        app.all_sessions.push(live);
+        app.focus_or_add_pane("live-1");
+
+        type_name(&mut app, "renamed");
+        assert!(app.accounts.iter().any(|a| a.name == "rn-busy"));
+        assert!(app.accounts_panel.as_ref().unwrap().error.is_some());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+}
+
 #[test]
 fn a_heading_is_not_an_account_to_act_on() {
     let mut app = open();

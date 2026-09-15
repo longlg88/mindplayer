@@ -283,3 +283,57 @@ fn each_login_carries_its_own_usage() {
         "a reading that failed says nothing about why:\n{screen}"
     );
 }
+
+/// The README documented a `u` popup that no longer existed, and nothing
+/// noticed. What the README promises about this screen is checked here
+/// against what the screen actually draws.
+#[test]
+fn the_readme_describes_the_screen_that_exists() {
+    let readme = include_str!("../../../../README.md");
+    let accounts = readme
+        .split("### 👥 Accounts")
+        .nth(1)
+        .expect("the README has no Accounts section");
+    let section = accounts.split("\n## ").next().unwrap_or(accounts);
+
+    let mut app = app_on_main();
+    // A second account, so both the word for the one in use and the word for
+    // the ones that are not can appear at all.
+    app.accounts
+        .push(Account::isolated(&std::env::temp_dir(), Agent::Codex, "second").unwrap());
+    app.open_accounts();
+    let screen = painted(&mut app, 100, 30);
+
+    // The README names each key; the screen offers it. Either drifting from
+    // the other is the failure this catches.
+    for (documented, offered) in [
+        ("<kbd>w</kbd>", "w use this one"),
+        ("<kbd>Enter</kbd>", "enter session on it"),
+        ("<kbd>a</kbd>", "a add"),
+        ("<kbd>r</kbd>", "r rename"),
+        ("<kbd>x</kbd>", "x remove"),
+    ] {
+        assert!(
+            section.contains(documented),
+            "the README stopped documenting {documented}"
+        );
+        assert!(
+            screen.contains(offered),
+            "the README documents {documented} but the screen does not offer `{offered}`:\n{screen}"
+        );
+    }
+    for word in ["in use", "reserve"] {
+        assert!(
+            section.contains(word),
+            "the README stopped explaining `{word}`"
+        );
+        assert!(
+            screen.contains(word),
+            "the README explains `{word}` but no row says it:\n{screen}"
+        );
+    }
+    assert!(
+        section.contains("accounts/") || readme.contains("accounts/<provider>/<name>/"),
+        "the README does not say where a second login's home lives"
+    );
+}

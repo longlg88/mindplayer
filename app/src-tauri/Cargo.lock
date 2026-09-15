@@ -1792,10 +1792,11 @@ dependencies = [
 
 [[package]]
 name = "mindplayer-core"
-version = "0.11.47"
+version = "0.23.0"
 dependencies = [
  "anyhow",
  "chrono",
+ "libc",
  "serde",
  "serde_json",
  "walkdir",

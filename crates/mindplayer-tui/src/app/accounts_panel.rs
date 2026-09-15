@@ -107,6 +107,12 @@ impl App {
         })
     }
 
+    /// True when this provider has more than one login, and a row therefore
+    /// has to say which one it is about.
+    pub(crate) fn provider_has_several_logins(&self, agent: Agent) -> bool {
+        self.accounts.iter().filter(|a| a.provider == agent).count() > 1
+    }
+
     /// The logins a usage refresh should read, which is every one that could
     /// serve a turn.
     ///

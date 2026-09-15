@@ -463,9 +463,9 @@ impl App {
             self.focus_or_add_pane(&session.id);
             return;
         }
-        // A synthetic new-session has no real id to `resume`; just show its
+        // A row MindPlayer invented has no real id to `resume`; just show its
         // (possibly ended) pane if it still exists, otherwise stay on the list.
-        if session.id.starts_with("new:") {
+        if mindplayer_core::session::is_synthetic_id(&session.id) {
             if self.ptys.contains_key(&session.id) {
                 self.focus_or_add_pane(&session.id);
             } else {
@@ -748,9 +748,9 @@ impl App {
                 self.focus_or_add_pane(&session.id);
                 continue;
             }
-            // Synthetic new-sessions have no real id to resume; only show an
-            // already-spawned pane if one survives.
-            if session.id.starts_with("new:") {
+            // A row MindPlayer invented has no real id to resume; only show
+            // an already-spawned pane if one survives.
+            if mindplayer_core::session::is_synthetic_id(&session.id) {
                 if self.ptys.contains_key(&session.id) {
                     self.focus_or_add_pane(&session.id);
                 }

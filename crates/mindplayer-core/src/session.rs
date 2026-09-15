@@ -38,6 +38,23 @@ impl Agent {
     }
 }
 
+/// Prefixes MindPlayer puts on a row that stands for something other than a
+/// session on disk: one it just started, one a handoff is filling, and a pane
+/// signing an account in.
+///
+/// None of these can be resumed — there is no transcript behind them — and a
+/// provider asked to resume one answers that no such session exists. The list
+/// lives here rather than at each guard because forgetting one is silent: the
+/// pane simply fails with the CLI's own error.
+pub const SYNTHETIC_ID_PREFIXES: [&str; 3] = ["new:", "handoff:", "login:"];
+
+/// True when `id` names a row MindPlayer invented rather than found.
+pub fn is_synthetic_id(id: &str) -> bool {
+    SYNTHETIC_ID_PREFIXES
+        .iter()
+        .any(|prefix| id.starts_with(prefix))
+}
+
 /// Token usage for a single session (or an aggregate).
 ///
 /// `cached` counts cached/cache-read input tokens. `total` is the authoritative

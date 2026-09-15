@@ -29,7 +29,7 @@ fn whoami(
         Agent::Codex => ("codex", &["login", "status"], &["not logged in"]),
         Agent::Claude => ("claude", &["auth", "status"], &["\"loggedin\": false"]),
         Agent::Kiro => ("kiro-cli", &["whoami"], &["not logged in"]),
-        Agent::Cursor => ("agent", &["status"], &[]),
+        Agent::Cursor => ("agent", &["status"], &["not logged in"]),
     }
 }
 

@@ -38,8 +38,8 @@ fn every_provider_that_can_hold_accounts_gets_a_heading() {
         .collect();
     assert_eq!(headers, MULTI_ACCOUNT_AGENTS.to_vec());
     assert!(
-        !headers.contains(&Agent::Cursor),
-        "cursor cannot hold a second login yet, so offering one would lie"
+        headers.contains(&Agent::Cursor),
+        "every provider can hold a second login now"
     );
 }
 

@@ -769,7 +769,13 @@ pub fn account_quota_rows(
         (Slot::Isolated { path }, Agent::Codex) => limits.codex = codex_limits_in(path),
         // Kiro derives everything from HOME, so the slot is the home.
         (Slot::Isolated { path }, Agent::Kiro) => limits.kiro = kiro_limits(path),
-        (Slot::Isolated { .. }, Agent::Cursor) => {}
+        // Cursor's usage is read with a token the Keychain holds once per
+        // machine, and that one belongs to the login this machine came with.
+        // A second Cursor login runs its turns fine; only its figure is
+        // unavailable, and saying so beats showing the other login's.
+        (Slot::Isolated { .. }, Agent::Cursor) => {
+            limits.cursor = Err("usage for a second Cursor login is not available".into())
+        }
     }
     let mut rows = limits.quota_rows();
     rows.retain(|row| row.agent == account.provider);

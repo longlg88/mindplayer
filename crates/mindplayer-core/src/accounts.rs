@@ -15,12 +15,9 @@ use crate::session::Agent;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
-/// Providers that can hold more than one account today.
-///
-/// Cursor is absent on purpose: it is the only CLI that needs its credential
-/// *store* switched rather than a directory pointed elsewhere, so it is not
-/// part of this first pass.
-pub const MULTI_ACCOUNT_AGENTS: [Agent; 3] = [Agent::Codex, Agent::Claude, Agent::Kiro];
+/// Providers that can hold more than one account.
+pub const MULTI_ACCOUNT_AGENTS: [Agent; 4] =
+    [Agent::Codex, Agent::Claude, Agent::Kiro, Agent::Cursor];
 
 /// The name given to the login that already exists on this machine.
 pub const DEFAULT_ACCOUNT: &str = "default";
@@ -239,7 +236,28 @@ impl Account {
                 ],
                 unset: vec!["KIRO_API_KEY".into()],
             },
-            Agent::Cursor => LaunchEnv::default(),
+            // Measured: the Cursor CLI decides which login it is on from HOME
+            // alone — an untouched home reports the machine's login, an empty
+            // one reports none. The rest pins the choice rather than leaving
+            // it to a default: the config and data directories so nothing is
+            // read from the machine's, and the credential store so the login
+            // is written beside them instead of somewhere shared.
+            Agent::Cursor => LaunchEnv {
+                set: vec![
+                    ("AGENT_CLI_CREDENTIAL_STORE".into(), "file".into()),
+                    ("CURSOR_CONFIG_DIR".into(), join(path, ".cursor")),
+                    ("CURSOR_DATA_DIR".into(), join(path, ".cursor")),
+                    ("HOME".into(), dir.clone()),
+                    ("XDG_CACHE_HOME".into(), join(path, ".cache")),
+                    ("XDG_CONFIG_HOME".into(), join(path, ".config")),
+                ],
+                unset: vec![
+                    "CURSOR_API_BASE_URL".into(),
+                    "CURSOR_API_ENDPOINT".into(),
+                    "CURSOR_API_KEY".into(),
+                    "CURSOR_AUTH_TOKEN".into(),
+                ],
+            },
         }
     }
 
@@ -473,14 +491,64 @@ mod tests {
         }
     }
 
+    /// Measured: the Cursor CLI reads its login from HOME — an untouched home
+    /// reports the machine's login and an empty one reports none. The config
+    /// and data directories and the credential store are pinned alongside so
+    /// the choice does not rest on a default.
     #[test]
-    fn cursor_cannot_hold_a_second_account_yet() {
+    fn an_isolated_cursor_account_moves_the_whole_home() {
         let home = tmp();
+        let account = Account::isolated(&home, Agent::Cursor, "work").unwrap();
+        let env = account.launch_env();
+        let dir = accounts_dir(&home, Agent::Cursor).join("work");
+
         assert_eq!(
-            Account::isolated(&home, Agent::Cursor, "work"),
-            Err(AccountError::Unsupported(Agent::Cursor))
+            env.set
+                .iter()
+                .find(|(k, _)| k == "HOME")
+                .map(|(_, v)| v.as_str()),
+            Some(dir.to_string_lossy().as_ref())
         );
-        assert!(!MULTI_ACCOUNT_AGENTS.contains(&Agent::Cursor));
+        let set: Vec<&str> = env.set.iter().map(|(k, _)| k.as_str()).collect();
+        for name in [
+            "CURSOR_CONFIG_DIR",
+            "CURSOR_DATA_DIR",
+            "AGENT_CLI_CREDENTIAL_STORE",
+        ] {
+            assert!(set.contains(&name), "{name} missing from {set:?}");
+        }
+        assert_eq!(
+            env.set
+                .iter()
+                .find(|(k, _)| k == "AGENT_CLI_CREDENTIAL_STORE")
+                .map(|(_, v)| v.as_str()),
+            Some("file"),
+            "the login must be written beside the slot, not somewhere shared"
+        );
+        for name in ["CURSOR_API_KEY", "CURSOR_AUTH_TOKEN"] {
+            assert!(
+                env.unset.contains(&name.to_string()),
+                "{name} would decide the account instead of the slot"
+            );
+        }
+        assert_eq!(
+            account.session_root(&home),
+            dir.join(".cursor").join("chats")
+        );
+    }
+
+    /// Every provider can hold a second login now, so nothing is refused for
+    /// being unsupported.
+    #[test]
+    fn no_provider_is_left_out() {
+        let home = tmp();
+        for agent in [Agent::Codex, Agent::Claude, Agent::Kiro, Agent::Cursor] {
+            assert!(MULTI_ACCOUNT_AGENTS.contains(&agent), "{agent:?}");
+            assert!(
+                Account::isolated(&home, agent, "second").is_ok(),
+                "{agent:?}"
+            );
+        }
     }
 
     #[test]

@@ -84,10 +84,11 @@ mod handing_over {
     use super::*;
 
     #[test]
-    fn every_usable_login_is_a_target_and_cursor_still_is_one() {
+    fn every_usable_login_is_a_target() {
         let (mut app, _, second) = app_with_two_codex();
         app.accounts.push(Account::inherited(Agent::Claude));
         app.accounts.push(Account::inherited(Agent::Kiro));
+        app.accounts.push(Account::inherited(Agent::Cursor));
 
         let targets = app.handoff_targets();
         assert!(
@@ -96,10 +97,13 @@ mod handing_over {
                 .any(|a| a.provider == Agent::Codex && a.name == second.name),
             "the second codex login cannot be handed to: {targets:?}"
         );
-        assert!(
-            targets.iter().any(|a| a.provider == Agent::Cursor),
-            "cursor holds no second account but is still a target: {targets:?}"
-        );
+        for agent in MULTI_ACCOUNT_AGENTS {
+            assert!(
+                targets.iter().any(|a| a.provider == agent),
+                "{} is not a handoff target: {targets:?}",
+                agent.as_str()
+            );
+        }
     }
 
     #[test]

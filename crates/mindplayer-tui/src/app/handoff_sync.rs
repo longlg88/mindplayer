@@ -24,23 +24,16 @@ pub(crate) fn deltas_for(marks: Vec<(Session, u64)>) -> Vec<handoff::PeerDelta> 
 impl App {
     /// Every login a handoff can land on, grouped by provider in a fixed
     /// order.
-    ///
-    /// Cursor holds no second account yet but is still a target, so it
-    /// contributes the login this machine already had.
     pub(crate) fn handoff_targets(&self) -> Vec<mindplayer_core::accounts::Account> {
-        use mindplayer_core::accounts::{Account, MULTI_ACCOUNT_AGENTS};
+        use mindplayer_core::accounts::MULTI_ACCOUNT_AGENTS;
         let mut out = Vec::new();
-        for agent in [Agent::Codex, Agent::Claude, Agent::Kiro, Agent::Cursor] {
-            if MULTI_ACCOUNT_AGENTS.contains(&agent) {
-                out.extend(
-                    self.accounts
-                        .iter()
-                        .filter(|a| a.provider == agent && !a.disabled)
-                        .cloned(),
-                );
-            } else {
-                out.push(Account::inherited(agent));
-            }
+        for agent in MULTI_ACCOUNT_AGENTS {
+            out.extend(
+                self.accounts
+                    .iter()
+                    .filter(|a| a.provider == agent && !a.disabled)
+                    .cloned(),
+            );
         }
         out
     }

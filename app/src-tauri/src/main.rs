@@ -163,7 +163,12 @@ fn pty_start(
         is_subagent: false,
         context_pct: None,
     };
-    let command = resume(&session);
+    // This app has no account screen, so it runs on the login this machine
+    // already had — the behaviour it has always had.
+    let command = resume(
+        &session,
+        &mindplayer_core::accounts::Account::inherited(session.agent),
+    );
     state
         .ptys
         .start(&app, &session_id, &command, cols, rows)
@@ -206,7 +211,11 @@ fn pty_new(
         let _ = archive.save();
     }
 
-    let command = mindplayer_core::new_session(agent, dir);
+    let command = mindplayer_core::new_session(
+        agent,
+        dir,
+        &mindplayer_core::accounts::Account::inherited(agent),
+    );
     state
         .ptys
         .start(&app, &id, &command, cols, rows)

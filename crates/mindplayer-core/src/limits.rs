@@ -463,7 +463,13 @@ impl Limits {
                     }
                 }
                 if !any_window {
-                    let detail = if c.credits_unlimited {
+                    // A limit the account actually hit leads. Without it the
+                    // row reads as missing data — "no window reported" — while
+                    // the account is in fact refusing every turn, which is the
+                    // one thing here the user can act on.
+                    let detail = if let Some(reached) = c.rate_limit_reached.as_deref() {
+                        reached_label(reached)
+                    } else if c.credits_unlimited {
                         "credits unlimited".to_string()
                     } else if let Some(b) = c.credit_balance {
                         format!("credits {b:.0} · no window reported")
@@ -3099,5 +3105,63 @@ mod fallback_stays_with_its_login {
         let (rows, used_cache) = merge_with_last_good(&fresh, &stored);
         assert_eq!(rows[0].used_percent, None, "{rows:?}");
         assert!(!used_cache);
+    }
+}
+
+#[cfg(test)]
+mod a_capped_account_says_so {
+    use super::*;
+
+    /// Taken verbatim from a rollout written when the account refused a turn:
+    /// the pane showed "You hit your spend cap set by the owner of your
+    /// workspace", and this is what the snapshot recorded.
+    const CAPPED: &str = r#"{
+        "limit_id": "premium",
+        "primary": null,
+        "secondary": null,
+        "credits": {"has_credits": true, "unlimited": false, "balance": "0"},
+        "rate_limit_reached_type": "workspace_member_usage_limit_reached"
+    }"#;
+
+    fn rows_from(raw: &str) -> Vec<QuotaRow> {
+        let parsed = parse_codex_rate_limits(&serde_json::from_str(raw).unwrap());
+        Limits {
+            claude: Err("not under test".into()),
+            codex: Ok(parsed),
+            kiro: Err("not under test".into()),
+            cursor: Err("not under test".into()),
+        }
+        .quota_rows()
+        .into_iter()
+        .filter(|r| r.agent == Agent::Codex)
+        .collect()
+    }
+
+    #[test]
+    fn the_row_names_the_limit_rather_than_the_missing_window() {
+        let rows = rows_from(CAPPED);
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        assert_eq!(
+            rows[0].detail, "workspace limit reached",
+            "an account refusing every turn read as missing data: {rows:?}"
+        );
+        assert!(
+            rows[0].used_percent.is_none(),
+            "a refused account has no percentage to draw: {rows:?}"
+        );
+    }
+
+    /// Without a limit having been hit, the balance is still the useful thing.
+    #[test]
+    fn a_balance_is_still_shown_when_nothing_was_hit() {
+        let rows = rows_from(
+            r#"{"limit_id":"codex","primary":null,"secondary":null,
+                "credits":{"unlimited":false,"balance":"12"},
+                "rate_limit_reached_type":null}"#,
+        );
+        assert!(
+            rows[0].detail.contains("credits 12"),
+            "the balance stopped being reported: {rows:?}"
+        );
     }
 }

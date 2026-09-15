@@ -5,7 +5,9 @@
 //! session stays automatic — see `App::account_for`.
 
 use super::*;
-use mindplayer_core::accounts::{save_accounts, Account, AccountError, Role, MULTI_ACCOUNT_AGENTS};
+use mindplayer_core::accounts::{
+    save_accounts, Account, AccountError, Role, Slot, MULTI_ACCOUNT_AGENTS,
+};
 
 /// Marks a pane that is signing an account in rather than running a session.
 pub(crate) const LOGIN_PREFIX: &str = "login:";
@@ -19,14 +21,24 @@ pub enum AccountRow {
     Entry(usize),
 }
 
-/// State of the Accounts screen (`A`).
+/// What a typed name will be used for. One field rather than two, so there is
+/// no state where the screen is both adding and renaming.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NameFor {
+    /// A new account of this provider.
+    NewAccount(Agent),
+    /// The account at this index in `App::accounts`.
+    Rename(usize),
+}
+
+/// State of the Accounts screen (`u`).
 #[derive(Debug, Clone, Default)]
 pub struct AccountsPanel {
     pub selected: usize,
-    /// `Some(buffer)` while typing a new account's name.
+    /// `Some(buffer)` while a name is being typed.
     pub new_name: Option<String>,
-    /// The provider the typed name will belong to.
-    pub adding_to: Option<Agent>,
+    /// What that name is for.
+    pub naming: Option<NameFor>,
     /// Why the last action did not happen, shown until the next one.
     pub error: Option<String>,
 }
@@ -186,11 +198,15 @@ impl App {
         self.accounts_move(0);
     }
 
-    /// How many live panes are running on `account`.
+    /// How many open panes belong to `account`.
+    ///
+    /// Open, not merely alive: a pane whose child has exited is still on
+    /// screen and still that account's, and renaming or removing an account
+    /// out from under it would leave a pane nothing can explain.
     pub(crate) fn pane_count_on(&self, account: &Account) -> usize {
         let home = limits_home_for_app();
-        self.ptys
-            .keys()
+        self.panes
+            .iter()
             .filter_map(|id| self.all_sessions.iter().find(|s| &s.id == id))
             .filter(|s| {
                 s.agent == account.provider
@@ -208,14 +224,28 @@ impl App {
         };
         if let Some(panel) = self.accounts_panel.as_mut() {
             panel.new_name = Some(String::new());
-            panel.adding_to = Some(agent);
+            panel.naming = Some(NameFor::NewAccount(agent));
+        }
+    }
+
+    /// Rename the highlighted account, starting from what it is called now so
+    /// a typo is a correction rather than a retype.
+    pub fn accounts_start_rename(&mut self) {
+        self.clear_error();
+        let Some(i) = self.selected_account() else {
+            return;
+        };
+        let current = self.accounts[i].name.clone();
+        if let Some(panel) = self.accounts_panel.as_mut() {
+            panel.new_name = Some(current);
+            panel.naming = Some(NameFor::Rename(i));
         }
     }
 
     pub fn accounts_cancel_add(&mut self) {
         if let Some(panel) = self.accounts_panel.as_mut() {
             panel.new_name = None;
-            panel.adding_to = None;
+            panel.naming = None;
         }
     }
 
@@ -241,14 +271,18 @@ impl App {
     /// a provider pointed at a path that does not exist reports a broken
     /// install rather than an empty account.
     pub fn accounts_confirm_add(&mut self) {
-        let (name, agent) = {
+        let (name, target) = {
             let Some(panel) = self.accounts_panel.as_ref() else {
                 return;
             };
-            let (Some(name), Some(agent)) = (panel.new_name.clone(), panel.adding_to) else {
+            let (Some(name), Some(target)) = (panel.new_name.clone(), panel.naming) else {
                 return;
             };
-            (name.trim().to_string(), agent)
+            (name.trim().to_string(), target)
+        };
+        let agent = match target {
+            NameFor::NewAccount(agent) => agent,
+            NameFor::Rename(i) => return self.finish_rename(i, &name),
         };
 
         let home = limits_home_for_app();
@@ -281,6 +315,65 @@ impl App {
         // says "logged in" leaves the next step to be guessed. Say it.
         self.status = format!(
             "signing in {} {} — when it finishes, close this pane and press u then w to use it",
+            account.provider.as_str(),
+            account.name
+        );
+    }
+
+    /// Give the account at `i` a new name.
+    ///
+    /// For an isolated account the name is its directory, so the directory
+    /// moves with it — keeping the two in step is what stops a later account
+    /// of the old name from landing on this one's login. The inherited account
+    /// owns no directory, so there it is only a label.
+    fn finish_rename(&mut self, i: usize, name: &str) {
+        let Some(account) = self.accounts.get(i).cloned() else {
+            return;
+        };
+        if name == account.name {
+            self.accounts_cancel_add();
+            return;
+        }
+        if let Err(e) = mindplayer_core::accounts::check_account_name(name) {
+            self.set_error(e.to_string());
+            return;
+        }
+        if self
+            .accounts
+            .iter()
+            .any(|a| a.provider == account.provider && a.name == name)
+        {
+            self.set_error(AccountError::Duplicate(name.to_string()).to_string());
+            return;
+        }
+        if self.pane_count_on(&account) > 0 {
+            self.set_error("a pane is running on this account — close it first");
+            return;
+        }
+
+        if let Slot::Isolated { path } = &account.slot {
+            let moved =
+                mindplayer_core::accounts::slot_dir(&limits_home_for_app(), account.provider, name);
+            if moved.exists() {
+                self.set_error("a directory of that name is already there");
+                return;
+            }
+            // A slot that was never written (a sign-in abandoned before it
+            // finished) has nothing to move; the new path is made on demand.
+            if path.exists() {
+                if let Err(e) = std::fs::rename(path, &moved) {
+                    self.set_error(format!("could not move this account's home: {e}"));
+                    return;
+                }
+            }
+            self.accounts[i].slot = Slot::Isolated { path: moved };
+        }
+        self.accounts[i].name = name.to_string();
+        self.persist_accounts();
+        self.accounts_cancel_add();
+        self.clear_error();
+        self.status = format!(
+            "{} {} is now {name}",
             account.provider.as_str(),
             account.name
         );

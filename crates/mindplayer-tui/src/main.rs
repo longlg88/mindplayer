@@ -713,6 +713,7 @@ fn handle_main_key(app: &mut App, key: KeyEvent) {
                 KeyCode::Down | KeyCode::Char('j') => app.accounts_move(1),
                 KeyCode::Enter => app.accounts_start_session(),
                 KeyCode::Char('a') => app.accounts_start_add(),
+                KeyCode::Char('r') => app.accounts_start_rename(),
                 KeyCode::Char('l') => app.accounts_relogin(),
                 KeyCode::Char('w') => app.accounts_make_primary(),
                 KeyCode::Char('d') => app.accounts_toggle_disabled(),

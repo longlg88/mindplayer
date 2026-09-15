@@ -30,11 +30,12 @@ fn every_login_that_could_serve_is_read_and_the_ones_that_cannot_are_not() {
         .map(|a| a.name.clone())
         .collect();
     assert!(probed.iter().any(|n| n == &second.name), "{probed:?}");
+    app.accounts.push(Account::inherited(Agent::Cursor));
     assert!(
         app.probe_accounts()
             .iter()
             .any(|a| a.provider == Agent::Cursor),
-        "cursor holds one login but still has a reading"
+        "cursor has a reading like every other provider"
     );
 
     app.accounts[1].disabled = true;
@@ -136,6 +137,28 @@ mod where_a_reading_comes_from {
             "the row did not say why it is empty: {rows:?}"
         );
         let _ = std::fs::remove_dir_all(account.slot_path());
+    }
+
+    /// Cursor's usage is read with a token the Keychain holds once per
+    /// machine. A second Cursor login runs its turns fine, but borrowing that
+    /// figure would label the machine login's usage as this account's.
+    #[test]
+    fn a_cursor_account_of_its_own_shows_no_figure_rather_than_the_machine_logins() {
+        let home = limits_home_for_app();
+        let account = Account::isolated(&home, Agent::Cursor, "second").unwrap();
+
+        let rows = account_quota_rows(&account, &home);
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        assert_eq!(rows[0].agent, Agent::Cursor);
+        assert_eq!(rows[0].account, "second");
+        assert!(
+            rows[0].used_percent.is_none(),
+            "a second Cursor login was given a figure it cannot have: {rows:?}"
+        );
+        assert!(
+            rows[0].detail.contains("not available"),
+            "the row does not say why it is empty: {rows:?}"
+        );
     }
 
     #[test]

@@ -312,8 +312,11 @@ validates its JWT subject and expiry, and sends only the resulting session cooki
 to `https://cursor.com/api/usage-summary`. The cookie is staged in a private
 mode-0600 curl config, never argv; HTTPS is required and redirects are disabled.
 Cursor quota is unavailable rather than guessed when that macOS Agent credential
-or a numeric plan/personal/team cap is absent. Browser cookies, chat content,
-project content, on-demand spend, and session metadata are not used as quota.
+is absent or the response contains no usable plan/category/personal/team cap.
+Included and capped on-demand usage are shown as separate rows so spending is not
+masked by the included aggregate. Auto and API breakdowns are not added as footer
+rows. Browser cookies, chat content, project content, and session metadata are not
+used as quota.
 
 What MindPlayer writes, all under `~/.mindplayer/`:
 

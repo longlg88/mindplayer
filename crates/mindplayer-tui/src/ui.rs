@@ -736,7 +736,15 @@ fn main_view(f: &mut Frame, app: &mut App) {
     // One row per account window. Each is gauged, so they cannot share a line
     // the way plain numbers did — and giving each its own row is what lets the
     // names align vertically enough to scan.
-    let quota_rows = app.quota_rows();
+    let mut quota_rows = app.quota_rows();
+    // Two logins of one provider produce rows with the same label, so the
+    // account has to be on the line or the reader cannot tell which allowance
+    // is which. A provider with one login says nothing extra.
+    for row in &mut quota_rows {
+        if !row.account.is_empty() && app.provider_has_several_logins(row.agent) {
+            row.label = format!("{} {}", row.label, row.account);
+        }
+    }
     let name_width = quota_rows
         .iter()
         .map(|r| r.label.chars().count())

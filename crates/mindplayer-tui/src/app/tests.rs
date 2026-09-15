@@ -3796,7 +3796,7 @@ fn each_account_gets_a_row_and_only_real_readings_get_a_gauge() {
     let labels: Vec<&str> = rows.iter().map(|r| r.label.as_str()).collect();
     assert_eq!(
         labels,
-        vec!["claude 5h", "claude wk", "codex", "kiro", "cursor"],
+        vec!["claude 5h", "claude wk", "codex", "kiro", "cursor included"],
         "claude reports two windows, so it gets two rows"
     );
 
@@ -3807,7 +3807,7 @@ fn each_account_gets_a_row_and_only_real_readings_get_a_gauge() {
         .collect();
     assert_eq!(
         gauged,
-        vec!["claude 5h", "claude wk", "kiro", "cursor"],
+        vec!["claude 5h", "claude wk", "kiro", "cursor included"],
         "codex reported no window, so it must not be gauged"
     );
 
@@ -3819,7 +3819,7 @@ fn each_account_gets_a_row_and_only_real_readings_get_a_gauge() {
     let kiro = rows.iter().find(|r| r.label == "kiro").unwrap();
     assert_eq!(kiro.detail, "185.5/10000 cr");
     assert_eq!(kiro.resets.as_deref(), Some("2026-10-01"));
-    let cursor = rows.iter().find(|r| r.label == "cursor").unwrap();
+    let cursor = rows.iter().find(|r| r.label == "cursor included").unwrap();
     assert_eq!(cursor.detail, "$15.00/$50");
 }
 
@@ -3994,6 +3994,61 @@ fn a_sibling_refresh_holds_back_an_instance_that_already_has_a_reading() {
         app.limits_rx.is_none(),
         "a sibling's fresh reading must satisfy this instance instead of doubling the request rate"
     );
+}
+
+/// A long-running process keeps its startup cache in memory. If a sibling
+/// refreshes the shared file later, this instance must re-read it before its
+/// own timer spends the same account budget again.
+#[test]
+fn a_sibling_refresh_replaces_a_stale_in_memory_cache_before_fetching() {
+    let home = std::env::temp_dir().join(format!(
+        "mp-shared-limits-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let _ = std::fs::remove_dir_all(&home);
+    std::fs::create_dir_all(&home).unwrap();
+    let mut app = isolated_app();
+    app.quota_cache = Some((
+        vec![mindplayer_core::limits::QuotaRow {
+            label: "cursor".into(),
+            used_percent: Some(12.5),
+            detail: "$2.50/$20".into(),
+            resets: None,
+            ..Default::default()
+        }],
+        Utc::now() - chrono::Duration::minutes(10),
+    ));
+    app.limits = Some(
+        mindplayer_core::limits::Limits {
+            claude: Ok(Default::default()),
+            codex: Ok(Default::default()),
+            kiro: Ok(Default::default()),
+            cursor: Ok(Default::default()),
+        }
+        .quota_rows(),
+    );
+    let sibling_rows = vec![mindplayer_core::limits::QuotaRow {
+        label: "cursor".into(),
+        used_percent: Some(27.5),
+        detail: "$5.50/$20".into(),
+        resets: Some("2026-10-04".into()),
+        ..Default::default()
+    }];
+    mindplayer_core::limits::save_quota_cache(&home, &sibling_rows, BUILD);
+
+    app.spawn_limits_fetch_from(home.clone());
+
+    assert!(
+        app.limits_rx.is_none(),
+        "the newer shared reading must suppress this process's duplicate fetch"
+    );
+    assert_eq!(app.quota_rows(), sibling_rows);
+    assert!(
+        app.limits.is_none(),
+        "the older live snapshot must yield to the newer shared reading"
+    );
+    let _ = std::fs::remove_dir_all(home);
 }
 
 #[test]

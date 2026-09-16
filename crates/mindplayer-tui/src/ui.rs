@@ -737,17 +737,35 @@ fn main_view(f: &mut Frame, app: &mut App) {
     // the way plain numbers did — and giving each its own row is what lets the
     // names align vertically enough to scan.
     let mut quota_rows = app.quota_rows();
-    // Two logins of one provider produce rows with the same label, so the
-    // account has to be on the line or the reader cannot tell which allowance
-    // is which. A provider with one login says nothing extra.
+    mindplayer_core::limits::order_for_display(&mut quota_rows, |agent| {
+        app.account_for(agent).name
+    });
+    // Provider order is fixed, and the login a new session would take comes
+    // first within each — otherwise the lines follow the order accounts were
+    // added and a provider's rows end up split apart.
+
+    // The provider becomes its own column, so the label drops the name it
+    // already starts with. Two logins of one provider still need the account
+    // on the line; one login says nothing extra.
     for row in &mut quota_rows {
+        let mut rest = mindplayer_core::limits::label_without_provider(row).to_string();
         if !row.account.is_empty() && app.provider_has_several_logins(row.agent) {
-            row.label = format!("{} {}", row.label, row.account);
+            rest = if rest.is_empty() {
+                row.account.clone()
+            } else {
+                format!("{rest} {}", row.account)
+            };
         }
+        row.label = rest;
     }
     let name_width = quota_rows
         .iter()
         .map(|r| r.label.chars().count())
+        .max()
+        .unwrap_or(0);
+    let platform_width = quota_rows
+        .iter()
+        .map(|r| r.agent.as_str().chars().count())
         .max()
         .unwrap_or(0);
     let quota_h = quota_rows.len() as u16;
@@ -819,9 +837,27 @@ fn main_view(f: &mut Frame, app: &mut App) {
         footer_rows[0],
     );
     if quota_h > 0 {
+        // The provider is named once per group. A blank there reads as "the
+        // one above", which is what makes the lines a group at a glance.
+        let mut previous: Option<Agent> = None;
         let lines: Vec<Line> = quota_rows
             .iter()
-            .map(|row| Line::from(quota_row_spans(row, name_width)))
+            .map(|row| {
+                let head = if previous == Some(row.agent) {
+                    String::new()
+                } else {
+                    row.agent.as_str().to_string()
+                };
+                previous = Some(row.agent);
+                let mut spans = vec![Span::styled(
+                    format!(" {head:<platform_width$} "),
+                    Style::default()
+                        .fg(quota_label_color(row.agent.as_str()))
+                        .add_modifier(Modifier::BOLD),
+                )];
+                spans.extend(quota_row_spans(row, name_width));
+                Line::from(spans)
+            })
             .collect();
         f.render_widget(Paragraph::new(lines), footer_rows[1]);
     }

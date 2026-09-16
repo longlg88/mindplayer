@@ -384,17 +384,97 @@ fn an_exhausted_login_stays_on_the_footer_after_switching_away_from_it() {
         screen.contains("100.0%"),
         "the exhausted login is not on the footer:\n{screen}"
     );
+    // The platform is its own column now, so the account rides on the label
+    // beside it rather than inside it.
     assert!(
-        screen.contains("codex weekly sendbird-kr"),
+        screen.contains("weekly sendbird-kr"),
         "two logins of one provider are not told apart:\n{screen}"
     );
     assert!(
-        screen.contains("codex sendbird-com"),
+        screen.contains("sendbird-com"),
         "the fresh login has no row at all:\n{screen}"
     );
     // One login means nothing extra on the line.
     assert!(
-        screen.contains("claude 5h ") && !screen.contains("claude 5h default"),
+        screen.contains("5h ") && !screen.contains("5h default"),
         "a provider with one login was labelled anyway:\n{screen}"
+    );
+}
+
+/// Reported: the footer put a provider's rows wherever its accounts happened
+/// to sit in `accounts.json`, so Codex was first and last with Claude and Kiro
+/// between them.
+#[test]
+fn the_footer_groups_each_platform_and_names_it_once() {
+    use mindplayer_core::limits::QuotaRow;
+    let mut app = app_on_main();
+    let kr = Account::isolated(&std::env::temp_dir(), Agent::Codex, "sendbird-kr").unwrap();
+    let com = Account::isolated(&std::env::temp_dir(), Agent::Codex, "sendbird-com").unwrap();
+    // Stored in the order the accounts were added, which is what used to leak
+    // through to the screen.
+    app.accounts = vec![
+        Account::inherited(Agent::Cursor),
+        kr.clone(),
+        Account::inherited(Agent::Claude),
+        Account::inherited(Agent::Kiro),
+        com.clone(),
+    ];
+    let r = |agent, account: &str, label: &str, used| QuotaRow {
+        label: label.into(),
+        agent,
+        account: account.into(),
+        used_percent: used,
+        ..Default::default()
+    };
+    app.limits = Some(vec![
+        r(Agent::Cursor, "default", "cursor included", Some(4.7)),
+        r(Agent::Cursor, "default", "cursor on-demand", Some(100.0)),
+        r(Agent::Codex, &kr.name, "codex weekly", Some(100.0)),
+        r(Agent::Claude, "default", "claude 5h", Some(48.0)),
+        r(Agent::Claude, "default", "claude wk", Some(85.0)),
+        r(Agent::Kiro, "default", "kiro", Some(90.9)),
+        r(Agent::Codex, &com.name, "codex", None),
+    ]);
+
+    let screen = painted(&mut app, 110, 30);
+    let at = |needle: &str| {
+        screen
+            .find(needle)
+            .unwrap_or_else(|| panic!("`{needle}` is not on screen:\n{screen}"))
+    };
+
+    // Both Codex lines sit together, above every other platform's.
+    let kr_at = at("sendbird-kr");
+    let com_at = at("sendbird-com");
+    let claude_at = at("claude");
+    let kiro_at = at("kiro");
+    let cursor_at = at("cursor");
+    assert!(
+        kr_at < com_at && com_at < claude_at,
+        "the two codex lines are not together:\n{screen}"
+    );
+    assert!(
+        claude_at < kiro_at && kiro_at < cursor_at,
+        "the platforms are not in the fixed order:\n{screen}"
+    );
+
+    // Named once per group, and the label no longer repeats it.
+    assert_eq!(
+        screen.matches("codex").count(),
+        1,
+        "the platform is repeated on its own rows:\n{screen}"
+    );
+    assert!(
+        !screen.contains("codex weekly"),
+        "the label still carries the platform it sits next to:\n{screen}"
+    );
+    assert!(
+        screen.contains("weekly sendbird-kr"),
+        "the window and account left the line:\n{screen}"
+    );
+    // One login means no account on the line.
+    assert!(
+        !screen.contains("5h default"),
+        "a platform with one login was labelled anyway:\n{screen}"
     );
 }

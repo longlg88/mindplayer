@@ -53,7 +53,11 @@ const CURL_TIMEOUT_SECS: u32 = 8;
 /// Kiro's hidden `/usage` command sometimes keeps its harness alive after
 /// printing a complete report. The readout is optional, so bound the whole
 /// child and let the next refresh try again.
-const KIRO_USAGE_TIMEOUT: Duration = Duration::from_secs(15);
+/// Kiro has no usage command outside `chat`, and starting a chat is the whole
+/// cost: measured on a developer machine, `kiro-cli chat --no-interactive`
+/// takes ~29s before it runs anything, and `/usage` itself adds ~2s. At 15s the
+/// probe could never finish, so the row read `kiro-cli timed out` forever.
+const KIRO_USAGE_TIMEOUT: Duration = Duration::from_secs(60);
 /// Same reason as the keychain constants above: only macOS shells out to
 /// `security(1)`, so elsewhere this bound has nothing to bound.
 #[cfg(target_os = "macos")]
@@ -258,7 +262,7 @@ pub fn merge_with_last_good(fresh: &[QuotaRow], stored: &[QuotaRow]) -> (Vec<Quo
         // login's row, which then appeared twice while the second vanished.
         let fallback: Vec<_> = stored
             .iter()
-            .filter(|old| old.has_gauge() && old.agent == row.agent && old.account == row.account)
+            .filter(|old| old.has_gauge() && old.agent == row.agent && stands_in_for(old, row))
             .cloned()
             .collect();
         if fallback.is_empty() {
@@ -765,6 +769,20 @@ fn window_label(window_minutes: Option<f64>) -> String {
     }
 }
 
+/// Whether `old` is the same login's earlier reading, and may therefore stand
+/// in when the fresh one has no figure.
+///
+/// Names must match, with one exception: a row stored before readings carried
+/// an account has no name at all, and at that time a provider had exactly one
+/// login — the one this machine came with. So it stands in for that one, and
+/// for no other. Refusing it outright left a rate-limited row showing the
+/// refusal for as long as the limit lasted, which is the moment the last good
+/// figure is worth the most.
+fn stands_in_for(old: &QuotaRow, fresh: &QuotaRow) -> bool {
+    old.account == fresh.account
+        || (old.account.is_empty() && fresh.account == crate::accounts::DEFAULT_ACCOUNT)
+}
+
 /// Whether any row was refused for asking too often.
 ///
 /// The same judgement as [`Limits::network_rate_limited`], made from rows
@@ -888,6 +906,18 @@ where
 /// same local `/usage` surface Kiro renders interactively; no transcript or
 /// project content is sent. A missing local Kiro store skips the child entirely
 /// (important for fixture homes and machines that do not use Kiro).
+/// How long the Kiro usage probe is given, so a test can hold it against what
+/// starting a chat actually costs.
+pub fn kiro_usage_timeout() -> Duration {
+    KIRO_USAGE_TIMEOUT
+}
+
+/// Where the usage probe's own throwaway chats are kept, so they never land in
+/// the store the user's real sessions live in.
+fn kiro_probe_home(home: &Path) -> PathBuf {
+    home.join(".mindplayer").join("kiro-probe").join(".kiro")
+}
+
 pub fn kiro_limits(home: &Path) -> Result<KiroLimits, String> {
     if !home.join(".kiro").exists() {
         return Err("no local Kiro profile".into());
@@ -896,7 +926,12 @@ pub fn kiro_limits(home: &Path) -> Result<KiroLimits, String> {
     command
         .args(["chat", "--no-interactive", "/usage"])
         .current_dir(home)
-        .env("HOME", home);
+        .env("HOME", home)
+        // Every probe starts a chat, and a chat writes itself into the session
+        // store — two files each time, every five minutes. Left on the user's
+        // own store, that is a reading which makes the thing it reads bigger.
+        // Only KIRO_HOME moves, so the account this runs as is unchanged.
+        .env("KIRO_HOME", kiro_probe_home(home));
     let (status, stdout, stderr) = run_bounded(command, KIRO_USAGE_TIMEOUT, "kiro-cli")?;
     let output = [stdout, stderr]
         .into_iter()

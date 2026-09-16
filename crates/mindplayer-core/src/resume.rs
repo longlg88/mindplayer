@@ -3,9 +3,9 @@
 //! Verified invocations:
 //! - Codex resume:  `codex resume <uuid>`            (run in the session cwd)
 //! - Claude resume: `claude --resume <id>`           (run in the session cwd)
-//! - Kiro resume:   `kiro-cli chat --resume-id <id>` (run in the session cwd)
+//! - Kiro resume:   `kiro-cli chat --resume-id <id> --trust-all-tools --v3`
 //! - Cursor resume: `agent --resume <chatId>`        (run in the session cwd)
-//! - New session:   `codex` / `claude` / `kiro-cli chat` / `agent`
+//! - New session:   `codex` / `claude` / `kiro-cli chat --trust-all-tools --v3` / `agent`
 
 use crate::accounts::{Account, LaunchEnv};
 use crate::session::{Agent, Session};
@@ -33,12 +33,11 @@ pub fn resume(session: &Session, account: &Account) -> Command {
     let args = match session.agent {
         Agent::Codex => vec!["resume".to_string(), id],
         Agent::Claude => vec!["--resume".to_string(), id],
-        Agent::Kiro => vec![
-            "chat".to_string(),
-            "--resume-id".to_string(),
-            id,
-            KIRO_TRUST_FLAG.to_string(),
-        ],
+        Agent::Kiro => {
+            let mut args = vec!["chat".to_string(), "--resume-id".to_string(), id];
+            args.extend(KIRO_FLAGS.iter().map(|f| f.to_string()));
+            args
+        }
         Agent::Cursor => vec!["--resume".to_string(), id],
     };
     Command {
@@ -50,16 +49,26 @@ pub fn resume(session: &Session, account: &Account) -> Command {
 }
 
 /// Kiro launches every session with every tool pre-trusted (user-requested: no
-/// per-tool / MCP approval prompts, ever) — resume, a brand-new session, and a
-/// handoff target all go through `resume()`/`new_session()` below, so this one
-/// flag covers every way a kiro session can start.
-const KIRO_TRUST_FLAG: &str = "--trust-all-tools";
+/// per-tool / MCP approval prompts, ever) and on the v3 agent engine — resume,
+/// a brand-new session, and a handoff target all go through
+/// `resume()`/`new_session()` below, so these cover every way a kiro session
+/// can start.
+///
+/// `--v3` is the CLI's own shorthand for `--agent-engine v3`; v2 is its
+/// default. A v3 session records itself as `sess_<id>.history` rather than the
+/// `<id>.json` sidecar discovery collects, so sessions started this way do not
+/// appear in the list — accepted deliberately (2026-09-16).
+const KIRO_FLAGS: [&str; 2] = ["--trust-all-tools", "--v3"];
 
 /// Command to start a brand new session in `cwd`, on `account`'s login.
 pub fn new_session(agent: Agent, cwd: PathBuf, account: &Account) -> Command {
     let args = match agent {
         // Kiro's chat lives under a subcommand; codex/claude launch bare.
-        Agent::Kiro => vec!["chat".to_string(), KIRO_TRUST_FLAG.to_string()],
+        Agent::Kiro => {
+            let mut args = vec!["chat".to_string()];
+            args.extend(KIRO_FLAGS.iter().map(|f| f.to_string()));
+            args
+        }
         Agent::Codex | Agent::Claude | Agent::Cursor => Vec::new(),
     };
     Command {
@@ -156,7 +165,7 @@ mod tests {
         assert_eq!(c.program, "kiro-cli");
         assert_eq!(
             c.args,
-            vec!["chat", "--resume-id", "kid-3", "--trust-all-tools"],
+            vec!["chat", "--resume-id", "kid-3", "--trust-all-tools", "--v3"],
             "resuming a kiro session must stay in trust mode — no per-tool/MCP approval prompts"
         );
         assert_eq!(c.cwd, PathBuf::from("/work"));
@@ -172,8 +181,30 @@ mod tests {
         assert_eq!(c.program, "kiro-cli");
         assert_eq!(
             c.args,
-            vec!["chat", "--trust-all-tools"],
+            vec!["chat", "--trust-all-tools", "--v3"],
             "a brand-new kiro session must start in trust mode too"
+        );
+    }
+
+    /// Every way a kiro session can start goes through one of these two, so
+    /// the engine cannot be set on some paths and not others.
+    #[test]
+    fn every_kiro_launch_carries_the_same_flags() {
+        let account = Account::inherited(Agent::Kiro);
+        let started = new_session(Agent::Kiro, PathBuf::from("/here"), &account);
+        let resumed = resume(&session(Agent::Kiro, "kid-9", "/work"), &account);
+
+        for (what, args) in [("new", &started.args), ("resume", &resumed.args)] {
+            for flag in KIRO_FLAGS {
+                assert!(
+                    args.contains(&flag.to_string()),
+                    "a {what} kiro session launched without {flag}: {args:?}"
+                );
+            }
+        }
+        assert!(
+            KIRO_FLAGS.contains(&"--v3"),
+            "the engine flag is what this pins; without it these assertions say nothing"
         );
     }
 

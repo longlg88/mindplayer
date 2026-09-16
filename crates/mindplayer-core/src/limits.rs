@@ -769,6 +769,51 @@ fn window_label(window_minutes: Option<f64>) -> String {
     }
 }
 
+/// The order providers appear in, fixed here rather than taken from the order
+/// accounts happen to be stored in.
+///
+/// Rows used to follow `accounts.json`, so a provider's lines sat wherever its
+/// accounts were added — Codex first and fifth in the reported case, split by
+/// Claude and Kiro. Adding an account moved things about, which is not an
+/// order a reader can learn.
+pub const PROVIDER_ORDER: [Agent; 4] = [Agent::Codex, Agent::Claude, Agent::Kiro, Agent::Cursor];
+
+/// Put rows in provider order, and within a provider put the login a new
+/// session would take first.
+///
+/// `in_use` names that login per provider. Rows of one account keep the order
+/// the reading produced them in, so a provider's windows stay in their own
+/// sequence.
+pub fn order_for_display(rows: &mut [QuotaRow], in_use: impl Fn(Agent) -> String) {
+    let rank = |agent: Agent| {
+        PROVIDER_ORDER
+            .iter()
+            .position(|a| *a == agent)
+            .unwrap_or(PROVIDER_ORDER.len())
+    };
+    rows.sort_by_key(|row| {
+        let current = in_use(row.agent);
+        // A row with no account name predates accounts; it can only be the
+        // machine's own login, so it sorts with the one in use.
+        let elsewhere = !row.account.is_empty() && row.account != current;
+        (rank(row.agent), u8::from(elsewhere), row.account.clone())
+    });
+}
+
+/// The provider a row belongs to, and what is left of its label once the
+/// provider's own name is taken out of it.
+///
+/// Labels are written as `codex weekly`, `cursor included`, `kiro` — the
+/// provider is the first word. Drawn in its own column, repeating it in the
+/// label would say the same thing twice on every line.
+pub fn label_without_provider(row: &QuotaRow) -> &str {
+    let provider = row.agent.as_str();
+    match row.label.strip_prefix(provider) {
+        Some(rest) => rest.trim_start(),
+        None => row.label.as_str(),
+    }
+}
+
 /// Whether `old` is the same login's earlier reading, and may therefore stand
 /// in when the fresh one has no figure.
 ///

@@ -351,6 +351,20 @@ pub fn load_quota_cache(
     Some((cache.rows, at))
 }
 
+/// When the endpoint was last asked, whoever asked and whatever build they
+/// were on.
+///
+/// Drawing a reading and deciding whether to take another are different
+/// questions. [`load_quota_cache`] refuses a foreign build because its numbers
+/// may mean something else in this one, but the fact that some pane spent a
+/// request is true across builds — and that is what keeps several panes off one
+/// account's request budget.
+pub fn quota_cache_taken_at(home: &Path) -> Option<chrono::DateTime<chrono::Utc>> {
+    let body = std::fs::read(quota_cache_path(home)).ok()?;
+    let cache: QuotaCache = serde_json::from_slice(&body).ok()?;
+    chrono::DateTime::from_timestamp(cache.written_at, 0)
+}
+
 /// Shorten a reset epoch: a clock for windows that roll over within a day, a
 /// date for the ones that don't.
 fn epoch_label(epoch: i64, clock: bool) -> Option<String> {

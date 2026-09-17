@@ -1131,9 +1131,16 @@ impl App {
         }
         // The limit is per account, not per process, so every pane's own timer
         // adds to the same budget unless a sibling's recent cache satisfies it.
-        if self.quota_cache.as_ref().is_some_and(|(_, written_at)| {
+        // A pane on another release writes a reading this build will not draw,
+        // but the request it spent counts all the same, so the gate asks when
+        // the endpoint was last called rather than what was last drawable.
+        let taken_at = mindplayer_core::limits::quota_cache_taken_at(&home)
+            .into_iter()
+            .chain(self.quota_cache.as_ref().map(|(_, at)| *at))
+            .max();
+        if taken_at.is_some_and(|at| {
             Utc::now()
-                .signed_duration_since(*written_at)
+                .signed_duration_since(at)
                 .to_std()
                 .unwrap_or(Duration::ZERO)
                 < LIMITS_REFRESH_INTERVAL

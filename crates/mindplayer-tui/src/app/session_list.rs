@@ -1120,8 +1120,29 @@ impl App {
                 .as_ref()
                 .is_none_or(|(_, local_at)| shared.1 > *local_at);
             if newer {
+                // Shared disk rows exclude Codex. Do not erase a live Codex
+                // reading when a sibling refreshes a different provider.
+                let mut live_codex: Vec<_> = self
+                    .limits
+                    .iter()
+                    .flatten()
+                    .filter(|row| {
+                        row.agent == Agent::Codex
+                            && self.accounts.iter().any(|account| {
+                                account.provider == Agent::Codex
+                                    && account.name == row.account
+                                    && !account.disabled
+                            })
+                    })
+                    .cloned()
+                    .collect();
+                self.limits = if live_codex.is_empty() {
+                    None
+                } else {
+                    live_codex.extend(shared.0.iter().cloned());
+                    Some(live_codex)
+                };
                 self.quota_cache = Some(shared);
-                self.limits = None;
             }
         }
 
@@ -1131,6 +1152,14 @@ impl App {
         }
         // The limit is per account, not per process, so every pane's own timer
         // adds to the same budget unless a sibling's recent cache satisfies it.
+        // Codex's disk snapshots are intentionally not reused: a reset can
+        // happen while no conversation is running. A fresh cache for another
+        // provider must not postpone this process's first live Codex reading.
+        let needs_codex_reading = self.limits.is_none()
+            && self
+                .probe_accounts()
+                .iter()
+                .any(|account| account.provider == Agent::Codex);
         // A pane on another release writes a reading this build will not draw,
         // but the request it spent counts all the same, so the gate asks when
         // the endpoint was last called rather than what was last drawable.
@@ -1138,22 +1167,30 @@ impl App {
             .into_iter()
             .chain(self.quota_cache.as_ref().map(|(_, at)| *at))
             .max();
-        if taken_at.is_some_and(|at| {
+        let shared_cache_is_fresh = taken_at.is_some_and(|at| {
             Utc::now()
                 .signed_duration_since(at)
                 .to_std()
                 .unwrap_or(Duration::ZERO)
                 < LIMITS_REFRESH_INTERVAL
-        }) {
+        });
+        if !needs_codex_reading && shared_cache_is_fresh {
             return;
         }
         self.limits_started = Some(now);
         // One reading per login, since the numbers are per account and an
         // account with its own home keeps its own state.
-        let accounts = self.probe_accounts();
+        let mut accounts = self.probe_accounts();
+        let mut cached_rows = Vec::new();
+        if shared_cache_is_fresh && needs_codex_reading {
+            accounts.retain(|account| account.provider == Agent::Codex);
+            if let Some((rows, _)) = &self.quota_cache {
+                cached_rows.extend(rows.iter().filter(|row| row.agent != Agent::Codex).cloned());
+            }
+        }
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
-            let mut rows = Vec::new();
+            let mut rows = cached_rows;
             for account in &accounts {
                 rows.extend(mindplayer_core::limits::account_quota_rows(account, &home));
             }

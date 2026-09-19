@@ -3943,6 +3943,8 @@ fn a_failed_claude_probe_restores_both_cached_windows() {
 #[test]
 fn a_recent_account_cache_prevents_an_immediate_duplicate_fetch() {
     let mut app = isolated_app();
+    app.accounts
+        .retain(|account| account.provider != Agent::Codex);
     app.quota_cache = Some((
         vec![mindplayer_core::limits::QuotaRow {
             label: "cursor".into(),
@@ -3961,6 +3963,64 @@ fn a_recent_account_cache_prevents_an_immediate_duplicate_fetch() {
         app.limits_rx.is_none(),
         "a second process starting against a fresh shared cache must not hit the account APIs again"
     );
+}
+
+#[test]
+fn a_fresh_other_provider_cache_does_not_hide_codex_after_reset() {
+    let mut app = isolated_app();
+    app.accounts = vec![mindplayer_core::accounts::Account::inherited(Agent::Codex)];
+    app.limits = None;
+    app.quota_cache = Some((
+        vec![mindplayer_core::limits::QuotaRow {
+            label: "cursor".into(),
+            agent: Agent::Cursor,
+            used_percent: Some(12.5),
+            ..Default::default()
+        }],
+        Utc::now(),
+    ));
+
+    app.spawn_limits_fetch();
+
+    assert!(
+        app.limits_rx.is_some(),
+        "Codex needs a live reading after startup"
+    );
+}
+
+#[test]
+fn a_sibling_cache_update_preserves_live_codex_during_backoff() {
+    use mindplayer_core::limits::QuotaRow;
+    let home = scratch_state_path("codex-live-cache")
+        .parent()
+        .unwrap()
+        .to_path_buf();
+    let mut app = isolated_app();
+    let account = mindplayer_core::accounts::Account::inherited(Agent::Codex);
+    app.accounts = vec![account.clone()];
+    let codex = QuotaRow {
+        label: "codex monthly".into(),
+        agent: Agent::Codex,
+        account: account.name,
+        used_percent: Some(10.0),
+        ..Default::default()
+    };
+    app.limits = Some(vec![codex.clone()]);
+    app.quota_cache = None;
+    app.limits_retry_at = Some(Instant::now() + Duration::from_secs(60));
+    let cursor = QuotaRow {
+        label: "cursor".into(),
+        agent: Agent::Cursor,
+        used_percent: Some(25.0),
+        ..Default::default()
+    };
+    mindplayer_core::limits::save_quota_cache(&home, std::slice::from_ref(&cursor), BUILD);
+
+    app.spawn_limits_fetch_from(home);
+
+    assert!(app.quota_rows().contains(&codex));
+    assert!(app.quota_rows().contains(&cursor));
+    assert!(app.limits_rx.is_none());
 }
 
 /// Every pane runs its own `App`, and the account limit is per account, not per
@@ -4012,6 +4072,8 @@ fn a_sibling_refresh_replaces_a_stale_in_memory_cache_before_fetching() {
     let _ = std::fs::remove_dir_all(&home);
     std::fs::create_dir_all(&home).unwrap();
     let mut app = isolated_app();
+    app.accounts
+        .retain(|account| account.provider != Agent::Codex);
     app.quota_cache = Some((
         vec![mindplayer_core::limits::QuotaRow {
             label: "cursor".into(),

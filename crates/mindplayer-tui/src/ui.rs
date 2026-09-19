@@ -111,7 +111,11 @@ fn quota_row_spans(
     if !row.detail.is_empty() {
         spans.push(Span::styled(
             format!("  {}", row.detail),
-            Style::default().fg(DIM),
+            Style::default().fg(if row.used_percent.is_some_and(|used| used >= 100.0) {
+                ERROR
+            } else {
+                DIM
+            }),
         ));
     }
     if let Some(resets) = row.resets.as_deref() {
@@ -748,12 +752,21 @@ fn main_view(f: &mut Frame, app: &mut App) {
     // already starts with. Two logins of one provider still need the account
     // on the line; one login says nothing extra.
     for row in &mut quota_rows {
+        // Keep the footer compact; the Accounts screen retains the reported
+        // usage/limit figures. The exhausted state must still be explicit.
+        if row.agent == Agent::Codex && row.label == "codex monthly" {
+            row.detail = if row.used_percent.is_some_and(|used| used >= 100.0) {
+                "limit reached".into()
+            } else {
+                String::new()
+            };
+        }
         let mut rest = mindplayer_core::limits::label_without_provider(row).to_string();
         if !row.account.is_empty() && app.provider_has_several_logins(row.agent) {
             rest = if rest.is_empty() {
                 row.account.clone()
             } else {
-                format!("{rest} {}", row.account)
+                format!("{} {rest}", row.account)
             };
         }
         row.label = rest;
@@ -2732,6 +2745,115 @@ fn accounts_popup(f: &mut Frame, app: &App) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn both_codex_accounts_render_weekly_and_monthly_in_the_footer() {
+        use mindplayer_core::accounts::Account;
+        use mindplayer_core::limits::QuotaRow;
+        use ratatui::{backend::TestBackend, Terminal};
+        let mut app = App::new();
+        app.screen = Screen::Main;
+        app.accounts = ["sendbird-kr", "sendbird-com"]
+            .into_iter()
+            .map(|name| {
+                let mut account = Account::inherited(Agent::Codex);
+                account.name = name.into();
+                account
+            })
+            .collect();
+        app.limits = Some(
+            ["sendbird-kr", "sendbird-com"]
+                .into_iter()
+                .flat_map(|account| {
+                    let exhausted = account == "sendbird-com";
+                    [
+                        QuotaRow {
+                            label: "codex weekly".into(),
+                            agent: Agent::Codex,
+                            account: account.into(),
+                            used_percent: (!exhausted).then_some(0.0),
+                            ..Default::default()
+                        },
+                        QuotaRow {
+                            label: "codex monthly".into(),
+                            agent: Agent::Codex,
+                            account: account.into(),
+                            used_percent: Some(if exhausted { 100.0 } else { 10.0 }),
+                            detail: "reported usage/limit".into(),
+                            resets: Some("10-01 09:00".into()),
+                        },
+                    ]
+                })
+                .collect(),
+        );
+        for width in [100, 140] {
+            let mut terminal = Terminal::new(TestBackend::new(width, 30)).unwrap();
+            terminal.draw(|frame| render(frame, &mut app)).unwrap();
+            let buffer = terminal.backend().buffer();
+            let lines: Vec<String> = (0..30)
+                .map(|y| (0..width).map(|x| buffer[(x, y)].symbol()).collect())
+                .collect();
+            for account in ["sendbird-kr", "sendbird-com"] {
+                for period in ["weekly", "monthly"] {
+                    assert!(
+                        lines
+                            .iter()
+                            .any(|line| line.contains(&format!("{account} {period}"))),
+                        "{lines:#?}"
+                    );
+                }
+            }
+            let exhausted = lines
+                .iter()
+                .find(|line| line.contains("sendbird-com monthly"))
+                .unwrap();
+            assert!(
+                exhausted.contains("100.0%")
+                    && exhausted.contains("limit reached")
+                    && exhausted.contains("10-01 09:00"),
+                "{exhausted}"
+            );
+            if width == 100 {
+                for line in lines.iter().filter(|line| line.contains("sendbird-")) {
+                    println!("{}", line.trim_end());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn codex_monthly_limit_and_unknown_weekly_are_distinct_for_both_accounts() {
+        use mindplayer_core::limits::QuotaRow;
+        for account in ["sendbird-kr", "sendbird-com"] {
+            let weekly = QuotaRow {
+                label: format!("{account} weekly"),
+                agent: Agent::Codex,
+                account: account.into(),
+                detail: "not reported".into(),
+                ..Default::default()
+            };
+            let monthly = QuotaRow {
+                label: format!("{account} monthly"),
+                agent: Agent::Codex,
+                account: account.into(),
+                used_percent: Some(100.0),
+                detail: "limit reached".into(),
+                resets: Some("10-01 09:00".into()),
+            };
+            let weekly_line = Line::from(quota_row_spans(&weekly, 20));
+            let monthly_spans = quota_row_spans(&monthly, 20);
+            let monthly_line = Line::from(monthly_spans.clone());
+            assert!(weekly_line.to_string().contains("—"));
+            assert!(!weekly_line.to_string().contains("0.0%"));
+            assert!(monthly_line.to_string().contains("100.0%"));
+            assert!(monthly_line.to_string().contains("limit reached"));
+            assert!(monthly_line.to_string().contains("10-01 09:00"));
+            assert!(monthly_spans.iter().any(|span| {
+                span.content.contains("limit reached") && span.style.fg == Some(ERROR)
+            }));
+            assert!(monthly_line.width() <= 100, "{monthly_line}");
+        }
+    }
 
     fn session(agent: Agent, total: u64) -> Session {
         Session {

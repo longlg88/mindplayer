@@ -54,6 +54,15 @@ none  = docs, chore, ci, test, style
 
 ## Changelog
 
+### v0.41.0 — 2026-09-19
+
+- Read Codex account limits directly through its app-server so an old rollout
+  cannot keep showing pre-reset usage.
+- Show weekly and monthly limits for each Codex account, including reset dates
+  and times, unavailable windows, and exhausted monthly allowances.
+- Preserve account isolation and other providers' cached readings; do not reuse
+  stale Codex gauges when a live reading fails.
+
 ### v0.15.1 — 2026-07-09
 
 - Removed the unused orchestration feature (`o`/`b`/`m`/`p`/`s`: group

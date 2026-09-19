@@ -4400,3 +4400,93 @@ mod account_selection {
         );
     }
 }
+
+/// The build stamp keeps one release from drawing another's rows. It must not
+/// also hide that a request was spent: a pane left running across an upgrade is
+/// ordinary, and if neither build counts the other's call they each keep their
+/// own five-minute timer against one account's budget — which is how the claude
+/// row ends up reading `HTTP 429` while the subscription itself is fine.
+mod shared_cache_gate {
+    use super::*;
+    use mindplayer_core::limits::QuotaRow;
+
+    fn scratch_home(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "mp-quota-{}-{tag}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// Records a reading in `home` the way another pane's fetch would.
+    fn a_sibling_asked(home: &std::path::Path, build: &str) {
+        mindplayer_core::limits::save_quota_cache(
+            home,
+            &[QuotaRow {
+                label: "claude".into(),
+                used_percent: Some(42.0),
+                detail: String::new(),
+                resets: None,
+                ..Default::default()
+            }],
+            build,
+        );
+    }
+
+    #[test]
+    fn a_sibling_on_another_release_still_counts_as_having_asked() {
+        let home = scratch_home("foreign");
+        a_sibling_asked(&home, "0.0.0-some-other-release");
+
+        let mut app = isolated_app();
+        app.accounts = vec![mindplayer_core::accounts::Account::inherited(Agent::Claude)];
+        app.quota_cache = None;
+        assert!(
+            mindplayer_core::limits::load_quota_cache(&home, crate::app::BUILD).is_none(),
+            "the foreign build's rows must still be refused for drawing"
+        );
+
+        app.spawn_limits_fetch_from(home.clone());
+
+        assert!(
+            app.limits_rx.is_none(),
+            "a pane on another release spent a request the shared file already showed was spent"
+        );
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn a_sibling_on_this_release_holds_a_pane_back_too() {
+        let home = scratch_home("same");
+        a_sibling_asked(&home, crate::app::BUILD);
+
+        let mut app = isolated_app();
+        app.accounts = vec![mindplayer_core::accounts::Account::inherited(Agent::Claude)];
+        app.quota_cache = None;
+        app.spawn_limits_fetch_from(home.clone());
+
+        assert!(
+            app.limits_rx.is_none(),
+            "a pane ignored the reading a sibling had just taken and spent another request"
+        );
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn with_nothing_recorded_a_pane_takes_its_own_reading() {
+        let home = scratch_home("empty");
+
+        let mut app = isolated_app();
+        app.quota_cache = None;
+        app.spawn_limits_fetch_from(home.clone());
+
+        assert!(
+            app.limits_rx.is_some(),
+            "with no reading on record a pane must take one, or no row ever appears"
+        );
+        let _ = std::fs::remove_dir_all(&home);
+    }
+}

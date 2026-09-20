@@ -82,7 +82,9 @@ fn a_slot_environment_makes_each_cli_read_a_different_login() {
         }
 
         let inherited = Account::inherited(agent);
-        assert!(inherited.launch_env().is_empty());
+        if agent != Agent::Codex {
+            assert!(inherited.launch_env().is_empty());
+        }
         let Some(before) = run(base_command(program, args)) else {
             eprintln!("skip {}: {program} did not answer in time", agent.as_str());
             continue;

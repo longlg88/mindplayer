@@ -538,6 +538,9 @@ pub struct App {
     pub(crate) limits_retry_at: Option<Instant>,
     /// Current delay after a rate-limited response.
     pub(crate) limits_backoff: Duration,
+    /// Set by the manual refresh shortcut to bypass the normal cache/backoff
+    /// gate once, while still reusing an in-flight request.
+    pub(crate) limits_force_refresh: bool,
     /// Keyboard shortcut help overlay opened by `?`.
     pub help_visible: bool,
     /// When `Some`, the session list is filtered as the user types after `/`.
@@ -716,6 +719,7 @@ impl App {
             limits_started: None,
             limits_retry_at: None,
             limits_backoff: LIMITS_REFRESH_INTERVAL,
+            limits_force_refresh: false,
             help_visible: false,
             search_query: None,
             new_counter: 0,

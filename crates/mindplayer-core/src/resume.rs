@@ -261,8 +261,8 @@ mod tests {
     }
 
     #[test]
-    fn the_existing_login_launches_with_no_environment_change() {
-        for agent in [Agent::Codex, Agent::Claude, Agent::Kiro, Agent::Cursor] {
+    fn the_existing_non_codex_login_launches_with_no_environment_change() {
+        for agent in [Agent::Claude, Agent::Kiro, Agent::Cursor] {
             let c = new_session(agent, PathBuf::from("/here"), &Account::inherited(agent));
             assert!(
                 c.env.is_empty(),
@@ -270,6 +270,19 @@ mod tests {
                 agent.as_str()
             );
         }
+    }
+
+    #[test]
+    fn the_existing_codex_login_is_pinned_to_the_default_home() {
+        let c = new_session(
+            Agent::Codex,
+            PathBuf::from("/here"),
+            &Account::inherited(Agent::Codex),
+        );
+        assert_eq!(
+            c.env.set.first().map(|(key, _)| key.as_str()),
+            Some("CODEX_HOME")
+        );
     }
 
     #[test]

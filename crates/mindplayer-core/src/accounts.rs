@@ -196,11 +196,20 @@ impl Account {
 
     /// The environment that makes this provider's CLI read this account.
     ///
-    /// The inherited login is reached by changing nothing, so it returns an
-    /// empty change: clearing ambient credentials there would take away a
-    /// login the user is deliberately running on.
+    /// Codex is special: its inherited account means the machine's default
+    /// `~/.codex`, not an arbitrary `CODEX_HOME` inherited by MindPlayer. An
+    /// explicit path prevents logging into one named slot from silently
+    /// changing another slot when MindPlayer itself was launched with a
+    /// per-account environment.
     pub fn launch_env(&self) -> LaunchEnv {
-        let Slot::Isolated { path } = &self.slot else {
+        let path = match &self.slot {
+            Slot::Inherited if self.provider == Agent::Codex => {
+                std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".codex"))
+            }
+            Slot::Inherited => return LaunchEnv::default(),
+            Slot::Isolated { path } => Some(path.clone()),
+        };
+        let Some(path) = path else {
             return LaunchEnv::default();
         };
         let dir = path.to_string_lossy().into_owned();
@@ -227,12 +236,12 @@ impl Account {
             Agent::Kiro => LaunchEnv {
                 set: vec![
                     ("HOME".into(), dir.clone()),
-                    ("KIRO_DATA_DIR".into(), join(path, ".local/share/kiro-cli")),
-                    ("KIRO_HOME".into(), join(path, ".kiro")),
-                    ("XDG_CACHE_HOME".into(), join(path, ".cache")),
-                    ("XDG_CONFIG_HOME".into(), join(path, ".config")),
-                    ("XDG_DATA_HOME".into(), join(path, ".local/share")),
-                    ("XDG_STATE_HOME".into(), join(path, ".local/state")),
+                    ("KIRO_DATA_DIR".into(), join(&path, ".local/share/kiro-cli")),
+                    ("KIRO_HOME".into(), join(&path, ".kiro")),
+                    ("XDG_CACHE_HOME".into(), join(&path, ".cache")),
+                    ("XDG_CONFIG_HOME".into(), join(&path, ".config")),
+                    ("XDG_DATA_HOME".into(), join(&path, ".local/share")),
+                    ("XDG_STATE_HOME".into(), join(&path, ".local/state")),
                 ],
                 unset: vec!["KIRO_API_KEY".into()],
             },
@@ -245,11 +254,11 @@ impl Account {
             Agent::Cursor => LaunchEnv {
                 set: vec![
                     ("AGENT_CLI_CREDENTIAL_STORE".into(), "file".into()),
-                    ("CURSOR_CONFIG_DIR".into(), join(path, ".cursor")),
-                    ("CURSOR_DATA_DIR".into(), join(path, ".cursor")),
+                    ("CURSOR_CONFIG_DIR".into(), join(&path, ".cursor")),
+                    ("CURSOR_DATA_DIR".into(), join(&path, ".cursor")),
                     ("HOME".into(), dir.clone()),
-                    ("XDG_CACHE_HOME".into(), join(path, ".cache")),
-                    ("XDG_CONFIG_HOME".into(), join(path, ".config")),
+                    ("XDG_CACHE_HOME".into(), join(&path, ".cache")),
+                    ("XDG_CONFIG_HOME".into(), join(&path, ".config")),
                 ],
                 unset: vec![
                     "CURSOR_API_BASE_URL".into(),
@@ -394,11 +403,29 @@ mod tests {
     }
 
     #[test]
-    fn the_login_already_on_this_machine_is_reached_by_changing_nothing() {
-        for agent in MULTI_ACCOUNT_AGENTS {
-            let account = Account::inherited(agent);
+    fn inherited_codex_is_pinned_to_the_default_home() {
+        let account = Account::inherited(Agent::Codex);
+        let env = account.launch_env();
+        let expected = std::env::var_os("HOME").map(|home| {
+            PathBuf::from(home)
+                .join(".codex")
+                .to_string_lossy()
+                .into_owned()
+        });
+        assert_eq!(
+            env.set,
+            expected
+                .map(|path| vec![("CODEX_HOME".into(), path)])
+                .unwrap_or_default()
+        );
+        assert!(env.unset.contains(&"CODEX_API_KEY".to_string()));
+    }
+
+    #[test]
+    fn inherited_non_codex_accounts_keep_their_ambient_login() {
+        for agent in [Agent::Claude, Agent::Kiro, Agent::Cursor] {
             assert!(
-                account.launch_env().is_empty(),
+                Account::inherited(agent).launch_env().is_empty(),
                 "{} inherited slot must not touch the environment",
                 agent.as_str()
             );

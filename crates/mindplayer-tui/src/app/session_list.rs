@@ -1152,6 +1152,7 @@ impl App {
         }
         // The limit is per account, not per process, so every pane's own timer
         // adds to the same budget unless a sibling's recent cache satisfies it.
+        let force_refresh = self.limits_force_refresh;
         // Codex's disk snapshots are intentionally not reused: a reset can
         // happen while no conversation is running. A fresh cache for another
         // provider must not postpone this process's first live Codex reading.
@@ -1174,15 +1175,16 @@ impl App {
                 .unwrap_or(Duration::ZERO)
                 < LIMITS_REFRESH_INTERVAL
         });
-        if !needs_codex_reading && shared_cache_is_fresh {
+        if !force_refresh && !needs_codex_reading && shared_cache_is_fresh {
             return;
         }
+        self.limits_force_refresh = false;
         self.limits_started = Some(now);
         // One reading per login, since the numbers are per account and an
         // account with its own home keeps its own state.
         let mut accounts = self.probe_accounts();
         let mut cached_rows = Vec::new();
-        if shared_cache_is_fresh && needs_codex_reading {
+        if !force_refresh && shared_cache_is_fresh && needs_codex_reading {
             accounts.retain(|account| account.provider == Agent::Codex);
             if let Some((rows, _)) = &self.quota_cache {
                 cached_rows.extend(rows.iter().filter(|row| row.agent != Agent::Codex).cloned());
@@ -1197,6 +1199,23 @@ impl App {
             let _ = tx.send(rows);
         });
         self.limits_rx = Some(rx);
+    }
+
+    /// Request an immediate usage refresh from the list view. The normal
+    /// five-minute cache and rate-limit backoff are bypassed once; an existing
+    /// request is allowed to finish instead of starting a duplicate.
+    pub fn refresh_limits_now(&mut self) {
+        self.status = "refreshing account usage".to_string();
+        if self.limits_rx.is_some()
+            && self
+                .limits_started
+                .is_none_or(|t| t.elapsed() < LIMITS_FETCH_DEADLINE)
+        {
+            return;
+        }
+        self.limits_force_refresh = true;
+        self.limits_retry_at = None;
+        self.spawn_limits_fetch();
     }
 
     /// Adopt a finished rate-limit fetch. True when the popup needs redrawing.
@@ -1230,6 +1249,9 @@ impl App {
             crate::app::BUILD,
         );
         self.limits = Some(rows);
+        if self.status == "refreshing account usage" {
+            self.status = "account usage refreshed".to_string();
+        }
         true
     }
 

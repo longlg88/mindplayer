@@ -54,6 +54,14 @@ none  = docs, chore, ci, test, style
 
 ## Changelog
 
+### v0.42.0 — 2026-09-20
+
+- Pin the inherited Codex account to the machine's default `~/.codex` so a
+  per-account `CODEX_HOME` cannot redirect its login into another account.
+- Refresh account usage immediately with Ctrl-R from the session list.
+- Preserve the session-trace HTML design alternatives for review; the trace
+  feature itself is not included in this release.
+
 ### v0.41.0 — 2026-09-19
 
 - Read Codex account limits directly through its app-server so an old rollout

@@ -312,9 +312,14 @@ mod renaming {
             app.accounts[0].is_inherited(),
             "relabelling turned it into a slot of its own"
         );
-        assert!(
-            app.accounts[0].launch_env().is_empty(),
-            "the existing login gained an environment it must not have"
+        assert_eq!(
+            app.accounts[0]
+                .launch_env()
+                .set
+                .first()
+                .map(|(key, _)| key.as_str()),
+            Some("CODEX_HOME"),
+            "the inherited Codex login must stay pinned to the machine's default home"
         );
     }
 

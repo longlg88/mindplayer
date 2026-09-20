@@ -1043,6 +1043,13 @@ fn handle_main_key(app: &mut App, key: KeyEvent) {
                 {
                     app.resume_live_view();
                 }
+                if !key
+                    .modifiers
+                    .intersects(KeyModifiers::ALT | KeyModifiers::SUPER)
+                    && matches!(key.code, KeyCode::Char('r') | KeyCode::Char('ㄱ'))
+                {
+                    app.refresh_limits_now();
+                }
                 return;
             }
             // Normalize Korean 2-beolsik jamo to the QWERTY letter so the list
@@ -1273,6 +1280,40 @@ mod tests {
         }];
         app.visible = vec![app::Row::Session(0)];
         app
+    }
+
+    #[test]
+    fn ctrl_r_refreshes_account_usage_from_the_list() {
+        let mut app = main_app();
+        app.accounts.clear();
+        app.quota_cache = Some((Vec::new(), chrono::Utc::now()));
+        app.limits_retry_at = Some(Instant::now() + Duration::from_secs(60));
+
+        handle_main_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL),
+        );
+
+        assert_eq!(app.status, "refreshing account usage");
+        assert!(app.limits_rx.is_some(), "ctrl-r did not start a refresh");
+        assert!(
+            !app.limits_force_refresh,
+            "one-shot refresh flag was not consumed"
+        );
+    }
+
+    #[test]
+    fn repeated_ctrl_r_reuses_inflight_refresh_and_clears_status() {
+        let mut app = main_app();
+        let (tx, rx) = std::sync::mpsc::channel();
+        app.limits_rx = Some(rx);
+        app.limits_started = Some(Instant::now());
+        app.refresh_limits_now();
+        assert!(!app.limits_force_refresh);
+        tx.send(Vec::new()).unwrap();
+        assert!(app.poll_limits());
+        assert_eq!(app.status, "account usage refreshed");
+        assert!(app.limits_rx.is_none());
     }
 
     /// `u` has to reach the Accounts screen, and the screen has to own every

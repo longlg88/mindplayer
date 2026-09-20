@@ -882,7 +882,7 @@ fn main_view(f: &mut Frame, app: &mut App) {
     if show_more_keys {
         f.render_widget(
             Paragraph::new(Line::from(Span::styled(
-                "i in progress · c catch-up · t category · ←→ fold    +5 more · ? help",
+                "i in progress · c catch-up · t category · ←→ fold    ctrl-r usage · ? help",
                 Style::default().fg(Color::Rgb(90, 95, 108)),
             )))
             .alignment(Alignment::Right),
@@ -2225,6 +2225,7 @@ fn help_lines() -> Vec<Line<'static>> {
         ),
         item("/", "search visible sessions"),
         item("d", "change working directory scope"),
+        item("ctrl-r", "refresh account usage now"),
         item("a", "toggle archived sessions"),
         Line::from(""),
         section("Terminal / Modal"),

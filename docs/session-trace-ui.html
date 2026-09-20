@@ -1,0 +1,378 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="description" content="MindPlayer session trace UI prototype" />
+  <title>MindPlayer — Session Trace prototype</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0b0d11;
+      --panel: #12161d;
+      --panel-2: #171c25;
+      --panel-3: #1d2430;
+      --line: #2a3341;
+      --line-strong: #3a4657;
+      --text: #e6eaf0;
+      --muted: #8d98a8;
+      --muted-2: #687384;
+      --blue: #82aaff;
+      --blue-soft: #1b2d4d;
+      --green: #7bd88f;
+      --green-soft: #173622;
+      --amber: #f2c76e;
+      --amber-soft: #3c3018;
+      --red: #ff827f;
+      --purple: #c5a1ff;
+    }
+    * { box-sizing: border-box; }
+    html, body { min-height: 100%; }
+    body {
+      margin: 0;
+      background: radial-gradient(circle at 78% -10%, rgba(73,109,179,.13), transparent 30rem), var(--bg);
+      color: var(--text);
+      font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Pretendard, sans-serif;
+    }
+    button, input { font: inherit; }
+    button { color: inherit; }
+    button:focus-visible, input:focus-visible, summary:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+    code, pre, .mono { font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace; }
+    code { color: #b8caff; }
+    .app-shell { max-width: 1500px; margin: 0 auto; padding: 20px; }
+    .topbar { display: flex; align-items: center; justify-content: space-between; gap: 18px; min-height: 58px; border-bottom: 1px solid var(--line); margin-bottom: 18px; }
+    .brand { display: flex; align-items: center; gap: 11px; }
+    .brand-mark { width: 30px; height: 30px; display: grid; place-items: center; border: 1px solid #5576b5; border-radius: 8px; color: var(--blue); background: #14213a; font-weight: 800; }
+    .brand-name { font-size: 16px; font-weight: 700; }
+    .brand-sub { color: var(--muted); font-size: 12px; margin-left: 8px; }
+    .top-actions { display: flex; gap: 8px; align-items: center; }
+    .button { border: 1px solid var(--line-strong); border-radius: 7px; background: var(--panel-2); padding: 7px 11px; cursor: pointer; transition: background .15s, border-color .15s; }
+    .button:hover { background: var(--panel-3); border-color: #61718a; }
+    .button.primary { background: var(--blue-soft); border-color: #4d71b0; color: #cbd9ff; }
+    .button.ghost { border-color: transparent; background: transparent; color: var(--muted); }
+    .key { display: inline-grid; place-items: center; min-width: 21px; height: 20px; padding: 0 5px; border: 1px solid var(--line-strong); border-radius: 4px; color: var(--muted); font: 11px/1 "SFMono-Regular", Consolas, monospace; }
+
+    .workspace { display: grid; grid-template-columns: 250px minmax(0, 1fr); gap: 16px; }
+    .rail, .main-panel { border: 1px solid var(--line); background: rgba(18,22,29,.92); border-radius: 11px; }
+    .rail { min-height: 760px; padding: 13px 10px; }
+    .rail-head { display: flex; justify-content: space-between; align-items: center; padding: 2px 7px 10px; }
+    .eyebrow { color: var(--muted); text-transform: uppercase; letter-spacing: .09em; font-size: 10px; font-weight: 700; }
+    .session-count { color: var(--muted-2); font-size: 11px; }
+    .search { width: 100%; border: 1px solid var(--line); border-radius: 6px; background: #0d1015; color: var(--text); padding: 7px 9px; margin-bottom: 12px; }
+    .session-list { display: grid; gap: 4px; }
+    .session { width: 100%; text-align: left; border: 1px solid transparent; border-radius: 7px; background: transparent; padding: 9px 8px; cursor: pointer; }
+    .session:hover { background: var(--panel-2); }
+    .session.selected { background: #17243b; border-color: #35588e; }
+    .session-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+    .session-title { font-weight: 650; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .agent { font-size: 10px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
+    .agent.codex { color: var(--blue); }
+    .agent.claude { color: var(--purple); }
+    .agent.kiro { color: var(--green); }
+    .session-meta { color: var(--muted-2); font-size: 11px; margin-top: 2px; }
+    .session-tokens { color: #b3bfd0; font: 11px "SFMono-Regular", Consolas, monospace; }
+    .rail-foot { margin: 18px 7px 0; padding-top: 13px; border-top: 1px solid var(--line); color: var(--muted-2); font-size: 11px; }
+    .rail-foot p { margin: 5px 0; }
+
+    .main-panel { overflow: hidden; }
+    .trace-head { padding: 20px 22px 16px; border-bottom: 1px solid var(--line); }
+    .crumb { display: flex; gap: 8px; align-items: center; color: var(--muted); font-size: 12px; margin-bottom: 12px; }
+    .crumb strong { color: var(--text); font-weight: 600; }
+    .trace-title-line { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; }
+    h1 { font-size: 23px; line-height: 1.2; margin: 0 0 5px; letter-spacing: -.02em; }
+    .trace-sub { color: var(--muted); font-size: 12px; }
+    .trace-actions { display: flex; gap: 7px; flex-wrap: wrap; justify-content: flex-end; }
+    .status { display: inline-flex; align-items: center; gap: 6px; border: 1px solid #2c6640; border-radius: 999px; padding: 4px 9px; color: var(--green); background: var(--green-soft); font-size: 11px; white-space: nowrap; }
+    .status::before { content: ""; width: 6px; height: 6px; background: currentColor; border-radius: 50%; }
+    .identity { display: flex; flex-wrap: wrap; gap: 8px 16px; color: var(--muted-2); font-size: 11px; margin-top: 16px; }
+    .identity span { display: inline-flex; gap: 5px; align-items: baseline; }
+    .identity b { color: var(--muted); font-weight: 500; }
+    .tabs { display: flex; align-items: center; gap: 3px; border-bottom: 1px solid var(--line); padding: 0 22px; }
+    .tab { border: 0; border-bottom: 2px solid transparent; background: transparent; padding: 12px 11px 10px; color: var(--muted); cursor: pointer; }
+    .tab:hover { color: var(--text); }
+    .tab.active { border-bottom-color: var(--blue); color: var(--text); }
+    .tab-note { margin-left: auto; color: var(--muted-2); font-size: 11px; }
+    .view { padding: 19px 22px 28px; }
+    .view[hidden] { display: none; }
+
+    .metrics { display: grid; grid-template-columns: 1.45fr repeat(4, 1fr); gap: 9px; margin-bottom: 18px; }
+    .metric { min-height: 94px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel-2); padding: 12px; }
+    .metric.primary { background: linear-gradient(135deg, #172b4c, #121a29); border-color: #3b5f9b; }
+    .metric-label { color: var(--muted); font-size: 11px; }
+    .metric-value { margin-top: 5px; font-size: 22px; font-weight: 700; letter-spacing: -.02em; }
+    .metric.primary .metric-value { color: #c6d5ff; }
+    .metric-hint { color: var(--muted-2); font-size: 10px; margin-top: 5px; }
+    .metric-hint.good { color: var(--green); }
+    .section-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 19px 0 9px; }
+    h2 { margin: 0; font-size: 14px; }
+    .section-help { color: var(--muted-2); font-size: 11px; }
+    .scope-note { border: 1px solid #3b3220; background: rgba(60,48,24,.42); color: #dec784; border-radius: 7px; padding: 9px 11px; font-size: 12px; margin-bottom: 14px; }
+    .scope-note strong { color: var(--amber); }
+    .chart-card { border: 1px solid var(--line); border-radius: 8px; background: var(--panel); padding: 13px; }
+    .chart-head { display: flex; justify-content: space-between; color: var(--muted); font-size: 11px; margin-bottom: 10px; }
+    .bars { display: flex; align-items: end; gap: 5px; height: 76px; padding: 0 3px; border-bottom: 1px solid var(--line); }
+    .bar-wrap { display: flex; flex: 1; height: 100%; flex-direction: column; justify-content: end; gap: 4px; }
+    .bar { min-height: 3px; border-radius: 3px 3px 0 0; background: linear-gradient(var(--blue), #405f9b); }
+    .bar.current { background: linear-gradient(var(--purple), #7559a9); }
+    .bar-label { color: var(--muted-2); font: 9px monospace; text-align: center; }
+
+    .timeline { display: grid; gap: 9px; }
+    .event { display: grid; grid-template-columns: 94px 1fr; gap: 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); padding: 12px 13px; }
+    .event-time { color: var(--muted-2); font: 10px/1.4 monospace; padding-top: 2px; }
+    .event-main { min-width: 0; }
+    .event-title { display: flex; flex-wrap: wrap; gap: 7px; align-items: center; font-weight: 650; }
+    .event-desc { color: var(--muted); font-size: 12px; margin-top: 4px; }
+    .event-detail { color: #aeb9ca; font-size: 11px; margin-top: 9px; }
+    .event-detail code { color: #b7c9ff; }
+    .tag { display: inline-flex; align-items: center; border-radius: 4px; padding: 2px 6px; font-size: 9px; letter-spacing: .07em; font-weight: 700; }
+    .tag.request { background: var(--blue-soft); color: var(--blue); }
+    .tag.decision { background: #302148; color: var(--purple); }
+    .tag.execution { background: var(--green-soft); color: var(--green); }
+    .tag.result { background: #23322f; color: #a5e5b2; }
+    .observed { color: var(--green); font-size: 10px; }
+    .derived { color: var(--amber); font-size: 10px; }
+    details { margin-top: 9px; }
+    summary { color: var(--muted); cursor: pointer; font-size: 11px; }
+    pre { white-space: pre-wrap; overflow-wrap: anywhere; background: #0b0e13; border: 1px solid var(--line); border-radius: 6px; color: #b9c5d4; padding: 9px; margin: 7px 0 0; font-size: 10px; line-height: 1.55; }
+    .filterbar { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-bottom: 11px; }
+    .filter { border: 1px solid var(--line); border-radius: 999px; background: var(--panel-2); color: var(--muted); padding: 4px 9px; cursor: pointer; font-size: 11px; }
+    .filter.active { background: var(--blue-soft); border-color: #4d71b0; color: #cbd9ff; }
+    .trace-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+    .trace-table th { color: var(--muted); font-weight: 500; text-align: left; font-size: 10px; text-transform: uppercase; letter-spacing: .07em; }
+    .trace-table th, .trace-table td { border-bottom: 1px solid var(--line); padding: 10px 8px; vertical-align: top; }
+    .trace-table th:first-child, .trace-table td:first-child { padding-left: 0; }
+    .trace-table td:not(:first-child) { color: #b4bfce; }
+    .number { text-align: right; font-family: monospace; white-space: nowrap; }
+    .bar-cell { min-width: 130px; }
+    .mini-bar { height: 6px; background: #202835; border-radius: 999px; overflow: hidden; margin-top: 5px; }
+    .mini-bar i { display: block; height: 100%; background: var(--blue); border-radius: inherit; }
+    .raw-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 10px; }
+    .raw-path { color: var(--muted-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .raw-log { border: 1px solid var(--line); border-radius: 8px; background: #080a0e; overflow: auto; max-height: 590px; }
+    .raw-line { display: grid; grid-template-columns: 42px 125px 1fr; gap: 10px; padding: 7px 11px; border-bottom: 1px solid rgba(42,51,65,.55); font: 10px/1.45 monospace; }
+    .raw-line:last-child { border: 0; }
+    .raw-no { color: var(--muted-2); text-align: right; }
+    .raw-kind { color: var(--blue); }
+    .raw-body { color: #aab7c8; overflow-wrap: anywhere; }
+    .footnote { display: flex; justify-content: space-between; gap: 14px; color: var(--muted-2); font-size: 11px; border-top: 1px solid var(--line); margin-top: 20px; padding-top: 13px; }
+    .footnote a { color: var(--blue); text-decoration: none; }
+    .footnote a:hover { text-decoration: underline; }
+    @media (max-width: 1060px) { .metrics { grid-template-columns: repeat(3, 1fr); } .metric.primary { grid-column: span 3; } }
+    @media (max-width: 760px) {
+      .app-shell { padding: 10px; }
+      .topbar { align-items: flex-start; flex-direction: column; padding-bottom: 12px; }
+      .top-actions { width: 100%; }
+      .top-actions .button { flex: 1; }
+      .workspace { grid-template-columns: 1fr; }
+      .rail { min-height: unset; }
+      .session-list { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .rail-foot { display: none; }
+      .trace-title-line { flex-direction: column; }
+      .trace-actions { justify-content: flex-start; }
+      .tabs, .view, .trace-head { padding-left: 14px; padding-right: 14px; }
+      .tab-note { display: none; }
+      .metrics { grid-template-columns: repeat(2, 1fr); }
+      .metric.primary { grid-column: span 2; }
+      .event { grid-template-columns: 1fr; gap: 5px; }
+      .event-time { padding: 0; }
+      .trace-table { min-width: 650px; }
+      .table-scroll { overflow-x: auto; }
+    }
+    @media (prefers-reduced-motion: reduce) { *, *::before, *::after { transition: none !important; } }
+  </style>
+</head>
+<body>
+  <main class="app-shell">
+    <header class="topbar">
+      <div class="brand"><div class="brand-mark">M</div><div><span class="brand-name">MindPlayer</span><span class="brand-sub">session trace prototype</span></div></div>
+      <div class="top-actions">
+        <button class="button ghost" id="backButton">← session list <span class="key">Esc</span></button>
+        <button class="button" id="themeButton">light preview</button>
+        <button class="button primary" id="openCommand">copy command</button>
+      </div>
+    </header>
+
+    <section class="workspace" aria-label="Session trace workspace">
+      <aside class="rail" aria-label="Sessions">
+        <div class="rail-head"><span class="eyebrow">Recent sessions</span><span class="session-count">42 total</span></div>
+        <input class="search" id="sessionSearch" type="search" placeholder="Filter sessions…" aria-label="Filter sessions" />
+        <div class="session-list" id="sessionList">
+          <button class="session selected" data-session="codex-refactor" data-search="codex refactor account isolation">
+            <div class="session-row"><span class="session-title">account isolation fix</span><span class="agent codex">codex</span></div>
+            <div class="session-row"><span class="session-meta">2 min ago · working</span><span class="session-tokens">30.0M</span></div>
+          </button>
+          <button class="session" data-session="claude-release" data-search="claude release checklist">
+            <div class="session-row"><span class="session-title">release checklist</span><span class="agent claude">claude</span></div>
+            <div class="session-row"><span class="session-meta">18 min ago · idle</span><span class="session-tokens">8.4M</span></div>
+          </button>
+          <button class="session" data-session="kiro-ui" data-search="kiro ui audit">
+            <div class="session-row"><span class="session-title">UI audit</span><span class="agent kiro">kiro</span></div>
+            <div class="session-row"><span class="session-meta">yesterday · done</span><span class="session-tokens">context 42%</span></div>
+          </button>
+          <button class="session" data-session="codex-tests" data-search="codex test cleanup">
+            <div class="session-row"><span class="session-title">test cleanup</span><span class="agent codex">codex</span></div>
+            <div class="session-row"><span class="session-meta">Sep 18 · done</span><span class="session-tokens">12.7M</span></div>
+          </button>
+        </div>
+        <div class="rail-foot">
+          <p><span class="key">l</span> open trace from list</p>
+          <p><code>mindplayer trace &lt;session-id&gt;</code></p>
+          <p>Source: local provider JSONL</p>
+        </div>
+      </aside>
+
+      <section class="main-panel" aria-label="Selected session trace">
+        <div class="trace-head">
+          <div class="crumb"><span>Sessions</span><span>/</span><strong>Trace</strong><span>/</span><span class="mono">01a0b9f5</span></div>
+          <div class="trace-title-line">
+            <div><h1>account isolation fix</h1><div class="trace-sub"><span class="agent codex">CODEX</span> · observable request and execution history</div></div>
+            <div class="trace-actions"><span class="status">working</span><button class="button" id="refreshButton">↻ refresh</button><button class="button" id="rawButton">open raw log</button></div>
+          </div>
+          <div class="identity">
+            <span><b>session</b> <code>01a0b9f5-ab67-7513-bbb5-c57a9c9cc4c6</code></span>
+            <span><b>account</b> sendbird-com</span>
+            <span><b>cwd</b> <code>/Users/eden.jang/Work/SendBird/working2</code></span>
+            <span><b>last active</b> 2026-09-20 10:12 KST</span>
+          </div>
+        </div>
+
+        <nav class="tabs" aria-label="Trace views">
+          <button class="tab active" data-tab="overview">Overview</button>
+          <button class="tab" data-tab="timeline">Timeline <span class="key">42</span></button>
+          <button class="tab" data-tab="raw">Raw log</button>
+          <span class="tab-note">facts stay local · summaries are labeled</span>
+        </nav>
+
+        <div class="view" id="overview" data-view>
+          <div class="metrics">
+            <article class="metric primary"><div class="metric-label">Session total · cumulative</div><div class="metric-value">30.0M tokens</div><div class="metric-hint">last provider record · 10:12:07</div></article>
+            <article class="metric"><div class="metric-label">Input</div><div class="metric-value">29.96M</div><div class="metric-hint">includes cached</div></article>
+            <article class="metric"><div class="metric-label">Cached input</div><div class="metric-value">29.08M</div><div class="metric-hint good">97.1% of input</div></article>
+            <article class="metric"><div class="metric-label">Output</div><div class="metric-value">56.3K</div><div class="metric-hint">visible + reasoning</div></article>
+            <article class="metric"><div class="metric-label">Reasoning</div><div class="metric-value">13.9K</div><div class="metric-hint">token category only</div></article>
+          </div>
+          <div class="scope-note"><strong>How to read this:</strong> “decision record” means an observable action choice supported by the request, tool call, and result. The model’s private chain-of-thought is not displayed. <span class="observed">● observed</span> and <span class="derived">● derived</span> labels are intentional.</div>
+
+          <div class="section-head"><h2>Token usage by request</h2><span class="section-help">cumulative totals from <code>token_count</code></span></div>
+          <div class="chart-card">
+            <div class="chart-head"><span>Each bar is the request’s input + output delta</span><span>context window 237.5K</span></div>
+            <div class="bars" aria-label="Token usage over recent requests">
+              <div class="bar-wrap"><div class="bar" style="height:18%"></div><span class="bar-label">09:31</span></div>
+              <div class="bar-wrap"><div class="bar" style="height:27%"></div><span class="bar-label">09:35</span></div>
+              <div class="bar-wrap"><div class="bar" style="height:35%"></div><span class="bar-label">09:42</span></div>
+              <div class="bar-wrap"><div class="bar" style="height:48%"></div><span class="bar-label">09:48</span></div>
+              <div class="bar-wrap"><div class="bar" style="height:61%"></div><span class="bar-label">09:55</span></div>
+              <div class="bar-wrap"><div class="bar" style="height:75%"></div><span class="bar-label">10:01</span></div>
+              <div class="bar-wrap"><div class="bar" style="height:44%"></div><span class="bar-label">10:06</span></div>
+              <div class="bar-wrap"><div class="bar current" style="height:92%"></div><span class="bar-label">10:12</span></div>
+            </div>
+          </div>
+
+          <div class="section-head"><h2>Latest decision record</h2><span class="section-help">derived from observable events</span></div>
+          <div class="event">
+            <div class="event-time">10:12:07<br />request #42</div>
+            <div class="event-main">
+              <div class="event-title"><span class="tag request">REQUEST</span> verify the account-isolation fix</div>
+              <div class="event-desc">The session inspected the changed account launch environment, ran the targeted tests, and reported the result.</div>
+              <div class="event-detail"><span class="derived">● derived decision record</span> Chose targeted repository inspection → patch verification → test execution because the request was about a concrete regression, not a new provider API.</div>
+              <details><summary>show evidence chain</summary><pre>request.user: “verify the account isolation fix”
+tool.call: rg / sed — inspect changed account paths
+tool.call: cargo test --test account_isolation
+tool.result: 2 passed; 0 failed
+message: verification result returned to user</pre></details>
+            </div>
+          </div>
+        </div>
+
+        <div class="view" id="timeline" data-view hidden>
+          <div class="filterbar" aria-label="Filter timeline events">
+            <button class="filter active" data-filter="all">all 42</button>
+            <button class="filter" data-filter="request">requests 8</button>
+            <button class="filter" data-filter="decision">decisions 7</button>
+            <button class="filter" data-filter="execution">tools 25</button>
+            <button class="filter" data-filter="result">results 2</button>
+            <button class="filter" data-filter="warning">warnings 0</button>
+          </div>
+          <div class="timeline" id="timelineEvents">
+            <article class="event" data-kind="request"><div class="event-time">10:12:07<br />+0 ms</div><div class="event-main"><div class="event-title"><span class="tag request">REQUEST</span> user request received <span class="observed">● observed</span></div><div class="event-desc">Verify that the Codex account isolation fix is correct.</div><details><summary>source event</summary><pre>{ "type": "message", "role": "user", "text": "Verify that the Codex account isolation fix is correct." }</pre></details></div></article>
+            <article class="event" data-kind="decision"><div class="event-time">10:12:09<br />+1.8 s</div><div class="event-main"><div class="event-title"><span class="tag decision">DECISION RECORD</span> inspect local implementation first <span class="derived">● derived</span></div><div class="event-desc">Selected repository evidence before any external lookup; the relevant files and regression test were known from the request context.</div><div class="event-detail">Evidence: requested scope + tool calls that followed. This is a compact audit summary, not private chain-of-thought.</div></div></article>
+            <article class="event" data-kind="execution"><div class="event-time">10:12:12<br />+4.6 s</div><div class="event-main"><div class="event-title"><span class="tag execution">TOOL</span> repository search <span class="observed">● observed</span></div><div class="event-desc"><code>rg -n "CODEX_HOME|account|launch_env" crates/mindplayer-core</code></div><details><summary>show command output (bounded)</summary><pre>crates/mindplayer-core/src/accounts.rs:…
+crates/mindplayer-core/src/resume.rs:…
+crates/mindplayer-core/tests/account_isolation.rs:…</pre></details></div></article>
+            <article class="event" data-kind="execution"><div class="event-time">10:12:26<br />+18.4 s</div><div class="event-main"><div class="event-title"><span class="tag execution">TOOL</span> targeted test <span class="observed">● observed</span></div><div class="event-desc"><code>cargo test -p mindplayer-core --test account_isolation</code></div><details><summary>show result</summary><pre>test account_home_isolated_from_ambient_codex_home ... ok
+test provider_accounts_keep_distinct_homes ... ok
+test result: ok. 2 passed; 0 failed</pre></details></div></article>
+            <article class="event" data-kind="result"><div class="event-time">10:12:31<br />+23.0 s</div><div class="event-main"><div class="event-title"><span class="tag result">RESULT</span> verification completed <span class="observed">● observed</span></div><div class="event-desc">The targeted account isolation tests passed. Full-suite status is shown separately when available.</div><div class="event-detail"><code>last_token_usage.total_tokens = 102,373</code> · <code>context_window = 237,500</code></div></div></article>
+          </div>
+        </div>
+
+        <div class="view" id="raw" data-view hidden>
+          <div class="raw-head"><div class="raw-path mono">~/.codex/sessions/2026/09/19/rollout-…-01a0b9f5.jsonl</div><button class="button" id="copyPath">copy path</button></div>
+          <div class="scope-note"><strong>Raw log is read-only.</strong> MindPlayer should show the original provider event type and a bounded payload preview. Full content can be opened externally when needed.</div>
+          <div class="raw-log" aria-label="Raw log preview">
+            <div class="raw-line"><span class="raw-no">421</span><span class="raw-kind">event_msg/token_count</span><span class="raw-body">{ "last_token_usage": { "input_tokens": 101964, "cached_input_tokens": 99200, "output_tokens": 409, "reasoning_output_tokens": 210 } }</span></div>
+            <div class="raw-line"><span class="raw-no">422</span><span class="raw-kind">response_item/message</span><span class="raw-body">{ "role": "assistant", "content": "I’ll verify the account isolation change…" }</span></div>
+            <div class="raw-line"><span class="raw-no">423</span><span class="raw-kind">response_item/custom_tool_call</span><span class="raw-body">{ "name": "exec", "arguments": "cargo test -p mindplayer-core --test account_isolation" }</span></div>
+            <div class="raw-line"><span class="raw-no">424</span><span class="raw-kind">response_item/custom_tool_call_output</span><span class="raw-body">{ "exit_code": 0, "output": "2 passed; 0 failed" }</span></div>
+            <div class="raw-line"><span class="raw-no">425</span><span class="raw-kind">event_msg/token_count</span><span class="raw-body">{ "total_token_usage": { "total_tokens": 30014701 }, "model_context_window": 237500 }</span></div>
+          </div>
+        </div>
+
+        <div class="footnote"><span>Prototype data is illustrative. Provider source remains authoritative.</span><span><a href="../DESIGN.md">design contract</a> · <span class="mono">mindplayer trace &lt;session-id&gt;</span></span></div>
+      </section>
+    </section>
+  </main>
+  <script>
+    const tabs = [...document.querySelectorAll('.tab')];
+    const views = [...document.querySelectorAll('[data-view]')];
+    tabs.forEach(tab => tab.addEventListener('click', () => {
+      const name = tab.dataset.tab;
+      tabs.forEach(item => item.classList.toggle('active', item === tab));
+      views.forEach(view => { view.hidden = view.id !== name; });
+    }));
+    const search = document.getElementById('sessionSearch');
+    const sessions = [...document.querySelectorAll('.session')];
+    search.addEventListener('input', () => {
+      const query = search.value.toLowerCase().trim();
+      sessions.forEach(session => { session.hidden = query && !session.dataset.search.includes(query); });
+    });
+    sessions.forEach(session => session.addEventListener('click', () => {
+      sessions.forEach(item => item.classList.toggle('selected', item === session));
+      if (session.dataset.session !== 'codex-refactor') {
+        document.querySelector('h1').textContent = session.querySelector('.session-title').textContent;
+        const agent = session.querySelector('.agent');
+        document.querySelector('.trace-sub').innerHTML = '<span class="agent ' + agent.classList[1] + '">' + agent.textContent.toUpperCase() + '</span> · preview data not loaded';
+      }
+    }));
+    const filters = [...document.querySelectorAll('.filter')];
+    const events = [...document.querySelectorAll('#timelineEvents .event')];
+    filters.forEach(filter => filter.addEventListener('click', () => {
+      const kind = filter.dataset.filter;
+      filters.forEach(item => item.classList.toggle('active', item === filter));
+      events.forEach(event => { event.hidden = kind !== 'all' && event.dataset.kind !== kind; });
+    }));
+    document.getElementById('themeButton').addEventListener('click', event => {
+      const light = document.body.classList.toggle('light');
+      event.target.textContent = light ? 'dark preview' : 'light preview';
+      document.documentElement.style.colorScheme = light ? 'light' : 'dark';
+      if (light) {
+        [['--bg','#f5f7fa'],['--panel','#ffffff'],['--panel-2','#f0f3f7'],['--panel-3','#e8edf4'],['--line','#d7dee8'],['--line-strong','#bac5d4'],['--text','#19202a'],['--muted','#5e6b7b'],['--muted-2','#7b8795']].forEach(([name, value]) => document.documentElement.style.setProperty(name, value));
+      } else {
+        [['--bg','#0b0d11'],['--panel','#12161d'],['--panel-2','#171c25'],['--panel-3','#1d2430'],['--line','#2a3341'],['--line-strong','#3a4657'],['--text','#e6eaf0'],['--muted','#8d98a8'],['--muted-2','#687384']].forEach(([name, value]) => document.documentElement.style.setProperty(name, value));
+      }
+    });
+    document.getElementById('openCommand').addEventListener('click', async event => {
+      const command = 'mindplayer trace 01a0b9f5-ab67-7513-bbb5-c57a9c9cc4c6';
+      try { await navigator.clipboard.writeText(command); event.target.textContent = 'copied ✓'; } catch { event.target.textContent = command; }
+      setTimeout(() => { event.target.textContent = 'copy command'; }, 1800);
+    });
+    document.getElementById('copyPath').addEventListener('click', async event => {
+      try { await navigator.clipboard.writeText('~/.codex/sessions/2026/09/19/rollout-…-01a0b9f5.jsonl'); event.target.textContent = 'copied ✓'; } catch { event.target.textContent = 'copy unavailable'; }
+      setTimeout(() => { event.target.textContent = 'copy path'; }, 1800);
+    });
+    document.getElementById('rawButton').addEventListener('click', () => document.querySelector('[data-tab="raw"]').click());
+    document.getElementById('refreshButton').addEventListener('click', event => { event.target.textContent = 'refreshing…'; setTimeout(() => { event.target.textContent = '↻ refresh'; }, 700); });
+    document.getElementById('backButton').addEventListener('click', () => alert('Prototype: return to the MindPlayer session list'));
+  </script>
+</body>
+</html>

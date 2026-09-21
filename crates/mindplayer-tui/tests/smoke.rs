@@ -46,6 +46,7 @@ const TITLE_B: &str = "MPTESTBRVO";
 /// Distinctive token typed into a live pane in scenario 1. Must not appear in
 /// any static UI chrome, so seeing it proves the keystrokes reached the child.
 const TYPED_TOKEN: &str = "zqxj";
+const OLDER_TRACE_PROMPT: &str = "older trace prompt";
 
 /// Distinctive token typed into the agent pane, so the open-in-browser
 /// scenarios can assert the pane still shows the agent (never a preview) after
@@ -87,7 +88,7 @@ fn write_script(path: &Path, body: &str) {
 /// Seed one minimal-but-valid synthetic Codex transcript that `discovery.rs`
 /// recognizes: a first `session_meta` line (id + cwd) and a `response_item`
 /// user message that becomes the session title.
-fn seed_codex_session(codex_dir: &Path, scope_cwd: &Path, id: &str, title: &str) {
+fn seed_codex_session(codex_dir: &Path, scope_cwd: &Path, id: &str, title: &str) -> PathBuf {
     let cwd = scope_cwd.display();
     let contents = format!(
         "{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"{id}\",\"cwd\":\"{cwd}\",\"timestamp\":\"2026-07-13T10:00:00Z\"}}}}\n\
@@ -98,7 +99,88 @@ fn seed_codex_session(codex_dir: &Path, scope_cwd: &Path, id: &str, title: &str)
     let dir = codex_dir.join("2026").join("07").join("13");
     std::fs::create_dir_all(&dir).expect("create codex dir");
     let file = dir.join(format!("rollout-2026-07-13T10-00-00-{id}.jsonl"));
-    std::fs::write(file, contents).expect("write codex session");
+    std::fs::write(&file, contents).expect("write codex session");
+    file
+}
+
+/// Append one synthetic Codex turn plus the native cumulative token-count
+/// record observers should pick up from the already-selected session, without a
+/// manual rescan.
+fn append_codex_observer_event(path: &Path, command_marker: &str, total_tokens: u64) {
+    let mut file = std::fs::OpenOptions::new()
+        .append(true)
+        .open(path)
+        .expect("open codex transcript for append");
+    writeln!(
+        file,
+        "{{\"timestamp\":\"2026-07-13T10:00:00Z\",\"type\":\"response_item\",\"payload\":{{\"type\":\"message\",\"role\":\"user\",\"content\":[{{\"type\":\"input_text\",\"text\":\"{OLDER_TRACE_PROMPT}\"}}]}}}}"
+    )
+    .expect("append older user prompt");
+    writeln!(
+        file,
+        "{{\"timestamp\":\"2026-07-13T10:00:00Z\",\"type\":\"response_item\",\"payload\":{{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{{\"type\":\"output_text\",\"text\":\"older answer\"}}]}}}}"
+    )
+    .expect("append older assistant answer");
+    writeln!(
+        file,
+        "{{\"timestamp\":\"2026-07-13T10:00:01Z\",\"type\":\"response_item\",\"payload\":{{\"type\":\"message\",\"role\":\"user\",\"content\":[{{\"type\":\"input_text\",\"text\":\"trace this command\"}}]}}}}"
+    )
+    .expect("append user prompt");
+    writeln!(
+        file,
+        "{{\"timestamp\":\"2026-07-13T10:00:02Z\",\"type\":\"response_item\",\"payload\":{{\"type\":\"function_call\",\"name\":\"{command_marker}\",\"call_id\":\"call-observe-smoke\",\"arguments\":\"{{}}\"}}}}"
+    )
+    .expect("append function_call");
+    writeln!(
+        file,
+        "{{\"timestamp\":\"2026-07-13T10:00:03Z\",\"type\":\"event_msg\",\"payload\":{{\"type\":\"token_count\",\"info\":{{\"total_token_usage\":{{\"input_tokens\":18000,\"cached_input_tokens\":14000,\"output_tokens\":2000,\"reasoning_output_tokens\":100,\"total_tokens\":20000}},\"last_token_usage\":{{\"input_tokens\":18000,\"cached_input_tokens\":14000,\"output_tokens\":2000,\"reasoning_output_tokens\":100,\"total_tokens\":20000}}}}}}}}"
+    )
+    .expect("append first token_count");
+    // Real Codex logs can repeat a token_count without advancing the cumulative
+    // total. This duplicate must not be charged to the prompt twice.
+    writeln!(
+        file,
+        "{{\"timestamp\":\"2026-07-13T10:00:04Z\",\"type\":\"event_msg\",\"payload\":{{\"type\":\"token_count\",\"info\":{{\"total_token_usage\":{{\"input_tokens\":18000,\"cached_input_tokens\":14000,\"output_tokens\":2000,\"reasoning_output_tokens\":100,\"total_tokens\":20000}},\"last_token_usage\":{{\"input_tokens\":5000,\"cached_input_tokens\":4000,\"output_tokens\":500,\"reasoning_output_tokens\":20,\"total_tokens\":5500}}}}}}}}"
+    )
+    .expect("append duplicate token_count");
+    writeln!(
+        file,
+        "{{\"timestamp\":\"2026-07-13T10:00:05Z\",\"type\":\"event_msg\",\"payload\":{{\"type\":\"token_count\",\"info\":{{\"total_token_usage\":{{\"input_tokens\":40000,\"cached_input_tokens\":30000,\"output_tokens\":3210,\"reasoning_output_tokens\":150,\"total_tokens\":{total_tokens}}},\"last_token_usage\":{{\"input_tokens\":22000,\"cached_input_tokens\":16000,\"output_tokens\":1210,\"reasoning_output_tokens\":50,\"total_tokens\":23210}}}}}}}}"
+    )
+    .expect("append final token_count");
+}
+
+fn observer_panel_text(screen: &str) -> String {
+    let mut panel = String::new();
+    let mut in_panel = false;
+    for line in screen.lines() {
+        if !in_panel && line.contains("TRACE") {
+            in_panel = true;
+        }
+        if in_panel {
+            panel.push_str(line);
+            panel.push('\n');
+            if line.contains('└') || line.contains('╚') {
+                break;
+            }
+        }
+    }
+    panel
+}
+
+fn contains_observer_total(screen: &str) -> bool {
+    let panel = observer_panel_text(screen);
+    ["43,210", "43210", "43.2K", "43.2k"]
+        .iter()
+        .any(|needle| panel.contains(needle))
+}
+
+fn contains_observer_native_usage(screen: &str) -> bool {
+    let panel = observer_panel_text(screen);
+    contains_observer_total(screen)
+        && panel.contains("40000")
+        && panel.contains("30000")
+        && panel.contains("3210")
 }
 
 /// A live mindplayer process running in a PTY, with a background reader feeding
@@ -120,12 +202,20 @@ struct Mp {
     /// which path the browser launch was invoked with. See the cfg note above.
     #[cfg(target_os = "macos")]
     open_marker: PathBuf,
+    codex_alfa_file: PathBuf,
+    codex_brvo_file: PathBuf,
 }
 
 impl Mp {
     /// Spawn the compiled binary against a temp home seeded with two synthetic
     /// Codex sessions and a fake `codex` on PATH.
     fn launch() -> Mp {
+        Self::launch_with_size(ROWS, COLS)
+    }
+
+    /// Spawn with an explicit PTY size so smoke coverage can exercise narrow
+    /// observer layout without depending on the developer's terminal.
+    fn launch_with_size(rows: u16, cols: u16) -> Mp {
         let tmp = unique_tmp();
 
         // Fully isolate every store the binary touches from the developer's real
@@ -189,13 +279,13 @@ impl Mp {
         std::fs::write(&html_fixture, "<html><body>hi</body></html>\n")
             .expect("write html fixture");
 
-        seed_codex_session(&codex_dir, &scope, "codex-alfa-0001", TITLE_A);
-        seed_codex_session(&codex_dir, &scope, "codex-brvo-0002", TITLE_B);
+        let codex_alfa_file = seed_codex_session(&codex_dir, &scope, "codex-alfa-0001", TITLE_A);
+        let codex_brvo_file = seed_codex_session(&codex_dir, &scope, "codex-brvo-0002", TITLE_B);
 
         let pair = native_pty_system()
             .openpty(PtySize {
-                rows: ROWS,
-                cols: COLS,
+                rows,
+                cols,
                 pixel_width: 0,
                 pixel_height: 0,
             })
@@ -222,7 +312,7 @@ impl Mp {
 
         let mut reader = pair.master.try_clone_reader().expect("reader");
         let writer = pair.master.take_writer().expect("writer");
-        let parser = Arc::new(Mutex::new(vt100::Parser::new(ROWS, COLS, 0)));
+        let parser = Arc::new(Mutex::new(vt100::Parser::new(rows, cols, 0)));
 
         {
             let parser = parser.clone();
@@ -251,6 +341,8 @@ impl Mp {
             html_fixture,
             #[cfg(target_os = "macos")]
             open_marker,
+            codex_alfa_file,
+            codex_brvo_file,
         }
     }
 
@@ -309,6 +401,16 @@ impl Mp {
         assert!(
             self.wait_for(needle, within),
             "{ctx}: expected {needle:?} on screen within {within:?}.\n\
+             ---- screen ----\n{}\n----------------",
+            self.screen()
+        );
+    }
+
+    /// Assert a substring is absent after the UI has had a chance to redraw.
+    fn expect_absent(&self, needle: &str, within: Duration, ctx: &str) {
+        assert!(
+            self.wait_until(within, |s| !s.contains(needle)),
+            "{ctx}: expected {needle:?} to disappear within {within:?}.\n\
              ---- screen ----\n{}\n----------------",
             self.screen()
         );
@@ -444,6 +546,125 @@ fn zoom_left_on_does_not_hide_a_multi_launch() {
         "both session titles must show in the split view.\n\
          ---- screen ----\n{screen}\n----------------",
     );
+}
+
+/// Scenario 3 — full-screen Trace smoke for the session observer feature.
+///
+/// This stays deliberately black-box: it drives a real `mindplayer` binary in a
+/// real PTY, appends Codex JSONL to the selected session, and waits for the
+/// rendered screen to update without triggering a manual rescan. Ctrl-G opens
+/// Trace directly on macOS without relying on a function key; Esc returns to
+/// the live PTY, where ordinary prompt text must still reach the fake `codex`
+/// (`cat`) session.
+#[test]
+fn observer_tracks_codex_jsonl_appends_without_stealing_prompt_input() {
+    const ORDINARY_PROMPT: &str = "ordinary-observe-smoke";
+    const POST_TOGGLE_PROMPT: &str = "after-toggle-observe-smoke";
+    const FUNCTION_MARKER: &str = "mp_observe_smoke_function_call";
+    const TOKEN_TOTAL: u64 = 43_210;
+
+    for (label, rows, cols) in [("narrow", 28, 88), ("wide", 40, 160)] {
+        let mut mp = Mp::launch_with_size(rows, cols);
+        mp.start_into_main_list();
+
+        mp.send(b"\r");
+        mp.expect(PANE_READY, STEP_TIMEOUT, "agent pane came up");
+
+        mp.send(ORDINARY_PROMPT.as_bytes());
+        mp.expect(
+            ORDINARY_PROMPT,
+            STEP_TIMEOUT,
+            "ordinary prompt input still reaches the fake codex child",
+        );
+
+        mp.send(b"\x07"); // Ctrl-G
+        mp.expect("TRACE", STEP_TIMEOUT, "Ctrl-G opens full-screen Trace");
+        mp.expect(
+            "READ ONLY",
+            STEP_TIMEOUT,
+            "Trace is visibly labelled as read-only",
+        );
+        mp.expect(
+            "focused session",
+            STEP_TIMEOUT,
+            "Trace identifies its source session",
+        );
+        mp.expect(
+            "Ctrl-G toggle",
+            STEP_TIMEOUT,
+            "Trace footer advertises the macOS-safe shortcut",
+        );
+
+        let selected_codex_file = if mp.screen().contains(TITLE_A) {
+            &mp.codex_alfa_file
+        } else {
+            &mp.codex_brvo_file
+        };
+        append_codex_observer_event(selected_codex_file, FUNCTION_MARKER, TOKEN_TOTAL);
+        assert!(
+            mp.wait_until(STEP_TIMEOUT, |s| {
+                let panel = observer_panel_text(s);
+                panel.contains("PROMPTS")
+                    && panel.contains("THIS TURN")
+                    && panel.contains("43.2K TOKENS")
+                    && panel.contains("YOUR TEXT")
+                    && panel.contains("~5 tokens")
+                    && panel.contains(FUNCTION_MARKER)
+                    && contains_observer_native_usage(s)
+            }),
+            "{label} Trace must notice the selected Codex JSONL append and \
+             render provider-recorded turn usage as primary, the prompt-text \
+             estimate as secondary, and the function_call name without \
+             a rescan.\n\
+             ---- observer panel ----\n{}\n---- screen ----\n{}\n----------------",
+            observer_panel_text(&mp.screen()),
+            mp.screen()
+        );
+        assert!(
+            !observer_panel_text(&mp.screen()).contains("session cumulative"),
+            "Trace must not foreground the all-session total"
+        );
+        println!(
+            "---- {label} observer screen after append ----\n{}\n---- end {label} observer screen ----",
+            mp.screen()
+        );
+
+        // Exercise the real crossterm SGR mouse path, not just the App method:
+        // wheel down over the rendered prompt rail must select the older turn.
+        mp.send(b"\x1b[<65;5;6M");
+        assert!(
+            mp.wait_until(STEP_TIMEOUT, |s| s.matches(OLDER_TRACE_PROMPT).count() >= 2),
+            "{label} mouse wheel over the prompt rail must select the older prompt\n{}",
+            mp.screen()
+        );
+        // Return to the newest turn so the rest of this scenario keeps testing
+        // the appended provider event.
+        mp.send(b"\x1b[<64;5;6M");
+        assert!(
+            mp.wait_until(STEP_TIMEOUT, |s| s.matches("trace this command").count()
+                >= 2),
+            "{label} reverse wheel must reselect the newest prompt\n{}",
+            mp.screen()
+        );
+
+        // Retired Ctrl-O must not close Trace; Esc is the universal return key.
+        mp.send(b"\x0f");
+        mp.expect("TRACE", STEP_TIMEOUT, "Ctrl-O no longer controls Trace");
+        mp.send(b"\x1b");
+        mp.expect_absent("TRACE", STEP_TIMEOUT, "Esc returns to the live session");
+
+        mp.send(POST_TOGGLE_PROMPT.as_bytes());
+        mp.expect(
+            POST_TOGGLE_PROMPT,
+            STEP_TIMEOUT,
+            "ordinary prompt input still reaches the fake codex child after observer toggles",
+        );
+
+        mp.send(b"\x07"); // Ctrl-G opens again.
+        mp.expect("TRACE", STEP_TIMEOUT, "Ctrl-G reopens Trace");
+        mp.send(b"\x07"); // Ctrl-G toggles it closed.
+        mp.expect_absent("TRACE", STEP_TIMEOUT, "Ctrl-G closes Trace");
+    }
 }
 
 /// Scenario 3 — the Ctrl-P candidate picker opens the selected file in the

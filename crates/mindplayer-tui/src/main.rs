@@ -7,6 +7,7 @@ mod handoff;
 mod kiro_patterns;
 mod links;
 mod mascot;
+mod observe;
 mod pty;
 mod render_writer;
 mod terminal_view;
@@ -298,6 +299,9 @@ fn run(terminal: &mut Terminal<CrosstermBackend<FrameSink>>, app: &mut App) -> R
             if app.poll_activity() {
                 needs_draw = true;
             }
+            if app.poll_observer() {
+                needs_draw = true;
+            }
             // Refresh Claude/Codex hook-derived status (see `agent_hooks`) —
             // takes over the badge from the screen-text heuristic whenever a
             // pane has one.
@@ -466,6 +470,27 @@ fn handle_mouse(app: &mut App, me: MouseEvent) -> bool {
             }
             _ => false,
         };
+    }
+
+    // The prompt rail and execution history have distinct wheel behavior.
+    // Test these rendered hit targets before the outer Trace rectangle so a
+    // mouse-aware Codex child can never receive input intended for Trace.
+    if app.observer_prompt_contains(me.column, me.row) {
+        return match me.kind {
+            MouseEventKind::ScrollUp => app.move_observer_turn(-1),
+            MouseEventKind::ScrollDown => app.move_observer_turn(1),
+            _ => true,
+        };
+    }
+    if app.observer_detail_contains(me.column, me.row) {
+        return match me.kind {
+            MouseEventKind::ScrollUp => app.scroll_observer(-STEP),
+            MouseEventKind::ScrollDown => app.scroll_observer(STEP),
+            _ => true,
+        };
+    }
+    if app.observer_contains(me.column, me.row) {
+        return true;
     }
 
     // Left-drag is reserved for MindPlayer pane-local copy, even when the child
@@ -967,6 +992,35 @@ fn handle_main_key(app: &mut App, key: KeyEvent) {
 
     match app.focus {
         Focus::Terminal => {
+            // Trace owns the whole viewport and is deliberately read-only.
+            // Consume navigation before any key can reach the child PTY.
+            if app.observer_open() {
+                let ctrl_g = key.modifiers.contains(KeyModifiers::CONTROL)
+                    && !key
+                        .modifiers
+                        .intersects(KeyModifiers::ALT | KeyModifiers::SUPER)
+                    && matches!(key.code, KeyCode::Char('g') | KeyCode::Char('ㅎ'));
+                if ctrl_g || matches!(key.code, KeyCode::Esc) {
+                    app.toggle_observer();
+                    return;
+                }
+                match key.code {
+                    KeyCode::Up => {
+                        app.move_observer_turn(-1);
+                    }
+                    KeyCode::Down => {
+                        app.move_observer_turn(1);
+                    }
+                    KeyCode::PageUp => {
+                        app.scroll_observer(-8);
+                    }
+                    KeyCode::PageDown => {
+                        app.scroll_observer(8);
+                    }
+                    _ => {}
+                }
+                return;
+            }
             // App-level pane/window chords are intercepted before forwarding
             // remaining control keys to the focused child PTY.
             if key.modifiers.contains(KeyModifiers::CONTROL)
@@ -975,6 +1029,10 @@ fn handle_main_key(app: &mut App, key: KeyEvent) {
                     .intersects(KeyModifiers::ALT | KeyModifiers::SUPER)
             {
                 match key.code {
+                    KeyCode::Char('g') => {
+                        app.toggle_observer();
+                        return;
+                    }
                     KeyCode::Char('x') | KeyCode::Char('ㅌ') => {
                         app.detach_terminal();
                         return;
@@ -1421,6 +1479,141 @@ mod tests {
 
         handle_main_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
         assert!(app.transition_report_input.is_none());
+    }
+
+    #[test]
+    fn ctrl_g_toggles_full_screen_trace_and_esc_returns() {
+        let mut app = main_app_with_session("s1");
+        app.focus_or_add_pane("s1");
+        handle_main_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('g'), KeyModifiers::CONTROL),
+        );
+        assert!(app.observers["s1"].enabled);
+
+        // The retired Ctrl-O shortcut does not close Trace.
+        handle_main_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL),
+        );
+        assert!(app.observers["s1"].enabled);
+
+        handle_main_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(!app.observers["s1"].enabled);
+        handle_main_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('g'), KeyModifiers::CONTROL),
+        );
+        assert!(app.observers["s1"].enabled);
+        handle_main_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('g'), KeyModifiers::CONTROL),
+        );
+        assert!(!app.observers["s1"].enabled);
+    }
+
+    #[test]
+    fn detaching_live_session_selects_it_before_label_edit() {
+        let mut app = main_app_with_session("s1");
+        app.state.labels.remove("s2");
+        let mut second = app.all_sessions[0].clone();
+        second.id = "s2".to_string();
+        second.title = "s2".to_string();
+        app.all_sessions.push(second);
+        // Reproduce a stale cursor on a category header while s2 is live.
+        app.visible = vec![
+            app::Row::Header(None),
+            app::Row::Session(0),
+            app::Row::Session(1),
+        ];
+        app.selected = 0;
+        app.focus_or_add_pane("s2");
+
+        app.detach_terminal();
+        assert_eq!(app.selected_session().map(|s| s.id.as_str()), Some("s2"));
+
+        handle_main_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE),
+        );
+        assert_eq!(app.label_target.as_deref(), Some("s2"));
+
+        for ch in "renamed session".chars() {
+            handle_main_key(
+                &mut app,
+                KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE),
+            );
+        }
+        handle_main_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(
+            app.state.labels.get("s2").map(String::as_str),
+            Some("renamed session")
+        );
+    }
+
+    #[test]
+    fn mouse_wheel_selects_prompts_or_scrolls_execution_by_rendered_region() {
+        let mut app = main_app_with_session("s1");
+        app.focus_or_add_pane("s1");
+        app.toggle_observer();
+        app.observers.get_mut("s1").unwrap().lines = vec![
+            "user: older prompt".into(),
+            "assistant: first answer".into(),
+            "user: newer prompt".into(),
+            "assistant: second answer".into(),
+        ];
+        // `(x, y, rows, cols)` from the rendered read-only trace.
+        app.observe_bounds = Some((0, 0, 30, 100));
+        app.observe_prompt_bounds = Some((0, 3, 26, 32));
+        app.observe_detail_bounds = Some((32, 3, 26, 68));
+
+        let over_prompts = |kind| MouseEvent {
+            kind,
+            column: 10,
+            row: 8,
+            modifiers: KeyModifiers::NONE,
+        };
+        assert!(handle_mouse(
+            &mut app,
+            over_prompts(MouseEventKind::ScrollDown)
+        ));
+        assert_eq!(app.observe_turn, 1);
+        assert!(handle_mouse(
+            &mut app,
+            over_prompts(MouseEventKind::ScrollUp)
+        ));
+        assert_eq!(app.observe_turn, 0);
+
+        let over_execution = |kind| MouseEvent {
+            kind,
+            column: 60,
+            row: 8,
+            modifiers: KeyModifiers::NONE,
+        };
+        app.observe_scroll = 3;
+        assert!(handle_mouse(
+            &mut app,
+            over_execution(MouseEventKind::ScrollUp)
+        ));
+        assert_eq!(app.observe_scroll, 0);
+        assert!(handle_mouse(
+            &mut app,
+            over_execution(MouseEventKind::ScrollDown)
+        ));
+        assert_eq!(app.observe_scroll, 3);
+
+        // A wheel event outside the observer does not alter its history.
+        app.observe_scroll = 3;
+        assert!(!handle_mouse(
+            &mut app,
+            MouseEvent {
+                kind: MouseEventKind::ScrollDown,
+                column: 110,
+                row: 8,
+                modifiers: KeyModifiers::NONE,
+            }
+        ));
+        assert_eq!(app.observe_scroll, 3);
     }
 
     #[test]

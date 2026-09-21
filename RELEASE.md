@@ -54,6 +54,15 @@ none  = docs, chore, ci, test, style
 
 ## Changelog
 
+### v0.43.0 — 2026-09-21
+
+- Open a full-screen, read-only Trace for the focused session with Ctrl-G while
+  its PTY continues running; Ctrl-G or Esc returns to the live session.
+- Group observed prompts, public messages, tool calls, results, and provider
+  usage into a selectable execution timeline with mouse-wheel navigation.
+- Make provider-recorded usage for the selected turn the primary token metric,
+  with the literal user text's local `~` estimate explicitly secondary.
+
 ### v0.42.0 — 2026-09-20
 
 - Pin the inherited Codex account to the machine's default `~/.codex` so a

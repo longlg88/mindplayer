@@ -48,7 +48,112 @@ const HTML_SKIP_DIRS: &[&str] = &[
     "__pycache__",
 ];
 
+fn point_in_bounds(bounds: Option<(u16, u16, u16, u16)>, col: u16, row: u16) -> bool {
+    bounds.is_some_and(|(x, y, rows, cols)| {
+        col >= x && col < x.saturating_add(cols) && row >= y && row < y.saturating_add(rows)
+    })
+}
+
 impl App {
+    pub fn toggle_observer(&mut self) {
+        let Some(id) = self.focused_pane().map(str::to_owned) else {
+            return;
+        };
+        let observer = self.observers.entry(id).or_default();
+        observer.enabled = !observer.enabled;
+        self.observe_turn = 0;
+        self.observe_scroll = 0;
+        self.observe_bounds = None;
+        self.observe_prompt_bounds = None;
+        self.observe_detail_bounds = None;
+    }
+
+    pub fn observer_open(&self) -> bool {
+        self.focused_pane()
+            .and_then(|id| self.observers.get(id))
+            .is_some_and(|observer| observer.enabled)
+    }
+
+    pub fn move_observer_turn(&mut self, delta: isize) -> bool {
+        let Some(count) = self
+            .focused_pane()
+            .and_then(|id| self.observers.get(id))
+            .map(crate::observe::Observer::turn_count)
+        else {
+            return false;
+        };
+        if count == 0 {
+            return false;
+        }
+        self.observe_turn = (self.observe_turn as isize + delta)
+            .clamp(0, count.saturating_sub(1) as isize) as usize;
+        self.observe_scroll = 0;
+        true
+    }
+
+    /// Consume scrolling that happens over the observer rather than sending it
+    /// to the focused agent PTY. The observer is deliberately read-only, so it
+    /// must win even if a Codex full-screen UI requested mouse reporting.
+    pub fn scroll_observer(&mut self, delta: isize) -> bool {
+        let enabled = self
+            .focused_pane()
+            .and_then(|id| self.observers.get(id))
+            .is_some_and(|observer| observer.enabled);
+        if !enabled {
+            return false;
+        }
+        self.observe_scroll = if delta.is_negative() {
+            self.observe_scroll.saturating_sub(delta.unsigned_abs())
+        } else {
+            self.observe_scroll
+                .saturating_add(delta as usize)
+                .min(10_000)
+        };
+        true
+    }
+
+    /// Whether a terminal cell falls inside the observer's latest frame.
+    pub fn observer_contains(&self, col: u16, row: u16) -> bool {
+        point_in_bounds(self.observe_bounds, col, row)
+    }
+
+    pub fn observer_prompt_contains(&self, col: u16, row: u16) -> bool {
+        point_in_bounds(self.observe_prompt_bounds, col, row)
+    }
+
+    pub fn observer_detail_contains(&self, col: u16, row: u16) -> bool {
+        point_in_bounds(self.observe_detail_bounds, col, row)
+    }
+
+    pub fn poll_observer(&mut self) -> bool {
+        // Closed panes cannot accumulate observers indefinitely.
+        self.observers.retain(|id, _| self.panes.contains(id));
+        if self.focus != Focus::Terminal {
+            return false;
+        }
+        let Some(id) = self.focused_pane().map(str::to_owned) else {
+            return false;
+        };
+        let session = self
+            .all_sessions
+            .iter()
+            .chain(self.extra_sessions.iter())
+            .find(|s| s.id == id)
+            .cloned();
+        let Some(observer) = self.observers.get_mut(&id).filter(|o| o.enabled) else {
+            return false;
+        };
+        match session {
+            Some(session) => observer.poll(&session),
+            None => {
+                let message = "Waiting for provider transcript";
+                let changed = observer.notice != message;
+                observer.notice = message.into();
+                changed
+            }
+        }
+    }
+
     /// The session id currently shown in the right pane, if it has a PTY.
     pub fn active_pty(&self) -> Option<&PtySession> {
         self.active.as_ref().and_then(|id| self.ptys.get(id))
@@ -798,6 +903,15 @@ impl App {
 
     pub fn detach_terminal(&mut self) {
         self.selection = None;
+        // Keep list actions anchored to the pane the user just left. Before
+        // this synchronization, `e` could silently target an old row or a
+        // category header after Ctrl-X, which looked like label editing was
+        // broken even though the modal itself worked.
+        if let Some(id) = self.focused_pane().map(str::to_string) {
+            if let Some(row) = self.row_of_session(&id) {
+                self.selected = row;
+            }
+        }
         self.focus = Focus::List;
         mindplayer_core::log_event_to(
             &self.audit_path,

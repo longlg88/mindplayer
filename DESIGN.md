@@ -1,23 +1,40 @@
 # Design
 
-## Approved direction — 2026-09-20
+## Approved direction — 2026-09-21
 
-The user selected **C / token analysis** in `docs/session-trace-options.html`.
-Implement this in the existing Rust TUI: selected session → `:trace` → request
-usage table, selected-request execution details and repeated-read evidence.
-Esc restores the session list. Preserve background PTY processing while viewing
-the trace. Read the selected session's local log; never infer exact file token
-costs or unrecorded reasoning. Cached input is a subset of input, not additive.
+The user selected **A / full-screen Trace** in `docs/observe-trace-ui.html`.
+From a focused live session, **Ctrl-G** replaces the session viewport with its
+Trace view; **Ctrl-G** or **Esc** returns to that same live session. The PTY
+continues to run and ingest output behind the Trace view. Ctrl-G reuses the
+experimental observer command entry point instead of adding a function key
+that conflicts with macOS media controls or stealing a new PTY editing chord.
+The intermediate command popup and `:observe` command are retired. Read the
+selected session's local log; never infer exact file token costs or unrecorded
+reasoning. The primary token figure is provider-recorded usage accumulated
+across the selected user turn; the user's literal prompt text estimate is
+secondary and explicitly marked `~`. Cached input is a subset of input, not
+additive.
 
 The HTML files are illustrative previews, not application surfaces. Earlier
 browser-dashboard and separate-window designs below are historical drafts,
 superseded by this decision. Trace implementation follows on a new branch after
 the account-fix/refresh release.
 
+### Experimental observer review — 2026-09-21
+
+The former `Ctrl-O` sidecar resembled a second session pane and its raw,
+line-oriented transcript did not make a prompt → observed tool call/result →
+usage sequence scannable. It is superseded by the full-screen Trace and should
+not remain as a second observer entry point. The implementation uses a session
+identity, then a selectable prompt rail with a local prompt-text token estimate,
+provider-recorded request context, and observed execution events. Session-
+cumulative totals are omitted from Trace because they obscure the selected
+prompt. The agent PTY keeps running behind that view.
+
 ## Source of truth
 
-- Status: Draft
-- Last refreshed: 2026-09-20
+- Status: Approved prototype direction
+- Last refreshed: 2026-09-21
 - Primary product surfaces: session list, dedicated session trace window
 - Evidence reviewed: README.md, mindplayer-core session/token models, the TUI
   entrypoint and renderer, and the local Codex JSONL event schema.
@@ -51,15 +68,16 @@ the account-fix/refresh release.
 - Primary navigation: session list → dedicated trace window.
 - Core routes/screens: mindplayer trace <session-id>; Overview, Timeline, Raw
   log tabs; session switcher in the trace window.
-- Content hierarchy: session identity → aggregate tokens → turn timeline → raw
-  evidence.
+- Content hierarchy: session identity → prompt selection → that prompt's token
+  usage → observed execution evidence.
 
 ## Design principles
 
 - Evidence before interpretation: every decision summary links to the request,
   tool call, or result that supports it.
-- Token scopes stay explicit: cumulative session totals and per-turn deltas are
-  never presented as the same number.
+- Token scopes stay explicit: Trace foregrounds provider-recorded usage for the
+  selected turn, keeps the `~`-marked local estimate of the literal user text
+  secondary, and does not show session-cumulative totals.
 - Progressive disclosure: the default view is scannable; raw payloads and full
   command output expand on demand.
 

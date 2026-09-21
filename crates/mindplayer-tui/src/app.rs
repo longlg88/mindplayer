@@ -308,6 +308,19 @@ fn input_submits_turn(bytes: &[u8]) -> bool {
 }
 
 pub struct App {
+    pub observers: HashMap<String, crate::observe::Observer>,
+    /// Newest-first prompt selected inside the focused session's trace view.
+    pub observe_turn: usize,
+    pub observe_scroll: usize,
+    /// Outer observer bounds `(x, y, rows, cols)` from the latest render.
+    /// Kept separately from `pane_bounds`: an observer is a read-only view of
+    /// the focused pane, never another PTY that should receive mouse events.
+    pub observe_bounds: Option<(u16, u16, u16, u16)>,
+    /// Prompt rail and execution pane hit targets from the latest Trace frame.
+    /// Wheel input over the rail changes turns; wheel input over execution
+    /// scrolls that turn's event history.
+    pub observe_prompt_bounds: Option<(u16, u16, u16, u16)>,
+    pub observe_detail_bounds: Option<(u16, u16, u16, u16)>,
     pub screen: Screen,
     /// 0 = working dir, 1 = global.
     pub scope_choice: usize,
@@ -641,6 +654,12 @@ impl App {
         let convo_dir = convo_dir_for_app();
         let walker_choice = resolve_walker(state.walker.as_deref());
         App {
+            observers: HashMap::new(),
+            observe_turn: 0,
+            observe_scroll: 0,
+            observe_bounds: None,
+            observe_prompt_bounds: None,
+            observe_detail_bounds: None,
             screen: Screen::ScopeSelect,
             scope_choice: 0,
             walker_choice,

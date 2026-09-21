@@ -1,0 +1,282 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MindPlayer Observe Trace — UI 비교</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --page: #12151c;
+      --shell: #20242d;
+      --panel: #262b35;
+      --raised: #2c323e;
+      --line: #414958;
+      --text: #e8eaf0;
+      --muted: #9aa3b2;
+      --blue: #78a9ff;
+      --cyan: #6fd6d3;
+      --green: #83d29a;
+      --amber: #edc879;
+      --red: #f08b8b;
+      --violet: #c9a7ff;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--page); color: var(--text); font: 14px/1.55 Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    button { font: inherit; color: inherit; }
+    button:focus-visible, summary:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+    .mono, code, pre, kbd { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    .page { width: min(1480px, 100%); margin: auto; padding: 26px; }
+    .intro { display: flex; justify-content: space-between; gap: 24px; align-items: end; margin-bottom: 18px; }
+    h1 { margin: 0; font-size: 22px; letter-spacing: -.02em; }
+    .intro p { margin: 5px 0 0; color: var(--muted); font-size: 13px; }
+    .recommendation { color: var(--green); font-size: 12px; text-align: right; }
+    .switcher { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-bottom: 16px; }
+    .choice { min-height: 96px; padding: 14px; text-align: left; background: var(--shell); border: 1px solid var(--line); border-radius: 9px; cursor: pointer; }
+    .choice:hover { background: var(--panel); }
+    .choice.active { border-color: var(--blue); box-shadow: inset 0 0 0 1px var(--blue); background: #25314a; }
+    .choice strong, .choice span { display: block; }
+    .choice strong { font-size: 14px; margin-bottom: 5px; }
+    .choice span { color: var(--muted); font-size: 12px; }
+    .choice em { color: var(--green); font-style: normal; font-size: 11px; }
+    .stage { min-height: 750px; background: var(--shell); border: 1px solid var(--line); border-radius: 11px; overflow: hidden; }
+    .windowbar { height: 42px; display: flex; align-items: center; gap: 12px; padding: 0 14px; border-bottom: 1px solid var(--line); color: var(--muted); font-size: 12px; }
+    .dots { display: flex; gap: 6px; }
+    .dots i { width: 9px; height: 9px; border-radius: 50%; background: #626978; }
+    .windowtitle { color: var(--text); }
+    .windowmeta { margin-left: auto; }
+    .view { display: none; min-height: 707px; }
+    .view.active { display: block; }
+    .hidden { display: none !important; }
+    .trace-head { padding: 18px 20px 14px; border-bottom: 1px solid var(--line); }
+    .eyebrow { display: flex; align-items: center; gap: 8px; color: var(--blue); font: 12px ui-monospace, monospace; text-transform: uppercase; letter-spacing: .06em; }
+    .live { display: inline-flex; align-items: center; gap: 6px; color: var(--green); }
+    .live::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--green); box-shadow: 0 0 0 4px #83d29a18; }
+    .trace-head h2 { margin: 7px 0 2px; font-size: 18px; font-weight: 650; }
+    .sub { color: var(--muted); font-size: 12px; }
+    .metrics { display: grid; grid-template-columns: 1.35fr repeat(4, 1fr); gap: 1px; background: var(--line); border-bottom: 1px solid var(--line); }
+    .metric { background: var(--panel); padding: 13px 16px; min-height: 80px; }
+    .metric label { display: block; color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .05em; }
+    .metric b { display: block; margin-top: 4px; font: 600 19px ui-monospace, monospace; }
+    .metric small { color: var(--muted); font-size: 11px; }
+    .metric.highlight b { color: var(--amber); }
+    .metric.prompt-text b { font-size: 42px; line-height: 1.05; letter-spacing: -.04em; }
+    .trace-body { display: grid; grid-template-columns: 330px minmax(0, 1fr); height: 530px; }
+    .turns { border-right: 1px solid var(--line); overflow: auto; }
+    .rail-title { padding: 12px 14px 8px; color: var(--muted); font: 11px ui-monospace, monospace; text-transform: uppercase; }
+    .turn { width: 100%; padding: 13px 14px; border: 0; border-left: 3px solid transparent; border-bottom: 1px solid var(--line); background: transparent; text-align: left; cursor: pointer; }
+    .turn:hover { background: var(--panel); }
+    .turn.selected { background: #2b3548; border-left-color: var(--blue); }
+    .turn-top { display: flex; justify-content: space-between; color: var(--muted); font: 11px ui-monospace, monospace; }
+    .turn-title { display: block; margin: 5px 0; line-height: 1.4; }
+    .turn-usage { color: var(--cyan); font: 11px ui-monospace, monospace; }
+    .inspector { overflow: auto; padding: 19px 22px 28px; }
+    .prompt { margin-bottom: 18px; padding: 14px 16px; background: var(--raised); border: 1px solid var(--line); border-radius: 8px; }
+    .prompt label { color: var(--blue); font: 11px ui-monospace, monospace; text-transform: uppercase; }
+    .prompt p { margin: 7px 0 0; }
+    .delta { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+    .chip { padding: 3px 7px; border: 1px solid var(--line); border-radius: 999px; color: var(--muted); font: 11px ui-monospace, monospace; }
+    .chip.derived { color: var(--amber); border-color: #725f37; }
+    .timeline { position: relative; margin-left: 8px; }
+    .timeline::before { content: ""; position: absolute; left: 9px; top: 8px; bottom: 10px; width: 1px; background: var(--line); }
+    .event { position: relative; display: grid; grid-template-columns: 20px 90px 1fr; gap: 10px; padding: 0 0 18px; }
+    .node { z-index: 1; width: 19px; height: 19px; display: grid; place-items: center; border: 1px solid var(--line); border-radius: 50%; background: var(--shell); color: var(--muted); font-size: 10px; }
+    .event.running .node { color: var(--green); border-color: var(--green); }
+    .event-type { color: var(--muted); font: 11px ui-monospace, monospace; text-transform: uppercase; padding-top: 2px; }
+    .event-main { min-width: 0; }
+    .event-main strong { font-weight: 600; }
+    .event-main p { margin: 4px 0 0; color: var(--muted); font-size: 12px; }
+    .command { display: block; margin-top: 7px; padding: 9px 11px; border: 1px solid var(--line); border-radius: 6px; background: #191d24; color: #dce3ee; overflow-wrap: anywhere; }
+    details { margin-top: 8px; color: var(--muted); font-size: 12px; }
+    summary { cursor: pointer; color: var(--blue); }
+    pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+    .privacy { margin: 4px 0 0 129px; padding: 9px 11px; border-left: 2px solid var(--violet); color: var(--muted); font-size: 11px; }
+    .footer { display: flex; gap: 20px; padding: 10px 16px; border-top: 1px solid var(--line); color: var(--muted); font-size: 11px; }
+    kbd { color: var(--blue); }
+    .live-session { min-height: 707px; display: flex; flex-direction: column; background: #1d2129; }
+    .live-session-copy { flex: 1; padding: 26px 28px; color: #cdd3df; font: 13px/1.75 ui-monospace, monospace; }
+    .live-session-copy .user { color: var(--blue); }
+    .shortcut-callout { width: min(520px, 100%); margin-top: 28px; padding: 14px 16px; border: 1px solid #5978ab; border-radius: 8px; background: #243047; color: var(--muted); }
+    .shortcut-callout b { color: var(--text); }
+    .keycap { display: inline-grid; place-items: center; min-width: 34px; padding: 3px 8px; margin-right: 6px; border: 1px solid #7fa8e8; border-bottom-width: 3px; border-radius: 5px; background: #1b2230; color: var(--blue); font-weight: 700; }
+    .agent-canvas { position: relative; min-height: 707px; padding: 22px; background: #1d2129; overflow: hidden; }
+    .terminal-copy { max-width: 760px; color: #cdd3df; font: 13px/1.7 ui-monospace, monospace; opacity: .72; }
+    .terminal-copy .user { color: var(--blue); }
+    .drawer { position: absolute; right: 0; top: 0; bottom: 0; width: min(620px, 55%); background: var(--shell); border-left: 2px solid var(--blue); box-shadow: -24px 0 50px #0007; }
+    .drawer-head { padding: 16px 18px; border-bottom: 1px solid var(--line); }
+    .drawer-body { padding: 16px 18px; }
+    .mini-event { padding: 12px 0; border-bottom: 1px solid var(--line); }
+    .mini-event b { color: var(--cyan); font: 11px ui-monospace, monospace; }
+    .mini-event p { margin: 4px 0 0; color: var(--muted); font-size: 12px; }
+    .desktop { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; min-height: 707px; padding: 22px; background: #181b22; }
+    .os-window { min-height: 600px; border: 1px solid var(--line); border-radius: 9px; background: var(--shell); overflow: hidden; }
+    .os-bar { padding: 10px 13px; border-bottom: 1px solid var(--line); color: var(--muted); font-size: 11px; }
+    .os-content { padding: 17px; }
+    .separate-note { color: var(--amber); font-size: 12px; margin: 0 0 14px; }
+    .fake-line { height: 8px; margin: 10px 0; border-radius: 5px; background: #414957; }
+    .fake-line:nth-child(2n) { width: 77%; }
+    .fake-line:nth-child(3n) { width: 58%; }
+    .verdict { margin-top: 14px; color: var(--muted); font-size: 12px; }
+    .verdict b { color: var(--text); }
+    @media (max-width: 900px) {
+      .page { padding: 12px; }
+      .intro { align-items: start; flex-direction: column; }
+      .recommendation { text-align: left; }
+      .switcher { grid-template-columns: 1fr; }
+      .stage { min-height: 900px; }
+      .trace-body { grid-template-columns: 1fr; height: auto; }
+      .turns { display: flex; overflow: auto; border-right: 0; border-bottom: 1px solid var(--line); }
+      .rail-title { display: none; }
+      .turn { min-width: 280px; border-left: 0; border-top: 3px solid transparent; }
+      .turn.selected { border-top-color: var(--blue); }
+      .metrics { grid-template-columns: repeat(2, 1fr); }
+      .metric:first-child { grid-column: 1 / -1; }
+      .drawer { width: 84%; }
+      .desktop { grid-template-columns: 1fr; }
+      .event { grid-template-columns: 20px 72px 1fr; }
+      .privacy { margin-left: 0; }
+    }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <header class="intro">
+      <div>
+        <h1>Observe를 “옆 세션”이 아닌 실행 추적 화면으로</h1>
+        <p>같은 데이터를 세 가지 창 구조로 비교합니다. A/B/C 키로 전환할 수 있습니다.</p>
+      </div>
+      <div class="recommendation">확정: A 전체화면 Trace<br><span class="mono">Ctrl-G toggle · Esc return · PTY keeps running</span></div>
+    </header>
+
+    <nav class="switcher" aria-label="Observe UI 시안 선택">
+      <button class="choice active" data-mode="a" aria-pressed="true"><strong>A · 전체화면 Trace</strong><span>세션에서 Ctrl-G로 진입 · Ctrl-G/Esc로 복귀</span><em>확정 · prompt와 실행의 인과관계가 가장 선명</em></button>
+      <button class="choice" data-mode="b" aria-pressed="false"><strong>B · 슬라이드 오버</strong><span>기존 세션 위에 오른쪽 inspector 표시</span><em>맥락 유지 · 좁은 화면에서는 답답함</em></button>
+      <button class="choice" data-mode="c" aria-pressed="false"><strong>C · 별도 OS 창</strong><span>세션과 Observe를 독립 창으로 분리</span><em>모니터가 넓을 때 강함 · 창 관리 비용</em></button>
+    </nav>
+
+    <section class="stage" aria-label="Observe UI 미리보기">
+      <div class="windowbar"><span class="dots" aria-hidden="true"><i></i><i></i><i></i></span><span class="windowtitle mono" id="window-title">mindplayer · Observe Trace</span><span class="windowmeta mono">local · read only · codex</span></div>
+
+      <section class="view active" data-view="a">
+        <div class="live-session hidden" id="a-live">
+          <div class="live-session-copy"><span class="user">› 창이 다른 창과 구별되게 표현해줘</span><br><br>현재 Codex 세션 화면입니다. 입력과 출력은 평소처럼 이 PTY에서 이어집니다.<br><br>• Reading current UI structure<br>• Grouping events by prompt<br>• Updating the trace design<div class="shortcut-callout"><span class="keycap">Ctrl-G</span><b>전체화면 Trace 열기</b><br>현재 세션은 종료되지 않고 뒤에서 계속 실행됩니다.</div></div>
+          <footer class="footer"><span><kbd>Ctrl-G</kbd> full-screen trace</span><span><kbd>Ctrl-X</kbd> session list</span><span><kbd>Tab</kbd> next pane</span></footer>
+        </div>
+        <header class="trace-head trace-surface">
+          <div class="eyebrow"><span>OBSERVE TRACE</span><span>·</span><span class="live">LIVE</span></div>
+          <h2>working2 — Codex session</h2>
+          <div class="sub mono">01a0bf61-1ed4-75f1-9b4f-8e59c211e9d0 · provider log observed 00:52:15</div>
+        </header>
+        <div class="metrics trace-surface">
+          <div class="metric highlight prompt-text"><label>This turn · provider recorded</label><b>181,928</b><small>input + output across this turn</small></div>
+          <div class="metric"><label>Your text</label><b>~18</b><small>local estimate only</small></div>
+          <div class="metric"><label>Context input</label><b>180,000</b><small>includes cached input</small></div>
+          <div class="metric"><label>Cached input</label><b>171,520</b><small>subset of prompt input</small></div>
+          <div class="metric"><label>Output</label><b>1,928</b><small>reasoning 640 included</small></div>
+        </div>
+        <div class="trace-body trace-surface">
+          <aside class="turns" aria-label="Prompt 목록">
+            <div class="rail-title">Prompts · newest first</div>
+            <button class="turn selected" data-turn="0"><span class="turn-top"><span>#12 · 00:51</span><span>RUNNING</span></span><span class="turn-title">창이 다른 창과 구별되게 표현해줘</span><span class="turn-usage">181.9k turn tokens · text ~18</span></button>
+            <button class="turn" data-turn="1"><span class="turn-top"><span>#11 · 00:46</span><span>DONE</span></span><span class="turn-title">Trace 화면을 다시 확인해줘</span><span class="turn-usage">92.4k turn tokens · text ~10</span></button>
+            <button class="turn" data-turn="2"><span class="turn-top"><span>#10 · 00:42</span><span>DONE</span></span><span class="turn-title">pulse codex 세션이 안 보이는 원인</span><span class="turn-usage">126.1k turn tokens · text ~13</span></button>
+            <button class="turn" data-turn="3"><span class="turn-top"><span>#09 · 00:36</span><span>DONE</span></span><span class="turn-title">로컬 버전을 설치해서 테스트하게 해줘</span><span class="turn-usage">211.8k turn tokens · text ~16</span></button>
+          </aside>
+          <article class="inspector">
+            <section class="prompt">
+              <label>Selected prompt · observed</label>
+              <p id="prompt-text">$typesafe-ai 창이 다른 창과 구별이 안 되는 것 같은데, 개발한 UI에서 창만 다른 식으로 표현해줘.</p>
+              <div class="delta"><span class="chip derived">this turn 181,928 · provider recorded</span><span class="chip">your text ~18 · local estimate</span><span class="chip">elapsed 27s</span></div>
+            </section>
+            <div class="timeline" id="timeline">
+              <div class="event"><span class="node">1</span><span class="event-type">Request</span><div class="event-main"><strong>사용자 prompt 수신</strong><p>Provider transcript의 user event에서 관찰됨.</p></div></div>
+              <div class="event"><span class="node">2</span><span class="event-type">Skill</span><div class="event-main"><strong>typesafe-ai 지침 확인</strong><p>Skill 파일과 현재 설계 원칙을 읽음. 이 항목은 실행 이벤트만 표시하며 숨겨진 사고 과정은 표시하지 않음.</p></div></div>
+              <div class="event"><span class="node">3</span><span class="event-type">Web</span><div class="event-main"><strong>공식 TypeSafe 문서 조회</strong><code class="command">open https://docs.typesafe.ai/llms.txt</code><details><summary>raw result 보기 · observed</summary><pre>HTTP 200 · documentation index loaded</pre></details></div></div>
+              <div class="event running"><span class="node">4</span><span class="event-type">Now</span><div class="event-main"><strong>UI 경계 재설계 중</strong><p>세션 PTY는 계속 실행되고 Observe Trace만 전면에 표시됩니다.</p></div></div>
+            </div>
+            <p class="privacy">Private reasoning은 노출하지 않습니다. 기록된 요청, tool call, 결과, 상태, usage만 보여줍니다.</p>
+          </article>
+        </div>
+        <footer class="footer trace-surface"><span><kbd>Ctrl-G / Esc</kbd> live session으로 복귀</span><span><kbd>↑/↓ · wheel</kbd> prompt 이동</span><span><kbd>Enter</kbd> raw 펼치기</span><span><kbd>/</kbd> 검색</span></footer>
+      </section>
+
+      <section class="view" data-view="b">
+        <div class="agent-canvas">
+          <div class="terminal-copy"><span class="user">› 창이 다른 창과 구별되게 표현해줘</span><br><br>요청을 확인했습니다. 현재 Observe UI가 별도 관찰 화면이라기보다 옆에 열린 세션처럼 보이는 원인을 먼저 확인합니다.<br><br>• Searching local session events<br>• Reading DESIGN.md<br>• Building UI alternatives<br><br>현재 PTY의 대화 내용은 그대로 유지됩니다.</div>
+          <aside class="drawer">
+            <header class="drawer-head"><div class="eyebrow">OBSERVE · LIVE · READ ONLY</div><h2>Prompt #12</h2><div class="sub mono">+181,928 derived tokens</div></header>
+            <div class="drawer-body">
+              <section class="prompt"><label>Current prompt</label><p>창이 다른 창과 구별되게 표현해줘</p></section>
+              <div class="mini-event"><b>00:51:48 · REQUEST</b><p>사용자 prompt 수신</p></div>
+              <div class="mini-event"><b>00:51:52 · SKILL</b><p>typesafe-ai 지침 확인</p></div>
+              <div class="mini-event"><b>00:52:02 · WEB</b><p>공식 문서 조회 완료</p></div>
+              <div class="mini-event"><b>NOW · RUNNING</b><p>UI 경계를 강화하는 중</p></div>
+              <p class="verdict"><b>장점:</b> 원래 대화와 실행 로그를 동시에 봅니다.<br><b>한계:</b> Observe가 여전히 “오른쪽에 열린 다른 세션”처럼 보일 수 있고, 좁은 터미널에서 양쪽 모두 읽기 어려워집니다.</p>
+            </div>
+          </aside>
+        </div>
+      </section>
+
+      <section class="view" data-view="c">
+        <div class="desktop">
+          <section class="os-window"><div class="os-bar mono">mindplayer · session · working2</div><div class="os-content"><div class="terminal-copy"><span class="user">› 창이 다른 창과 구별되게 표현해줘</span><br><br>현재 세션은 원래 크기로 유지됩니다.</div><div class="fake-line"></div><div class="fake-line"></div><div class="fake-line"></div><div class="fake-line"></div><div class="fake-line"></div></div></section>
+          <section class="os-window"><div class="os-bar mono">mindplayer · Observe Trace · 01a0bf61</div><div class="os-content"><p class="separate-note">독립적인 관찰 창 · local · read only</p><section class="prompt"><label>Prompt #12</label><p>창이 다른 창과 구별되게 표현해줘</p><div class="delta"><span class="chip derived">+181,928 derived</span><span class="chip">running</span></div></section><div class="mini-event"><b>REQUEST</b><p>사용자 prompt 수신</p></div><div class="mini-event"><b>TOOL</b><p>공식 문서와 로컬 설계 확인</p></div><div class="mini-event"><b>NOW</b><p>UI 경계를 강화하는 중</p></div><p class="verdict"><b>장점:</b> 두 창의 정체성이 가장 명백합니다.<br><b>한계:</b> 창 생성·포커스·종료 동기화가 플랫폼별로 달라지고, 노트북 한 화면에서는 공간이 부족합니다.</p></div></section>
+        </div>
+      </section>
+    </section>
+  </main>
+
+  <script>
+    const titles = { a: 'mindplayer · Observe Trace', b: 'mindplayer · session + Observe drawer', c: 'MindPlayer desktop · two windows' };
+    const choices = [...document.querySelectorAll('[data-mode]')];
+    const views = [...document.querySelectorAll('[data-view]')];
+    let traceOpen = true;
+    function setTraceOpen(open) {
+      traceOpen = open;
+      document.querySelector('#a-live').classList.toggle('hidden', open);
+      document.querySelectorAll('.trace-surface').forEach(element => element.classList.toggle('hidden', !open));
+      document.querySelector('#window-title').textContent = open ? titles.a : 'mindplayer · live session · working2';
+    }
+    function selectMode(mode) {
+      choices.forEach(button => {
+        const selected = button.dataset.mode === mode;
+        button.classList.toggle('active', selected);
+        button.setAttribute('aria-pressed', String(selected));
+      });
+      views.forEach(view => view.classList.toggle('active', view.dataset.view === mode));
+      document.querySelector('#window-title').textContent = titles[mode];
+      if (mode === 'a') setTraceOpen(true);
+    }
+    choices.forEach(button => button.addEventListener('click', () => selectMode(button.dataset.mode)));
+    document.addEventListener('keydown', event => {
+      if (event.ctrlKey && event.key.toLowerCase() === 'g') {
+        event.preventDefault();
+        const aIsActive = document.querySelector('[data-view="a"]').classList.contains('active');
+        if (aIsActive) setTraceOpen(!traceOpen);
+        else {
+          selectMode('a');
+          setTraceOpen(true);
+        }
+        return;
+      }
+      if (event.key === 'Escape' && document.querySelector('[data-view="a"]').classList.contains('active') && traceOpen) {
+        event.preventDefault();
+        setTraceOpen(false);
+        return;
+      }
+      if (!event.metaKey && !event.ctrlKey && !event.altKey && ['a', 'b', 'c'].includes(event.key.toLowerCase())) selectMode(event.key.toLowerCase());
+    });
+    const promptCopy = [
+      '$typesafe-ai 창이 다른 창과 구별이 안 되는 것 같은데, 개발한 UI에서 창만 다른 식으로 표현해줘.',
+      'Trace 화면을 다시 확인하고 스크롤과 로그 가시성을 개선해줘.',
+      '새로 mindplayer를 띄워도 pulse의 codex 세션이 안 보이는 원인을 찾아줘.',
+      '정규 릴리즈나 commit 없이 개발 버전을 올리고 로컬에 설치해줘.'
+    ];
+    document.querySelectorAll('[data-turn]').forEach(button => button.addEventListener('click', () => {
+      document.querySelectorAll('[data-turn]').forEach(item => item.classList.remove('selected'));
+      button.classList.add('selected');
+      document.querySelector('#prompt-text').textContent = promptCopy[Number(button.dataset.turn)];
+    }));
+  </script>
+</body>
+</html>

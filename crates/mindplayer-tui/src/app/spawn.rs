@@ -246,6 +246,9 @@ impl App {
                     if let Some(pty) = self.ptys.remove(&extra.id) {
                         self.ptys.insert(real_id.clone(), pty);
                     }
+                    if let Some(observer) = self.observers.remove(&extra.id) {
+                        self.observers.insert(real_id.clone(), observer);
+                    }
                     if let Some(input) = self.pending_initial_inputs.remove(&extra.id) {
                         self.pending_initial_inputs.insert(real_id.clone(), input);
                     }

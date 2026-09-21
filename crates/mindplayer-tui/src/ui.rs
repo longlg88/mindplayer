@@ -13,7 +13,7 @@ use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{
-    Block, BorderType, Borders, Clear, Gauge, List, ListItem, ListState, Paragraph, Wrap,
+    Block, BorderType, Borders, Clear, Gauge, List, ListItem, ListState, Padding, Paragraph, Wrap,
 };
 use ratatui::Frame;
 use std::path::{Path, PathBuf};
@@ -39,6 +39,11 @@ const ZOOM: Color = Color::Rgb(235, 160, 70);
 const PREVIEW: Color = Color::Rgb(82, 196, 214);
 // Rose used for the inline error line inside the preview popup.
 const ERROR: Color = Color::Rgb(245, 130, 120);
+// The observer is a local read-only tool, not another agent terminal. Keep its
+// colour and surface separate from session/focus chrome so the two cannot be
+// mistaken for peer panes when they share a row.
+const OBSERVER: Color = Color::Rgb(74, 210, 177);
+const OBSERVER_BG: Color = Color::Rgb(21, 35, 40);
 const SPINNER: [&str; 8] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧"];
 
 fn agent_tag(agent: Agent) -> (&'static str, Color) {
@@ -813,23 +818,22 @@ fn main_view(f: &mut Frame, app: &mut App) {
         "type to filter · enter open · ↑↓ move · esc exit search".to_string()
     } else {
         match app.focus {
-        Focus::List if app.multi_select => {
-            "MULTI-SELECT · space mark · enter launch all marked · esc cancel".to_string()
-        }
-        Focus::List => {
-            // When a live view is detached but still running, surface that ctrl-x
-            // jumps back into it.
-            let live = if !app.panes.is_empty() {
-                format!("ctrl-x live ({}) · ", app.panes.len())
-            } else {
-                String::new()
-            };
-            format!("{live}enter open · v multi-select · n new · h handoff   View: / search · ? help")
-        }
-        Focus::Terminal => {
-            "ctrl-x list · tab/ctrl-w pane · ctrl-z zoom · ctrl-y links · ctrl-q close · wheel history · drag=copy this pane"
-                .to_string()
-        }
+            Focus::List if app.multi_select => {
+                "MULTI-SELECT · space mark · enter launch all marked · esc cancel".to_string()
+            }
+            Focus::List => {
+                // When a live view is detached but still running, surface that ctrl-x
+                // jumps back into it.
+                let live = if !app.panes.is_empty() {
+                    format!("ctrl-x live ({}) · ", app.panes.len())
+                } else {
+                    String::new()
+                };
+                format!("{live}enter open · v multi-select · n new · h handoff   View: / search · ? help")
+            }
+            Focus::Terminal => {
+                "ctrl-g trace · ctrl-x list · tab pane · ctrl-z zoom · ctrl-q close".to_string()
+            }
         }
     };
     // The status owns its own full-width row(s); the key hints get the next one.
@@ -1692,6 +1696,16 @@ pub fn compute_pane_rects(area: Rect, n: usize, layout: PaneLayout) -> Vec<Rect>
 }
 
 fn live_pane(f: &mut Frame, app: &mut App, area: Rect) {
+    // Trace does not own a PTY. Clear its hit target before every render so a
+    // just-hidden or resized view can never steal mouse input.
+    app.observe_bounds = None;
+    app.observe_prompt_bounds = None;
+    app.observe_detail_bounds = None;
+    if app.observer_open() {
+        app.observe_bounds = Some((area.x, area.y, area.height, area.width));
+        observe_panel(f, app, area);
+        return;
+    }
     let focused_view = app.focus == Focus::Terminal;
     let live_count = app.live_pty_count();
 
@@ -1786,6 +1800,360 @@ fn live_pane(f: &mut Frame, app: &mut App, area: Rect) {
             cat.as_ref().map(|(l, c)| (l.as_str(), *c)),
         );
     }
+}
+
+#[derive(Default)]
+struct TraceTurn {
+    prompt: String,
+    prompt_observed: bool,
+    events: Vec<String>,
+    usage: Option<crate::observe::Usage>,
+}
+
+fn trace_turns(lines: &[String]) -> Vec<TraceTurn> {
+    let mut turns: Vec<TraceTurn> = Vec::new();
+    for line in lines {
+        if let Some(prompt) = line.strip_prefix("user: ") {
+            turns.push(TraceTurn {
+                prompt: prompt.to_string(),
+                prompt_observed: true,
+                events: Vec::new(),
+                usage: None,
+            });
+            continue;
+        }
+        if turns.is_empty() {
+            turns.push(TraceTurn {
+                prompt: "Earlier prompt omitted by bounded tail".to_string(),
+                prompt_observed: false,
+                events: Vec::new(),
+                usage: None,
+            });
+        }
+        if let Some(usage) = crate::observe::prompt_usage_from_line(line) {
+            turns.last_mut().unwrap().usage = Some(usage);
+            continue;
+        }
+        turns.last_mut().unwrap().events.push(line.clone());
+    }
+    turns.reverse();
+    turns
+}
+
+/// Estimate only the text the user typed, rather than the full model request.
+///
+/// Provider logs expose request-level input usage but not the tokenized user
+/// message. UTF-8 bytes divided by four is deliberately marked with `~`: it is
+/// useful for comparing prompt text without pretending to be a provider count,
+/// and behaves more reasonably for Korean than an ASCII character heuristic.
+fn estimated_prompt_tokens(prompt: &str) -> u64 {
+    let bytes = prompt.trim().len() as u64;
+    if bytes == 0 {
+        0
+    } else {
+        bytes.div_ceil(4)
+    }
+}
+
+const BIG_DIGITS: [[&str; 5]; 10] = [
+    ["███", "█ █", "█ █", "█ █", "███"],
+    [" █ ", "██ ", " █ ", " █ ", "███"],
+    ["███", "  █", "███", "█  ", "███"],
+    ["███", "  █", "███", "  █", "███"],
+    ["█ █", "█ █", "███", "  █", "  █"],
+    ["███", "█  ", "███", "  █", "███"],
+    ["███", "█  ", "███", "█ █", "███"],
+    ["███", "  █", "  █", "  █", "  █"],
+    ["███", "█ █", "███", "█ █", "███"],
+    ["███", "█ █", "███", "  █", "███"],
+];
+
+fn big_token_lines(tokens: u64) -> Vec<Line<'static>> {
+    let digits = tokens.to_string();
+    (0..5)
+        .map(|row| {
+            let mut rendered = "  ".to_string();
+            for digit in digits.bytes() {
+                rendered.push_str(BIG_DIGITS[(digit - b'0') as usize][row]);
+                rendered.push(' ');
+            }
+            if row == 2 {
+                rendered.push_str(" TOKENS");
+            }
+            Line::from(Span::styled(
+                rendered,
+                Style::default()
+                    .fg(Color::Rgb(237, 200, 121))
+                    .add_modifier(Modifier::BOLD),
+            ))
+        })
+        .collect()
+}
+
+fn trace_event_line(line: &str) -> Line<'static> {
+    let (kind, text, color) = if let Some(text) = line.strip_prefix("assistant: ") {
+        ("ASSISTANT", text, Color::White)
+    } else if line.starts_with("function_call ")
+        || line.starts_with("custom_tool_call ")
+        || line.starts_with("tool_use ")
+    {
+        ("TOOL", line, ACCENT)
+    } else if line.starts_with("function_call_output:")
+        || line.starts_with("custom_tool_output:")
+        || line.starts_with("tool_result:")
+    {
+        ("RESULT", line, Color::Rgb(131, 210, 154))
+    } else {
+        ("EVENT", line, DIM)
+    };
+    Line::from(vec![
+        Span::styled(
+            format!("{kind:<10}"),
+            Style::default().fg(color).add_modifier(Modifier::BOLD),
+        ),
+        Span::raw(text.to_string()),
+    ])
+}
+
+fn observe_panel(f: &mut Frame, app: &mut App, area: Rect) {
+    let Some(id) = app.focused_pane().map(str::to_owned) else {
+        return;
+    };
+    let Some((notice, observed_lines)) = app
+        .observers
+        .get(&id)
+        .map(|observer| (observer.notice.clone(), observer.lines.clone()))
+    else {
+        return;
+    };
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Double)
+        .title(Line::from(vec![
+            Span::styled(
+                " TRACE ",
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(OBSERVER)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                " FULL SCREEN · LIVE LOCAL LOG · READ ONLY ",
+                Style::default().fg(OBSERVER).add_modifier(Modifier::BOLD),
+            ),
+        ]))
+        .border_style(Style::default().fg(OBSERVER))
+        .style(Style::default().bg(OBSERVER_BG));
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+    let header = vec![
+        Line::from(vec![
+            Span::styled(
+                "SOURCE  ",
+                Style::default().fg(OBSERVER).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("focused session · ", Style::default().fg(DIM)),
+            Span::styled(id, Style::default().fg(OBSERVER)),
+        ]),
+        Line::from(Span::styled(notice, Style::default().fg(DIM))),
+    ];
+    let parts = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length((header.len() as u16).min(inner.height.saturating_sub(3))),
+            Constraint::Min(0),
+            Constraint::Length(1),
+        ])
+        .split(inner);
+    f.render_widget(Paragraph::new(header), parts[0]);
+
+    let turns = trace_turns(&observed_lines);
+    if turns.is_empty() {
+        f.render_widget(
+            Paragraph::new("Waiting for a recorded prompt…")
+                .style(Style::default().fg(DIM))
+                .alignment(Alignment::Center),
+            parts[1],
+        );
+    } else {
+        let selected = app.observe_turn.min(turns.len().saturating_sub(1));
+        let (direction, constraints) = if parts[1].width >= 96 {
+            (
+                Direction::Horizontal,
+                [Constraint::Percentage(32), Constraint::Percentage(68)],
+            )
+        } else {
+            (
+                Direction::Vertical,
+                [
+                    Constraint::Length(7.min(parts[1].height / 2)),
+                    Constraint::Min(0),
+                ],
+            )
+        };
+        let columns = Layout::default()
+            .direction(direction)
+            .constraints(constraints)
+            .split(parts[1]);
+        app.observe_prompt_bounds = Some((
+            columns[0].x,
+            columns[0].y,
+            columns[0].height,
+            columns[0].width,
+        ));
+        app.observe_detail_bounds = Some((
+            columns[1].x,
+            columns[1].y,
+            columns[1].height,
+            columns[1].width,
+        ));
+
+        let rail = turns
+            .iter()
+            .enumerate()
+            .map(|(index, turn)| {
+                let marker = if index == selected { "▶" } else { " " };
+                let style = if index == selected {
+                    Style::default()
+                        .fg(Color::White)
+                        .bg(Color::Rgb(43, 53, 72))
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(DIM)
+                };
+                let token_label = turn
+                    .usage
+                    .map(|usage| human_tokens(usage.total))
+                    .unwrap_or_else(|| "…".to_string());
+                let prefix = format!(
+                    "{marker} #{:02} {token_label:>5}  ",
+                    turns.len().saturating_sub(index)
+                );
+                let prompt_width = (columns[0].width as usize).saturating_sub(prefix.len() + 1);
+                Line::from(Span::styled(
+                    format!("{prefix}{}", truncate(&turn.prompt, prompt_width)),
+                    style,
+                ))
+            })
+            .collect::<Vec<_>>();
+        f.render_widget(
+            Paragraph::new(rail).block(
+                Block::default()
+                    .borders(Borders::RIGHT)
+                    .border_style(Style::default().fg(Color::Rgb(65, 73, 88)))
+                    .title(Span::styled(" PROMPTS ", Style::default().fg(DIM))),
+            ),
+            columns[0],
+        );
+
+        let turn = &turns[selected];
+        let roomy_trace = columns[1].height >= 22;
+        let mut detail = vec![
+            Line::from(Span::styled(
+                "SELECTED PROMPT · OBSERVED",
+                Style::default().fg(OBSERVER).add_modifier(Modifier::BOLD),
+            )),
+            Line::from(turn.prompt.clone()),
+            Line::from(""),
+        ];
+        if let Some(usage) = turn.usage {
+            if roomy_trace {
+                detail.push(Line::from(vec![
+                    Span::styled(
+                        "THIS TURN  ",
+                        Style::default().fg(OBSERVER).add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(
+                        format!("{} TOKENS · PROVIDER RECORDED", human_tokens(usage.total)),
+                        Style::default()
+                            .fg(Color::Rgb(237, 200, 121))
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                ]));
+                detail.extend(big_token_lines(usage.total));
+                detail.push(Line::from(""));
+                let mut usage_parts = vec![
+                    format!("input {}", usage.input),
+                    format!("cache {} (input subset)", usage.cached),
+                    format!("output {}", usage.output),
+                ];
+                if usage.reasoning > 0 {
+                    usage_parts.push(format!("reasoning {}", usage.reasoning));
+                }
+                detail.push(Line::from(Span::styled(
+                    usage_parts.join(" · "),
+                    Style::default().fg(DIM),
+                )));
+            } else {
+                detail.push(Line::from(Span::styled(
+                    format!(
+                        "THIS TURN {} TOKENS · input {} · cache {} · output {} · reasoning {}",
+                        human_tokens(usage.total),
+                        usage.input,
+                        usage.cached,
+                        usage.output,
+                        usage.reasoning
+                    ),
+                    Style::default().fg(DIM),
+                )));
+            }
+        } else {
+            detail.push(Line::from(Span::styled(
+                if roomy_trace {
+                    "THIS TURN  waiting for provider usage record"
+                } else {
+                    "TURN USAGE waiting for provider usage record"
+                },
+                Style::default().fg(DIM),
+            )));
+        }
+        if turn.prompt_observed {
+            detail.push(Line::from(Span::styled(
+                format!(
+                    "YOUR TEXT  ~{} tokens · local estimate",
+                    estimated_prompt_tokens(&turn.prompt)
+                ),
+                Style::default().fg(DIM),
+            )));
+        }
+        if roomy_trace {
+            detail.push(Line::from(""));
+        }
+        if turn.events.is_empty() {
+            detail.push(Line::from(Span::styled(
+                "No recorded events after this prompt yet.",
+                Style::default().fg(DIM),
+            )));
+        } else {
+            detail.extend(turn.events.iter().map(|event| trace_event_line(event)));
+        }
+        detail.push(Line::from(""));
+        detail.push(Line::from(Span::styled(
+            "Private reasoning is not displayed. Only recorded prompts, tool calls, results, and usage are shown.",
+            Style::default().fg(DIM),
+        )));
+        let detail_inner_height = columns[1].height.saturating_sub(2) as usize;
+        let max_scroll = detail.len().saturating_sub(detail_inner_height);
+        let offset = app.observe_scroll.min(max_scroll).min(u16::MAX as usize) as u16;
+        f.render_widget(
+            Paragraph::new(detail)
+                .block(
+                    Block::default()
+                        .padding(Padding::horizontal(2))
+                        .title(Span::styled(" EXECUTION ", Style::default().fg(DIM))),
+                )
+                .wrap(Wrap { trim: false })
+                .scroll((offset, 0)),
+            columns[1],
+        );
+    }
+    f.render_widget(
+        Paragraph::new(
+            "READ ONLY · Ctrl-G toggle · ↑/↓ prompt · Wheel: prompts select, execution scrolls · Esc back",
+        )
+            .style(Style::default().fg(DIM).bg(OBSERVER_BG)),
+        parts[2],
+    );
 }
 
 /// Colours a category's cell is drawn in. Assigned from the category id so a
@@ -2188,6 +2556,9 @@ fn help_lines() -> Vec<Line<'static>> {
     };
     vec![
         section("Session"),
+        item("ctrl-g", "live pane: open full-screen Trace for the focused session"),
+        item("esc / ctrl-g", "Trace: return to the live session"),
+        item("up/down", "Trace: select prompt; wheel/page keys scroll events"),
         item(
             "enter",
             "open the selected session, adding it to the live view (launch all marked in multi-select)",
@@ -2746,6 +3117,22 @@ fn accounts_popup(f: &mut Frame, app: &App) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn prompt_text_estimate_is_local_and_utf8_aware() {
+        assert_eq!(estimated_prompt_tokens(""), 0);
+        assert_eq!(estimated_prompt_tokens("trace this command"), 5);
+        assert_eq!(estimated_prompt_tokens("잘된건가?"), 4);
+    }
+
+    #[test]
+    fn turn_token_count_has_a_five_row_visual_treatment() {
+        let lines = big_token_lines(42);
+        assert_eq!(lines.len(), 5);
+        assert!(!lines[2].to_string().contains("~"));
+        assert!(lines[2].to_string().contains("TOKENS"));
+        assert!(lines.iter().any(|line| line.to_string().contains("███")));
+    }
 
     #[test]
     fn both_codex_accounts_render_weekly_and_monthly_in_the_footer() {

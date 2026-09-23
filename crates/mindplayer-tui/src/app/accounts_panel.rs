@@ -196,7 +196,7 @@ impl App {
         }
     }
 
-    fn persist_accounts(&mut self) {
+    pub(crate) fn persist_accounts(&mut self) {
         if let Err(e) = save_accounts(&limits_home_for_app(), &self.accounts) {
             self.set_error(format!("could not save accounts: {e}"));
         }

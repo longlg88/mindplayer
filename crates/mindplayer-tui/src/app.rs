@@ -506,6 +506,9 @@ pub struct App {
     /// The login the pending new session will start on. Set alongside
     /// `new_agent`, which the label popup still titles itself with.
     pub new_account: Option<mindplayer_core::accounts::Account>,
+    /// Set when the pending new session should start on a sign-in of its own
+    /// rather than on the provider's current login.
+    pub new_fresh_login: bool,
     /// When `Some`, the label-input modal is editing an EXISTING session's label
     /// (this is its id) rather than creating a new session. Shares `new_label`
     /// as the text buffer.
@@ -726,6 +729,7 @@ impl App {
             new_label: None,
             new_agent: None,
             new_account: None,
+            new_fresh_login: false,
             label_target: None,
             dir_input: None,
             catchup_confirm: None,
@@ -938,49 +942,22 @@ impl App {
         )
     }
 
-    /// Every login the new-session picker offers, grouped by provider in the
-    /// order the picker has always listed them.
+    /// One row per provider, each on the login that provider currently starts on.
     ///
-    /// A disabled account is not offered — it cannot serve a turn. A provider
-    /// with nothing usable still gets one row, because a picker that silently
-    /// drops a provider reads as that provider being uninstalled.
+    /// Another account is reached with a sign-in of its own from the same row,
+    /// not by listing every login here — the list stays the four it always was.
     pub(crate) fn new_session_choices(&self) -> Vec<mindplayer_core::accounts::Account> {
-        use mindplayer_core::accounts::{Account, MULTI_ACCOUNT_AGENTS};
-        let mut out = Vec::new();
-        for agent in MULTI_ACCOUNT_AGENTS {
-            let before = out.len();
-            out.extend(
-                self.accounts
-                    .iter()
-                    .filter(|a| a.provider == agent && !a.disabled)
-                    .cloned(),
-            );
-            if out.len() == before {
-                out.push(Account::inherited(agent));
-            }
-        }
-        out
+        mindplayer_core::accounts::MULTI_ACCOUNT_AGENTS
+            .into_iter()
+            .map(|agent| self.account_for(agent))
+            .collect()
     }
 
-    /// What each of those rows reads as.
-    ///
-    /// A provider with one login keeps the bare name it has always shown, so
-    /// the picker only grows for someone who actually has a second account.
+    /// What each of those rows reads as: the provider, as it always has.
     pub(crate) fn new_session_choice_labels(&self) -> Vec<String> {
-        let choices = self.new_session_choices();
-        choices
+        self.new_session_choices()
             .iter()
-            .map(|account| {
-                let siblings = choices
-                    .iter()
-                    .filter(|other| other.provider == account.provider)
-                    .count();
-                if siblings > 1 {
-                    format!("{} · {}", account.provider.as_str(), account.name)
-                } else {
-                    account.provider.as_str().to_string()
-                }
-            })
+            .map(|account| account.provider.as_str().to_string())
             .collect()
     }
 

@@ -99,6 +99,7 @@ impl App {
         self.new_picker = None;
         self.new_label = None;
         self.new_agent = None;
+        self.new_account = None;
         self.focus_or_add_pane(&session_id);
 
         let label = label.trim();

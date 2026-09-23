@@ -2,9 +2,10 @@ use super::*;
 use std::path::Path;
 
 impl App {
-    /// Picker -> label input: remember the agent, start an empty label buffer.
-    pub fn choose_new_agent(&mut self, agent: Agent) {
-        self.new_agent = Some(agent);
+    /// Picker -> label input, on the login the picker row named.
+    pub fn choose_new_account(&mut self, account: &mindplayer_core::accounts::Account) {
+        self.new_agent = Some(account.provider);
+        self.new_account = Some(account.clone());
         self.new_label = Some(String::new());
         self.new_picker = None;
     }
@@ -23,9 +24,14 @@ impl App {
 
     /// Confirm the label input and spawn the new session.
     pub fn confirm_new_session(&mut self) {
-        let agent = self.new_agent.unwrap_or(Agent::Codex);
         let label = self.new_label.take().unwrap_or_default();
-        self.request_new(agent, &label);
+        match self.new_account.take() {
+            Some(account) => self.request_new_on(&account, &label),
+            None => {
+                let agent = self.new_agent.unwrap_or(Agent::Codex);
+                self.request_new(agent, &label);
+            }
+        }
     }
 
     pub fn cancel_new_session(&mut self) {
@@ -33,6 +39,7 @@ impl App {
         self.handoff_picker = None;
         self.new_label = None;
         self.new_agent = None;
+        self.new_account = None;
         self.label_target = None;
     }
 

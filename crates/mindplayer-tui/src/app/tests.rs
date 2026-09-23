@@ -294,6 +294,53 @@ fn a_closed_new_sessions_late_file_is_archived_not_shown() {
     let _ = std::fs::remove_file(&tmp);
 }
 
+/// Regression, from a real report: a session started right after another was
+/// closed arrived already archived. Both placeholders match on agent, cwd and
+/// "newer than me", so whichever is served first takes the file — and the
+/// closed one archives what the open pane just wrote.
+#[test]
+fn a_closed_placeholder_does_not_take_the_session_an_open_pane_just_wrote() {
+    let tmp = test_state_path("closed-placeholder-steal");
+    let mut app = isolated_app_at(tmp.clone());
+    app.scope = Scope::WorkingDir(PathBuf::from("/work"));
+
+    // Closed a few seconds ago, still inside the grace window.
+    app.request_new(Agent::Codex, "first try");
+    app.selected = 0;
+    app.close_selected();
+    assert_eq!(
+        app.closed_extras.len(),
+        1,
+        "the closed placeholder is waiting"
+    );
+
+    // Started straight after, still open, and this is the one that writes.
+    app.request_new(Agent::Codex, "test codex");
+    let live = app
+        .extra_sessions
+        .last()
+        .map(|s| s.id.clone())
+        .expect("the open pane has a placeholder");
+
+    app.all_sessions = vec![late_disk_session("real-second", Agent::Codex, "/work")];
+    app.merge_extras();
+    app.rebuild_visible();
+
+    assert!(
+        !app.state.is_archived("real-second"),
+        "the open pane's own session was archived by the placeholder of one already closed"
+    );
+    assert!(
+        app.visible_sessions().any(|s| s.id == "real-second"),
+        "and it must still be listed"
+    );
+    assert!(
+        !app.extra_sessions.iter().any(|s| s.id == live),
+        "the open placeholder is the one that should have claimed it"
+    );
+    let _ = std::fs::remove_file(&tmp);
+}
+
 /// Past the grace window the placeholder must claim nothing: a session
 /// appearing that much later is far more likely one the user started in the
 /// same directory, and archiving that silently is the worse failure.

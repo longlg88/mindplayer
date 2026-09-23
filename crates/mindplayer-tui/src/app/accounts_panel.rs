@@ -472,6 +472,9 @@ impl App {
             self.set_error("sign in to this one the way you normally do, outside MindPlayer");
             return;
         }
-        self.request_login(&account);
+        // Signing out first: a slot already holding a sign-in does not change
+        // hands on `login` alone, which is what made swapping accounts mean
+        // signing out by hand.
+        self.request_relogin(&account);
     }
 }

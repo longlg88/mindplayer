@@ -16,6 +16,33 @@ impl App {
         };
         let agent = account.provider;
         let command = mindplayer_core::login(agent, dir.clone(), account);
+        self.open_login_pane(account, command, dir, "signing in");
+    }
+
+    /// Sign `account` out and straight back in, so a slot can change hands
+    /// without signing out by hand first.
+    ///
+    /// Refused for the login this machine came with: clearing that one is not
+    /// MindPlayer's to do.
+    pub fn request_relogin(&mut self, account: &mindplayer_core::accounts::Account) {
+        let dir = match &self.scope {
+            Scope::WorkingDir(p) => p.clone(),
+            Scope::Global => self.cwd.clone(),
+        };
+        match mindplayer_core::resume::relogin(dir.clone(), account) {
+            Ok(command) => self.open_login_pane(account, command, dir, "signing in again"),
+            Err(why) => self.status = why,
+        }
+    }
+
+    fn open_login_pane(
+        &mut self,
+        account: &mindplayer_core::accounts::Account,
+        command: mindplayer_core::Command,
+        dir: PathBuf,
+        verb: &str,
+    ) {
+        let agent = account.provider;
         let session_id = format!(
             "{}{}:{}",
             super::accounts_panel::LOGIN_PREFIX,
@@ -52,7 +79,7 @@ impl App {
         });
         self.accounts_panel = None;
         self.focus_or_add_pane(&session_id);
-        self.status = format!("signing in {} {}", agent.as_str(), account.name);
+        self.status = format!("{verb} {} {}", agent.as_str(), account.name);
     }
 
     /// Spawn a new Codex/Claude session in the current scope dir, optionally

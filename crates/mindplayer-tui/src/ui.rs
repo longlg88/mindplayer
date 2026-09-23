@@ -905,7 +905,7 @@ fn main_view(f: &mut Frame, app: &mut App) {
     } else if let Some(choice) = app.handoff_picker {
         handoff_popup(f, choice, app.selected_session().cloned().as_ref(), app);
     } else if let Some(choice) = app.new_picker {
-        new_session_popup(f, choice);
+        new_session_popup(f, choice, &app.new_session_choice_labels());
     } else if let Some(label) = &app.new_label {
         if app.label_target.is_some() {
             label_edit_popup(f, label);
@@ -2417,14 +2417,15 @@ fn pane_dot(app: &App, sid: &str, ended: bool) -> (&'static str, Color) {
     }
 }
 
-fn new_session_popup(f: &mut Frame, choice: usize) {
-    let area = centered(f.area(), 40, 7);
+fn new_session_popup(f: &mut Frame, choice: usize, opts: &[String]) {
+    // Two for the border, and as tall as the logins on offer.
+    let height = (opts.len() as u16).saturating_add(2).max(3);
+    let area = centered(f.area(), 40, height);
     f.render_widget(Clear, area);
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(ACCENT))
         .title(" New session ");
-    let opts = ["codex", "claude", "kiro", "cursor"];
     let lines: Vec<Line> = opts
         .iter()
         .enumerate()

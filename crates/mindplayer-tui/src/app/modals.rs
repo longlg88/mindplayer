@@ -10,6 +10,16 @@ impl App {
         self.new_picker = None;
     }
 
+    /// Picker -> label input, for a session that signs in to an account of
+    /// its own. The home is only made on confirm, so backing out leaves none.
+    pub fn choose_new_fresh_login(&mut self, agent: Agent) {
+        self.new_agent = Some(agent);
+        self.new_account = None;
+        self.new_fresh_login = true;
+        self.new_label = Some(String::new());
+        self.new_picker = None;
+    }
+
     pub fn label_input_push(&mut self, c: char) {
         if let Some(buf) = self.new_label.as_mut() {
             buf.push(c);
@@ -25,6 +35,11 @@ impl App {
     /// Confirm the label input and spawn the new session.
     pub fn confirm_new_session(&mut self) {
         let label = self.new_label.take().unwrap_or_default();
+        if std::mem::take(&mut self.new_fresh_login) {
+            let agent = self.new_agent.unwrap_or(Agent::Codex);
+            self.request_new_fresh_login(agent, &label);
+            return;
+        }
         match self.new_account.take() {
             Some(account) => self.request_new_on(&account, &label),
             None => {
@@ -40,6 +55,7 @@ impl App {
         self.new_label = None;
         self.new_agent = None;
         self.new_account = None;
+        self.new_fresh_login = false;
         self.label_target = None;
     }
 

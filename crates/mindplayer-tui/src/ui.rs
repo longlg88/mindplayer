@@ -2425,7 +2425,8 @@ fn new_session_popup(f: &mut Frame, choice: usize, opts: &[String]) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(ACCENT))
-        .title(" New session ");
+        .title(" New session ")
+        .title_bottom(" enter start · r sign in again ");
     let lines: Vec<Line> = opts
         .iter()
         .enumerate()

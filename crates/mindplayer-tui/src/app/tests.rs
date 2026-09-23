@@ -294,6 +294,53 @@ fn a_closed_new_sessions_late_file_is_archived_not_shown() {
     let _ = std::fs::remove_file(&tmp);
 }
 
+/// Regression, from a real report: a session started right after another was
+/// closed arrived already archived. Both placeholders match on agent, cwd and
+/// "newer than me", so whichever is served first takes the file — and the
+/// closed one archives what the open pane just wrote.
+#[test]
+fn a_closed_placeholder_does_not_take_the_session_an_open_pane_just_wrote() {
+    let tmp = test_state_path("closed-placeholder-steal");
+    let mut app = isolated_app_at(tmp.clone());
+    app.scope = Scope::WorkingDir(PathBuf::from("/work"));
+
+    // Closed a few seconds ago, still inside the grace window.
+    app.request_new(Agent::Codex, "first try");
+    app.selected = 0;
+    app.close_selected();
+    assert_eq!(
+        app.closed_extras.len(),
+        1,
+        "the closed placeholder is waiting"
+    );
+
+    // Started straight after, still open, and this is the one that writes.
+    app.request_new(Agent::Codex, "test codex");
+    let live = app
+        .extra_sessions
+        .last()
+        .map(|s| s.id.clone())
+        .expect("the open pane has a placeholder");
+
+    app.all_sessions = vec![late_disk_session("real-second", Agent::Codex, "/work")];
+    app.merge_extras();
+    app.rebuild_visible();
+
+    assert!(
+        !app.state.is_archived("real-second"),
+        "the open pane's own session was archived by the placeholder of one already closed"
+    );
+    assert!(
+        app.visible_sessions().any(|s| s.id == "real-second"),
+        "and it must still be listed"
+    );
+    assert!(
+        !app.extra_sessions.iter().any(|s| s.id == live),
+        "the open placeholder is the one that should have claimed it"
+    );
+    let _ = std::fs::remove_file(&tmp);
+}
+
 /// Past the grace window the placeholder must claim nothing: a session
 /// appearing that much later is far more likely one the user started in the
 /// same directory, and archiving that silently is the worse failure.
@@ -4599,6 +4646,50 @@ mod new_session_account_picker {
             !pending.command.env.is_empty(),
             "this proves nothing unless the chosen login changes the environment"
         );
+    }
+
+    /// A slot already holding a sign-in does not change hands on `login`
+    /// alone, so swapping which account it runs on meant signing out by hand.
+    #[test]
+    fn a_slot_can_be_signed_in_again_from_the_picker() {
+        let second = second_codex();
+        let mut accounts = base();
+        accounts.push(second.clone());
+        let mut app = app_with(accounts);
+
+        app.request_relogin(&second);
+
+        let pending = app.pending.as_ref().expect("a sign-in pane was queued");
+        let line = pending.command.args.join(" ");
+        assert_eq!(pending.command.program, "sh", "two commands need a shell");
+        assert!(
+            line.contains("codex logout") && line.contains("codex login"),
+            "signing out has to come before signing in: {line}"
+        );
+        assert!(
+            line.find("codex logout") < line.find("codex login"),
+            "the order is what makes it change hands: {line}"
+        );
+        assert_eq!(
+            pending.command.env,
+            second.launch_env(),
+            "the sign-in must land in the slot that was picked"
+        );
+    }
+
+    /// The machine's own sign-in is not MindPlayer's to clear.
+    #[test]
+    fn the_inherited_login_is_never_signed_out() {
+        let mut app = app_with(base());
+        let inherited = Account::inherited(Agent::Codex);
+
+        app.request_relogin(&inherited);
+
+        assert!(
+            app.pending.is_none(),
+            "signing the machine's own login out would take every other pane with it"
+        );
+        assert!(!app.status.is_empty(), "and it has to say why");
     }
 
     #[test]

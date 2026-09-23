@@ -111,6 +111,29 @@ fn logout_args(agent: Agent) -> Vec<String> {
     }
 }
 
+/// What to do in the browser before a sign-in, so it asks which account.
+///
+/// Signing a slot out does not sign the browser out, and a browser still signed
+/// in approves that account without asking — which is how two slots ended up on
+/// one account. The site is named only where it is known: Kiro signs in through
+/// an organisation's own start URL, so it gets the general wording.
+pub fn browser_hint(agent: Agent) -> String {
+    let site = match agent {
+        Agent::Codex => Some("chatgpt.com"),
+        Agent::Claude => Some("claude.ai"),
+        Agent::Cursor => Some("cursor.com"),
+        Agent::Kiro => None,
+    };
+    let what = site.map_or_else(
+        || format!("{} in your browser", agent.as_str()),
+        |site| format!("{site} in your browser"),
+    );
+    format!(
+        "Before signing in: sign out of {what}, or open the link in a private window. \
+         A browser still signed in approves that account without asking."
+    )
+}
+
 /// Command that signs `account` out and straight back in, run in its own pane.
 ///
 /// A slot already holding a sign-in does not change hands on `login` alone, so
@@ -132,8 +155,10 @@ pub fn relogin(cwd: PathBuf, account: &Account) -> Result<Command, String> {
     let program = agent.program();
     // One pane, two commands: the shell runs them in order and `exec` hands the
     // pane to the sign-in, so the pane is the sign-in rather than its parent.
+    // Printed first so it sits right above the sign-in link; the hint has no single quote to escape.
     let line = format!(
-        "{} {} >/dev/null 2>&1; exec {} {}",
+        "printf '%s\\n\\n' '{}'; {} {} >/dev/null 2>&1; exec {} {}",
+        browser_hint(agent),
         program,
         logout_args(agent).join(" "),
         program,
@@ -145,6 +170,35 @@ pub fn relogin(cwd: PathBuf, account: &Account) -> Result<Command, String> {
         cwd,
         env: account.launch_env(),
     })
+}
+
+/// Command that signs a fresh home in and then starts a session there, all in
+/// one pane.
+///
+/// This is how a new session reaches another account without touching the
+/// homes other panes are running on: nothing is signed out, the new home simply
+/// holds whichever account the sign-in lands on. If the sign-in is abandoned the
+/// session never starts, because the two are joined with `&&`.
+pub fn login_then_start(cwd: PathBuf, account: &Account) -> Command {
+    let agent = account.provider;
+    let program = agent.program();
+    let login_args = login(agent, cwd.clone(), account).args.join(" ");
+    let start_args = new_session(agent, cwd.clone(), account).args.join(" ");
+    // Printed first so it sits right above the sign-in link; the hint has no single quote to escape.
+    let line = format!(
+        "printf '%s\\n\\n' '{}'; {} {} && exec {} {}",
+        browser_hint(agent),
+        program,
+        login_args,
+        program,
+        start_args
+    );
+    Command {
+        program: "sh".to_string(),
+        args: vec!["-c".to_string(), line.trim_end().to_string()],
+        cwd,
+        env: account.launch_env(),
+    }
 }
 
 #[cfg(test)]
@@ -353,6 +407,85 @@ mod tests {
         assert_eq!(
             resumed.env, started.env,
             "resuming must land on the same login that started the session"
+        );
+    }
+
+    /// The hint is wrapped in single quotes for the shell, so it must never
+    /// carry one of its own.
+    #[test]
+    fn every_browser_hint_is_safe_inside_single_quotes() {
+        for agent in [Agent::Codex, Agent::Claude, Agent::Kiro, Agent::Cursor] {
+            let hint = browser_hint(agent);
+            assert!(
+                !hint.contains('\''),
+                "{} hint would break the shell line: {hint}",
+                agent.as_str()
+            );
+        }
+    }
+
+    /// A site is named only where it is known; Kiro signs in through an
+    /// organisation's own start URL.
+    #[test]
+    fn the_hint_names_a_site_only_where_one_is_known() {
+        assert!(browser_hint(Agent::Codex).contains("chatgpt.com"));
+        assert!(browser_hint(Agent::Claude).contains("claude.ai"));
+        assert!(browser_hint(Agent::Cursor).contains("cursor.com"));
+        let kiro = browser_hint(Agent::Kiro);
+        assert!(!kiro.contains(".com") && !kiro.contains(".ai"), "{kiro}");
+    }
+
+    /// Runs the real line against a stand-in `codex` on the child's own PATH, so
+    /// nothing on this machine is signed in or out.
+    #[cfg(unix)]
+    fn run_with_stub(stub: &str) -> String {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!(
+            "mp-login-stub-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let bin = dir.join("codex");
+        std::fs::write(&bin, format!("#!/bin/sh\n{stub}\n")).unwrap();
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let account = Account::isolated(&dir, Agent::Codex, "probe").unwrap();
+        let command = login_then_start(dir.clone(), &account);
+        assert_eq!(command.program, "sh");
+        let out = std::process::Command::new("sh")
+            .args(&command.args)
+            .env("PATH", format!("{}:/usr/bin:/bin", dir.display()))
+            .output()
+            .unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_hint_comes_first_then_the_sign_in_then_the_session() {
+        let out = run_with_stub(
+            r#"if [ "$1" = login ]; then echo "stub login"; else echo "stub start $*"; fi"#,
+        );
+        let hint = out.find("chatgpt.com").expect("the hint was never printed");
+        let login = out.find("stub login").expect("the sign-in never ran");
+        let start = out.find("stub start").expect("the session never started");
+        assert!(hint < login && login < start, "wrong order:\n{out}");
+    }
+
+    /// Abandoning the sign-in must not leave a session running on no account.
+    #[cfg(unix)]
+    #[test]
+    fn a_sign_in_that_does_not_finish_starts_nothing() {
+        let out = run_with_stub(
+            r#"if [ "$1" = login ]; then echo "stub login"; exit 1; fi; echo "stub start""#,
+        );
+        assert!(out.contains("stub login"), "{out}");
+        assert!(
+            !out.contains("stub start"),
+            "a session started although the sign-in failed:\n{out}"
         );
     }
 }

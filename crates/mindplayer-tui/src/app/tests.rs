@@ -4538,9 +4538,9 @@ mod shared_cache_gate {
     }
 }
 
-/// The picker names a login, not just a provider. Which account a pane starts
-/// on decides which of a provider's logins it runs under, so it has to be
-/// choosable where sessions are actually started.
+/// The picker lists providers, not logins. Another account is reached with a
+/// sign-in of its own for that one session, in a home made for it, so every
+/// pane already running keeps the account it had.
 mod new_session_account_picker {
     use super::*;
     use mindplayer_core::accounts::Account;
@@ -4567,44 +4567,147 @@ mod new_session_account_picker {
         .unwrap()
     }
 
-    #[test]
-    fn one_login_per_provider_reads_exactly_as_it_always_did() {
-        let app = app_with(base());
-        assert_eq!(
-            app.new_session_choice_labels(),
-            vec!["codex", "claude", "kiro", "cursor"],
-            "the picker must not grow for someone with a single login each"
-        );
+    fn pending_line(app: &App) -> String {
+        app.pending
+            .as_ref()
+            .expect("a pane was queued")
+            .command
+            .args
+            .join(" ")
     }
 
     #[test]
-    fn a_second_login_splits_only_its_own_provider() {
+    fn one_row_per_provider_even_with_a_second_login() {
         let mut accounts = base();
         accounts.push(second_codex());
         let app = app_with(accounts);
         assert_eq!(
             app.new_session_choice_labels(),
-            vec![
-                "codex · default",
-                "codex · sendbird-com",
-                "claude",
-                "kiro",
-                "cursor"
-            ]
+            vec!["codex", "claude", "kiro", "cursor"],
+            "a second login must not split the provider's row"
         );
     }
 
     #[test]
-    fn a_disabled_login_is_not_offered() {
+    fn enter_starts_on_the_providers_current_login() {
         let mut accounts = base();
-        let mut extra = second_codex();
-        extra.disabled = true;
-        accounts.push(extra);
-        let app = app_with(accounts);
+        accounts.push(second_codex());
+        let mut app = app_with(accounts);
+        let codex = app.new_session_choices()[0].clone();
+        app.choose_new_account(&codex);
+        app.confirm_new_session();
+
+        let pending = app.pending.as_ref().expect("a spawn was queued");
         assert_eq!(
-            app.new_session_choice_labels(),
-            vec!["codex", "claude", "kiro", "cursor"]
+            pending.command.env,
+            app.account_for(Agent::Codex).launch_env()
         );
+        assert_ne!(
+            pending.command.program, "sh",
+            "no sign-in on the plain path"
+        );
+    }
+
+    #[test]
+    fn another_account_signs_in_to_a_home_of_its_own_then_starts() {
+        let mut app = app_with(base());
+        app.choose_new_fresh_login(Agent::Codex);
+        app.confirm_new_session();
+
+        let fresh = app
+            .accounts
+            .iter()
+            .find(|a| a.provider == Agent::Codex && a.name == "codex-2")
+            .cloned()
+            .expect("the sign-in got a home registered as an account");
+        assert!(!fresh.is_inherited());
+
+        let pending = app.pending.as_ref().expect("a pane was queued");
+        let line = pending_line(&app);
+        assert_eq!(pending.command.program, "sh");
+        assert!(
+            line.contains("codex login && exec codex"),
+            "sign in, then start in the same pane only if the sign-in finished: {line}"
+        );
+        assert_eq!(
+            pending.command.env,
+            fresh.launch_env(),
+            "both halves must run in the new home"
+        );
+    }
+
+    /// The reconciler can only adopt a session discovery finds, and a new home
+    /// is somewhere discovery only looks if it is a registered account. This is
+    /// the same failure that archived a session on arrival.
+    #[test]
+    fn a_fresh_login_is_somewhere_discovery_looks() {
+        let mut app = app_with(base());
+        app.choose_new_fresh_login(Agent::Codex);
+        app.confirm_new_session();
+
+        let fresh = app
+            .accounts
+            .iter()
+            .find(|a| a.name == "codex-2")
+            .cloned()
+            .unwrap();
+        let home = super::super::limits_home_for_app();
+        assert!(
+            app.scan_roots()
+                .iter()
+                .any(|r| r.dir == fresh.session_root(&home)),
+            "the new session's transcript would land where no scan looks"
+        );
+    }
+
+    #[test]
+    fn a_fresh_login_signs_nothing_out() {
+        let before = base();
+        let mut app = app_with(before.clone());
+        app.choose_new_fresh_login(Agent::Codex);
+        app.confirm_new_session();
+
+        assert!(
+            !pending_line(&app).contains("logout"),
+            "a running pane on another home must keep its account"
+        );
+        for account in &before {
+            assert!(
+                app.accounts.contains(account),
+                "{} was changed by someone else's sign-in",
+                account.name
+            );
+        }
+    }
+
+    #[test]
+    fn each_fresh_login_gets_its_own_home() {
+        let mut app = app_with(base());
+        for _ in 0..2 {
+            app.choose_new_fresh_login(Agent::Codex);
+            app.confirm_new_session();
+        }
+        let names: Vec<&str> = app
+            .accounts
+            .iter()
+            .filter(|a| a.provider == Agent::Codex && !a.is_inherited())
+            .map(|a| a.name.as_str())
+            .collect();
+        assert_eq!(names, vec!["codex-2", "codex-3"]);
+    }
+
+    #[test]
+    fn backing_out_leaves_no_home_behind() {
+        let mut app = app_with(base());
+        let before = app.accounts.len();
+        app.choose_new_fresh_login(Agent::Codex);
+        app.cancel_new_session();
+        assert_eq!(
+            app.accounts.len(),
+            before,
+            "a cancelled sign-in made a home anyway"
+        );
+        assert!(!app.new_fresh_login);
     }
 
     /// A provider whose every login is off still gets a row: one that
@@ -4616,42 +4719,14 @@ mod new_session_account_picker {
             a.disabled = true;
         }
         let app = app_with(accounts);
-        let labels = app.new_session_choice_labels();
-        assert!(labels.contains(&"kiro".to_string()), "{labels:?}");
+        assert!(app
+            .new_session_choice_labels()
+            .contains(&"kiro".to_string()));
     }
 
+    /// The Accounts screen still signs a named slot out and back in.
     #[test]
-    fn starting_a_session_uses_the_login_the_row_named() {
-        let second = second_codex();
-        let mut accounts = base();
-        accounts.push(second.clone());
-        let mut app = app_with(accounts);
-
-        let choices = app.new_session_choices();
-        let chosen = choices
-            .iter()
-            .find(|a| a.name == "sendbird-com")
-            .expect("the second login is offered")
-            .clone();
-        app.choose_new_account(&chosen);
-        app.confirm_new_session();
-
-        let pending = app.pending.as_ref().expect("a spawn was queued");
-        assert_eq!(
-            pending.command.env,
-            second.launch_env(),
-            "the pane would have started on a different login than the row named"
-        );
-        assert!(
-            !pending.command.env.is_empty(),
-            "this proves nothing unless the chosen login changes the environment"
-        );
-    }
-
-    /// A slot already holding a sign-in does not change hands on `login`
-    /// alone, so swapping which account it runs on meant signing out by hand.
-    #[test]
-    fn a_slot_can_be_signed_in_again_from_the_picker() {
+    fn a_slot_can_be_signed_in_again_from_the_accounts_screen() {
         let second = second_codex();
         let mut accounts = base();
         accounts.push(second.clone());
@@ -4659,21 +4734,14 @@ mod new_session_account_picker {
 
         app.request_relogin(&second);
 
-        let pending = app.pending.as_ref().expect("a sign-in pane was queued");
-        let line = pending.command.args.join(" ");
-        assert_eq!(pending.command.program, "sh", "two commands need a shell");
-        assert!(
-            line.contains("codex logout") && line.contains("codex login"),
-            "signing out has to come before signing in: {line}"
-        );
+        let line = pending_line(&app);
         assert!(
             line.find("codex logout") < line.find("codex login"),
-            "the order is what makes it change hands: {line}"
+            "signing out has to come before signing in: {line}"
         );
         assert_eq!(
-            pending.command.env,
-            second.launch_env(),
-            "the sign-in must land in the slot that was picked"
+            app.pending.as_ref().unwrap().command.env,
+            second.launch_env()
         );
     }
 
@@ -4681,26 +4749,11 @@ mod new_session_account_picker {
     #[test]
     fn the_inherited_login_is_never_signed_out() {
         let mut app = app_with(base());
-        let inherited = Account::inherited(Agent::Codex);
-
-        app.request_relogin(&inherited);
-
+        app.request_relogin(&Account::inherited(Agent::Codex));
         assert!(
             app.pending.is_none(),
             "signing the machine's own login out would take every other pane with it"
         );
         assert!(!app.status.is_empty(), "and it has to say why");
-    }
-
-    #[test]
-    fn cancelling_forgets_the_chosen_login() {
-        let mut accounts = base();
-        accounts.push(second_codex());
-        let mut app = app_with(accounts);
-        let chosen = app.new_session_choices().last().unwrap().clone();
-        app.choose_new_account(&chosen);
-        app.cancel_new_session();
-        assert!(app.new_account.is_none());
-        assert!(app.new_agent.is_none());
     }
 }

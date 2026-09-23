@@ -91,18 +91,71 @@ impl App {
     /// The same, on a named account rather than whichever one this provider
     /// currently starts on.
     pub fn request_new_on(&mut self, account: &mindplayer_core::accounts::Account, label: &str) {
-        let agent = account.provider;
-        let dir = match &self.scope {
+        let dir = self.new_session_dir();
+        let command = mindplayer_core::new_session(account.provider, dir, account);
+        self.request_new_with(account, label, command);
+    }
+
+    /// A new session on a sign-in of its own, in a home made for it.
+    ///
+    /// Nothing is signed out and no other home is touched, so every pane
+    /// already running keeps the account it had. The home is registered before
+    /// the pane starts: discovery only looks where accounts live, and a session
+    /// it cannot find is one the reconciler would lose.
+    pub fn request_new_fresh_login(&mut self, agent: Agent, label: &str) {
+        use mindplayer_core::accounts::Account;
+        let home = super::limits_home_for_app();
+        let name = (2..)
+            .map(|n| format!("{}-{n}", agent.as_str()))
+            .find(|name| {
+                !self
+                    .accounts
+                    .iter()
+                    .any(|a| a.provider == agent && &a.name == name)
+            })
+            .expect("an unbounded range always has a free name");
+        let account = match Account::isolated(&home, agent, &name) {
+            Ok(account) => account,
+            Err(e) => {
+                self.status = e.to_string();
+                return;
+            }
+        };
+        if let Err(e) = mindplayer_core::private::create_dir_private(&account.slot_path()) {
+            self.status = format!("could not make a home for this sign-in: {e}");
+            return;
+        }
+        self.accounts.push(account.clone());
+        self.persist_accounts();
+        let command = mindplayer_core::resume::login_then_start(self.new_session_dir(), &account);
+        self.request_new_with(&account, label, command);
+        self.status = format!(
+            "signing in a new {} login ({name}) — the session starts once it finishes",
+            agent.as_str()
+        );
+    }
+
+    fn new_session_dir(&self) -> PathBuf {
+        match &self.scope {
             Scope::WorkingDir(p) => p.clone(),
             Scope::Global => self.cwd.clone(),
-        };
+        }
+    }
+
+    fn request_new_with(
+        &mut self,
+        account: &mindplayer_core::accounts::Account,
+        label: &str,
+        command: mindplayer_core::Command,
+    ) {
+        let agent = account.provider;
+        let dir = self.new_session_dir();
         mindplayer_core::log_event_to(
             &self.audit_path,
             mindplayer_core::AuditEvent::NewSession {
                 agent: agent.as_str().to_string(),
             },
         );
-        let command = mindplayer_core::new_session(agent, dir.clone(), account);
         // Synthetic, unique id so it never collides with a real session or a
         // previous new session of the same agent.
         self.new_counter += 1;
@@ -127,6 +180,7 @@ impl App {
         self.new_label = None;
         self.new_agent = None;
         self.new_account = None;
+        self.new_fresh_login = false;
         self.focus_or_add_pane(&session_id);
 
         let label = label.trim();

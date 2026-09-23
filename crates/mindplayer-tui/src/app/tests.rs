@@ -4490,3 +4490,126 @@ mod shared_cache_gate {
         let _ = std::fs::remove_dir_all(&home);
     }
 }
+
+/// The picker names a login, not just a provider. Which account a pane starts
+/// on decides which of a provider's logins it runs under, so it has to be
+/// choosable where sessions are actually started.
+mod new_session_account_picker {
+    use super::*;
+    use mindplayer_core::accounts::Account;
+
+    fn app_with(accounts: Vec<Account>) -> App {
+        let mut app = isolated_app();
+        app.accounts = accounts;
+        app
+    }
+
+    fn base() -> Vec<Account> {
+        mindplayer_core::accounts::MULTI_ACCOUNT_AGENTS
+            .into_iter()
+            .map(Account::inherited)
+            .collect()
+    }
+
+    fn second_codex() -> Account {
+        Account::isolated(
+            &super::super::limits_home_for_app(),
+            Agent::Codex,
+            "sendbird-com",
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn one_login_per_provider_reads_exactly_as_it_always_did() {
+        let app = app_with(base());
+        assert_eq!(
+            app.new_session_choice_labels(),
+            vec!["codex", "claude", "kiro", "cursor"],
+            "the picker must not grow for someone with a single login each"
+        );
+    }
+
+    #[test]
+    fn a_second_login_splits_only_its_own_provider() {
+        let mut accounts = base();
+        accounts.push(second_codex());
+        let app = app_with(accounts);
+        assert_eq!(
+            app.new_session_choice_labels(),
+            vec![
+                "codex · default",
+                "codex · sendbird-com",
+                "claude",
+                "kiro",
+                "cursor"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_disabled_login_is_not_offered() {
+        let mut accounts = base();
+        let mut extra = second_codex();
+        extra.disabled = true;
+        accounts.push(extra);
+        let app = app_with(accounts);
+        assert_eq!(
+            app.new_session_choice_labels(),
+            vec!["codex", "claude", "kiro", "cursor"]
+        );
+    }
+
+    /// A provider whose every login is off still gets a row: one that
+    /// disappears reads as the CLI not being installed.
+    #[test]
+    fn a_provider_with_nothing_usable_still_gets_a_row() {
+        let mut accounts = base();
+        for a in accounts.iter_mut().filter(|a| a.provider == Agent::Kiro) {
+            a.disabled = true;
+        }
+        let app = app_with(accounts);
+        let labels = app.new_session_choice_labels();
+        assert!(labels.contains(&"kiro".to_string()), "{labels:?}");
+    }
+
+    #[test]
+    fn starting_a_session_uses_the_login_the_row_named() {
+        let second = second_codex();
+        let mut accounts = base();
+        accounts.push(second.clone());
+        let mut app = app_with(accounts);
+
+        let choices = app.new_session_choices();
+        let chosen = choices
+            .iter()
+            .find(|a| a.name == "sendbird-com")
+            .expect("the second login is offered")
+            .clone();
+        app.choose_new_account(&chosen);
+        app.confirm_new_session();
+
+        let pending = app.pending.as_ref().expect("a spawn was queued");
+        assert_eq!(
+            pending.command.env,
+            second.launch_env(),
+            "the pane would have started on a different login than the row named"
+        );
+        assert!(
+            !pending.command.env.is_empty(),
+            "this proves nothing unless the chosen login changes the environment"
+        );
+    }
+
+    #[test]
+    fn cancelling_forgets_the_chosen_login() {
+        let mut accounts = base();
+        accounts.push(second_codex());
+        let mut app = app_with(accounts);
+        let chosen = app.new_session_choices().last().unwrap().clone();
+        app.choose_new_account(&chosen);
+        app.cancel_new_session();
+        assert!(app.new_account.is_none());
+        assert!(app.new_agent.is_none());
+    }
+}

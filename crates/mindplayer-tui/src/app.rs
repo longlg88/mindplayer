@@ -503,6 +503,9 @@ pub struct App {
     pub new_label: Option<String>,
     /// Agent chosen in the picker, awaiting a label.
     pub new_agent: Option<Agent>,
+    /// The login the pending new session will start on. Set alongside
+    /// `new_agent`, which the label popup still titles itself with.
+    pub new_account: Option<mindplayer_core::accounts::Account>,
     /// When `Some`, the label-input modal is editing an EXISTING session's label
     /// (this is its id) rather than creating a new session. Shares `new_label`
     /// as the text buffer.
@@ -722,6 +725,7 @@ impl App {
             handoff_picker: None,
             new_label: None,
             new_agent: None,
+            new_account: None,
             label_target: None,
             dir_input: None,
             catchup_confirm: None,
@@ -932,6 +936,52 @@ impl App {
             &session.file,
             &limits_home_for_app(),
         )
+    }
+
+    /// Every login the new-session picker offers, grouped by provider in the
+    /// order the picker has always listed them.
+    ///
+    /// A disabled account is not offered — it cannot serve a turn. A provider
+    /// with nothing usable still gets one row, because a picker that silently
+    /// drops a provider reads as that provider being uninstalled.
+    pub(crate) fn new_session_choices(&self) -> Vec<mindplayer_core::accounts::Account> {
+        use mindplayer_core::accounts::{Account, MULTI_ACCOUNT_AGENTS};
+        let mut out = Vec::new();
+        for agent in MULTI_ACCOUNT_AGENTS {
+            let before = out.len();
+            out.extend(
+                self.accounts
+                    .iter()
+                    .filter(|a| a.provider == agent && !a.disabled)
+                    .cloned(),
+            );
+            if out.len() == before {
+                out.push(Account::inherited(agent));
+            }
+        }
+        out
+    }
+
+    /// What each of those rows reads as.
+    ///
+    /// A provider with one login keeps the bare name it has always shown, so
+    /// the picker only grows for someone who actually has a second account.
+    pub(crate) fn new_session_choice_labels(&self) -> Vec<String> {
+        let choices = self.new_session_choices();
+        choices
+            .iter()
+            .map(|account| {
+                let siblings = choices
+                    .iter()
+                    .filter(|other| other.provider == account.provider)
+                    .count();
+                if siblings > 1 {
+                    format!("{} · {}", account.provider.as_str(), account.name)
+                } else {
+                    account.provider.as_str().to_string()
+                }
+            })
+            .collect()
     }
 
     /// The login a new pane of `agent` starts on.

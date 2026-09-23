@@ -26,6 +26,7 @@ use crossterm::execute;
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
+#[cfg(test)]
 use mindplayer_core::Agent;
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
@@ -797,17 +798,16 @@ fn handle_main_key(app: &mut App, key: KeyEvent) {
 
     // Step 1 (modal): pick codex/claude.
     if let Some(choice) = app.new_picker {
+        // One row per login, so the list is as long as the accounts make it.
+        let choices = app.new_session_choices();
+        let last = choices.len().saturating_sub(1);
         match key.code {
             KeyCode::Up => app.new_picker = Some(choice.saturating_sub(1)),
-            KeyCode::Down => app.new_picker = Some((choice + 1).min(3)),
+            KeyCode::Down => app.new_picker = Some((choice + 1).min(last)),
             KeyCode::Enter => {
-                let agent = match choice {
-                    0 => Agent::Codex,
-                    1 => Agent::Claude,
-                    2 => Agent::Kiro,
-                    _ => Agent::Cursor,
-                };
-                app.choose_new_agent(agent);
+                if let Some(account) = choices.get(choice).cloned() {
+                    app.choose_new_account(&account);
+                }
             }
             KeyCode::Esc => app.cancel_new_session(),
             _ => {}

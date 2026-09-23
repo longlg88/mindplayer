@@ -4648,6 +4648,50 @@ mod new_session_account_picker {
         );
     }
 
+    /// A slot already holding a sign-in does not change hands on `login`
+    /// alone, so swapping which account it runs on meant signing out by hand.
+    #[test]
+    fn a_slot_can_be_signed_in_again_from_the_picker() {
+        let second = second_codex();
+        let mut accounts = base();
+        accounts.push(second.clone());
+        let mut app = app_with(accounts);
+
+        app.request_relogin(&second);
+
+        let pending = app.pending.as_ref().expect("a sign-in pane was queued");
+        let line = pending.command.args.join(" ");
+        assert_eq!(pending.command.program, "sh", "two commands need a shell");
+        assert!(
+            line.contains("codex logout") && line.contains("codex login"),
+            "signing out has to come before signing in: {line}"
+        );
+        assert!(
+            line.find("codex logout") < line.find("codex login"),
+            "the order is what makes it change hands: {line}"
+        );
+        assert_eq!(
+            pending.command.env,
+            second.launch_env(),
+            "the sign-in must land in the slot that was picked"
+        );
+    }
+
+    /// The machine's own sign-in is not MindPlayer's to clear.
+    #[test]
+    fn the_inherited_login_is_never_signed_out() {
+        let mut app = app_with(base());
+        let inherited = Account::inherited(Agent::Codex);
+
+        app.request_relogin(&inherited);
+
+        assert!(
+            app.pending.is_none(),
+            "signing the machine's own login out would take every other pane with it"
+        );
+        assert!(!app.status.is_empty(), "and it has to say why");
+    }
+
     #[test]
     fn cancelling_forgets_the_chosen_login() {
         let mut accounts = base();

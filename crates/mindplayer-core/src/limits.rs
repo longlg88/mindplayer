@@ -112,6 +112,9 @@ pub struct CodexLimits {
     /// `codex` pool and a `premium` pool with separate balances — so a bare
     /// number says nothing about what ran out.
     pub limit_id: Option<String>,
+    /// Who the provider says this reading belongs to. Two logins can resolve
+    /// to one provider account, and this is the only thing that says so.
+    pub account_id: Option<String>,
     /// Set when the account has actually hit a limit. This is the one field
     /// here that calls for action, so it outranks the balance on screen.
     pub rate_limit_reached: Option<String>,
@@ -221,6 +224,14 @@ pub struct QuotaRow {
     pub detail: String,
     /// When the window rolls over, already shortened for display.
     pub resets: Option<String>,
+    /// Who the provider says this reading belongs to, when it says so at all.
+    ///
+    /// Two accounts can be signed in to one provider account — a browser
+    /// already signed in completes the flow without asking which — and then
+    /// both rows carry the same figures honestly. Only the provider's own id
+    /// can tell that apart from two accounts that merely look alike.
+    #[serde(default)]
+    pub identity: Option<String>,
 }
 
 /// What a row read back from a cache written before providers were recorded
@@ -239,6 +250,7 @@ impl Default for QuotaRow {
             used_percent: None,
             detail: String::new(),
             resets: None,
+            identity: None,
         }
     }
 }
@@ -253,6 +265,7 @@ impl QuotaRow {
             used_percent: None,
             detail: why.to_string(),
             resets: None,
+            identity: None,
         }
     }
 
@@ -473,6 +486,7 @@ impl Limits {
                             used_percent: Some(p),
                             detail: String::new(),
                             resets: reset.and_then(|e| epoch_label(e, clock)),
+                            identity: None,
                         });
                     }
                 }
@@ -507,6 +521,7 @@ impl Limits {
                             used_percent: Some(p),
                             detail: String::new(),
                             resets: reset.and_then(epoch_label_date_time),
+                            identity: None,
                         });
                     }
                 }
@@ -521,6 +536,7 @@ impl Limits {
                         used_percent: None,
                         detail: "not reported".to_string(),
                         resets: None,
+                        identity: None,
                     });
                 }
                 if let Some(monthly) = monthly_used {
@@ -544,6 +560,7 @@ impl Limits {
                         used_percent: Some(monthly),
                         detail,
                         resets: c.individual_reset.and_then(epoch_label_date_time),
+                        identity: None,
                     });
                     any_window = true;
                 }
@@ -568,6 +585,7 @@ impl Limits {
                         used_percent: None,
                         detail,
                         resets: None,
+                        identity: None,
                     });
                 }
             }
@@ -595,6 +613,7 @@ impl Limits {
                     _ => String::new(),
                 },
                 resets: k.reset_date.clone(),
+                identity: None,
             }),
             Ok(_) => out.push(QuotaRow::reason("kiro", "no usage reported")),
             Err(e) => out.push(QuotaRow::reason("kiro", e)),
@@ -1005,12 +1024,49 @@ pub fn account_quota_rows(
             limits.cursor = Err("usage for a second Cursor login is not available".into())
         }
     }
+    let identity = limits
+        .codex
+        .as_ref()
+        .ok()
+        .and_then(|c| c.account_id.clone());
     let mut rows = limits.quota_rows();
     rows.retain(|row| row.agent == account.provider);
     for row in &mut rows {
         row.account.clone_from(&account.name);
+        row.identity.clone_from(&identity);
     }
     rows
+}
+
+/// Say so when two accounts turn out to be one login.
+///
+/// Signing a second slot in through a browser that is already signed in
+/// completes without asking which account, so the slot ends up on the first
+/// one. Both rows are then correct and identical, which reads as the feature
+/// being broken rather than as the accounts being the same. The provider's own
+/// id is the only thing that can tell those apart.
+///
+/// The first account to carry an id keeps its figures; later ones lose their
+/// gauge and say whose reading they would have repeated.
+pub fn mark_shared_logins(rows: &mut [QuotaRow]) {
+    let mut owner: Vec<(Agent, String, String)> = Vec::new();
+    for row in rows.iter_mut() {
+        let Some(identity) = row.identity.clone() else {
+            continue;
+        };
+        match owner
+            .iter()
+            .find(|(agent, id, _)| *agent == row.agent && *id == identity)
+        {
+            Some((_, _, first)) if *first != row.account => {
+                row.used_percent = None;
+                row.detail = format!("same login as {first}");
+                row.resets = None;
+            }
+            Some(_) => {}
+            None => owner.push((row.agent, identity, row.account.clone())),
+        }
+    }
 }
 
 /// Read all providers concurrently. Each source has independent latency and
@@ -1808,7 +1864,15 @@ fn parse_codex_app_server_response(response: &Value) -> Result<CodexLimits, Stri
     let rate_limits = result
         .get("rateLimits")
         .ok_or_else(|| "codex app-server response had no rateLimits".to_string())?;
-    Ok(parse_codex_app_server_rate_limits(rate_limits))
+    let mut limits = parse_codex_app_server_rate_limits(rate_limits);
+    // `accountId` sits beside `rateLimits`, not inside it, so the window parser
+    // never sees it.
+    limits.account_id = result
+        .get("accountId")
+        .and_then(Value::as_str)
+        .filter(|id| !id.is_empty())
+        .map(str::to_string);
+    Ok(limits)
 }
 
 fn rpc_error(response: &Value) -> Option<&Value> {
@@ -1878,6 +1942,7 @@ pub fn parse_codex_app_server_rate_limits(rl: &Value) -> CodexLimits {
             .and_then(Value::as_str)
             .map(str::to_string),
         spend_control_reached,
+        account_id: None,
     }
 }
 
@@ -2037,6 +2102,7 @@ pub fn parse_codex_rate_limits(rl: &Value) -> CodexLimits {
             .and_then(Value::as_str)
             .map(str::to_string),
         spend_control_reached: false,
+        account_id: None,
     }
 }
 
@@ -3502,6 +3568,7 @@ sleep 10
                 used_percent: Some(6.4),
                 detail: "639.7/10000 cr".into(),
                 resets: Some("2026-10-01".into()),
+                identity: None,
             },
             QuotaRow::reason("codex", "no window reported"),
         ];
@@ -3564,6 +3631,7 @@ sleep 10
             used_percent: Some(96.0),
             detail: String::new(),
             resets: None,
+            identity: None,
         }];
         save_quota_cache(home, &theirs, "0.33.0");
 
@@ -3585,6 +3653,7 @@ sleep 10
             used_percent: Some(96.0),
             detail: String::new(),
             resets: Some("09-19".into()),
+            identity: None,
         }];
         save_quota_cache(home, &mine, "0.34.0");
         assert_eq!(
@@ -3966,5 +4035,121 @@ mod a_capped_account_says_so {
             rows[0].detail.contains("credits 12"),
             "the balance stopped being reported: {rows:?}"
         );
+    }
+}
+
+/// Two logins can be one provider account, and only the provider's id says so.
+#[cfg(test)]
+mod shared_login_tests {
+    use super::*;
+
+    fn codex_row(account: &str, identity: Option<&str>, used: f64) -> QuotaRow {
+        QuotaRow {
+            label: "codex weekly".into(),
+            agent: Agent::Codex,
+            account: account.into(),
+            used_percent: Some(used),
+            detail: "detail".into(),
+            resets: Some("09-26".into()),
+            identity: identity.map(str::to_string),
+        }
+    }
+
+    /// Measured against the live app-server: `accountId` sits beside
+    /// `rateLimits`, so a parser reading only the window object never sees it.
+    #[test]
+    fn the_response_carries_the_account_it_answered_for() {
+        let response = serde_json::json!({
+            "result": {
+                "accountId": "58cd5562-7c8e-4de5-8383-d08f47fcb9cf",
+                "rateLimits": {
+                    "primary": {"usedPercent": 93.0, "windowDurationMins": 10080.0},
+                    "individualLimit": {"remainingPercent": 90.0}
+                }
+            }
+        });
+        let limits = parse_codex_app_server_response(&response).unwrap();
+        assert_eq!(
+            limits.account_id.as_deref(),
+            Some("58cd5562-7c8e-4de5-8383-d08f47fcb9cf")
+        );
+        assert_eq!(limits.primary, Some(93.0));
+    }
+
+    #[test]
+    fn a_response_without_an_account_leaves_the_id_unset() {
+        let response = serde_json::json!({
+            "result": { "rateLimits": {"primary": {"usedPercent": 1.0}} }
+        });
+        let limits = parse_codex_app_server_response(&response).unwrap();
+        assert!(limits.account_id.is_none());
+    }
+
+    #[test]
+    fn a_second_account_on_the_same_login_stops_repeating_the_first() {
+        let mut rows = vec![
+            codex_row("sendbird-kr", Some("acct-1"), 93.0),
+            codex_row("sendbird-com", Some("acct-1"), 93.0),
+        ];
+        mark_shared_logins(&mut rows);
+
+        assert_eq!(
+            rows[0].used_percent,
+            Some(93.0),
+            "the first keeps its figures"
+        );
+        assert_eq!(
+            rows[1].used_percent, None,
+            "a repeated reading must not be drawn as a second account's"
+        );
+        assert_eq!(rows[1].detail, "same login as sendbird-kr");
+        assert!(rows[1].resets.is_none());
+    }
+
+    #[test]
+    fn two_real_accounts_are_both_left_alone() {
+        let mut rows = vec![
+            codex_row("sendbird-kr", Some("acct-1"), 93.0),
+            codex_row("sendbird-com", Some("acct-2"), 4.0),
+        ];
+        mark_shared_logins(&mut rows);
+        assert_eq!(rows[0].used_percent, Some(93.0));
+        assert_eq!(
+            rows[1].used_percent,
+            Some(4.0),
+            "different logins must keep their own figures"
+        );
+    }
+
+    /// One account's own rows share its id — the weekly and monthly windows of
+    /// one login are not a collision.
+    #[test]
+    fn one_accounts_several_windows_are_not_a_collision() {
+        let mut rows = vec![
+            codex_row("sendbird-kr", Some("acct-1"), 93.0),
+            QuotaRow {
+                label: "codex monthly".into(),
+                ..codex_row("sendbird-kr", Some("acct-1"), 10.0)
+            },
+        ];
+        mark_shared_logins(&mut rows);
+        assert_eq!(rows[1].used_percent, Some(10.0));
+    }
+
+    #[test]
+    fn a_provider_that_reports_no_id_is_never_marked() {
+        let mut rows = vec![codex_row("a", None, 50.0), codex_row("b", None, 50.0)];
+        mark_shared_logins(&mut rows);
+        assert_eq!(rows[1].used_percent, Some(50.0));
+    }
+
+    /// Ids are only comparable within one provider.
+    #[test]
+    fn the_same_id_under_two_providers_is_not_a_collision() {
+        let mut kiro = codex_row("kiro-login", Some("acct-1"), 20.0);
+        kiro.agent = Agent::Kiro;
+        let mut rows = vec![codex_row("sendbird-kr", Some("acct-1"), 93.0), kiro];
+        mark_shared_logins(&mut rows);
+        assert_eq!(rows[1].used_percent, Some(20.0));
     }
 }

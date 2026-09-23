@@ -3169,6 +3169,7 @@ mod tests {
                             used_percent: Some(if exhausted { 100.0 } else { 10.0 }),
                             detail: "reported usage/limit".into(),
                             resets: Some("10-01 09:00".into()),
+                            identity: None,
                         },
                     ]
                 })
@@ -3227,6 +3228,7 @@ mod tests {
                 used_percent: Some(100.0),
                 detail: "limit reached".into(),
                 resets: Some("10-01 09:00".into()),
+                identity: None,
             };
             let weekly_line = Line::from(quota_row_spans(&weekly, 20));
             let monthly_spans = quota_row_spans(&monthly, 20);

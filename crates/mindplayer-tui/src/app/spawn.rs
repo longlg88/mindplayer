@@ -16,6 +16,33 @@ impl App {
         };
         let agent = account.provider;
         let command = mindplayer_core::login(agent, dir.clone(), account);
+        self.open_login_pane(account, command, dir, "signing in");
+    }
+
+    /// Sign `account` out and straight back in, so a slot can change hands
+    /// without signing out by hand first.
+    ///
+    /// Refused for the login this machine came with: clearing that one is not
+    /// MindPlayer's to do.
+    pub fn request_relogin(&mut self, account: &mindplayer_core::accounts::Account) {
+        let dir = match &self.scope {
+            Scope::WorkingDir(p) => p.clone(),
+            Scope::Global => self.cwd.clone(),
+        };
+        match mindplayer_core::resume::relogin(dir.clone(), account) {
+            Ok(command) => self.open_login_pane(account, command, dir, "signing in again"),
+            Err(why) => self.status = why,
+        }
+    }
+
+    fn open_login_pane(
+        &mut self,
+        account: &mindplayer_core::accounts::Account,
+        command: mindplayer_core::Command,
+        dir: PathBuf,
+        verb: &str,
+    ) {
+        let agent = account.provider;
         let session_id = format!(
             "{}{}:{}",
             super::accounts_panel::LOGIN_PREFIX,
@@ -52,7 +79,7 @@ impl App {
         });
         self.accounts_panel = None;
         self.focus_or_add_pane(&session_id);
-        self.status = format!("signing in {} {}", agent.as_str(), account.name);
+        self.status = format!("{verb} {} {}", agent.as_str(), account.name);
     }
 
     /// Spawn a new Codex/Claude session in the current scope dir, optionally
@@ -225,9 +252,22 @@ impl App {
     /// live PTY to the real id), and re-append the ones still unmatched so they
     /// stay visible.
     pub(crate) fn merge_extras(&mut self) {
-        self.reap_closed_extras();
+        // A live placeholder claims first. Both kinds match on agent, cwd and
+        // "newer than me", so a closed one going first takes the session the
+        // open pane just wrote and archives it — close a new session, start
+        // another in the same directory within the grace window, and the second
+        // one lands already archived. Claiming here re-keys the PTY onto the
+        // real id, which is what then makes the reaper's live-PTY guard refuse
+        // it.
+        let taken = self.claim_live_extras();
+        self.reap_closed_extras(&taken);
+    }
+
+    /// Let the open panes claim their own sessions, and report which ones they
+    /// took so nothing else can.
+    fn claim_live_extras(&mut self) -> HashSet<String> {
         if self.extra_sessions.is_empty() {
-            return;
+            return HashSet::new();
         }
         let mut claimed: HashSet<String> = HashSet::new();
         let mut remaining = Vec::new();
@@ -304,6 +344,7 @@ impl App {
             }
         }
         self.extra_sessions = remaining;
+        claimed
     }
 
     /// The real disk session a synthetic new-session row should become, if it
@@ -355,12 +396,14 @@ impl App {
     /// session appearing that late is far more likely one the user started
     /// themselves in the same directory — and archiving that silently is worse
     /// than letting a stale row through.
-    pub(crate) fn reap_closed_extras(&mut self) {
+    pub(crate) fn reap_closed_extras(&mut self, taken: &HashSet<String>) {
         if self.closed_extras.is_empty() {
             return;
         }
         let now = Utc::now();
-        let claimed = HashSet::new();
+        // Whatever an open pane just claimed is its own work, not a closed
+        // pane's late file.
+        let claimed = taken.clone();
         let mut still = Vec::new();
         let mut archived_any = false;
         for extra in std::mem::take(&mut self.closed_extras) {

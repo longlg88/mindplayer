@@ -100,6 +100,53 @@ pub fn login(agent: Agent, cwd: PathBuf, account: &Account) -> Command {
     }
 }
 
+/// The words each CLI uses to sign out, from its own `--help`: `codex logout`,
+/// `claude auth logout`, `kiro-cli user logout`, `agent logout`.
+fn logout_args(agent: Agent) -> Vec<String> {
+    match agent {
+        Agent::Codex => vec!["logout".to_string()],
+        Agent::Claude => vec!["auth".to_string(), "logout".to_string()],
+        Agent::Kiro => vec!["user".to_string(), "logout".to_string()],
+        Agent::Cursor => vec!["logout".to_string()],
+    }
+}
+
+/// Command that signs `account` out and straight back in, run in its own pane.
+///
+/// A slot already holding a sign-in does not change hands on `login` alone, so
+/// swapping which account a slot runs on meant signing out by hand first. The
+/// sign-out is why this refuses the login the machine already had: that one is
+/// not MindPlayer's to clear.
+///
+/// Signing out does not sign the browser out, so the provider's page may
+/// approve the same account again without asking. This offers the chance to
+/// choose; it cannot make the choice.
+///
+/// # Errors
+/// Returns the reason when `account` is the login this machine came with.
+pub fn relogin(cwd: PathBuf, account: &Account) -> Result<Command, String> {
+    if account.is_inherited() {
+        return Err("the login this machine came with is signed out where you made it".into());
+    }
+    let agent = account.provider;
+    let program = agent.program();
+    // One pane, two commands: the shell runs them in order and `exec` hands the
+    // pane to the sign-in, so the pane is the sign-in rather than its parent.
+    let line = format!(
+        "{} {} >/dev/null 2>&1; exec {} {}",
+        program,
+        logout_args(agent).join(" "),
+        program,
+        login(agent, cwd.clone(), account).args.join(" ")
+    );
+    Ok(Command {
+        program: "sh".to_string(),
+        args: vec!["-c".to_string(), line],
+        cwd,
+        env: account.launch_env(),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

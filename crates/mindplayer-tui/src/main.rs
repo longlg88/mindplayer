@@ -809,6 +809,15 @@ fn handle_main_key(app: &mut App, key: KeyEvent) {
                     app.choose_new_account(&account);
                 }
             }
+            // Signing a slot in from here: a slot already holding a sign-in
+            // does not change hands on `login` alone, and this is where the
+            // account is being chosen.
+            KeyCode::Char('r') => {
+                if let Some(account) = choices.get(choice).cloned() {
+                    app.new_picker = None;
+                    app.request_relogin(&account);
+                }
+            }
             KeyCode::Esc => app.cancel_new_session(),
             _ => {}
         }

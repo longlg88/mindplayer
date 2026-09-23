@@ -1196,6 +1196,9 @@ impl App {
             for account in &accounts {
                 rows.extend(mindplayer_core::limits::account_quota_rows(account, &home));
             }
+            // Only here is every login's reading in one place, which is what it
+            // takes to notice that two of them are the same login.
+            mindplayer_core::limits::mark_shared_logins(&mut rows);
             let _ = tx.send(rows);
         });
         self.limits_rx = Some(rx);

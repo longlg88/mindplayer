@@ -947,17 +947,40 @@ impl App {
     /// Another account is reached with a sign-in of its own from the same row,
     /// not by listing every login here — the list stays the four it always was.
     pub(crate) fn new_session_choices(&self) -> Vec<mindplayer_core::accounts::Account> {
-        mindplayer_core::accounts::MULTI_ACCOUNT_AGENTS
-            .into_iter()
-            .map(|agent| self.account_for(agent))
-            .collect()
+        let mut out = Vec::new();
+        for agent in mindplayer_core::accounts::MULTI_ACCOUNT_AGENTS {
+            // The one this provider would start on leads, so Enter on a fresh
+            // install still does what it always did.
+            let preferred = self.account_for(agent);
+            out.push(preferred.clone());
+            out.extend(
+                self.accounts
+                    .iter()
+                    .filter(|a| a.provider == agent && !a.disabled && a.name != preferred.name)
+                    .cloned(),
+            );
+        }
+        out
     }
 
-    /// What each of those rows reads as: the provider, as it always has.
+    /// What each row reads as: the provider alone while it has one login, and
+    /// the login's name beside it once there is a choice to make.
     pub(crate) fn new_session_choice_labels(&self) -> Vec<String> {
-        self.new_session_choices()
+        let choices = self.new_session_choices();
+        choices
             .iter()
-            .map(|account| account.provider.as_str().to_string())
+            .map(|account| {
+                let several = choices
+                    .iter()
+                    .filter(|other| other.provider == account.provider)
+                    .count()
+                    > 1;
+                if several {
+                    format!("{} · {}", account.provider.as_str(), account.name)
+                } else {
+                    account.provider.as_str().to_string()
+                }
+            })
             .collect()
     }
 

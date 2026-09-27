@@ -134,6 +134,21 @@ pub fn browser_hint(agent: Agent) -> String {
     )
 }
 
+/// The page that lets a provider's own site switch which account is signed in.
+///
+/// A sign-in opened from a browser already holding a session is approved as
+/// that account without asking, which is how a second slot ends up on the
+/// first account. Opening this first is what gives the choice back.
+///
+/// Only Codex has one here because only Codex's has been checked. A guess at
+/// another provider's URL would send someone to a 404 mid-sign-in.
+pub fn account_chooser_url(agent: Agent) -> Option<&'static str> {
+    match agent {
+        Agent::Codex => Some("https://auth.openai.com/choose-an-account"),
+        Agent::Claude | Agent::Kiro | Agent::Cursor => None,
+    }
+}
+
 /// Command that signs `account` out and straight back in, run in its own pane.
 ///
 /// A slot already holding a sign-in does not change hands on `login` alone, so
@@ -185,9 +200,15 @@ pub fn login_then_start(cwd: PathBuf, account: &Account) -> Command {
     let login_args = login(agent, cwd.clone(), account).args.join(" ");
     let start_args = new_session(agent, cwd.clone(), account).args.join(" ");
     // Printed first so it sits right above the sign-in link; the hint has no single quote to escape.
+    // The chooser goes first so the browser is on it before the sign-in link
+    // opens; `command -v` keeps the line quiet where `open` is not a thing.
+    let chooser = account_chooser_url(agent).map_or_else(String::new, |url| {
+        format!("command -v open >/dev/null 2>&1 && open '{url}'; ")
+    });
     let line = format!(
-        "printf '%s\\n\\n' '{}'; {} {} && exec {} {}",
+        "printf '%s\\n\\n' '{}'; {}{} {} && exec {} {}",
         browser_hint(agent),
+        chooser,
         program,
         login_args,
         program,
@@ -487,5 +508,57 @@ mod tests {
             !out.contains("stub start"),
             "a session started although the sign-in failed:\n{out}"
         );
+    }
+}
+
+/// Picking a login has to be possible, and a sign-in has to offer the choice.
+#[cfg(test)]
+mod account_choice_tests {
+    use super::*;
+
+    fn slot(name: &str) -> Account {
+        Account::isolated(&PathBuf::from("/tmp/mp-choice"), Agent::Codex, name).unwrap()
+    }
+
+    #[test]
+    fn signing_in_opens_the_chooser_before_the_sign_in_link() {
+        let line = login_then_start(PathBuf::from("/here"), &slot("second"))
+            .args
+            .join(" ");
+        let chooser = line
+            .find("choose-an-account")
+            .expect("the chooser is never opened, so the browser decides the account");
+        let login = line.find("codex login").expect("no sign-in in the line");
+        assert!(
+            chooser < login,
+            "the chooser must open before the sign-in link, or the session is already decided: {line}"
+        );
+    }
+
+    /// Only Codex's chooser has been checked; a guessed URL is a 404 in the
+    /// middle of someone's sign-in.
+    #[test]
+    fn a_provider_without_a_checked_chooser_opens_none() {
+        for agent in [Agent::Claude, Agent::Kiro, Agent::Cursor] {
+            assert!(account_chooser_url(agent).is_none(), "{}", agent.as_str());
+            let account = Account::inherited(agent);
+            let line = login_then_start(PathBuf::from("/here"), &account)
+                .args
+                .join(" ");
+            assert!(
+                !line.contains("choose-an-account"),
+                "{} got Codex's chooser: {line}",
+                agent.as_str()
+            );
+        }
+    }
+
+    #[test]
+    fn the_sign_in_still_runs_and_still_hands_over_to_the_session() {
+        let line = login_then_start(PathBuf::from("/here"), &slot("second"))
+            .args
+            .join(" ");
+        assert!(line.contains("codex login"), "{line}");
+        assert!(line.contains("exec codex"), "{line}");
     }
 }

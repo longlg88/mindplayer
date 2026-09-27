@@ -440,7 +440,7 @@ fn such_a_pane_never_turns_into_a_session() {
 }
 
 /// Reported from a pane's own log:
-/// `ERROR: No saved session found with ID login:codex:sendbird-com`.
+/// `ERROR: No saved session found with ID login:codex:personal`.
 /// A sign-in pane has no transcript, so asking its provider to resume it makes
 /// the provider answer that no such session exists.
 mod a_row_we_invented_is_never_resumed {
@@ -452,7 +452,7 @@ mod a_row_we_invented_is_never_resumed {
         for id in [
             "new:codex:1",
             "handoff:codex:claude:2",
-            "login:codex:sendbird-com",
+            "login:codex:personal",
         ] {
             assert!(is_synthetic_id(id), "`{id}` would be handed to `resume`");
         }

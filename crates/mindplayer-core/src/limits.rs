@@ -2404,7 +2404,7 @@ mod tests {
         let codex = QuotaRow {
             label: "codex weekly".into(),
             agent: Agent::Codex,
-            account: "sendbird-kr".into(),
+            account: "work".into(),
             used_percent: Some(100.0),
             ..Default::default()
         };
@@ -3929,25 +3929,20 @@ mod fallback_stays_with_its_login {
     #[test]
     fn a_login_with_no_reading_is_not_given_another_logins() {
         let fresh = vec![
-            row(Agent::Codex, "sendbird-kr", "codex weekly", Some(100.0)),
-            row(Agent::Codex, "sendbird-com", "codex", None),
+            row(Agent::Codex, "work", "codex weekly", Some(100.0)),
+            row(Agent::Codex, "personal", "codex", None),
         ];
-        let stored = vec![row(
-            Agent::Codex,
-            "sendbird-kr",
-            "codex weekly",
-            Some(100.0),
-        )];
+        let stored = vec![row(Agent::Codex, "work", "codex weekly", Some(100.0))];
 
         let (rows, used_cache) = merge_with_last_good(&fresh, &stored);
 
         assert_eq!(
-            rows.iter().filter(|r| r.account == "sendbird-kr").count(),
+            rows.iter().filter(|r| r.account == "work").count(),
             1,
             "the first login's reading was drawn twice: {rows:?}"
         );
         assert!(
-            rows.iter().any(|r| r.account == "sendbird-com"),
+            rows.iter().any(|r| r.account == "personal"),
             "the second login has no row at all: {rows:?}"
         );
         assert!(
@@ -4088,8 +4083,8 @@ mod shared_login_tests {
     #[test]
     fn a_second_account_on_the_same_login_stops_repeating_the_first() {
         let mut rows = vec![
-            codex_row("sendbird-kr", Some("acct-1"), 93.0),
-            codex_row("sendbird-com", Some("acct-1"), 93.0),
+            codex_row("work", Some("acct-1"), 93.0),
+            codex_row("personal", Some("acct-1"), 93.0),
         ];
         mark_shared_logins(&mut rows);
 
@@ -4102,15 +4097,15 @@ mod shared_login_tests {
             rows[1].used_percent, None,
             "a repeated reading must not be drawn as a second account's"
         );
-        assert_eq!(rows[1].detail, "same login as sendbird-kr");
+        assert_eq!(rows[1].detail, "same login as work");
         assert!(rows[1].resets.is_none());
     }
 
     #[test]
     fn two_real_accounts_are_both_left_alone() {
         let mut rows = vec![
-            codex_row("sendbird-kr", Some("acct-1"), 93.0),
-            codex_row("sendbird-com", Some("acct-2"), 4.0),
+            codex_row("work", Some("acct-1"), 93.0),
+            codex_row("personal", Some("acct-2"), 4.0),
         ];
         mark_shared_logins(&mut rows);
         assert_eq!(rows[0].used_percent, Some(93.0));
@@ -4126,10 +4121,10 @@ mod shared_login_tests {
     #[test]
     fn one_accounts_several_windows_are_not_a_collision() {
         let mut rows = vec![
-            codex_row("sendbird-kr", Some("acct-1"), 93.0),
+            codex_row("work", Some("acct-1"), 93.0),
             QuotaRow {
                 label: "codex monthly".into(),
-                ..codex_row("sendbird-kr", Some("acct-1"), 10.0)
+                ..codex_row("work", Some("acct-1"), 10.0)
             },
         ];
         mark_shared_logins(&mut rows);
@@ -4148,7 +4143,7 @@ mod shared_login_tests {
     fn the_same_id_under_two_providers_is_not_a_collision() {
         let mut kiro = codex_row("kiro-login", Some("acct-1"), 20.0);
         kiro.agent = Agent::Kiro;
-        let mut rows = vec![codex_row("sendbird-kr", Some("acct-1"), 93.0), kiro];
+        let mut rows = vec![codex_row("work", Some("acct-1"), 93.0), kiro];
         mark_shared_logins(&mut rows);
         assert_eq!(rows[1].used_percent, Some(20.0));
     }

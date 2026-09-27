@@ -1727,7 +1727,17 @@ fn kiro_handoff_to_codex_creates_child_lane() {
     let pending = app.pending.as_ref().expect("handoff queues PTY spawn");
     assert!(pending.session_id.starts_with("handoff:kiro:codex:"));
     assert_eq!(pending.command.program, "codex");
-    assert_eq!(pending.command.args.len(), 0);
+    // A handoff target starts through `new_session`, so it launches the same
+    // way a codex pane started by hand does — unattended, not prompting.
+    assert!(
+        pending
+            .command
+            .args
+            .contains(&"--ask-for-approval".to_string())
+            && pending.command.args.contains(&"never".to_string()),
+        "{:?}",
+        pending.command.args
+    );
     assert_eq!(pending.command.cwd, PathBuf::from("/work/project"));
     assert!(pending.initial_input.is_some());
     assert_eq!(

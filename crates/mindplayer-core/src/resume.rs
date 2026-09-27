@@ -31,7 +31,11 @@ pub struct Command {
 pub fn resume(session: &Session, account: &Account) -> Command {
     let id = session.id.clone();
     let args = match session.agent {
-        Agent::Codex => vec!["resume".to_string(), id],
+        Agent::Codex => {
+            let mut args = vec!["resume".to_string(), id];
+            args.extend(CODEX_FLAGS.iter().map(|f| f.to_string()));
+            args
+        }
         Agent::Claude => vec!["--resume".to_string(), id],
         Agent::Kiro => {
             let mut args = vec!["chat".to_string(), "--resume-id".to_string(), id];
@@ -60,6 +64,20 @@ pub fn resume(session: &Session, account: &Account) -> Command {
 /// appear in the list — accepted deliberately (2026-09-16).
 const KIRO_FLAGS: [&str; 2] = ["--trust-all-tools", "--v3"];
 
+/// Codex launches every session unattended and unsandboxed (user-requested):
+/// no approval prompts, and shell commands run with full access. Both values
+/// are taken from `codex --help` — `never` for the approval policy, and
+/// `danger-full-access` for the sandbox.
+///
+/// These ride on resume as well as on a new session, so a pane cannot be
+/// attended on one path and unattended on the other.
+const CODEX_FLAGS: [&str; 4] = [
+    "--ask-for-approval",
+    "never",
+    "--sandbox",
+    "danger-full-access",
+];
+
 /// Command to start a brand new session in `cwd`, on `account`'s login.
 pub fn new_session(agent: Agent, cwd: PathBuf, account: &Account) -> Command {
     let args = match agent {
@@ -69,7 +87,8 @@ pub fn new_session(agent: Agent, cwd: PathBuf, account: &Account) -> Command {
             args.extend(KIRO_FLAGS.iter().map(|f| f.to_string()));
             args
         }
-        Agent::Codex | Agent::Claude | Agent::Cursor => Vec::new(),
+        Agent::Codex => CODEX_FLAGS.iter().map(|f| f.to_string()).collect(),
+        Agent::Claude | Agent::Cursor => Vec::new(),
     };
     Command {
         program: agent.program().to_string(),
@@ -252,7 +271,18 @@ mod tests {
             &Account::inherited(Agent::Codex),
         );
         assert_eq!(c.program, "codex");
-        assert_eq!(c.args, vec!["resume", "uuid-1"]);
+        assert_eq!(
+            c.args,
+            vec![
+                "resume",
+                "uuid-1",
+                "--ask-for-approval",
+                "never",
+                "--sandbox",
+                "danger-full-access"
+            ],
+            "resuming a codex session must stay unattended too"
+        );
         assert_eq!(c.cwd, PathBuf::from("/work"));
     }
 
@@ -267,14 +297,22 @@ mod tests {
     }
 
     #[test]
-    fn new_session_has_no_args() {
+    fn a_new_codex_session_launches_unattended() {
         let c = new_session(
             Agent::Codex,
             PathBuf::from("/here"),
             &Account::inherited(Agent::Codex),
         );
         assert_eq!(c.program, "codex");
-        assert!(c.args.is_empty());
+        assert_eq!(
+            c.args,
+            vec![
+                "--ask-for-approval",
+                "never",
+                "--sandbox",
+                "danger-full-access"
+            ]
+        );
         assert_eq!(c.cwd, PathBuf::from("/here"));
     }
 
@@ -305,6 +343,28 @@ mod tests {
             c.args,
             vec!["chat", "--trust-all-tools", "--v3"],
             "a brand-new kiro session must start in trust mode too"
+        );
+    }
+
+    /// Every way a codex session can start goes through one of these two, so
+    /// it cannot be unattended on one path and prompting on the other.
+    #[test]
+    fn every_codex_launch_carries_the_same_flags() {
+        let account = Account::inherited(Agent::Codex);
+        let started = new_session(Agent::Codex, PathBuf::from("/here"), &account);
+        let resumed = resume(&session(Agent::Codex, "uuid-9", "/work"), &account);
+
+        for (what, args) in [("new", &started.args), ("resume", &resumed.args)] {
+            for flag in CODEX_FLAGS {
+                assert!(
+                    args.contains(&flag.to_string()),
+                    "a {what} codex session launched without {flag}: {args:?}"
+                );
+            }
+        }
+        assert!(
+            CODEX_FLAGS.contains(&"danger-full-access"),
+            "the sandbox value is what this pins; without it these assertions say nothing"
         );
     }
 

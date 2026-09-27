@@ -1093,6 +1093,44 @@ impl App {
 
     /// The fetch path with its cache home explicit, so the cross-process gate
     /// can be tested without mutating the process-wide `HOME`.
+    /// Which logins this fetch asks, and which rows it carries over unasked.
+    ///
+    /// With `codex_only`, a fresh shared reading covers the other providers and
+    /// only Codex is asked again. That holds only for rows actually in hand: the
+    /// in-memory copy is refused when the file came from another release, while
+    /// freshness is judged across releases, so after an upgrade there can be a
+    /// fresh file and nothing to carry. A login with no carried row is therefore
+    /// still asked, rather than dropped from a result that is saved as complete.
+    pub(crate) fn plan_probe(
+        &self,
+        codex_only: bool,
+    ) -> (
+        Vec<mindplayer_core::accounts::Account>,
+        Vec<mindplayer_core::limits::QuotaRow>,
+    ) {
+        let accounts = self.probe_accounts();
+        if !codex_only {
+            return (accounts, Vec::new());
+        }
+        let carried: Vec<_> = self
+            .quota_cache
+            .iter()
+            .flat_map(|(rows, _)| rows.iter())
+            .filter(|row| row.agent != Agent::Codex)
+            .cloned()
+            .collect();
+        let accounts = accounts
+            .into_iter()
+            .filter(|account| {
+                account.provider == Agent::Codex
+                    || !carried
+                        .iter()
+                        .any(|row| row.agent == account.provider && row.account == account.name)
+            })
+            .collect();
+        (accounts, carried)
+    }
+
     pub(crate) fn spawn_limits_fetch_from(&mut self, home: PathBuf) {
         // A fetch that never returns — `security(1)` can block on an interactive
         // Keychain prompt — would otherwise hold `limits_rx` for the rest of the
@@ -1182,14 +1220,8 @@ impl App {
         self.limits_started = Some(now);
         // One reading per login, since the numbers are per account and an
         // account with its own home keeps its own state.
-        let mut accounts = self.probe_accounts();
-        let mut cached_rows = Vec::new();
-        if !force_refresh && shared_cache_is_fresh && needs_codex_reading {
-            accounts.retain(|account| account.provider == Agent::Codex);
-            if let Some((rows, _)) = &self.quota_cache {
-                cached_rows.extend(rows.iter().filter(|row| row.agent != Agent::Codex).cloned());
-            }
-        }
+        let (accounts, cached_rows) =
+            self.plan_probe(!force_refresh && shared_cache_is_fresh && needs_codex_reading);
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
             let mut rows = cached_rows;

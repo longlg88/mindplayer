@@ -3143,7 +3143,7 @@ mod tests {
         use ratatui::{backend::TestBackend, Terminal};
         let mut app = App::new();
         app.screen = Screen::Main;
-        app.accounts = ["example-kr", "example-com"]
+        app.accounts = ["work", "personal"]
             .into_iter()
             .map(|name| {
                 let mut account = Account::inherited(Agent::Codex);
@@ -3152,10 +3152,10 @@ mod tests {
             })
             .collect();
         app.limits = Some(
-            ["example-kr", "example-com"]
+            ["work", "personal"]
                 .into_iter()
                 .flat_map(|account| {
-                    let exhausted = account == "example-com";
+                    let exhausted = account == "personal";
                     [
                         QuotaRow {
                             label: "codex weekly".into(),
@@ -3184,7 +3184,7 @@ mod tests {
             let lines: Vec<String> = (0..30)
                 .map(|y| (0..width).map(|x| buffer[(x, y)].symbol()).collect())
                 .collect();
-            for account in ["example-kr", "example-com"] {
+            for account in ["work", "personal"] {
                 for period in ["weekly", "monthly"] {
                     assert!(
                         lines
@@ -3196,7 +3196,7 @@ mod tests {
             }
             let exhausted = lines
                 .iter()
-                .find(|line| line.contains("example-com monthly"))
+                .find(|line| line.contains("personal monthly"))
                 .unwrap();
             assert!(
                 exhausted.contains("100.0%")
@@ -3205,7 +3205,10 @@ mod tests {
                 "{exhausted}"
             );
             if width == 100 {
-                for line in lines.iter().filter(|line| line.contains("example-")) {
+                for line in lines
+                    .iter()
+                    .filter(|line| line.contains("work") || line.contains("personal"))
+                {
                     println!("{}", line.trim_end());
                 }
             }
@@ -3215,7 +3218,7 @@ mod tests {
     #[test]
     fn codex_monthly_limit_and_unknown_weekly_are_distinct_for_both_accounts() {
         use mindplayer_core::limits::QuotaRow;
-        for account in ["example-kr", "example-com"] {
+        for account in ["work", "personal"] {
             let weekly = QuotaRow {
                 label: format!("{account} weekly"),
                 agent: Agent::Codex,

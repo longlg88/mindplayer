@@ -4757,3 +4757,96 @@ mod new_session_account_picker {
         assert!(!app.status.is_empty(), "and it has to say why");
     }
 }
+
+/// Reported: right after an upgrade the footer showed Codex alone. The file was
+/// fresh but written by the previous release, so freshness said "the others are
+/// covered" while the rows to carry were refused as foreign — and the Codex-only
+/// result was saved as if it were the whole reading.
+mod codex_only_fetch_plan {
+    use super::*;
+    use mindplayer_core::accounts::Account;
+    use mindplayer_core::limits::QuotaRow;
+
+    fn app_with_every_provider() -> App {
+        let mut app = isolated_app();
+        app.accounts = mindplayer_core::accounts::MULTI_ACCOUNT_AGENTS
+            .into_iter()
+            .map(Account::inherited)
+            .collect();
+        app
+    }
+
+    fn row(agent: Agent) -> QuotaRow {
+        QuotaRow {
+            label: agent.as_str().into(),
+            agent,
+            account: mindplayer_core::accounts::DEFAULT_ACCOUNT.into(),
+            used_percent: Some(10.0),
+            ..Default::default()
+        }
+    }
+
+    fn asked(app: &App, codex_only: bool) -> Vec<Agent> {
+        let (accounts, _) = app.plan_probe(codex_only);
+        accounts.iter().map(|a| a.provider).collect()
+    }
+
+    #[test]
+    fn after_an_upgrade_a_codex_only_fetch_still_asks_the_other_providers() {
+        let mut app = app_with_every_provider();
+        app.quota_cache = None;
+
+        let asked = asked(&app, true);
+        for agent in [Agent::Claude, Agent::Kiro, Agent::Cursor] {
+            assert!(
+                asked.contains(&agent),
+                "{} was neither asked nor carried, so it would vanish from the footer",
+                agent.as_str()
+            );
+        }
+        assert!(asked.contains(&Agent::Codex));
+    }
+
+    #[test]
+    fn with_the_others_in_hand_only_codex_is_asked() {
+        let mut app = app_with_every_provider();
+        app.quota_cache = Some((
+            vec![row(Agent::Claude), row(Agent::Kiro), row(Agent::Cursor)],
+            Utc::now(),
+        ));
+
+        let (accounts, carried) = app.plan_probe(true);
+        assert_eq!(
+            accounts.iter().map(|a| a.provider).collect::<Vec<_>>(),
+            vec![Agent::Codex],
+            "the shortcut exists to spare the other providers' budgets"
+        );
+        assert_eq!(carried.len(), 3);
+    }
+
+    #[test]
+    fn a_provider_missing_from_the_carried_rows_is_still_asked() {
+        let mut app = app_with_every_provider();
+        app.quota_cache = Some((vec![row(Agent::Claude)], Utc::now()));
+
+        let asked = asked(&app, true);
+        assert!(
+            !asked.contains(&Agent::Claude),
+            "claude is in hand: {asked:?}"
+        );
+        assert!(
+            asked.contains(&Agent::Kiro) && asked.contains(&Agent::Cursor),
+            "{asked:?}"
+        );
+    }
+
+    #[test]
+    fn a_full_fetch_asks_everyone_and_carries_nothing() {
+        let mut app = app_with_every_provider();
+        app.quota_cache = Some((vec![row(Agent::Claude)], Utc::now()));
+
+        let (accounts, carried) = app.plan_probe(false);
+        assert_eq!(accounts.len(), 4);
+        assert!(carried.is_empty());
+    }
+}

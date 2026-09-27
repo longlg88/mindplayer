@@ -4256,16 +4256,13 @@ fn a_failed_reading_becomes_a_row_that_explains_itself() {
 #[test]
 fn the_footer_shortens_the_working_dir_but_the_scan_screen_does_not() {
     let mut app = App::new();
-    app.scope = Scope::WorkingDir(PathBuf::from("/Users/eden.jang/Work/SendBird/working2"));
-    app.cwd = PathBuf::from("/Users/eden.jang/Work/SendBird/working2");
+    app.scope = Scope::WorkingDir(PathBuf::from("/home/dev/code/webapp"));
+    app.cwd = PathBuf::from("/home/dev/code/webapp");
 
-    assert_eq!(app.scope_label_short(), "working dir (SendBird/working2)");
-    assert_eq!(
-        app.scope_label(),
-        "working dir (/Users/eden.jang/Work/SendBird/working2)"
-    );
-    assert!(app.summary_tail().contains("SendBird/working2"));
-    assert!(!app.summary_tail().contains("/Users/eden.jang"));
+    assert_eq!(app.scope_label_short(), "working dir (code/webapp)");
+    assert_eq!(app.scope_label(), "working dir (/home/dev/code/webapp)");
+    assert!(app.summary_tail().contains("code/webapp"));
+    assert!(!app.summary_tail().contains("/home/dev"));
 }
 
 #[test]
@@ -4562,7 +4559,7 @@ mod new_session_account_picker {
         Account::isolated(
             &super::super::limits_home_for_app(),
             Agent::Codex,
-            "sendbird-com",
+            "personal",
         )
         .unwrap()
     }
@@ -4576,15 +4573,49 @@ mod new_session_account_picker {
             .join(" ")
     }
 
+    /// Which login a session runs on is also which login a sign-in would be
+    /// for, so the picker has to name them. Folding them into one provider row
+    /// left the second login reachable only by making a third.
     #[test]
-    fn one_row_per_provider_even_with_a_second_login() {
+    fn every_login_of_a_provider_gets_its_own_row() {
         let mut accounts = base();
         accounts.push(second_codex());
         let app = app_with(accounts);
         assert_eq!(
             app.new_session_choice_labels(),
+            vec![
+                "codex · default",
+                "codex · personal",
+                "claude",
+                "kiro",
+                "cursor"
+            ],
+            "a provider's logins must each be selectable"
+        );
+    }
+
+    /// A provider with one login stays a bare row: naming it would be noise on
+    /// every machine that never added a second.
+    #[test]
+    fn a_lone_login_is_not_named() {
+        let app = app_with(base());
+        assert_eq!(
+            app.new_session_choice_labels(),
+            vec!["codex", "claude", "kiro", "cursor"]
+        );
+    }
+
+    #[test]
+    fn a_disabled_login_is_not_offered() {
+        let mut accounts = base();
+        let mut second = second_codex();
+        second.disabled = true;
+        accounts.push(second);
+        let app = app_with(accounts);
+        assert_eq!(
+            app.new_session_choice_labels(),
             vec!["codex", "claude", "kiro", "cursor"],
-            "a second login must not split the provider's row"
+            "a disabled login must not be startable from the picker"
         );
     }
 

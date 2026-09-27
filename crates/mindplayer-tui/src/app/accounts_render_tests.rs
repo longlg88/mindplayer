@@ -150,7 +150,7 @@ fn every_key_stays_on_screen_at_any_width() {
             );
         }
         assert!(
-            screen.contains("sendbird") || screen.contains("work"),
+            screen.contains("work") || screen.contains("personal"),
             "an account name is cut off at {width} columns:\n{screen}"
         );
     }
@@ -195,7 +195,7 @@ fn a_second_account_sits_under_its_provider_and_the_cursor_marks_one() {
 fn a_narrow_terminal_drops_the_note_rather_than_the_columns() {
     let mut app = app_on_main();
     app.accounts
-        .push(Account::isolated(&std::env::temp_dir(), Agent::Codex, "sendbird-com").unwrap());
+        .push(Account::isolated(&std::env::temp_dir(), Agent::Codex, "personal").unwrap());
     app.open_accounts();
 
     let wide = painted(&mut app, 96, 24);
@@ -209,7 +209,7 @@ fn a_narrow_terminal_drops_the_note_rather_than_the_columns() {
         !narrow.contains("machine's own"),
         "the note stayed and pushed the columns off the edge:\n{narrow}"
     );
-    for whole in ["sendbird-com", "in use", "reserve", "idle"] {
+    for whole in ["personal", "in use", "reserve", "idle"] {
         assert!(
             narrow.contains(whole),
             "`{whole}` did not survive a narrow terminal:\n{narrow}"
@@ -224,7 +224,7 @@ fn a_narrow_terminal_drops_the_note_rather_than_the_columns() {
 fn each_login_carries_its_own_usage() {
     use mindplayer_core::limits::QuotaRow;
     let mut app = app_on_main();
-    let second = Account::isolated(&std::env::temp_dir(), Agent::Codex, "sendbird-com").unwrap();
+    let second = Account::isolated(&std::env::temp_dir(), Agent::Codex, "personal").unwrap();
     app.accounts.push(second.clone());
     app.limits = Some(vec![
         QuotaRow {
@@ -345,8 +345,8 @@ fn the_readme_describes_the_screen_that_exists() {
 fn an_exhausted_login_stays_on_the_footer_after_switching_away_from_it() {
     use mindplayer_core::limits::QuotaRow;
     let mut app = app_on_main();
-    let mut spent = Account::isolated(&std::env::temp_dir(), Agent::Codex, "sendbird-kr").unwrap();
-    let fresh = Account::isolated(&std::env::temp_dir(), Agent::Codex, "sendbird-com").unwrap();
+    let mut spent = Account::isolated(&std::env::temp_dir(), Agent::Codex, "work").unwrap();
+    let fresh = Account::isolated(&std::env::temp_dir(), Agent::Codex, "personal").unwrap();
     // As reported: the exhausted login was put in reserve and the fresh one
     // made the account new sessions take.
     spent.role = mindplayer_core::accounts::Role::Fallback;
@@ -387,11 +387,11 @@ fn an_exhausted_login_stays_on_the_footer_after_switching_away_from_it() {
     // The platform is its own column now, so the account rides on the label
     // beside it rather than inside it.
     assert!(
-        screen.contains("sendbird-kr weekly"),
+        screen.contains("work weekly"),
         "two logins of one provider are not told apart:\n{screen}"
     );
     assert!(
-        screen.contains("sendbird-com"),
+        screen.contains("personal"),
         "the fresh login has no row at all:\n{screen}"
     );
     // One login means nothing extra on the line.
@@ -408,8 +408,8 @@ fn an_exhausted_login_stays_on_the_footer_after_switching_away_from_it() {
 fn the_footer_groups_each_platform_and_names_it_once() {
     use mindplayer_core::limits::QuotaRow;
     let mut app = app_on_main();
-    let kr = Account::isolated(&std::env::temp_dir(), Agent::Codex, "sendbird-kr").unwrap();
-    let com = Account::isolated(&std::env::temp_dir(), Agent::Codex, "sendbird-com").unwrap();
+    let kr = Account::isolated(&std::env::temp_dir(), Agent::Codex, "work").unwrap();
+    let com = Account::isolated(&std::env::temp_dir(), Agent::Codex, "personal").unwrap();
     // Stored in the order the accounts were added, which is what used to leak
     // through to the screen.
     app.accounts = vec![
@@ -444,8 +444,8 @@ fn the_footer_groups_each_platform_and_names_it_once() {
     };
 
     // Both Codex lines sit together, above every other platform's.
-    let kr_at = at("sendbird-kr");
-    let com_at = at("sendbird-com");
+    let kr_at = at("work");
+    let com_at = at("personal");
     let claude_at = at("claude");
     let kiro_at = at("kiro");
     let cursor_at = at("cursor");
@@ -469,7 +469,7 @@ fn the_footer_groups_each_platform_and_names_it_once() {
         "the label still carries the platform it sits next to:\n{screen}"
     );
     assert!(
-        screen.contains("sendbird-kr weekly"),
+        screen.contains("work weekly"),
         "the window and account left the line:\n{screen}"
     );
     // One login means no account on the line.

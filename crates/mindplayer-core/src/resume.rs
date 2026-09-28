@@ -9,7 +9,7 @@
 
 use crate::accounts::{Account, LaunchEnv};
 use crate::session::{Agent, Session};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// A spawnable command: program, args, the directory to run it in, and the
 /// environment that decides which login the CLI runs on.
@@ -31,7 +31,7 @@ pub struct Command {
 pub fn resume(session: &Session, account: &Account) -> Command {
     let id = session.id.clone();
     let args = match session.agent {
-        Agent::Codex => vec!["resume".to_string(), id],
+        Agent::Codex => codex_args(&session.cwd, vec!["resume".to_string(), id]),
         Agent::Claude => vec!["--resume".to_string(), id],
         Agent::Kiro => {
             let mut args = vec!["chat".to_string(), "--resume-id".to_string(), id];
@@ -60,6 +60,50 @@ pub fn resume(session: &Session, account: &Account) -> Command {
 /// appear in the list — accepted deliberately (2026-09-16).
 const KIRO_FLAGS: [&str; 2] = ["--trust-all-tools", "--v3"];
 
+/// Codex launches every session unattended and unsandboxed (user-requested):
+/// no approval prompts, and shell commands run with full access. Both values
+/// are taken from `codex --help` — `never` for the approval policy, and
+/// `danger-full-access` for the sandbox.
+///
+/// These ride on resume as well as on a new session, so a pane cannot be
+/// attended on one path and unattended on the other.
+/// Codex trusts a working directory per `CODEX_HOME`, in that home's own
+/// `config.toml`. An account with a home of its own therefore starts with an
+/// empty trust list, and a directory the machine's own login has trusted for
+/// months is unknown to it — which is what stops a pane working in the
+/// directory it was opened in.
+///
+/// The override names the same key Codex writes itself
+/// (`[projects."<dir>"] trust_level`), so the session trusts the directory it
+/// is running in without the slot having to have been there before.
+fn codex_trust_arg(cwd: &Path) -> Option<String> {
+    let dir = cwd.to_str()?;
+    // The key is quoted TOML; a directory holding a quote or a backslash would
+    // change what key is set, so such a path is left to Codex to ask about.
+    if dir.is_empty() || dir.contains('"') || dir.contains('\\') {
+        return None;
+    }
+    Some(format!("projects.{dir:?}.trust_level=\"trusted\""))
+}
+
+const CODEX_FLAGS: [&str; 4] = [
+    "--ask-for-approval",
+    "never",
+    "--sandbox",
+    "danger-full-access",
+];
+
+/// Codex's arguments: whatever the subcommand needs, then the flags every
+/// launch carries, then the trust for the directory this pane runs in.
+fn codex_args(cwd: &Path, mut args: Vec<String>) -> Vec<String> {
+    args.extend(CODEX_FLAGS.iter().map(|f| f.to_string()));
+    if let Some(trust) = codex_trust_arg(cwd) {
+        args.push("-c".to_string());
+        args.push(trust);
+    }
+    args
+}
+
 /// Command to start a brand new session in `cwd`, on `account`'s login.
 pub fn new_session(agent: Agent, cwd: PathBuf, account: &Account) -> Command {
     let args = match agent {
@@ -69,7 +113,8 @@ pub fn new_session(agent: Agent, cwd: PathBuf, account: &Account) -> Command {
             args.extend(KIRO_FLAGS.iter().map(|f| f.to_string()));
             args
         }
-        Agent::Codex | Agent::Claude | Agent::Cursor => Vec::new(),
+        Agent::Codex => codex_args(&cwd, Vec::new()),
+        Agent::Claude | Agent::Cursor => Vec::new(),
     };
     Command {
         program: agent.program().to_string(),
@@ -252,7 +297,20 @@ mod tests {
             &Account::inherited(Agent::Codex),
         );
         assert_eq!(c.program, "codex");
-        assert_eq!(c.args, vec!["resume", "uuid-1"]);
+        assert_eq!(
+            c.args,
+            vec![
+                "resume",
+                "uuid-1",
+                "--ask-for-approval",
+                "never",
+                "--sandbox",
+                "danger-full-access",
+                "-c",
+                r#"projects."/work".trust_level="trusted""#
+            ],
+            "resuming a codex session must stay unattended too"
+        );
         assert_eq!(c.cwd, PathBuf::from("/work"));
     }
 
@@ -267,14 +325,24 @@ mod tests {
     }
 
     #[test]
-    fn new_session_has_no_args() {
+    fn a_new_codex_session_launches_unattended() {
         let c = new_session(
             Agent::Codex,
             PathBuf::from("/here"),
             &Account::inherited(Agent::Codex),
         );
         assert_eq!(c.program, "codex");
-        assert!(c.args.is_empty());
+        assert_eq!(
+            c.args,
+            vec![
+                "--ask-for-approval",
+                "never",
+                "--sandbox",
+                "danger-full-access",
+                "-c",
+                r#"projects."/here".trust_level="trusted""#
+            ]
+        );
         assert_eq!(c.cwd, PathBuf::from("/here"));
     }
 
@@ -305,6 +373,65 @@ mod tests {
             c.args,
             vec!["chat", "--trust-all-tools", "--v3"],
             "a brand-new kiro session must start in trust mode too"
+        );
+    }
+
+    /// A pane is opened in a directory to work in it. A slot with a home of
+    /// its own has never seen that directory, so without this the session
+    /// stops to ask about the very directory it was started in.
+    #[test]
+    fn every_codex_launch_trusts_the_directory_it_runs_in() {
+        let account = Account::inherited(Agent::Codex);
+        let started = new_session(Agent::Codex, PathBuf::from("/work/project"), &account);
+        let resumed = resume(&session(Agent::Codex, "uuid-7", "/work/project"), &account);
+
+        for (what, args) in [("new", &started.args), ("resume", &resumed.args)] {
+            let joined = args.join(" ");
+            assert!(
+                joined.contains(r#"projects."/work/project".trust_level="trusted""#),
+                "a {what} codex session does not trust its own directory: {args:?}"
+            );
+            assert!(args.contains(&"-c".to_string()), "{args:?}");
+        }
+    }
+
+    /// The key is quoted TOML, so a directory that could close the quote is
+    /// left alone rather than setting some other key.
+    #[test]
+    fn a_directory_that_could_break_the_key_is_not_trusted_blindly() {
+        let account = Account::inherited(Agent::Codex);
+        let odd = new_session(Agent::Codex, PathBuf::from(r#"/work/we"ird"#), &account);
+        assert!(
+            !odd.args.join(" ").contains("trust_level"),
+            "{:?}",
+            odd.args
+        );
+        assert!(
+            odd.args.contains(&"--sandbox".to_string()),
+            "the rest of the launch must still be intact: {:?}",
+            odd.args
+        );
+    }
+
+    /// Every way a codex session can start goes through one of these two, so
+    /// it cannot be unattended on one path and prompting on the other.
+    #[test]
+    fn every_codex_launch_carries_the_same_flags() {
+        let account = Account::inherited(Agent::Codex);
+        let started = new_session(Agent::Codex, PathBuf::from("/here"), &account);
+        let resumed = resume(&session(Agent::Codex, "uuid-9", "/work"), &account);
+
+        for (what, args) in [("new", &started.args), ("resume", &resumed.args)] {
+            for flag in CODEX_FLAGS {
+                assert!(
+                    args.contains(&flag.to_string()),
+                    "a {what} codex session launched without {flag}: {args:?}"
+                );
+            }
+        }
+        assert!(
+            CODEX_FLAGS.contains(&"danger-full-access"),
+            "the sandbox value is what this pins; without it these assertions say nothing"
         );
     }
 

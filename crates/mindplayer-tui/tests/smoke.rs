@@ -150,6 +150,31 @@ fn append_codex_observer_event(path: &Path, command_marker: &str, total_tokens: 
     .expect("append final token_count");
 }
 
+fn append_long_codex_execution(path: &Path, final_marker: &str) {
+    let mut file = std::fs::OpenOptions::new()
+        .append(true)
+        .open(path)
+        .expect("open codex transcript for long execution append");
+    for index in 0..12 {
+        let body = format!("wrapped-result-{index}-{}", "x".repeat(300));
+        writeln!(
+            file,
+            "{{\"timestamp\":\"2026-07-13T10:01:{index:02}Z\",\"type\":\"response_item\",\"payload\":{{\"type\":\"function_call_output\",\"call_id\":\"call-{index}\",\"output\":\"{body}\"}}}}"
+        )
+        .expect("append wrapped function result");
+    }
+    writeln!(
+        file,
+        "{{\"timestamp\":\"2026-07-13T10:01:20Z\",\"type\":\"response_item\",\"payload\":{{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{{\"type\":\"output_text\",\"text\":\"{final_marker}\"}}]}}}}"
+    )
+    .expect("append final scroll marker");
+    writeln!(
+        file,
+        "{{\"timestamp\":\"2026-07-13T10:01:21Z\",\"type\":\"event_msg\",\"payload\":{{\"type\":\"token_count\",\"info\":{{\"total_token_usage\":{{\"input_tokens\":40800,\"cached_input_tokens\":30700,\"output_tokens\":3410,\"reasoning_output_tokens\":170,\"total_tokens\":44210}},\"last_token_usage\":{{\"input_tokens\":800,\"cached_input_tokens\":700,\"output_tokens\":200,\"reasoning_output_tokens\":20,\"total_tokens\":1000}}}}}}}}"
+    )
+    .expect("append updated token_count");
+}
+
 fn observer_panel_text(screen: &str) -> String {
     let mut panel = String::new();
     let mut in_panel = false;
@@ -187,6 +212,7 @@ fn contains_observer_native_usage(screen: &str) -> bool {
 /// a shared vt100 parser we can snapshot at any time.
 struct Mp {
     parser: Arc<Mutex<vt100::Parser>>,
+    raw_output: Arc<Mutex<Vec<u8>>>,
     writer: Box<dyn Write + Send>,
     child: Box<dyn portable_pty::Child + Send + Sync>,
     _master: Box<dyn MasterPty + Send>,
@@ -313,15 +339,18 @@ impl Mp {
         let mut reader = pair.master.try_clone_reader().expect("reader");
         let writer = pair.master.take_writer().expect("writer");
         let parser = Arc::new(Mutex::new(vt100::Parser::new(rows, cols, 0)));
+        let raw_output = Arc::new(Mutex::new(Vec::new()));
 
         {
             let parser = parser.clone();
+            let raw_output = Arc::clone(&raw_output);
             std::thread::spawn(move || {
                 let mut buf = [0u8; 8192];
                 loop {
                     match reader.read(&mut buf) {
                         Ok(0) | Err(_) => break,
                         Ok(n) => {
+                            raw_output.lock().unwrap().extend_from_slice(&buf[..n]);
                             if let Ok(mut p) = parser.lock() {
                                 p.process(&buf[..n]);
                             }
@@ -333,6 +362,7 @@ impl Mp {
 
         Mp {
             parser,
+            raw_output,
             writer,
             child,
             _master: pair.master,
@@ -371,6 +401,10 @@ impl Mp {
     /// Current rendered screen as plain text.
     fn screen(&self) -> String {
         self.parser.lock().unwrap().screen().contents()
+    }
+
+    fn raw_output_contains(&self, needle: &str) -> bool {
+        String::from_utf8_lossy(&self.raw_output.lock().unwrap()).contains(needle)
     }
 
     fn send(&mut self, bytes: &[u8]) {
@@ -561,6 +595,7 @@ fn observer_tracks_codex_jsonl_appends_without_stealing_prompt_input() {
     const ORDINARY_PROMPT: &str = "ordinary-observe-smoke";
     const POST_TOGGLE_PROMPT: &str = "after-toggle-observe-smoke";
     const FUNCTION_MARKER: &str = "mp_observe_smoke_function_call";
+    const SCROLL_MARKER: &str = "mp_observe_scroll_reached_end";
     const TOKEN_TOTAL: u64 = 43_210;
 
     for (label, rows, cols) in [("narrow", 28, 88), ("wide", 40, 160)] {
@@ -569,6 +604,10 @@ fn observer_tracks_codex_jsonl_appends_without_stealing_prompt_input() {
 
         mp.send(b"\r");
         mp.expect(PANE_READY, STEP_TIMEOUT, "agent pane came up");
+        assert!(
+            !mp.raw_output_contains("starting..."),
+            "session entry must not publish a placeholder frame before the PTY"
+        );
 
         mp.send(ORDINARY_PROMPT.as_bytes());
         mp.expect(
@@ -607,6 +646,8 @@ fn observer_tracks_codex_jsonl_appends_without_stealing_prompt_input() {
                 panel.contains("PROMPTS")
                     && panel.contains("THIS TURN")
                     && panel.contains("43.2K TOKENS")
+                    && (panel.contains("2 MODEL CALLS") || panel.contains("2 calls"))
+                    && (panel.contains("latest call 23.2K") || panel.contains("latest 23.2K"))
                     && panel.contains("YOUR TEXT")
                     && panel.contains("~5 tokens")
                     && panel.contains(FUNCTION_MARKER)
@@ -623,6 +664,33 @@ fn observer_tracks_codex_jsonl_appends_without_stealing_prompt_input() {
         assert!(
             !observer_panel_text(&mp.screen()).contains("session cumulative"),
             "Trace must not foreground the all-session total"
+        );
+
+        // Long JSONL events wrap to many terminal rows. The real mouse wheel
+        // over the execution region must use that rendered height, not the
+        // number of logical events, or the final marker is unreachable.
+        append_long_codex_execution(selected_codex_file, SCROLL_MARKER);
+        mp.expect(
+            "44.2K TOKENS",
+            STEP_TIMEOUT,
+            "Trace ingested the long execution batch",
+        );
+        assert!(
+            !observer_panel_text(&mp.screen()).contains(SCROLL_MARKER),
+            "the end marker should begin below the execution viewport"
+        );
+        let wheel_down = if label == "narrow" {
+            b"\x1b[<65;40;18M".as_slice()
+        } else {
+            b"\x1b[<65;100;18M".as_slice()
+        };
+        for _ in 0..30 {
+            mp.send(wheel_down);
+        }
+        mp.expect(
+            SCROLL_MARKER,
+            STEP_TIMEOUT,
+            "mouse wheel scrolls wrapped execution history to the end",
         );
         println!(
             "---- {label} observer screen after append ----\n{}\n---- end {label} observer screen ----",

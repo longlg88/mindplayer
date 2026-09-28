@@ -10,12 +10,16 @@ retired.
 The selected session's PTY keeps running while Trace displays available local
 transcript events. The primary token figure is provider-recorded usage
 accumulated across the selected turn: context input, cached input, output, and
-reasoning. The selected user prompt's UTF-8 text estimate is secondary and
-carries a `~` marker because provider logs do not record message-only
-tokenization. Session-cumulative totals are intentionally omitted.
+reasoning. Trace also shows how many model calls make up that total and the
+latest call's size, so a multi-step agent turn is not mistaken for one context
+window. The selected user prompt's UTF-8 text estimate is secondary and carries
+a `~` marker because provider logs do not record message-only tokenization.
+Session-cumulative totals are intentionally omitted.
 **Up/Down** selects a prompt. The mouse wheel selects prompts while it is over
 the prompt rail and scrolls event history while it is over the execution pane;
 **PageUp/PageDown** also scrolls event history.
+Execution scrolling is measured from rendered rows, including wrapped tool
+results, rather than from the number of underlying JSONL events.
 Trace is read-only and consumes keys and mouse input while open, so navigation
 never leaks into a mouse-aware Codex session. The toggle is per live pane, in
 memory only.

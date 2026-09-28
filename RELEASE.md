@@ -54,6 +54,12 @@ none  = docs, chore, ci, test, style
 
 ## Changelog
 
+### Unreleased
+
+- Clarify selected-turn token totals with model-call count and latest-call
+  usage, make wrapped Trace execution logs mouse-scrollable, and avoid
+  transient/repeated redraws while entering or observing a new session.
+
 ### v0.43.0 — 2026-09-21
 
 - Open a full-screen, read-only Trace for the focused session with Ctrl-G while

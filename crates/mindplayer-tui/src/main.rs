@@ -733,6 +733,11 @@ fn handle_main_key(app: &mut App, key: KeyEvent) {
                 _ => {}
             }
         } else {
+            // Anything but a second `x` calls the pending erase off, so it can
+            // only happen on two deliberate presses in a row.
+            if !matches!(key.code, KeyCode::Char('x')) {
+                app.accounts_cancel_remove();
+            }
             match key.code {
                 KeyCode::Esc | KeyCode::Char('q') => app.close_accounts(),
                 KeyCode::Up | KeyCode::Char('k') => app.accounts_move(-1),

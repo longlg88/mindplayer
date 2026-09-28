@@ -2898,7 +2898,7 @@ const ACCOUNT_HINTS: &[&str] = &[
     "r rename",
     "l sign in",
     "d off",
-    "x remove",
+    "x erase login",
     "esc close",
 ];
 

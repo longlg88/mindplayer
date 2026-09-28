@@ -271,7 +271,7 @@ session run on*:
 | <kbd>w</kbd> | **use this one** — new sessions of that provider start here; the rest of its accounts drop to reserve |
 | <kbd>Enter</kbd> | start a session on the highlighted account **now**, without changing which one the next session takes |
 | <kbd>a</kbd> | add an account — name it, then its provider's own sign‑in runs in a pane, inside the new account's home |
-| <kbd>r</kbd> | rename (the login moves with the name) · <kbd>l</kbd> sign in again · <kbd>d</kbd> off · <kbd>x</kbd> remove |
+| <kbd>r</kbd> | rename (the login moves with the name) · <kbd>l</kbd> sign in again · <kbd>d</kbd> off · <kbd>x</kbd> erase login (twice) |
 
 Exactly one account per provider is *in use*, so the choice never depends on
 list order. The footer keeps one line per provider — the account a new session

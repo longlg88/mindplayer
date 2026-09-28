@@ -41,6 +41,9 @@ pub struct AccountsPanel {
     pub naming: Option<NameFor>,
     /// Why the last action did not happen, shown until the next one.
     pub error: Option<String>,
+    /// The account `x` is waiting on a second press for. Erasing a login
+    /// cannot be undone, so it is asked for rather than done on one key.
+    pub confirm_remove: Option<String>,
 }
 
 /// Which account each session belongs to, worked out once for a redraw.
@@ -273,11 +276,39 @@ impl App {
             self.set_error("a pane is running on this account — close it first");
             return;
         }
-        // The slot's directory stays: it holds a real login, and deleting it
-        // would sign the user out of something MindPlayer did not create.
-        self.accounts.remove(i);
+        let name = self.accounts[i].name.clone();
+        let asked = self
+            .accounts_panel
+            .as_ref()
+            .and_then(|p| p.confirm_remove.clone());
+        if asked.as_deref() != Some(name.as_str()) {
+            if let Some(panel) = self.accounts_panel.as_mut() {
+                panel.confirm_remove = Some(name.clone());
+            }
+            self.status =
+                format!("x again to remove {name} and erase its login — any other key cancels");
+            return;
+        }
+
+        // Erasing the slot is the point: leaving it behind is what made
+        // removing an account look like it had not worked.
+        let account = self.accounts.remove(i);
+        match mindplayer_core::accounts::forget_login(&account, &limits_home_for_app()) {
+            // Already out of the list; say what was left rather than put it
+            // back and lose the removal too.
+            Err(e) => self.set_error(e),
+            Ok(()) => self.status = format!("removed {name} and erased its login"),
+        }
         self.persist_accounts();
+        self.accounts_cancel_remove();
         self.accounts_move(0);
+    }
+
+    /// Forget a pending `x`, so a stray second press cannot erase anything.
+    pub fn accounts_cancel_remove(&mut self) {
+        if let Some(panel) = self.accounts_panel.as_mut() {
+            panel.confirm_remove = None;
+        }
     }
 
     /// How many open panes belong to `account`.

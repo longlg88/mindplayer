@@ -491,3 +491,72 @@ mod a_row_we_invented_is_never_resumed {
         );
     }
 }
+
+/// Erasing a login cannot be undone, so `x` asks once before doing it.
+mod erasing_a_login {
+    use super::*;
+
+    /// The limits home is per-process, not per-test, so two tests sharing a
+    /// slot name share the directory one of them erases.
+    fn app_with_a_spare(name: &str) -> (App, PathBuf) {
+        let mut app = App::new();
+        let home = crate::app::limits_home_for_app();
+        let spare = Account::isolated(&home, Agent::Codex, name).unwrap();
+        let path = spare.slot_path();
+        let _ = std::fs::create_dir_all(&path);
+        app.accounts = vec![Account::inherited(Agent::Codex), spare];
+        app.open_accounts();
+        select(&mut app, Agent::Codex);
+        // Past the machine's own login, onto the spare.
+        app.accounts_move(1);
+        (app, path)
+    }
+
+    #[test]
+    fn one_press_asks_and_erases_nothing() {
+        let (mut app, path) = app_with_a_spare("one-press");
+        app.accounts_remove();
+
+        assert_eq!(
+            app.accounts.len(),
+            2,
+            "the account was removed on one press"
+        );
+        assert!(path.exists(), "the login was erased on one press");
+        assert!(app.status.contains("x again"), "{}", app.status);
+    }
+
+    #[test]
+    fn a_second_press_removes_the_account_and_erases_its_login() {
+        let (mut app, path) = app_with_a_spare("two-press");
+        app.accounts_remove();
+        app.accounts_remove();
+
+        assert_eq!(app.accounts.len(), 1, "{:?}", app.accounts);
+        assert!(!path.exists(), "the login survived: {path:?}");
+    }
+
+    #[test]
+    fn anything_in_between_calls_it_off() {
+        let (mut app, path) = app_with_a_spare("cancelled");
+        app.accounts_remove();
+        app.accounts_cancel_remove();
+        app.accounts_remove();
+
+        assert_eq!(
+            app.accounts.len(),
+            2,
+            "a cancelled erase still went through"
+        );
+        assert!(path.exists());
+    }
+
+    #[test]
+    fn the_machines_own_login_is_never_offered_for_erasing() {
+        let (mut app, _) = app_with_a_spare("inherited");
+        app.accounts_move(-1);
+        app.accounts_remove();
+        app.accounts_remove();
+        assert_eq!(app.accounts.len(), 2, "the inherited login was removed");
+    }
+}

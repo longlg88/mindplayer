@@ -11,9 +11,10 @@ that conflicts with macOS media controls or stealing a new PTY editing chord.
 The intermediate command popup and `:observe` command are retired. Read the
 selected session's local log; never infer exact file token costs or unrecorded
 reasoning. The primary token figure is provider-recorded usage accumulated
-across the selected user turn; the user's literal prompt text estimate is
-secondary and explicitly marked `~`. Cached input is a subset of input, not
-additive.
+across the selected user turn, accompanied by model-call count and latest-call
+size so repeated context processing is explicit; the user's literal prompt
+text estimate is secondary and explicitly marked `~`. Cached input is a subset
+of input, not additive.
 
 The HTML files are illustrative previews, not application surfaces. Earlier
 browser-dashboard and separate-window designs below are historical drafts,

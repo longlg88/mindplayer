@@ -4891,3 +4891,64 @@ mod codex_only_fetch_plan {
         assert!(carried.is_empty());
     }
 }
+
+/// Removing an account has to take its row with it. The stored reading is the
+/// whole footer until a live one lands, so a removed login went on being drawn
+/// and `x` looked like it had done nothing.
+mod removed_accounts_leave_the_footer {
+    use super::*;
+    use mindplayer_core::accounts::Account;
+    use mindplayer_core::limits::QuotaRow;
+
+    fn row(account: &str, label: &str) -> QuotaRow {
+        QuotaRow {
+            label: label.into(),
+            agent: Agent::Codex,
+            account: account.into(),
+            used_percent: Some(50.0),
+            ..Default::default()
+        }
+    }
+
+    fn app_with_cache(rows: Vec<QuotaRow>, accounts: Vec<Account>) -> App {
+        let mut app = isolated_app();
+        app.accounts = accounts;
+        app.limits = None;
+        app.quota_cache = Some((rows, Utc::now()));
+        app
+    }
+
+    #[test]
+    fn a_stored_row_for_a_login_that_is_gone_is_not_drawn() {
+        let app = app_with_cache(
+            vec![row("kept", "codex weekly"), row("removed", "codex weekly")],
+            vec![Account::isolated(&std::env::temp_dir(), Agent::Codex, "kept").unwrap()],
+        );
+        let names: Vec<String> = app.quota_rows().iter().map(|r| r.account.clone()).collect();
+        assert!(
+            !names.contains(&"removed".to_string()),
+            "a removed login is still drawn from the cache: {names:?}"
+        );
+        assert!(names.contains(&"kept".to_string()), "{names:?}");
+    }
+
+    /// A cache written before accounts were recorded names no login. Those
+    /// rows are the machine's own, which cannot be removed, so they stay.
+    #[test]
+    fn a_row_from_before_accounts_existed_survives() {
+        let app = app_with_cache(vec![row("", "codex weekly")], Vec::new());
+        assert_eq!(app.quota_rows().len(), 1);
+    }
+
+    #[test]
+    fn a_live_reading_still_wins_over_the_cache() {
+        let mut app = app_with_cache(
+            vec![row("kept", "codex weekly")],
+            vec![Account::isolated(&std::env::temp_dir(), Agent::Codex, "kept").unwrap()],
+        );
+        let mut fresh = row("kept", "codex weekly");
+        fresh.used_percent = Some(91.0);
+        app.limits = Some(vec![fresh]);
+        assert_eq!(app.quota_rows()[0].used_percent, Some(91.0));
+    }
+}

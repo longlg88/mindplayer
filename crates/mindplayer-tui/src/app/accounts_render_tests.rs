@@ -126,7 +126,7 @@ fn a_refusal_is_shown_where_the_action_was_taken() {
     );
 }
 
-/// The hint ran off the end of a fixed-width popup, so `x remove` and
+/// The hint ran off the end of a fixed-width popup, so `x erase login` and
 /// `esc close` were simply not on screen. A key the user cannot see is the
 /// same as a key that does not exist.
 #[test]
@@ -141,7 +141,7 @@ fn every_key_stays_on_screen_at_any_width() {
         for hint in [
             "w use this one",
             "enter session on it",
-            "x remove",
+            "x erase login",
             "esc close",
         ] {
             assert!(
@@ -311,7 +311,7 @@ fn the_readme_describes_the_screen_that_exists() {
         ("<kbd>Enter</kbd>", "enter session on it"),
         ("<kbd>a</kbd>", "a add"),
         ("<kbd>r</kbd>", "r rename"),
-        ("<kbd>x</kbd>", "x remove"),
+        ("<kbd>x</kbd>", "x erase login"),
     ] {
         assert!(
             section.contains(documented),

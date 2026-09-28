@@ -1042,14 +1042,43 @@ impl App {
     /// to the last good reading for the same account and the footer says how
     /// old it is.
     fn quota_view(&self) -> (Vec<mindplayer_core::limits::QuotaRow>, bool) {
-        let cached = self.quota_cache.as_ref().map(|(rows, _)| rows);
+        let cached = self
+            .quota_cache
+            .as_ref()
+            .map(|(rows, _)| self.rows_of_current_accounts(rows));
         let Some(live) = self.limits.clone() else {
-            return (cached.cloned().unwrap_or_default(), cached.is_some());
+            return (
+                cached.clone().unwrap_or_default(),
+                cached.is_some_and(|rows| !rows.is_empty()),
+            );
         };
         let Some(cached) = cached else {
             return (live, false);
         };
-        mindplayer_core::limits::merge_with_last_good(&live, cached)
+        mindplayer_core::limits::merge_with_last_good(&live, &cached)
+    }
+
+    /// The stored rows that still belong to a login this machine has.
+    ///
+    /// The cache outlives the accounts in it, and until a live reading lands
+    /// it is the whole footer — so a removed account went on being drawn and
+    /// removing it looked like it had not worked. A row from a cache written
+    /// before accounts were recorded carries no name and is kept: it is the
+    /// machine's own login, which cannot be removed.
+    fn rows_of_current_accounts(
+        &self,
+        rows: &[mindplayer_core::limits::QuotaRow],
+    ) -> Vec<mindplayer_core::limits::QuotaRow> {
+        rows.iter()
+            .filter(|row| {
+                row.account.is_empty()
+                    || self
+                        .accounts
+                        .iter()
+                        .any(|a| a.provider == row.agent && a.name == row.account)
+            })
+            .cloned()
+            .collect()
     }
 }
 

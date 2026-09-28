@@ -352,6 +352,36 @@ fn one_primary_per_provider(accounts: &mut [Account]) {
     }
 }
 
+/// Delete the sign-in an isolated account keeps, and the home holding it.
+///
+/// Removing an account from the list left its sign-in on disk, so the login
+/// information was never actually gone — which is the thing someone removing
+/// an account is usually trying to be rid of.
+///
+/// Only a directory MindPlayer itself laid down under `accounts/<provider>/`
+/// is removed. The login this machine came with lives in the provider's own
+/// home and is not MindPlayer's to delete; a slot pointing anywhere else is
+/// refused rather than trusted, because this deletes a directory whole.
+///
+/// # Errors
+/// Returns the reason when the slot is not one of ours, or the delete fails.
+pub fn forget_login(account: &Account, home: &Path) -> Result<(), String> {
+    let Slot::Isolated { path } = &account.slot else {
+        return Err("the login already on this machine is not MindPlayer's to delete".into());
+    };
+    let expected = accounts_dir(home, account.provider).join(&account.name);
+    if path != &expected {
+        return Err(format!(
+            "this account's home is not one MindPlayer made ({}), so it is left alone",
+            path.display()
+        ));
+    }
+    if !path.exists() {
+        return Ok(());
+    }
+    std::fs::remove_dir_all(path).map_err(|e| format!("could not delete the sign-in: {e}"))
+}
+
 /// Which account wrote `file`, judged by where it sits.
 ///
 /// Resuming has to land on the account that started the session, because the
@@ -729,5 +759,73 @@ mod tests {
             accounts.iter().all(|a| a.name != "../../escape"),
             "{accounts:?}"
         );
+    }
+}
+
+/// Erasing a login deletes a directory whole, so what it will delete matters.
+#[cfg(test)]
+mod forget_login_tests {
+    use super::*;
+
+    fn home() -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "mp-forget-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn an_accounts_own_home_is_deleted() {
+        let home = home();
+        let account = Account::isolated(&home, Agent::Codex, "spare").unwrap();
+        let path = account.slot_path();
+        std::fs::create_dir_all(&path).unwrap();
+        std::fs::write(path.join("marker"), b"x").unwrap();
+
+        forget_login(&account, &home).unwrap();
+        assert!(!path.exists(), "the account's home survived: {path:?}");
+    }
+
+    #[test]
+    fn the_machines_own_login_is_refused() {
+        let home = home();
+        let err = forget_login(&Account::inherited(Agent::Codex), &home).unwrap_err();
+        assert!(err.contains("not MindPlayer's to delete"), "{err}");
+    }
+
+    /// The path is checked against where MindPlayer puts slots rather than
+    /// trusted, because this deletes a directory and everything under it.
+    #[test]
+    fn a_home_somewhere_else_is_refused_and_left_alone() {
+        let home = home();
+        let elsewhere = home.join("not-ours");
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        let account = Account {
+            provider: Agent::Codex,
+            name: "spare".into(),
+            slot: Slot::Isolated {
+                path: elsewhere.clone(),
+            },
+            role: Role::Primary,
+            disabled: false,
+        };
+
+        let err = forget_login(&account, &home).unwrap_err();
+        assert!(err.contains("not one MindPlayer made"), "{err}");
+        assert!(
+            elsewhere.exists(),
+            "a directory outside the slots was deleted"
+        );
+    }
+
+    #[test]
+    fn a_home_that_is_already_gone_is_not_an_error() {
+        let home = home();
+        let account = Account::isolated(&home, Agent::Codex, "never-made").unwrap();
+        forget_login(&account, &home).unwrap();
     }
 }

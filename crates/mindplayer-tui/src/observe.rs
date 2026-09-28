@@ -160,8 +160,10 @@ impl Observer {
             }
             ReadOutcome::Unchanged => false,
             ReadOutcome::Error(e) => {
-                self.notice = merge_notice(&self.notice, &e);
-                true
+                let notice = merge_notice(&self.notice, &e);
+                let changed = notice != self.notice;
+                self.notice = notice;
+                changed
             }
         }
     }
@@ -237,8 +239,14 @@ fn push_observed_event(items: &mut VecDeque<String>, item: String) {
 
 fn prompt_usage_line(usage: Usage) -> String {
     format!(
-        "{PROMPT_USAGE_PREFIX}total={} input={} cached={} output={} reasoning={}",
-        usage.total, usage.input, usage.cached, usage.output, usage.reasoning
+        "{PROMPT_USAGE_PREFIX}total={} input={} cached={} output={} reasoning={} calls={} latest={}",
+        usage.total,
+        usage.input,
+        usage.cached,
+        usage.output,
+        usage.reasoning,
+        usage.calls,
+        usage.latest
     )
 }
 
@@ -254,6 +262,8 @@ pub(crate) fn prompt_usage_from_line(line: &str) -> Option<Usage> {
             "cached" => usage.cached = value,
             "output" => usage.output = value,
             "reasoning" => usage.reasoning = value,
+            "calls" => usage.calls = value,
+            "latest" => usage.latest = value,
             _ => return None,
         }
     }
@@ -503,7 +513,7 @@ impl JsonlFollower {
     }
 
     fn prompt_usage_delta(&mut self, usage: Option<UsageRecord>) -> Option<Usage> {
-        match usage? {
+        let delta = match usage? {
             UsageRecord::Delta(delta) => (delta.total > 0).then_some(delta),
             UsageRecord::Codex { cumulative, last } => {
                 let delta = match self.codex_cumulative {
@@ -514,7 +524,8 @@ impl JsonlFollower {
                 self.codex_cumulative = Some(cumulative);
                 delta.filter(|delta| delta.total > 0)
             }
-        }
+        }?;
+        Some(delta.as_model_call())
     }
 }
 
@@ -553,6 +564,8 @@ pub(crate) struct Usage {
     pub(crate) output: u64,
     pub(crate) reasoning: u64,
     pub(crate) total: u64,
+    pub(crate) calls: u64,
+    pub(crate) latest: u64,
 }
 
 impl Usage {
@@ -574,6 +587,7 @@ impl Usage {
             output,
             reasoning: 0,
             total,
+            ..Self::default()
         }
     }
 
@@ -597,7 +611,15 @@ impl Usage {
             output: self.output.checked_sub(previous.output)?,
             reasoning: self.reasoning.checked_sub(previous.reasoning)?,
             total: self.total.checked_sub(previous.total)?,
+            calls: 0,
+            latest: 0,
         })
+    }
+
+    fn as_model_call(mut self) -> Self {
+        self.calls = 1;
+        self.latest = self.total;
+        self
     }
 
     fn saturating_add(self, other: Self) -> Self {
@@ -609,6 +631,12 @@ impl Usage {
             output: self.output.saturating_add(other.output),
             reasoning: self.reasoning.saturating_add(other.reasoning),
             total: self.total.saturating_add(other.total),
+            calls: self.calls.saturating_add(other.calls),
+            latest: if other.latest > 0 {
+                other.latest
+            } else {
+                self.latest
+            },
         }
     }
 }
@@ -1169,6 +1197,20 @@ mod tests {
         assert_eq!(prompt_usage[0].cached, 30_000);
         assert_eq!(prompt_usage[0].output, 3_210);
         assert_eq!(prompt_usage[0].reasoning, 150);
+        assert_eq!(prompt_usage[0].calls, 2);
+        assert_eq!(prompt_usage[0].latest, 23_210);
+    }
+
+    #[test]
+    fn repeated_reader_error_only_requests_one_redraw() {
+        let mut observer = Observer::default();
+        assert!(observer.apply_outcome(ReadOutcome::Error("waiting for transcript".into())));
+        let notice = observer.notice.clone();
+        assert!(
+            !observer.apply_outcome(ReadOutcome::Error("waiting for transcript".into())),
+            "an unchanged notice must not continuously redraw Trace"
+        );
+        assert_eq!(observer.notice, notice);
     }
 
     fn outcome_events(outcome: ReadOutcome) -> Vec<String> {

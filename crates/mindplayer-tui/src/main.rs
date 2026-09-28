@@ -28,7 +28,7 @@ use crossterm::terminal::{
 };
 #[cfg(test)]
 use mindplayer_core::Agent;
-use ratatui::backend::CrosstermBackend;
+use ratatui::backend::{CrosstermBackend, TestBackend};
 use ratatui::Terminal;
 use render_writer::FrameSink;
 use std::io::{self, Write};
@@ -275,6 +275,20 @@ fn run(terminal: &mut Terminal<CrosstermBackend<FrameSink>>, app: &mut App) -> R
         // from a fragmented cursor-position report. Release genuine Escapes on
         // the normal event-loop clock even when no further key arrives.
         app.flush_terminal_reply_guards();
+        if app.screen == Screen::Main && app.pending.is_some() {
+            // Pane sizes are normally recorded by `ui::render`, but publishing
+            // that first layout used to expose a transient `starting...` frame
+            // before the PTY existed. Measure the exact same layout against an
+            // in-memory backend, spawn at those sizes, then publish only the
+            // real terminal frame.
+            let size = terminal.size()?;
+            let mut measurement = Terminal::new(TestBackend::new(size.width, size.height))?;
+            measurement.draw(|f| ui::render(f, app))?;
+            while app.pending.is_some() {
+                app.spawn_pending();
+            }
+            needs_draw = true;
+        }
         if needs_draw {
             // `FrameSink` (see `render_writer`) buffers this in memory and
             // hands it to a background writer thread on flush, so a
@@ -284,20 +298,15 @@ fn run(terminal: &mut Terminal<CrosstermBackend<FrameSink>>, app: &mut App) -> R
             needs_draw = false;
         }
 
-        // After a Main draw the right-pane size is known, so spawn any pending
-        // PTY and keep an existing one sized correctly.
+        // Keep existing PTYs aligned with the pane geometry recorded by the
+        // visible draw. Pending PTYs were already measured and spawned above.
         if app.screen == Screen::Main {
-            if app.pending.is_some() {
-                app.spawn_pending();
+            app.sync_pty_size();
+            if app.reap_pty() {
                 needs_draw = true;
-            } else {
-                app.sync_pty_size();
-                if app.reap_pty() {
-                    needs_draw = true;
-                }
             }
             // Track which sessions are actively producing output (status badge).
-            if app.poll_activity() {
+            if app.poll_activity() && !app.observer_open() {
                 needs_draw = true;
             }
             if app.poll_observer() {
@@ -365,7 +374,7 @@ fn run(terminal: &mut Terminal<CrosstermBackend<FrameSink>>, app: &mut App) -> R
         }
 
         // New PTY output → redraw the live pane.
-        if app.pty_dirty() {
+        if app.pty_dirty() && !app.observer_open() {
             needs_draw = true;
         }
 
@@ -420,7 +429,7 @@ fn run(terminal: &mut Terminal<CrosstermBackend<FrameSink>>, app: &mut App) -> R
             }
             // Keep redrawing briefly after output so a "working" badge can decay
             // back to "idle" even when no new events arrive.
-            if app.any_recent_activity() {
+            if app.any_recent_activity() && !app.observer_open() {
                 needs_draw = true;
             }
         }

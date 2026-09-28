@@ -1915,6 +1915,17 @@ fn trace_event_line(line: &str) -> Line<'static> {
     ])
 }
 
+/// Maximum vertical offset for Trace's execution pane, measured in rendered
+/// terminal rows. A single event often wraps across many rows; counting only
+/// logical `Line`s makes overflowing content appear unscrollable.
+fn trace_detail_max_scroll(detail: &[Line<'_>], width: u16, height: u16) -> usize {
+    let content_width = width.saturating_sub(4); // `Padding::horizontal(2)`
+    Paragraph::new(detail.to_vec())
+        .wrap(Wrap { trim: false })
+        .line_count(content_width)
+        .saturating_sub(height as usize)
+}
+
 fn observe_panel(f: &mut Frame, app: &mut App, area: Rect) {
     let Some(id) = app.focused_pane().map(str::to_owned) else {
         return;
@@ -2060,11 +2071,16 @@ fn observe_panel(f: &mut Frame, app: &mut App, area: Rect) {
             if roomy_trace {
                 detail.push(Line::from(vec![
                     Span::styled(
-                        "THIS TURN  ",
+                        "THIS TURN TOTAL  ",
                         Style::default().fg(OBSERVER).add_modifier(Modifier::BOLD),
                     ),
                     Span::styled(
-                        format!("{} TOKENS · PROVIDER RECORDED", human_tokens(usage.total)),
+                        format!(
+                            "{} TOKENS · {} MODEL CALL{} · PROVIDER RECORDED",
+                            human_tokens(usage.total),
+                            usage.calls,
+                            if usage.calls == 1 { "" } else { "S" }
+                        ),
                         Style::default()
                             .fg(Color::Rgb(237, 200, 121))
                             .add_modifier(Modifier::BOLD),
@@ -2080,6 +2096,9 @@ fn observe_panel(f: &mut Frame, app: &mut App, area: Rect) {
                 if usage.reasoning > 0 {
                     usage_parts.push(format!("reasoning {}", usage.reasoning));
                 }
+                if usage.latest > 0 {
+                    usage_parts.push(format!("latest call {}", human_tokens(usage.latest)));
+                }
                 detail.push(Line::from(Span::styled(
                     usage_parts.join(" · "),
                     Style::default().fg(DIM),
@@ -2087,8 +2106,10 @@ fn observe_panel(f: &mut Frame, app: &mut App, area: Rect) {
             } else {
                 detail.push(Line::from(Span::styled(
                     format!(
-                        "THIS TURN {} TOKENS · input {} · cache {} · output {} · reasoning {}",
+                        "THIS TURN TOTAL {} TOKENS · {} calls · latest {} · input {} · cache {} · output {} · reasoning {}",
                         human_tokens(usage.total),
+                        usage.calls,
+                        human_tokens(usage.latest),
                         usage.input,
                         usage.cached,
                         usage.output,
@@ -2100,7 +2121,7 @@ fn observe_panel(f: &mut Frame, app: &mut App, area: Rect) {
         } else {
             detail.push(Line::from(Span::styled(
                 if roomy_trace {
-                    "THIS TURN  waiting for provider usage record"
+                    "THIS TURN TOTAL  waiting for provider usage record"
                 } else {
                     "TURN USAGE waiting for provider usage record"
                 },
@@ -2132,9 +2153,9 @@ fn observe_panel(f: &mut Frame, app: &mut App, area: Rect) {
             "Private reasoning is not displayed. Only recorded prompts, tool calls, results, and usage are shown.",
             Style::default().fg(DIM),
         )));
-        let detail_inner_height = columns[1].height.saturating_sub(2) as usize;
-        let max_scroll = detail.len().saturating_sub(detail_inner_height);
-        let offset = app.observe_scroll.min(max_scroll).min(u16::MAX as usize) as u16;
+        let max_scroll = trace_detail_max_scroll(&detail, columns[1].width, columns[1].height);
+        app.observe_scroll = app.observe_scroll.min(max_scroll);
+        let offset = app.observe_scroll.min(u16::MAX as usize) as u16;
         f.render_widget(
             Paragraph::new(detail)
                 .block(
@@ -3306,6 +3327,20 @@ mod tests {
             wrapped_popup_height(&[Line::from(""), short], width),
             4,
             "an empty spacer still costs its row"
+        );
+    }
+
+    #[test]
+    fn trace_scroll_range_counts_wrapped_terminal_rows() {
+        let detail = vec![Line::from("word ".repeat(40))];
+        assert!(
+            trace_detail_max_scroll(&detail, 20, 5) > 0,
+            "a long logical line occupies multiple rendered rows and must scroll"
+        );
+        assert_eq!(
+            trace_detail_max_scroll(&[Line::from("short")], 20, 5),
+            0,
+            "content that fits must not invent scrollback"
         );
     }
 

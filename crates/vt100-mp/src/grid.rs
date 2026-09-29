@@ -209,7 +209,9 @@ impl Grid {
                     cursor = Some((lines.len(), cursor_col));
                 }
                 lines.push(LogicalLine::fixed(
-                    (0..row.cols()).filter_map(|c| row.get(c).cloned()).collect(),
+                    (0..row.cols())
+                        .filter_map(|c| row.get(c).cloned())
+                        .collect(),
                 ));
                 continue;
             }

@@ -1741,6 +1741,57 @@ mod vt100_reflow {
         assert_eq!(before, painted(&p));
     }
 
+    /// The same screen, narrowed. Splitting each painted row in two pushed the
+    /// top of the screen into scrollback, so the pane showed different rows
+    /// than it had a moment earlier — text moving while the window is dragged.
+    #[test]
+    fn a_repainted_screen_keeps_its_rows_when_narrowed() {
+        let mut p = Parser::new(6, 60, 100);
+        for r in 1..=6 {
+            p.process(format!("\x1b[{r};1H\x1b[Krow {r} ").as_bytes());
+            p.process("x".repeat(50).as_bytes());
+        }
+        let before = painted(&p);
+        p.set_size(6, 40);
+        let after = painted(&p);
+
+        assert_eq!(after.len(), before.len(), "{after:#?}");
+        for (i, (was, now)) in before.iter().zip(after.iter()).enumerate() {
+            assert!(
+                now.trim_end().len() <= 40,
+                "row {i} is wider than the pane: {now:?}"
+            );
+            assert!(
+                was.starts_with(now.trim_end()),
+                "row {i} is no longer the row it was:\n  was: {was:?}\n  now: {now:?}"
+            );
+        }
+    }
+
+    /// A pane holding both kinds at once: a streamed transcript that scrolled,
+    /// then a painted footer. The transcript must still rewrap and the footer
+    /// must still hold its rows.
+    #[test]
+    fn a_streamed_transcript_still_rewraps_under_a_painted_footer() {
+        let mut p = Parser::new(8, 20, 100);
+        for i in 0..6 {
+            p.process(format!("line {i} is longer than twenty columns wide\r\n").as_bytes());
+        }
+        p.process(b"\x1b[8;1H\x1b[Kfooter stays put");
+        p.set_size(8, 60);
+        let seen = painted(&p);
+
+        assert!(
+            seen.iter()
+                .any(|l| l == "line 5 is longer than twenty columns wide"),
+            "the streamed part stopped rewrapping: {seen:#?}"
+        );
+        assert!(
+            seen.iter().any(|l| l == "footer stays put"),
+            "the painted row was lost: {seen:#?}"
+        );
+    }
+
     /// A double-width character must not be split across the wrap point.
     #[test]
     fn a_wide_character_is_never_cut_in_half() {

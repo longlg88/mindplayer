@@ -15,6 +15,28 @@ pub struct Grid {
     scrollback_offset: usize,
 }
 
+/// One line handed to [`Grid::rewrap`]: its cells, and whether the width may
+/// be changed under it.
+struct LogicalLine {
+    cells: Vec<crate::cell::Cell>,
+    /// A row the application painted by absolute address. It keeps its own
+    /// row rather than being rewrapped, so a repainted screen does not move.
+    fixed: bool,
+}
+
+impl LogicalLine {
+    fn wrapped(cells: Vec<crate::cell::Cell>) -> Self {
+        Self {
+            cells,
+            fixed: false,
+        }
+    }
+
+    fn fixed(cells: Vec<crate::cell::Cell>) -> Self {
+        Self { cells, fixed: true }
+    }
+}
+
 impl Grid {
     pub fn new(size: Size, scrollback_len: usize) -> Self {
         Self {
@@ -166,8 +188,8 @@ impl Grid {
         cursor_row: usize,
         cursor_col: usize,
         last_used: usize,
-    ) -> (Vec<Vec<crate::cell::Cell>>, Option<(usize, usize)>) {
-        let mut lines = Vec::new();
+    ) -> (Vec<LogicalLine>, Option<(usize, usize)>) {
+        let mut lines: Vec<LogicalLine> = Vec::new();
         let mut cursor = None;
         let mut line: Vec<crate::cell::Cell> = Vec::new();
         for (idx, row) in self
@@ -177,6 +199,20 @@ impl Grid {
             .take(last_used + 1)
             .enumerate()
         {
+            // A row the application addressed directly is one row of a screen
+            // it repaints, so it is its own line and is never rewrapped.
+            if row.painted() {
+                if !line.is_empty() {
+                    lines.push(LogicalLine::wrapped(std::mem::take(&mut line)));
+                }
+                if idx == cursor_row {
+                    cursor = Some((lines.len(), cursor_col));
+                }
+                lines.push(LogicalLine::fixed(
+                    (0..row.cols()).filter_map(|c| row.get(c).cloned()).collect(),
+                ));
+                continue;
+            }
             if idx == cursor_row {
                 cursor = Some((lines.len(), line.len() + cursor_col));
             }
@@ -192,11 +228,11 @@ impl Grid {
             };
             line.extend((0..keep).filter_map(|c| row.get(c).cloned()));
             if !row.wrapped() {
-                lines.push(std::mem::take(&mut line));
+                lines.push(LogicalLine::wrapped(std::mem::take(&mut line)));
             }
         }
         if !line.is_empty() {
-            lines.push(line);
+            lines.push(LogicalLine::wrapped(line));
         }
         (lines, cursor)
     }
@@ -208,14 +244,33 @@ impl Grid {
     /// the next row. A cell too wide for the pane itself stays put rather than
     /// wrapping forever against an edge it can never clear.
     fn rewrap(
-        lines: &[Vec<crate::cell::Cell>],
+        lines: &[LogicalLine],
         cols: u16,
         cursor: Option<(usize, usize)>,
     ) -> (Vec<crate::row::Row>, Option<(usize, u16)>) {
         let width = usize::from(cols);
         let mut rows: Vec<crate::row::Row> = Vec::new();
         let mut at = None;
-        for (index, line) in lines.iter().enumerate() {
+        for (index, entry) in lines.iter().enumerate() {
+            // A painted row keeps its own row: it is cut to the new width
+            // rather than spilling onto a second one, so every row below it
+            // stays where the application last put it.
+            if entry.fixed {
+                let mut row = crate::row::Row::new(cols);
+                row.paint(true);
+                for (col, cell) in entry.cells.iter().take(width).enumerate() {
+                    if let Some(dst) = row.get_mut(col as u16) {
+                        *dst = cell.clone();
+                    }
+                }
+                if at.is_none() && cursor.is_some_and(|(l, _)| l == index) {
+                    let col = cursor.map_or(0, |(_, c)| c).min(width.saturating_sub(1));
+                    at = Some((rows.len(), col as u16));
+                }
+                rows.push(row);
+                continue;
+            }
+            let line = &entry.cells;
             let mut row = crate::row::Row::new(cols);
             let mut col = 0usize;
             let mut i = 0usize;
@@ -314,6 +369,14 @@ impl Grid {
 
     pub fn drawing_row_mut(&mut self, row: u16) -> Option<&mut crate::row::Row> {
         self.drawing_rows_mut().nth(usize::from(row))
+    }
+
+    /// Record that the application addressed the current row directly.
+    pub fn mark_current_row_painted(&mut self) {
+        let row = self.pos.row;
+        if let Some(row) = self.drawing_row_mut(row) {
+            row.paint(true);
+        }
     }
 
     pub fn current_row_mut(&mut self) -> &mut crate::row::Row {

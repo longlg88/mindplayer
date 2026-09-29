@@ -1103,10 +1103,15 @@ impl Screen {
 
     // CSI H
     fn cup(&mut self, (row, col): (u16, u16)) {
-        self.grid_mut().set_pos(crate::grid::Pos {
+        let grid = self.grid_mut();
+        grid.set_pos(crate::grid::Pos {
             row: row - 1,
             col: col - 1,
         });
+        // An absolute address is how an application paints a screen rather
+        // than writing a line, and a painted row must survive a resize where
+        // it is instead of being rewrapped out from under the repaint.
+        grid.mark_current_row_painted();
     }
 
     // CSI J

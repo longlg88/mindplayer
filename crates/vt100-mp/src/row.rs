@@ -4,6 +4,8 @@ use crate::term::BufWrite as _;
 pub struct Row {
     cells: Vec<crate::cell::Cell>,
     wrapped: bool,
+    /// Set when the application put the cursor on this row by absolute address.
+    painted: bool,
 }
 
 impl Row {
@@ -11,6 +13,7 @@ impl Row {
         Self {
             cells: vec![crate::cell::Cell::default(); usize::from(cols)],
             wrapped: false,
+            painted: false,
         }
     }
 
@@ -27,6 +30,18 @@ impl Row {
             cell.clear(attrs);
         }
         self.wrapped = false;
+        self.painted = false;
+    }
+
+    /// Mark this row as one the application addressed directly, so a resize
+    /// leaves it where it is instead of rewrapping a screen being repainted.
+    pub fn paint(&mut self, painted: bool) {
+        self.painted = painted;
+    }
+
+    /// True when the application put the cursor here by absolute address.
+    pub fn painted(&self) -> bool {
+        self.painted
     }
 
     fn cells(&self) -> impl Iterator<Item = &crate::cell::Cell> {

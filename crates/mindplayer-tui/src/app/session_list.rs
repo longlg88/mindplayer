@@ -1222,25 +1222,43 @@ impl App {
         // account with its own home keeps its own state.
         let (accounts, cached_rows) =
             self.plan_probe(!force_refresh && shared_cache_is_fresh && needs_codex_reading);
+        // An account already asked about this run is not asked again, so its provider is not asked either.
+        let asked = self.unusable_asked.clone();
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
             let mut rows = cached_rows;
-            let mut unusable = Vec::new();
+            let mut unsure = Vec::new();
             for account in &accounts {
                 let taken = mindplayer_core::limits::account_quota_rows(account, &home);
-                // A reading that produced no figure is the only time it is
-                // worth asking the provider anything: on the ordinary path this
-                // costs nothing, and a provider that answers plainly is the
-                // only thing that can tell a missing account from a bad network.
+                // Only a reading with no figure is worth asking the provider about.
                 if !taken
                     .iter()
                     .any(mindplayer_core::limits::QuotaRow::has_gauge)
-                    && mindplayer_core::accounts::signed_out(account, &home) == Some(true)
+                    && !asked.contains(&crate::app::accounts_panel::unusable_key(account))
                 {
-                    unusable.push(account.clone());
+                    unsure.push(account.clone());
                 }
                 rows.extend(taken);
             }
+            // Asked side by side, so one hung CLI costs its own timeout rather than adding to every other's.
+            let unusable = std::thread::scope(|scope| {
+                let asks: Vec<_> = unsure
+                    .iter()
+                    .map(|account| {
+                        let home = &home;
+                        scope.spawn(move || {
+                            mindplayer_core::accounts::signed_out(account, home) == Some(true)
+                        })
+                    })
+                    .collect();
+                unsure
+                    .iter()
+                    .zip(asks)
+                    .filter_map(|(account, ask)| {
+                        ask.join().unwrap_or(false).then(|| account.clone())
+                    })
+                    .collect::<Vec<_>>()
+            });
             // Only here is every login's reading in one place, which is what it
             // takes to notice that two of them are the same login.
             mindplayer_core::limits::mark_shared_logins(&mut rows);
@@ -1277,18 +1295,19 @@ impl App {
         let rows = reading.rows;
         self.limits_rx = None;
         self.limits_started = None;
-        // Ask once per account per run: the refresh comes round every few
-        // minutes and a question that keeps reappearing is the thing being
-        // complained about, not the fix for it.
-        if self.unusable_prompt.is_none() {
-            self.unusable_prompt = reading.unusable.into_iter().find(|account| {
-                self.unusable_asked.insert(format!(
-                    "{}/{}",
-                    account.provider.as_str(),
-                    account.name
-                ))
-            });
+        // Asked once per account per run, and only when no other key is spoken for.
+        for account in reading.unusable {
+            let key = crate::app::accounts_panel::unusable_key(&account);
+            if !self.unusable_asked.contains(&key)
+                && !self
+                    .unusable_waiting
+                    .iter()
+                    .any(|w| crate::app::accounts_panel::unusable_key(w) == key)
+            {
+                self.unusable_waiting.push(account);
+            }
         }
+        self.raise_unusable_prompt();
         if mindplayer_core::limits::rows_are_rate_limited(&rows) {
             self.limits_backoff = self
                 .limits_backoff

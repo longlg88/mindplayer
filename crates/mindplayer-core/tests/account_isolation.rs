@@ -189,3 +189,47 @@ fn an_empty_home_reads_as_unavailable_and_a_real_one_does_not() {
     }
     eprintln!("checked availability for {exercised} provider(s)");
 }
+
+/// The trust override was once a dotted `-c` key, which codex splits on every
+/// `.` and then drops without a word, so a path holding a dot was never
+/// trusted. Checking the string's shape passed; only asking codex whether it
+/// applied catches that. The generated argument goes to codex with its value
+/// swapped for an invalid one: a type error proves the key landed.
+#[test]
+fn the_trust_override_reaches_codex_even_for_a_dotted_path() {
+    if which("codex").is_none() {
+        eprintln!("skip: codex is not installed");
+        return;
+    }
+    let home = scratch("trust-dotted");
+    let slot = Account::isolated(&home, Agent::Codex, "probe").unwrap();
+    std::fs::create_dir_all(slot.slot_path()).unwrap();
+
+    let started = mindplayer_core::resume::new_session(
+        Agent::Codex,
+        PathBuf::from("/tmp/first.last/work"),
+        &slot,
+    );
+    let trust = started
+        .args
+        .iter()
+        .find(|a| a.contains("trust_level"))
+        .expect("an isolated codex slot carries no trust override at all")
+        .replace("\"trusted\"", "123");
+
+    let mut command = base_command("codex", &[]);
+    command.args(["-c", &trust, "login", "status"]);
+    let env = slot.launch_env();
+    for (key, value) in &env.set {
+        command.env(key, value);
+    }
+    for key in &env.unset {
+        command.env_remove(key);
+    }
+    let answer = run(command).expect("codex did not answer");
+    assert!(
+        answer.contains("trust_level"),
+        "codex never read the override, so the directory was not trusted: {answer}"
+    );
+    let _ = std::fs::remove_dir_all(&home);
+}

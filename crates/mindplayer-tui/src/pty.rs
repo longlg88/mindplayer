@@ -1792,6 +1792,26 @@ mod vt100_reflow {
         );
     }
 
+    /// A painted row that has scrolled off is history: the application will
+    /// never repaint it, so widening must rewrap it like any other line.
+    /// Keeping it fixed left old sessions pinned at the width they were
+    /// written at, with the rest of the pane empty beside them.
+    #[test]
+    fn a_painted_row_that_scrolled_off_still_rewraps() {
+        let mut p = Parser::new(4, 20, 100);
+        for r in 1..=10 {
+            p.process(format!("\x1b[4;1H\x1b[Kpainted line {r} runs past twenty").as_bytes());
+            p.process(b"\n");
+        }
+        p.set_size(4, 60);
+        let seen = painted(&p);
+        let all = format!("{seen:#?}");
+        assert!(
+            seen.iter().any(|l| l.len() > 20),
+            "scrolled-off painted rows kept the old width: {all}"
+        );
+    }
+
     /// A double-width character must not be split across the wrap point.
     #[test]
     fn a_wide_character_is_never_cut_in_half() {

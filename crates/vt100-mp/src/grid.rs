@@ -162,6 +162,10 @@ impl Grid {
         }
         let scrolled_off = rows.len() - wanted;
         self.rows = rows.split_off(scrolled_off);
+        // Pushed off the screen by the rewrap, a painted row is history like one scrolled off.
+        for row in &mut rows {
+            row.paint(false);
+        }
         self.scrollback = rows.into();
         while self.scrollback.len() > self.scrollback_len {
             self.scrollback.pop_front();

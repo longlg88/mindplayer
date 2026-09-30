@@ -12,6 +12,11 @@ use mindplayer_core::accounts::{
 /// Marks a pane that is signing an account in rather than running a session.
 pub(crate) const LOGIN_PREFIX: &str = "login:";
 
+/// How an account is remembered as already asked about this run.
+pub(crate) fn unusable_key(account: &Account) -> String {
+    format!("{}/{}", account.provider.as_str(), account.name)
+}
+
 /// One line of the Accounts screen.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AccountRow {
@@ -309,6 +314,14 @@ impl App {
         let Some(account) = self.unusable_prompt.take() else {
             return;
         };
+        if account.is_inherited() {
+            self.status = format!(
+                "{} {}: sign in to this one the way you normally do, outside MindPlayer",
+                account.provider.as_str(),
+                account.name
+            );
+            return;
+        }
         self.request_login(&account);
         self.status = format!("signing in {} {}", account.provider.as_str(), account.name);
     }
@@ -341,6 +354,55 @@ impl App {
         self.unusable_prompt = None;
     }
 
+    /// Whether any popup or text entry holds the keyboard, so a prompt raised now would take a key meant for it.
+    fn keyboard_taken(&self) -> bool {
+        self.help_visible
+            || self.accounts_panel.is_some()
+            || self.category_menu.is_some()
+            || self.category_picker.is_some()
+            || self.handoff_picker.is_some()
+            || self.new_picker.is_some()
+            || self.new_label.is_some()
+            || self.dir_input.is_some()
+            || self.link_picker.is_some()
+            || self.html_preview_picker.is_some()
+            || self.html_preview_input.is_some()
+            || self.catchup_confirm.is_some()
+            || self.transition_report_input.is_some()
+            || self.transition_report_review.is_some()
+            || self.search_query.is_some()
+    }
+
+    /// Put the next waiting unavailable account to the user, but only while the list has the keyboard and nothing else does.
+    pub(crate) fn raise_unusable_prompt(&mut self) -> bool {
+        if self.unusable_prompt.is_some()
+            || self.focus != Focus::List
+            || self.screen != Screen::Main
+            || self.keyboard_taken()
+        {
+            return false;
+        }
+        while !self.unusable_waiting.is_empty() {
+            let account = self.unusable_waiting.remove(0);
+            let current = self
+                .accounts
+                .iter()
+                .find(|a| a.provider == account.provider && a.name == account.name)
+                .cloned();
+            let Some(current) = current else {
+                continue;
+            };
+            if current.disabled || self.pane_count_on(&current) > 0 {
+                continue;
+            }
+            if self.unusable_asked.insert(unusable_key(&current)) {
+                self.unusable_prompt = Some(current);
+                return true;
+            }
+        }
+        false
+    }
+
     /// Forget a pending `x`, so a stray second press cannot erase anything.
     pub fn accounts_cancel_remove(&mut self) {
         if let Some(panel) = self.accounts_panel.as_mut() {
@@ -355,16 +417,37 @@ impl App {
     /// out from under it would leave a pane nothing can explain.
     pub(crate) fn pane_count_on(&self, account: &Account) -> usize {
         let home = limits_home_for_app();
-        self.panes
-            .iter()
-            .filter_map(|id| self.all_sessions.iter().find(|s| &s.id == id))
-            .filter(|s| {
-                s.agent == account.provider
-                    && mindplayer_core::accounts::owner_of(&self.accounts, s.agent, &s.file, &home)
-                        .name
-                        == account.name
-            })
-            .count()
+        // A sign-in pane has no transcript to judge by, so it is known by the id it was opened under.
+        let login_id = format!(
+            "{LOGIN_PREFIX}{}:{}",
+            account.provider.as_str(),
+            account.name
+        );
+        let started_on = |id: &String| {
+            self.pane_accounts
+                .get(id)
+                .is_some_and(|(agent, name)| *agent == account.provider && *name == account.name)
+        };
+        let recorded = self.panes.iter().filter(|id| started_on(id)).count();
+        recorded
+            + self
+                .panes
+                .iter()
+                .filter(|id| !started_on(id))
+                .filter_map(|id| self.all_sessions.iter().find(|s| &s.id == id))
+                .filter(|s| {
+                    s.id == login_id
+                        || (s.agent == account.provider
+                            && mindplayer_core::accounts::owner_of(
+                                &self.accounts,
+                                s.agent,
+                                &s.file,
+                                &home,
+                            )
+                            .name
+                                == account.name)
+                })
+                .count()
     }
 
     pub fn accounts_start_add(&mut self) {

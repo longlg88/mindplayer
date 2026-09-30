@@ -555,6 +555,10 @@ pub struct App {
     /// asked this run so the question is put once rather than every refresh.
     pub(crate) unusable_prompt: Option<mindplayer_core::accounts::Account>,
     pub(crate) unusable_asked: HashSet<String>,
+    /// Which account each pane was started on, for the panes that have no transcript to say so yet.
+    pub(crate) pane_accounts: HashMap<String, (Agent, String)>,
+    /// Reported unavailable, and waiting for a moment when asking cannot take a key meant for something else.
+    pub(crate) unusable_waiting: Vec<mindplayer_core::accounts::Account>,
     /// The previous run's account reading, shown until this run has its own.
     pub(crate) quota_cache: Option<(Vec<mindplayer_core::limits::QuotaRow>, DateTime<Utc>)>,
     /// The logins available per provider. Always holds the one this machine
@@ -753,6 +757,8 @@ impl App {
             limits_rx: None,
             unusable_prompt: None,
             unusable_asked: HashSet::new(),
+            pane_accounts: HashMap::new(),
+            unusable_waiting: Vec::new(),
             quota_cache: mindplayer_core::limits::load_quota_cache(&limits_home_for_app(), BUILD),
             accounts: mindplayer_core::accounts::load_accounts(&limits_home_for_app()),
             accounts_panel: None,
@@ -955,10 +961,7 @@ impl App {
         )
     }
 
-    /// One row per provider, each on the login that provider currently starts on.
-    ///
-    /// Another account is reached with a sign-in of its own from the same row,
-    /// not by listing every login here — the list stays the four it always was.
+    /// Every usable login of each provider, the one a new pane would start on leading.
     pub(crate) fn new_session_choices(&self) -> Vec<mindplayer_core::accounts::Account> {
         let mut out = Vec::new();
         for agent in mindplayer_core::accounts::MULTI_ACCOUNT_AGENTS {

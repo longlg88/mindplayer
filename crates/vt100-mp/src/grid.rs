@@ -750,6 +750,11 @@ impl Grid {
             // that covers no-region scrolling and top-anchored regions, while still
             // skipping genuine status-bar regions that don't start at row 0.
             if self.scrollback_len > 0 && self.scroll_top == 0 {
+                // Off the screen it is history: the application will never
+                // repaint it, so it rewraps like any other line rather than
+                // staying pinned at the width it was written at.
+                let mut removed = removed;
+                removed.paint(false);
                 self.scrollback.push_back(removed);
                 while self.scrollback.len() > self.scrollback_len {
                     self.scrollback.pop_front();

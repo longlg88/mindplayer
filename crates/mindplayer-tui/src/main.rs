@@ -726,6 +726,17 @@ fn handle_main_key(app: &mut App, key: KeyEvent) {
         return;
     }
 
+    // A provider reported having no account behind it. The question owns every
+    // key while it is up, so an answer cannot be mistaken for a shortcut.
+    if app.unusable_prompt.is_some() {
+        match key.code {
+            KeyCode::Char('y' | 'Y') => app.confirm_unusable_prompt(),
+            KeyCode::Char('n' | 'N') => app.decline_unusable_prompt(),
+            _ => app.dismiss_unusable_prompt(),
+        }
+        return;
+    }
+
     // Accounts screen (`A`). Owns every key while open, and while typing a
     // name the letters are text rather than shortcuts.
     if app.accounts_panel.is_some() {
@@ -1388,7 +1399,11 @@ mod tests {
         app.limits_started = Some(Instant::now());
         app.refresh_limits_now();
         assert!(!app.limits_force_refresh);
-        tx.send(Vec::new()).unwrap();
+        tx.send(crate::app::UsageReading {
+            rows: Vec::new(),
+            unusable: Vec::new(),
+        })
+        .unwrap();
         assert!(app.poll_limits());
         assert_eq!(app.status, "account usage refreshed");
         assert!(app.limits_rx.is_none());

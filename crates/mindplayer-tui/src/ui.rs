@@ -188,6 +188,42 @@ fn draw_mascot(f: &mut Frame, area: Rect, tick: usize) {
     f.render_widget(Paragraph::new(mascot::lines(tick)), r);
 }
 
+/// Asked when a provider says it has no account behind it, so nothing keeps
+/// reaching for one that is not there.
+fn unusable_account_popup(f: &mut Frame, app: &App) {
+    let Some(account) = app.unusable_prompt.as_ref() else {
+        return;
+    };
+    let who = format!("{} · {}", account.provider.as_str(), account.name);
+    let area = centered(f.area(), 58, 7);
+    f.render_widget(Clear, area);
+    f.render_widget(
+        Paragraph::new(vec![
+            Line::from(Span::styled(
+                who,
+                Style::default().add_modifier(Modifier::BOLD),
+            )),
+            Line::from(""),
+            Line::from(Span::styled(
+                "reports no account. Sign in now?",
+                Style::default(),
+            )),
+            Line::from(""),
+            Line::from(Span::styled(
+                "y sign in   ·   n turn it off   ·   any other key: not now",
+                Style::default().fg(DIM),
+            )),
+        ])
+        .wrap(Wrap { trim: false })
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(" Account unavailable "),
+        ),
+        area,
+    );
+}
+
 /// The category menu (`t` on a header): auto-sync, sync now, rename, remove.
 fn category_menu_popup(f: &mut Frame, app: &App) {
     let Some(menu) = app.category_menu.as_ref() else {
@@ -894,7 +930,9 @@ fn main_view(f: &mut Frame, app: &mut App) {
         );
     }
 
-    if app.help_visible {
+    if app.unusable_prompt.is_some() {
+        unusable_account_popup(f, app);
+    } else if app.help_visible {
         help_popup(f);
     } else if app.accounts_panel.is_some() {
         accounts_popup(f, app);

@@ -142,3 +142,50 @@ fn which(program: &str) -> Option<PathBuf> {
         .map(|dir| dir.join(program))
         .find(|candidate| candidate.is_file())
 }
+
+/// The prompt turns an account off, so it must only fire when the provider
+/// says outright that there is nothing behind it. This drives the real CLIs:
+/// an empty home must read as unavailable and this machine's own must not.
+#[test]
+fn an_empty_home_reads_as_unavailable_and_a_real_one_does_not() {
+    use mindplayer_core::accounts::signed_out;
+
+    let mut exercised = 0;
+    for agent in mindplayer_core::accounts::MULTI_ACCOUNT_AGENTS {
+        let (program, _, _) = whoami(agent);
+        if which(program).is_none() {
+            eprintln!("skip {}: {program} is not installed", agent.as_str());
+            continue;
+        }
+        let home = scratch(&format!("unavailable-{}", agent.as_str()));
+
+        let inherited = Account::inherited(agent);
+        match signed_out(&inherited, &home) {
+            // This machine may genuinely have no account for a provider; that
+            // is not a failure, it just proves nothing here.
+            Some(true) => {
+                eprintln!("skip {}: this machine has none either", agent.as_str());
+                let _ = std::fs::remove_dir_all(&home);
+                continue;
+            }
+            Some(false) => {}
+            None => {
+                eprintln!("skip {}: the CLI did not answer", agent.as_str());
+                let _ = std::fs::remove_dir_all(&home);
+                continue;
+            }
+        }
+
+        let empty = Account::isolated(&home, agent, "nothing").unwrap();
+        std::fs::create_dir_all(empty.slot_path()).unwrap();
+        assert_eq!(
+            signed_out(&empty, &home),
+            Some(true),
+            "{}: an empty home is not reported as unavailable, so the prompt would never appear",
+            agent.as_str()
+        );
+        exercised += 1;
+        let _ = std::fs::remove_dir_all(&home);
+    }
+    eprintln!("checked availability for {exercised} provider(s)");
+}

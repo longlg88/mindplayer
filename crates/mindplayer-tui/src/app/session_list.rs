@@ -1225,13 +1225,26 @@ impl App {
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
             let mut rows = cached_rows;
+            let mut unusable = Vec::new();
             for account in &accounts {
-                rows.extend(mindplayer_core::limits::account_quota_rows(account, &home));
+                let taken = mindplayer_core::limits::account_quota_rows(account, &home);
+                // A reading that produced no figure is the only time it is
+                // worth asking the provider anything: on the ordinary path this
+                // costs nothing, and a provider that answers plainly is the
+                // only thing that can tell a missing account from a bad network.
+                if !taken
+                    .iter()
+                    .any(mindplayer_core::limits::QuotaRow::has_gauge)
+                    && mindplayer_core::accounts::signed_out(account, &home) == Some(true)
+                {
+                    unusable.push(account.clone());
+                }
+                rows.extend(taken);
             }
             // Only here is every login's reading in one place, which is what it
             // takes to notice that two of them are the same login.
             mindplayer_core::limits::mark_shared_logins(&mut rows);
-            let _ = tx.send(rows);
+            let _ = tx.send(crate::app::UsageReading { rows, unusable });
         });
         self.limits_rx = Some(rx);
     }
@@ -1258,11 +1271,24 @@ impl App {
         let Some(rx) = &self.limits_rx else {
             return false;
         };
-        let Ok(rows) = rx.try_recv() else {
+        let Ok(reading) = rx.try_recv() else {
             return false;
         };
+        let rows = reading.rows;
         self.limits_rx = None;
         self.limits_started = None;
+        // Ask once per account per run: the refresh comes round every few
+        // minutes and a question that keeps reappearing is the thing being
+        // complained about, not the fix for it.
+        if self.unusable_prompt.is_none() {
+            self.unusable_prompt = reading.unusable.into_iter().find(|account| {
+                self.unusable_asked.insert(format!(
+                    "{}/{}",
+                    account.provider.as_str(),
+                    account.name
+                ))
+            });
+        }
         if mindplayer_core::limits::rows_are_rate_limited(&rows) {
             self.limits_backoff = self
                 .limits_backoff

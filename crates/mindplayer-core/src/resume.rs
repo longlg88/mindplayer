@@ -31,7 +31,7 @@ pub struct Command {
 pub fn resume(session: &Session, account: &Account) -> Command {
     let id = session.id.clone();
     let args = match session.agent {
-        Agent::Codex => codex_args(&session.cwd, vec!["resume".to_string(), id]),
+        Agent::Codex => codex_args(&session.cwd, account, vec!["resume".to_string(), id]),
         Agent::Claude => vec!["--resume".to_string(), id],
         Agent::Kiro => {
             let mut args = vec!["chat".to_string(), "--resume-id".to_string(), id];
@@ -78,12 +78,14 @@ const KIRO_FLAGS: [&str; 2] = ["--trust-all-tools", "--v3"];
 /// is running in without the slot having to have been there before.
 fn codex_trust_arg(cwd: &Path) -> Option<String> {
     let dir = cwd.to_str()?;
-    // The key is quoted TOML; a directory holding a quote or a backslash would
-    // change what key is set, so such a path is left to Codex to ask about.
+    // The path is a quoted TOML key; a quote or backslash would change which key is set.
     if dir.is_empty() || dir.contains('"') || dir.contains('\\') {
         return None;
     }
-    Some(format!("projects.{dir:?}.trust_level=\"trusted\""))
+    // Codex splits a `-c` key on every `.`, so a dotted path must ride in the value, not the key.
+    Some(format!(
+        "projects={{\"{dir}\"={{trust_level=\"trusted\"}}}}"
+    ))
 }
 
 const CODEX_FLAGS: [&str; 4] = [
@@ -95,11 +97,14 @@ const CODEX_FLAGS: [&str; 4] = [
 
 /// Codex's arguments: whatever the subcommand needs, then the flags every
 /// launch carries, then the trust for the directory this pane runs in.
-fn codex_args(cwd: &Path, mut args: Vec<String>) -> Vec<String> {
+fn codex_args(cwd: &Path, account: &Account, mut args: Vec<String>) -> Vec<String> {
     args.extend(CODEX_FLAGS.iter().map(|f| f.to_string()));
-    if let Some(trust) = codex_trust_arg(cwd) {
-        args.push("-c".to_string());
-        args.push(trust);
+    // Only a slot with a home of its own lacks the trust list; the machine's own keeps the user's.
+    if !account.is_inherited() {
+        if let Some(trust) = codex_trust_arg(cwd) {
+            args.push("-c".to_string());
+            args.push(trust);
+        }
     }
     args
 }
@@ -113,7 +118,7 @@ pub fn new_session(agent: Agent, cwd: PathBuf, account: &Account) -> Command {
             args.extend(KIRO_FLAGS.iter().map(|f| f.to_string()));
             args
         }
-        Agent::Codex => codex_args(&cwd, Vec::new()),
+        Agent::Codex => codex_args(&cwd, account, Vec::new()),
         Agent::Claude | Agent::Cursor => Vec::new(),
     };
     Command {
@@ -305,11 +310,9 @@ mod tests {
                 "--ask-for-approval",
                 "never",
                 "--sandbox",
-                "danger-full-access",
-                "-c",
-                r#"projects."/work".trust_level="trusted""#
+                "danger-full-access"
             ],
-            "resuming a codex session must stay unattended too"
+            "resuming a codex session must stay unattended too; the machine's own login keeps its trust list"
         );
         assert_eq!(c.cwd, PathBuf::from("/work"));
     }
@@ -338,9 +341,7 @@ mod tests {
                 "--ask-for-approval",
                 "never",
                 "--sandbox",
-                "danger-full-access",
-                "-c",
-                r#"projects."/here".trust_level="trusted""#
+                "danger-full-access"
             ]
         );
         assert_eq!(c.cwd, PathBuf::from("/here"));
@@ -380,26 +381,40 @@ mod tests {
     /// its own has never seen that directory, so without this the session
     /// stops to ask about the very directory it was started in.
     #[test]
-    fn every_codex_launch_trusts_the_directory_it_runs_in() {
-        let account = Account::inherited(Agent::Codex);
-        let started = new_session(Agent::Codex, PathBuf::from("/work/project"), &account);
-        let resumed = resume(&session(Agent::Codex, "uuid-7", "/work/project"), &account);
+    fn an_isolated_codex_account_trusts_the_directory_it_runs_in() {
+        let slot =
+            Account::isolated(&PathBuf::from("/tmp/mp-trust"), Agent::Codex, "second").unwrap();
+        let started = new_session(Agent::Codex, PathBuf::from("/Users/a.b/work"), &slot);
+        let resumed = resume(&session(Agent::Codex, "uuid-7", "/Users/a.b/work"), &slot);
 
         for (what, args) in [("new", &started.args), ("resume", &resumed.args)] {
-            let joined = args.join(" ");
+            // The path rides in the value: a dotted key is split by codex and silently dropped.
             assert!(
-                joined.contains(r#"projects."/work/project".trust_level="trusted""#),
-                "a {what} codex session does not trust its own directory: {args:?}"
+                args.contains(
+                    &r#"projects={"/Users/a.b/work"={trust_level="trusted"}}"#.to_string()
+                ),
+                "a {what} codex session on its own slot does not trust its directory: {args:?}"
             );
-            assert!(args.contains(&"-c".to_string()), "{args:?}");
         }
+    }
+
+    #[test]
+    fn the_machines_own_codex_login_keeps_its_own_trust_list() {
+        let own = Account::inherited(Agent::Codex);
+        let started = new_session(Agent::Codex, PathBuf::from("/work"), &own);
+        assert!(
+            !started.args.iter().any(|a| a.contains("trust_level")),
+            "the machine's own trust list would be overridden: {:?}",
+            started.args
+        );
     }
 
     /// The key is quoted TOML, so a directory that could close the quote is
     /// left alone rather than setting some other key.
     #[test]
     fn a_directory_that_could_break_the_key_is_not_trusted_blindly() {
-        let account = Account::inherited(Agent::Codex);
+        let account =
+            Account::isolated(&PathBuf::from("/tmp/mp-trust"), Agent::Codex, "second").unwrap();
         let odd = new_session(Agent::Codex, PathBuf::from(r#"/work/we"ird"#), &account);
         assert!(
             !odd.args.join(" ").contains("trust_level"),

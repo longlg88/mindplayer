@@ -1183,7 +1183,10 @@ impl Screen {
 
     // CSI d
     fn vpa(&mut self, row: u16) {
-        self.grid_mut().row_set(row - 1);
+        let grid = self.grid_mut();
+        grid.row_set(row - 1);
+        // An absolute row address paints the row, the same as CUP.
+        grid.mark_current_row_painted();
     }
 
     // CSI h

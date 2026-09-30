@@ -1956,12 +1956,20 @@ fn trace_event_line(line: &str) -> Line<'static> {
 /// Maximum vertical offset for Trace's execution pane, measured in rendered
 /// terminal rows. A single event often wraps across many rows; counting only
 /// logical `Line`s makes overflowing content appear unscrollable.
+/// The EXECUTION block, shared by the render and the scroll range so the two agree on its chrome.
+fn trace_detail_block() -> Block<'static> {
+    Block::default()
+        .padding(Padding::horizontal(2))
+        .title(Span::styled(" EXECUTION ", Style::default().fg(DIM)))
+}
+
 fn trace_detail_max_scroll(detail: &[Line<'_>], width: u16, height: u16) -> usize {
-    let content_width = width.saturating_sub(4); // `Padding::horizontal(2)`
+    // Measured against the block's own inner area: its title takes a row the old arithmetic missed.
+    let inner = trace_detail_block().inner(Rect::new(0, 0, width, height));
     Paragraph::new(detail.to_vec())
         .wrap(Wrap { trim: false })
-        .line_count(content_width)
-        .saturating_sub(height as usize)
+        .line_count(inner.width)
+        .saturating_sub(inner.height as usize)
 }
 
 fn observe_panel(f: &mut Frame, app: &mut App, area: Rect) {
@@ -2196,11 +2204,7 @@ fn observe_panel(f: &mut Frame, app: &mut App, area: Rect) {
         let offset = app.observe_scroll.min(u16::MAX as usize) as u16;
         f.render_widget(
             Paragraph::new(detail)
-                .block(
-                    Block::default()
-                        .padding(Padding::horizontal(2))
-                        .title(Span::styled(" EXECUTION ", Style::default().fg(DIM))),
-                )
+                .block(trace_detail_block())
                 .wrap(Wrap { trim: false })
                 .scroll((offset, 0)),
             columns[1],
@@ -3365,6 +3369,41 @@ mod tests {
             wrapped_popup_height(&[Line::from(""), short], width),
             4,
             "an empty spacer still costs its row"
+        );
+    }
+
+    /// The EXECUTION block spends a row on its title, so a scroll range worked out from the
+    /// whole area stopped one row short and the last line could never be scrolled into view.
+    #[test]
+    fn the_last_execution_line_can_be_scrolled_into_view() {
+        use ratatui::{backend::TestBackend, Terminal};
+        let (width, height) = (30u16, 6u16);
+        let mut detail: Vec<Line> = (0..12).map(|i| Line::from(format!("line {i}"))).collect();
+        detail.push(Line::from("the very last line"));
+        let max_scroll = trace_detail_max_scroll(&detail, width, height);
+
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal
+            .draw(|f| {
+                f.render_widget(
+                    Paragraph::new(detail.clone())
+                        .block(trace_detail_block())
+                        .wrap(Wrap { trim: false })
+                        .scroll((max_scroll as u16, 0)),
+                    f.area(),
+                );
+            })
+            .unwrap();
+        let screen: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(
+            screen.contains("the very last line"),
+            "scrolled to the end, the last line is still off screen: {screen:?}"
         );
     }
 

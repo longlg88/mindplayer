@@ -551,6 +551,25 @@ mod erasing_a_login {
         assert!(path.exists());
     }
 
+    /// A sign-in pane writes into the slot, so erasing it underneath the sign-in is refused like any other pane.
+    #[test]
+    fn a_login_pane_on_the_account_blocks_the_erase() {
+        let (mut app, path) = app_with_a_spare("signing-in");
+        let spare = app.accounts[1].clone();
+        app.request_login(&spare);
+        app.open_accounts();
+        select(&mut app, Agent::Codex);
+        app.accounts_move(1);
+        app.accounts_remove();
+        app.accounts_remove();
+
+        assert_eq!(app.accounts.len(), 2, "erased under a running sign-in");
+        assert!(
+            path.exists(),
+            "the slot a sign-in is writing to was deleted"
+        );
+    }
+
     #[test]
     fn the_machines_own_login_is_never_offered_for_erasing() {
         let (mut app, _) = app_with_a_spare("inherited");
@@ -559,6 +578,24 @@ mod erasing_a_login {
         app.accounts_remove();
         assert_eq!(app.accounts.len(), 2, "the inherited login was removed");
     }
+}
+
+/// A new session has no transcript until the CLI writes one, so a path cannot
+/// say which account it is on. Erasing that account then deleted the home of
+/// a CLI that was running in it.
+#[test]
+fn a_session_still_starting_on_the_account_blocks_the_erase() {
+    let mut app = App::new();
+    let home = crate::app::limits_home_for_app();
+    let spare = Account::isolated(&home, Agent::Codex, "starting").unwrap();
+    let _ = std::fs::create_dir_all(spare.slot_path());
+    app.accounts = vec![Account::inherited(Agent::Codex), spare.clone()];
+
+    app.request_new_on(&spare, "");
+    assert!(
+        app.pane_count_on(&spare) > 0,
+        "a session starting on this account is not counted, so erasing it would delete a live home"
+    );
 }
 
 /// A provider with nothing behind it was reached for every few minutes
@@ -618,6 +655,42 @@ mod unavailable_account_prompt {
         assert!(app.unusable_prompt.is_none());
         let found = app.accounts.iter().find(|a| a.name == spare.name).unwrap();
         assert!(!found.disabled, "dismissing must not turn anything off");
+    }
+
+    /// A question raised while a pane has the keyboard would take the next key typed into it.
+    #[test]
+    fn it_waits_while_a_pane_has_the_keyboard() {
+        let (mut app, spare) = app_with_prompt();
+        app.unusable_prompt = None;
+        app.screen = Screen::Main;
+        app.focus = Focus::Terminal;
+        app.unusable_waiting.push(spare.clone());
+        assert!(!app.raise_unusable_prompt());
+        assert!(app.unusable_prompt.is_none(), "raised over a focused pane");
+        app.focus = Focus::List;
+        app.help_visible = true;
+        assert!(
+            !app.raise_unusable_prompt(),
+            "raised over help, whose keys it would not get"
+        );
+        app.help_visible = false;
+        assert!(app.raise_unusable_prompt());
+        assert_eq!(
+            app.unusable_prompt.as_ref().map(|a| a.name.clone()),
+            Some(spare.name)
+        );
+    }
+
+    #[test]
+    fn yes_on_the_machines_own_login_opens_nothing() {
+        let (mut app, _) = app_with_prompt();
+        app.unusable_prompt = Some(Account::inherited(Agent::Kiro));
+        app.confirm_unusable_prompt();
+        assert!(
+            app.pending.is_none(),
+            "a sign-in was started on the machine's own login"
+        );
+        assert!(app.status.contains("outside MindPlayer"), "{}", app.status);
     }
 
     /// The refresh comes round every few minutes; a question that reappears

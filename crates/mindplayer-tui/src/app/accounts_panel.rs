@@ -304,6 +304,43 @@ impl App {
         self.accounts_move(0);
     }
 
+    /// Answer the prompt with yes: open a pane that signs this account in.
+    pub fn confirm_unusable_prompt(&mut self) {
+        let Some(account) = self.unusable_prompt.take() else {
+            return;
+        };
+        self.request_login(&account);
+        self.status = format!("signing in {} {}", account.provider.as_str(), account.name);
+    }
+
+    /// Answer with no: turn the account off so nothing reaches for it again.
+    ///
+    /// Off, not removed — the account and whatever it holds stay, and `d` on
+    /// the Accounts screen turns it back on.
+    pub fn decline_unusable_prompt(&mut self) {
+        let Some(account) = self.unusable_prompt.take() else {
+            return;
+        };
+        if let Some(found) = self
+            .accounts
+            .iter_mut()
+            .find(|a| a.provider == account.provider && a.name == account.name)
+        {
+            found.disabled = true;
+        }
+        self.persist_accounts();
+        self.status = format!(
+            "{} {} is off — press u then d to turn it back on",
+            account.provider.as_str(),
+            account.name
+        );
+    }
+
+    /// Put the prompt away without deciding; it is not asked again this run.
+    pub fn dismiss_unusable_prompt(&mut self) {
+        self.unusable_prompt = None;
+    }
+
     /// Forget a pending `x`, so a stray second press cannot erase anything.
     pub fn accounts_cancel_remove(&mut self) {
         if let Some(panel) = self.accounts_panel.as_mut() {

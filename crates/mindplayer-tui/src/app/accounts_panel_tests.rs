@@ -560,3 +560,77 @@ mod erasing_a_login {
         assert_eq!(app.accounts.len(), 2, "the inherited login was removed");
     }
 }
+
+/// A provider with nothing behind it was reached for every few minutes
+/// forever. It is asked about once, and a no turns it off.
+mod unavailable_account_prompt {
+    use super::*;
+
+    fn app_with_prompt() -> (App, Account) {
+        let mut app = App::new();
+        let spare =
+            Account::isolated(&crate::app::limits_home_for_app(), Agent::Kiro, "unused").unwrap();
+        app.accounts = vec![Account::inherited(Agent::Kiro), spare.clone()];
+        app.unusable_prompt = Some(spare.clone());
+        (app, spare)
+    }
+
+    #[test]
+    fn no_turns_the_account_off_and_keeps_it() {
+        let (mut app, spare) = app_with_prompt();
+        app.decline_unusable_prompt();
+
+        let found = app
+            .accounts
+            .iter()
+            .find(|a| a.name == spare.name)
+            .expect("the account is kept, only turned off");
+        assert!(found.disabled, "a no must stop anything reaching for it");
+        assert!(app.unusable_prompt.is_none());
+        assert!(app.status.contains("off"), "{}", app.status);
+    }
+
+    #[test]
+    fn a_disabled_account_is_no_longer_probed() {
+        let (mut app, spare) = app_with_prompt();
+        app.decline_unusable_prompt();
+        assert!(
+            !app.probe_accounts().iter().any(|a| a.name == spare.name),
+            "a declined account is still being reached for"
+        );
+    }
+
+    #[test]
+    fn yes_opens_a_pane_that_signs_it_in() {
+        let (mut app, _) = app_with_prompt();
+        app.confirm_unusable_prompt();
+        assert!(app.unusable_prompt.is_none());
+        assert!(
+            app.pending.is_some() || !app.panes.is_empty(),
+            "a yes must actually start the sign-in"
+        );
+    }
+
+    #[test]
+    fn any_other_key_puts_it_away_without_deciding() {
+        let (mut app, spare) = app_with_prompt();
+        app.dismiss_unusable_prompt();
+        assert!(app.unusable_prompt.is_none());
+        let found = app.accounts.iter().find(|a| a.name == spare.name).unwrap();
+        assert!(!found.disabled, "dismissing must not turn anything off");
+    }
+
+    /// The refresh comes round every few minutes; a question that reappears
+    /// each time is the complaint, not the fix.
+    #[test]
+    fn the_same_account_is_asked_about_once_a_run() {
+        let (mut app, spare) = app_with_prompt();
+        let key = format!("{}/{}", spare.provider.as_str(), spare.name);
+        assert!(app.unusable_asked.insert(key.clone()));
+        app.dismiss_unusable_prompt();
+        assert!(
+            !app.unusable_asked.insert(key),
+            "the account would be asked about again on the next refresh"
+        );
+    }
+}

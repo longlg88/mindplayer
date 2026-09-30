@@ -44,6 +44,13 @@ pub struct LinkPicker {
     pub turns_ago: usize,
 }
 
+/// A finished usage refresh: the rows to draw, and the accounts the provider
+/// itself reported as having no account behind them.
+pub(crate) struct UsageReading {
+    pub(crate) rows: Vec<mindplayer_core::limits::QuotaRow>,
+    pub(crate) unusable: Vec<mindplayer_core::accounts::Account>,
+}
+
 /// Background refresh result for one already-discovered session.
 struct ActivityUpdate {
     id: String,
@@ -543,7 +550,11 @@ pub struct App {
     /// Subscription rate-limit windows for the usage popup. `None` until the
     /// first fetch lands; the fetch does network I/O so it never blocks a keypress.
     pub limits: Option<Vec<mindplayer_core::limits::QuotaRow>>,
-    pub(crate) limits_rx: Option<Receiver<Vec<mindplayer_core::limits::QuotaRow>>>,
+    pub(crate) limits_rx: Option<Receiver<UsageReading>>,
+    /// The account a prompt is currently asking about, and the ones already
+    /// asked this run so the question is put once rather than every refresh.
+    pub(crate) unusable_prompt: Option<mindplayer_core::accounts::Account>,
+    pub(crate) unusable_asked: HashSet<String>,
     /// The previous run's account reading, shown until this run has its own.
     pub(crate) quota_cache: Option<(Vec<mindplayer_core::limits::QuotaRow>, DateTime<Utc>)>,
     /// The logins available per provider. Always holds the one this machine
@@ -740,6 +751,8 @@ impl App {
             prompts_dir: prompts_dir_for_app(),
             limits: None,
             limits_rx: None,
+            unusable_prompt: None,
+            unusable_asked: HashSet::new(),
             quota_cache: mindplayer_core::limits::load_quota_cache(&limits_home_for_app(), BUILD),
             accounts: mindplayer_core::accounts::load_accounts(&limits_home_for_app()),
             accounts_panel: None,

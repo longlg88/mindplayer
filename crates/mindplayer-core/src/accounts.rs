@@ -382,6 +382,69 @@ pub fn forget_login(account: &Account, home: &Path) -> Result<(), String> {
     std::fs::remove_dir_all(path).map_err(|e| format!("could not delete the sign-in: {e}"))
 }
 
+/// How long to wait for a provider to report which account it is running as.
+const WHOAMI_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
+
+/// The command that reports which account a provider is running as, and the
+/// phrase its answer carries when there is none.
+///
+/// Every pair was read off the real CLI twice — once on a home holding no
+/// account and once on a home holding one — so the phrase separates the two
+/// rather than merely appearing in one of them.
+fn whoami_command(agent: Agent) -> (&'static str, &'static [&'static str], &'static str) {
+    match agent {
+        Agent::Codex => ("codex", &["login", "status"][..], "not logged in"),
+        Agent::Claude => ("claude", &["auth", "status"][..], "\"loggedin\": false"),
+        Agent::Kiro => ("kiro-cli", &["whoami"][..], "not logged in"),
+        Agent::Cursor => ("agent", &["status"][..], "not logged in"),
+    }
+}
+
+/// Whether `account` has no account behind it, asked of the provider itself.
+///
+/// `Some(true)` only when the provider says outright that it has none.
+/// Anything else — a CLI that is missing, one that hangs, one that answers
+/// something unexpected — is `None`: a usage reading fails for reasons that
+/// have nothing to do with this, and acting on a guess would interrupt
+/// someone over a dropped network.
+pub fn signed_out(account: &Account, home: &Path) -> Option<bool> {
+    let (program, args, marker) = whoami_command(account.provider);
+    let mut command = std::process::Command::new(program);
+    command
+        .args(args)
+        .current_dir(home)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    let env = account.launch_env();
+    for name in &env.unset {
+        command.env_remove(name);
+    }
+    for (name, value) in &env.set {
+        command.env(name, value);
+    }
+
+    let mut child = command.spawn().ok()?;
+    let started = std::time::Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => break,
+            Ok(None) if started.elapsed() < WHOAMI_TIMEOUT => {
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+        }
+    }
+    let out = child.wait_with_output().ok()?;
+    let mut answer = String::from_utf8_lossy(&out.stdout).into_owned();
+    answer.push_str(&String::from_utf8_lossy(&out.stderr));
+    Some(answer.to_lowercase().contains(marker))
+}
+
 /// Which account wrote `file`, judged by where it sits.
 ///
 /// Resuming has to land on the account that started the session, because the

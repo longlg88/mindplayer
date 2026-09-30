@@ -4179,15 +4179,16 @@ fn a_sibling_refresh_replaces_a_stale_in_memory_cache_before_fetching() {
 fn a_429_account_response_defers_the_next_fetch() {
     let mut app = isolated_app();
     let (tx, rx) = mpsc::channel();
-    tx.send(
-        mindplayer_core::limits::Limits {
+    tx.send(crate::app::UsageReading {
+        unusable: Vec::new(),
+        rows: mindplayer_core::limits::Limits {
             claude: Ok(Default::default()),
             codex: Ok(Default::default()),
             kiro: Ok(Default::default()),
             cursor: Err("curl failed: response status 429".into()),
         }
         .quota_rows(),
-    )
+    })
     .unwrap();
     app.limits_rx = Some(rx);
     app.limits_started = Some(Instant::now());
@@ -4215,15 +4216,16 @@ fn a_run_of_429s_stops_growing_the_wait_at_a_cap_that_still_looks_again_within_t
     let mut app = isolated_app();
     for _ in 0..8 {
         let (tx, rx) = mpsc::channel();
-        tx.send(
-            mindplayer_core::limits::Limits {
+        tx.send(crate::app::UsageReading {
+            unusable: Vec::new(),
+            rows: mindplayer_core::limits::Limits {
                 claude: Err("rate limited by the account API (HTTP 429)".into()),
                 codex: Ok(Default::default()),
                 kiro: Ok(Default::default()),
                 cursor: Ok(Default::default()),
             }
             .quota_rows(),
-        )
+        })
         .unwrap();
         app.limits_rx = Some(rx);
         app.limits_started = Some(Instant::now());

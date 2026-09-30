@@ -275,6 +275,9 @@ fn run(terminal: &mut Terminal<CrosstermBackend<FrameSink>>, app: &mut App) -> R
         // from a fragmented cursor-position report. Release genuine Escapes on
         // the normal event-loop clock even when no further key arrives.
         app.flush_terminal_reply_guards();
+        if app.raise_unusable_prompt() {
+            needs_draw = true;
+        }
         if app.screen == Screen::Main && app.pending.is_some() {
             // Pane sizes are normally recorded by `ui::render`, but publishing
             // that first layout used to expose a transient `starting...` frame
@@ -690,6 +693,16 @@ fn handle_key(app: &mut App, key: KeyEvent) {
 }
 
 fn handle_main_key(app: &mut App, key: KeyEvent) {
+    // Checked first because it is drawn over every other popup, so the key goes where the eye is.
+    if app.unusable_prompt.is_some() {
+        match key.code {
+            KeyCode::Char('y' | 'Y') => app.confirm_unusable_prompt(),
+            KeyCode::Char('n' | 'N') => app.decline_unusable_prompt(),
+            _ => app.dismiss_unusable_prompt(),
+        }
+        return;
+    }
+
     if app.help_visible {
         match key.code {
             KeyCode::Esc => app.close_help(),
@@ -722,17 +735,6 @@ fn handle_main_key(app: &mut App, key: KeyEvent) {
                 KeyCode::Esc | KeyCode::Char('q') => app.cancel_category_menu(),
                 _ => {}
             }
-        }
-        return;
-    }
-
-    // A provider reported having no account behind it. The question owns every
-    // key while it is up, so an answer cannot be mistaken for a shortcut.
-    if app.unusable_prompt.is_some() {
-        match key.code {
-            KeyCode::Char('y' | 'Y') => app.confirm_unusable_prompt(),
-            KeyCode::Char('n' | 'N') => app.decline_unusable_prompt(),
-            _ => app.dismiss_unusable_prompt(),
         }
         return;
     }

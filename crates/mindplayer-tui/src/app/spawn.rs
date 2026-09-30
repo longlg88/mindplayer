@@ -71,6 +71,8 @@ impl App {
         self.extra_sessions.push(synthetic.clone());
         self.all_sessions.push(synthetic);
         self.rebuild_visible();
+        self.pane_accounts
+            .insert(session_id.clone(), (agent, account.name.clone()));
         self.pending = Some(PendingSpawn {
             command,
             session_id: session_id.clone(),
@@ -170,6 +172,8 @@ impl App {
             .map(|s| s.id.clone())
             .collect();
         self.new_baselines.insert(session_id.clone(), baseline);
+        self.pane_accounts
+            .insert(session_id.clone(), (agent, account.name.clone()));
         self.pending = Some(PendingSpawn {
             command,
             session_id: session_id.clone(),

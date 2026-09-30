@@ -1812,6 +1812,42 @@ mod vt100_reflow {
         );
     }
 
+    /// VPA addresses a row as absolutely as CUP, so a screen painted with it keeps its rows too.
+    #[test]
+    fn a_screen_painted_with_vpa_keeps_its_rows_when_narrowed() {
+        let mut p = Parser::new(6, 60, 100);
+        for r in 1..=6 {
+            p.process(format!("\x1b[{r}d\r\x1b[Krow {r} ").as_bytes());
+            p.process("x".repeat(50).as_bytes());
+        }
+        let before = painted(&p);
+        p.set_size(6, 40);
+        let after = painted(&p);
+        for (i, (was, now)) in before.iter().zip(after.iter()).enumerate() {
+            assert!(
+                was.starts_with(now.trim_end()),
+                "row {i} moved:\n  was: {was:?}\n  now: {now:?}"
+            );
+        }
+    }
+
+    /// A painted row the rewrap pushes into scrollback is history, so a later narrowing wraps it instead of cutting it.
+    #[test]
+    fn a_painted_row_pushed_off_by_a_resize_rewraps_later() {
+        let mut p = Parser::new(3, 40, 100);
+        p.process(b"\x1b[1;1Hpainted 0123456789abc\r\n");
+        p.process("s".repeat(80).as_bytes());
+        p.set_size(3, 21);
+        p.set_size(3, 10);
+        p.set_size(3, 40);
+        p.set_scrollback(100);
+        let seen = painted(&p);
+        assert!(
+            seen.iter().any(|l| l == "painted 0123456789abc"),
+            "the scrolled-off painted row was cut at the narrower width: {seen:#?}"
+        );
+    }
+
     /// A double-width character must not be split across the wrap point.
     #[test]
     fn a_wide_character_is_never_cut_in_half() {

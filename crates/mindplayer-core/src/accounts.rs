@@ -392,12 +392,13 @@ const WHOAMI_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
 /// account and once on a home holding one — so the phrase separates the two
 /// rather than merely appearing in one of them.
 fn whoami_command(agent: Agent) -> (&'static str, &'static [&'static str], &'static str) {
-    match agent {
-        Agent::Codex => ("codex", &["login", "status"][..], "not logged in"),
-        Agent::Claude => ("claude", &["auth", "status"][..], "\"loggedin\": false"),
-        Agent::Kiro => ("kiro-cli", &["whoami"][..], "not logged in"),
-        Agent::Cursor => ("agent", &["status"][..], "not logged in"),
-    }
+    let (args, marker): (&'static [&'static str], &'static str) = match agent {
+        Agent::Codex => (&["login", "status"], "not logged in"),
+        Agent::Claude => (&["auth", "status"], "\"loggedin\": false"),
+        Agent::Kiro => (&["whoami"], "not logged in"),
+        Agent::Cursor => (&["status"], "not logged in"),
+    };
+    (agent.program(), args, marker)
 }
 
 /// Whether `account` has no account behind it, asked of the provider itself.

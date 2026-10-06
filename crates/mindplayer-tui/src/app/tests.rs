@@ -4631,6 +4631,44 @@ mod new_session_account_picker {
         );
     }
 
+    /// A provider whose every login is off is one that is not used, so it stops taking a row.
+    #[test]
+    fn a_provider_turned_off_leaves_the_picker() {
+        let mut accounts = base();
+        for a in &mut accounts {
+            a.disabled = matches!(a.provider, Agent::Kiro | Agent::Cursor);
+        }
+        let app = app_with(accounts);
+        assert_eq!(app.new_session_choice_labels(), vec!["codex", "claude"]);
+    }
+
+    /// With one of two logins off the provider is still in use and keeps its row.
+    #[test]
+    fn a_provider_with_one_login_left_stays() {
+        let mut accounts = base();
+        accounts[0].disabled = true;
+        accounts.push(second_codex());
+        let app = app_with(accounts);
+        assert_eq!(
+            app.new_session_choice_labels(),
+            vec!["codex", "claude", "kiro", "cursor"]
+        );
+    }
+
+    /// Turning everything off must not leave a picker with nothing to start.
+    #[test]
+    fn every_provider_off_still_offers_them_all() {
+        let mut accounts = base();
+        for a in &mut accounts {
+            a.disabled = true;
+        }
+        let app = app_with(accounts);
+        assert_eq!(
+            app.new_session_choice_labels(),
+            vec!["codex", "claude", "kiro", "cursor"]
+        );
+    }
+
     #[test]
     fn enter_starts_on_the_providers_current_login() {
         let mut accounts = base();
@@ -4751,20 +4789,6 @@ mod new_session_account_picker {
             "a cancelled sign-in made a home anyway"
         );
         assert!(!app.new_fresh_login);
-    }
-
-    /// A provider whose every login is off still gets a row: one that
-    /// disappears reads as the CLI not being installed.
-    #[test]
-    fn a_provider_with_nothing_usable_still_gets_a_row() {
-        let mut accounts = base();
-        for a in accounts.iter_mut().filter(|a| a.provider == Agent::Kiro) {
-            a.disabled = true;
-        }
-        let app = app_with(accounts);
-        assert!(app
-            .new_session_choice_labels()
-            .contains(&"kiro".to_string()));
     }
 
     /// The Accounts screen still signs a named slot out and back in.

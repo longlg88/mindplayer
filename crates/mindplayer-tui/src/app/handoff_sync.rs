@@ -22,16 +22,24 @@ pub(crate) fn deltas_for(marks: Vec<(Session, u64)>) -> Vec<handoff::PeerDelta> 
 }
 
 impl App {
-    /// Every login a handoff can land on, grouped by provider in a fixed
-    /// order.
+    /// Every login a handoff can land on, grouped by provider. The account a
+    /// new session would use leads within each provider, so accepting the
+    /// first matching target is consistent across new sessions and handoffs.
     pub(crate) fn handoff_targets(&self) -> Vec<mindplayer_core::accounts::Account> {
         use mindplayer_core::accounts::MULTI_ACCOUNT_AGENTS;
         let mut out = Vec::new();
         for agent in MULTI_ACCOUNT_AGENTS {
+            let preferred = self.account_for(agent);
             out.extend(
                 self.accounts
                     .iter()
-                    .filter(|a| a.provider == agent && !a.disabled)
+                    .filter(|a| a.provider == agent && !a.disabled && a.name == preferred.name)
+                    .cloned(),
+            );
+            out.extend(
+                self.accounts
+                    .iter()
+                    .filter(|a| a.provider == agent && !a.disabled && a.name != preferred.name)
                     .cloned(),
             );
         }
@@ -105,6 +113,8 @@ impl App {
             .map(|s| s.id.clone())
             .collect();
         self.new_baselines.insert(session_id.clone(), baseline);
+        self.pane_accounts
+            .insert(session_id.clone(), (target, account.name.clone()));
         let handoff_label = self.state.label_for(&source.id).and_then(handoff_label);
         self.state
             .set_handoff_link(&session_id, &parent_id, prepared.artifact.clone(), now);

@@ -564,6 +564,8 @@ pub struct App {
     /// The logins available per provider. Always holds the one this machine
     /// already had, so a pane can always be started.
     pub(crate) accounts: Vec<mindplayer_core::accounts::Account>,
+    /// Startup account preference; an explicit Accounts selection clears it.
+    pub(crate) preferred_codex_home: Option<PathBuf>,
     /// The Accounts screen, while it is open.
     pub accounts_panel: Option<accounts_panel::AccountsPanel>,
     /// When the in-flight fetch started, so a wedged one can be abandoned.
@@ -761,6 +763,7 @@ impl App {
             unusable_waiting: Vec::new(),
             quota_cache: mindplayer_core::limits::load_quota_cache(&limits_home_for_app(), BUILD),
             accounts: mindplayer_core::accounts::load_accounts(&limits_home_for_app()),
+            preferred_codex_home: std::env::var_os("CODEX_HOME").map(PathBuf::from),
             accounts_panel: None,
             limits_started: None,
             limits_retry_at: None,
@@ -953,6 +956,15 @@ impl App {
         &self,
         session: &Session,
     ) -> mindplayer_core::accounts::Account {
+        if let Some((provider, name)) = self.pane_accounts.get(&session.id) {
+            if let Some(account) = self
+                .accounts
+                .iter()
+                .find(|account| account.provider == *provider && account.name == *name)
+            {
+                return account.clone();
+            }
+        }
         mindplayer_core::accounts::owner_of(
             &self.accounts,
             session.agent,
@@ -1018,12 +1030,34 @@ impl App {
 
     /// The login a new pane of `agent` starts on.
     ///
-    /// An account marked fallback is reached only when no primary one can
-    /// serve, and a disabled account never is. A provider with nothing usable
-    /// still gets the login this machine already had rather than refusing to
-    /// start: a pane that will not open is worse than one on a busy account.
+    /// An explicit `CODEX_HOME` matching a registered isolated account wins,
+    /// so starting MindPlayer from that account's shell cannot silently fall
+    /// back to the machine login. Otherwise an account marked fallback is
+    /// reached only when no primary one can serve, and a disabled account
+    /// never is. A provider with nothing usable still gets the login this
+    /// machine already had rather than refusing to start.
     pub(crate) fn account_for(&self, agent: Agent) -> mindplayer_core::accounts::Account {
+        self.account_for_with_ambient_codex_home(agent, self.preferred_codex_home.as_deref())
+    }
+
+    fn account_for_with_ambient_codex_home(
+        &self,
+        agent: Agent,
+        ambient_codex_home: Option<&std::path::Path>,
+    ) -> mindplayer_core::accounts::Account {
         use mindplayer_core::accounts::{Account, Role};
+        if let Some(home) = ambient_codex_home {
+            if let Some(account) = self.accounts.iter().find(|account| {
+                let slot_path = account.slot_path();
+                agent == Agent::Codex
+                    && account.provider == agent
+                    && !account.disabled
+                    && !slot_path.as_os_str().is_empty()
+                    && slot_path == home
+            }) {
+                return account.clone();
+            }
+        }
         let usable = |role: Role| {
             self.accounts
                 .iter()

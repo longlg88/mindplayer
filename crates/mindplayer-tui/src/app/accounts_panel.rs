@@ -58,6 +58,7 @@ pub struct AccountsPanel {
 pub(crate) struct AccountMarks {
     home: PathBuf,
     accounts: Vec<Account>,
+    pane_accounts: HashMap<String, (Agent, String)>,
     /// The account each provider currently starts sessions on.
     in_use: Vec<(Agent, String)>,
 }
@@ -76,17 +77,23 @@ impl AccountMarks {
             &session.file,
             &self.home,
         );
+        let owner_name = self
+            .pane_accounts
+            .get(&session.id)
+            .filter(|(agent, _)| *agent == session.agent)
+            .map(|(_, name)| name.as_str())
+            .unwrap_or(&owner.name);
         let current = self
             .in_use
             .iter()
             .find(|(agent, _)| *agent == session.agent)
             .map(|(_, name)| name.as_str())?;
-        if owner.name == current {
+        if owner_name == current {
             return None;
         }
         self.accounts
             .iter()
-            .find(|a| a.provider == session.agent && a.name == owner.name)
+            .find(|a| a.provider == session.agent && a.name == owner_name)
             .map(|a| a.name.as_str())
     }
 }
@@ -108,6 +115,7 @@ impl App {
         Some(AccountMarks {
             home: limits_home_for_app(),
             accounts: self.accounts.clone(),
+            pane_accounts: self.pane_accounts.clone(),
             in_use: MULTI_ACCOUNT_AGENTS
                 .iter()
                 .map(|agent| (*agent, self.account_for(*agent).name))
@@ -235,6 +243,9 @@ impl App {
             return;
         }
         let provider = self.accounts[i].provider;
+        if provider == Agent::Codex {
+            self.preferred_codex_home = None;
+        }
         for (j, account) in self.accounts.iter_mut().enumerate() {
             if account.provider == provider {
                 account.role = if j == i {

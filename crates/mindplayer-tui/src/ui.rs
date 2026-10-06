@@ -85,6 +85,7 @@ fn quota_label_color(label: &str) -> Color {
 fn quota_row_spans(
     row: &mindplayer_core::limits::QuotaRow,
     name_width: usize,
+    hint: Option<(String, Color)>,
 ) -> Vec<Span<'static>> {
     let mut spans = vec![Span::styled(
         format!("  {:<name_width$} ", row.label),
@@ -113,7 +114,12 @@ fn quota_row_spans(
             Style::default().fg(DIM),
         )),
     }
-    if !row.detail.is_empty() {
+    if let Some((text, color)) = hint {
+        spans.push(Span::styled(
+            format!("  {text}"),
+            Style::default().fg(color),
+        ));
+    } else if !row.detail.is_empty() {
         spans.push(Span::styled(
             format!("  {}", row.detail),
             Style::default().fg(if row.used_percent.is_some_and(|used| used >= 100.0) {
@@ -130,6 +136,59 @@ fn quota_row_spans(
         ));
     }
     spans
+}
+
+/// What the footer says about a failed reading: what happened and what to do, in place of the raw cause.
+fn failure_hint(app: &App, row: &mindplayer_core::limits::QuotaRow) -> Option<(String, Color)> {
+    use mindplayer_core::limits::FailureKind;
+    let kind = row.failure?;
+    let retry = || match app.limits_retry_at {
+        Some(at) if at > std::time::Instant::now() => {
+            format!(
+                "retrying in {} · Ctrl-R now",
+                short_wait(at - std::time::Instant::now())
+            )
+        }
+        _ => "retrying · Ctrl-R now".to_string(),
+    };
+    Some(match kind {
+        FailureKind::SignIn => {
+            let inherited = row.account.is_empty()
+                || app
+                    .accounts
+                    .iter()
+                    .any(|a| a.provider == row.agent && a.name == row.account && a.is_inherited());
+            let action = if inherited {
+                let account = mindplayer_core::accounts::Account::inherited(row.agent);
+                let login = mindplayer_core::resume::login(row.agent, PathBuf::new(), &account);
+                format!("run: {} {}", login.program, login.args.join(" "))
+            } else {
+                "press u, then l on this account".to_string()
+            };
+            (format!("sign-in needed · {action}"), ZOOM)
+        }
+        FailureKind::Temporary => (format!("temporarily unavailable · {}", retry()), DIM),
+        FailureKind::RateLimited => (format!("rate limited · {}", retry()), DIM),
+        FailureKind::Unsupported => ("usage not available for this account".to_string(), DIM),
+        FailureKind::Unreadable => (
+            format!("can't read {} output · details: u", row.agent.program()),
+            ZOOM,
+        ),
+        FailureKind::Internal => ("mindplayer error · details: u".to_string(), ERROR),
+    })
+}
+
+/// A wait in the largest unit that matters: `45s`, `4m`, `2h`.
+fn short_wait(wait: std::time::Duration) -> String {
+    let secs = wait.as_secs();
+    let minutes = secs.div_ceil(60);
+    if secs < 60 {
+        format!("{secs}s")
+    } else if minutes < 60 {
+        format!("{minutes}m")
+    } else {
+        format!("{}h", secs.div_ceil(3600))
+    }
 }
 
 fn plural_session(count: usize) -> &'static str {
@@ -908,7 +967,7 @@ fn main_view(f: &mut Frame, app: &mut App) {
                         .fg(quota_label_color(row.agent.as_str()))
                         .add_modifier(Modifier::BOLD),
                 )];
-                spans.extend(quota_row_spans(row, name_width));
+                spans.extend(quota_row_spans(row, name_width, failure_hint(app, row)));
                 Line::from(spans)
             })
             .collect();
@@ -3130,7 +3189,7 @@ fn accounts_popup(f: &mut Frame, app: &App) {
                         Span::styled(format!("{:<8}  ", state.0), Style::default().fg(state.1)),
                     ];
                     match usage.first() {
-                        Some(row) => spans.extend(quota_row_spans(row, 9)),
+                        Some(row) => spans.extend(quota_row_spans(row, 9, None)),
                         None => spans.push(Span::styled(
                             format!("{:<9}   ─", ""),
                             Style::default().fg(DIM),
@@ -3147,7 +3206,7 @@ fn accounts_popup(f: &mut Frame, app: &App) {
                     for row in usage.iter().skip(1) {
                         let mut extra =
                             vec![Span::raw(format!("    {:<name_width$}  {:<8}  ", "", ""))];
-                        extra.extend(quota_row_spans(row, 9));
+                        extra.extend(quota_row_spans(row, 9, None));
                         lines.push(Line::from(extra));
                     }
                 }
@@ -3268,6 +3327,7 @@ mod tests {
                             detail: "reported usage/limit".into(),
                             resets: Some("10-01 09:00".into()),
                             identity: None,
+                            failure: None,
                         },
                     ]
                 })
@@ -3330,9 +3390,10 @@ mod tests {
                 detail: "limit reached".into(),
                 resets: Some("10-01 09:00".into()),
                 identity: None,
+                failure: None,
             };
-            let weekly_line = Line::from(quota_row_spans(&weekly, 20));
-            let monthly_spans = quota_row_spans(&monthly, 20);
+            let weekly_line = Line::from(quota_row_spans(&weekly, 20, None));
+            let monthly_spans = quota_row_spans(&monthly, 20, None);
             let monthly_line = Line::from(monthly_spans.clone());
             assert!(weekly_line.to_string().contains("—"));
             assert!(!weekly_line.to_string().contains("0.0%"));
@@ -3658,5 +3719,20 @@ mod tests {
         // Asking for more than MAX_PANES never yields more rects than the cap.
         let rects = compute_pane_rects(body(), MAX_PANES + 3, PaneLayout::Horizontal);
         assert_eq!(rects.len(), MAX_PANES);
+    }
+}
+
+#[cfg(test)]
+mod short_wait_tests {
+    use super::short_wait;
+    use std::time::Duration;
+
+    /// Just under an hour rounds up to the hour, never to "60m".
+    #[test]
+    fn a_wait_is_named_in_the_largest_unit_that_fits() {
+        assert_eq!(short_wait(Duration::from_secs(45)), "45s");
+        assert_eq!(short_wait(Duration::from_secs(239)), "4m");
+        assert_eq!(short_wait(Duration::from_secs(3541)), "1h");
+        assert_eq!(short_wait(Duration::from_secs(5400)), "2h");
     }
 }

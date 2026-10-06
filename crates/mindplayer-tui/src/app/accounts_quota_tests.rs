@@ -200,6 +200,7 @@ mod asking_too_often {
             agent: Agent::Claude,
             account: "default".into(),
             detail: "request failed: response status 429".into(),
+            failure: Some(mindplayer_core::limits::FailureKind::RateLimited),
             ..Default::default()
         };
         assert!(rows_are_rate_limited(&[refused]));

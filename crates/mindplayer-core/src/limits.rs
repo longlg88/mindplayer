@@ -40,7 +40,7 @@ use serde_json::Value;
 /// multi-hundred-megabyte file to be thorough.
 #[cfg(test)]
 const ROLLOUT_TAIL_BYTES: u64 = 1 << 20;
-const QUOTA_CACHE_SOURCE: &str = "app-server-rate-limits-v1";
+const QUOTA_CACHE_SOURCE: &str = "app-server-rate-limits-v2";
 
 /// Claude's OAuth usage endpoint and the beta header it requires.
 const CLAUDE_USAGE_URL: &str = "https://api.anthropic.com/api/oauth/usage";
@@ -205,6 +205,59 @@ fn window_is_open(used: Option<f64>, reset: Option<i64>) -> bool {
     reset.is_some() || used.is_some_and(|p| p > 0.0)
 }
 
+/// What a person can do about a failed reading, which is what the footer tells them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FailureKind {
+    /// The login is missing, expired, or refused: signing in again fixes it.
+    SignIn,
+    /// The network, the provider, or its CLI did not answer this time: the next refresh retries.
+    Temporary,
+    /// The provider's own request limit answered: the next refresh retries after a backoff.
+    RateLimited,
+    /// This login cannot report usage at all, so there is nothing to do.
+    Unsupported,
+    /// The provider answered in a shape this build does not understand.
+    Unreadable,
+    /// mindplayer itself failed.
+    Internal,
+}
+
+/// A failed reading: what kind of failure, and the cause the Accounts screen shows.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ProbeError {
+    pub kind: FailureKind,
+    pub detail: String,
+}
+
+impl ProbeError {
+    pub fn new(kind: FailureKind, detail: impl Into<String>) -> Self {
+        Self {
+            kind,
+            detail: detail.into(),
+        }
+    }
+}
+
+impl std::fmt::Display for ProbeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.detail)
+    }
+}
+
+/// An unclassified failure is mindplayer's own, so a probe that forgot to say why reads as a bug rather than as advice.
+impl From<String> for ProbeError {
+    fn from(detail: String) -> Self {
+        Self::new(FailureKind::Internal, detail)
+    }
+}
+
+impl From<&str> for ProbeError {
+    fn from(detail: &str) -> Self {
+        Self::new(FailureKind::Internal, detail)
+    }
+}
+
 /// One account window for the footer, as values rather than a rendered line.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct QuotaRow {
@@ -232,6 +285,9 @@ pub struct QuotaRow {
     /// can tell that apart from two accounts that merely look alike.
     #[serde(default)]
     pub identity: Option<String>,
+    /// Set when there is no reading because the probe failed; `detail` then holds the cause.
+    #[serde(default)]
+    pub failure: Option<FailureKind>,
 }
 
 /// What a row read back from a cache written before providers were recorded
@@ -251,21 +307,28 @@ impl Default for QuotaRow {
             detail: String::new(),
             resets: None,
             identity: None,
+            failure: None,
         }
     }
 }
 
 impl QuotaRow {
-    /// A row that explains an absent reading instead of implying a full one.
-    fn reason(label: &str, why: &str) -> Self {
+    /// A row that explains a failed reading instead of implying a full one.
+    fn reason(label: &str, why: &ProbeError) -> Self {
         Self {
             label: label.to_string(),
-            agent: default_row_agent(),
-            account: String::new(),
-            used_percent: None,
-            detail: why.to_string(),
-            resets: None,
-            identity: None,
+            detail: why.detail.clone(),
+            failure: Some(why.kind),
+            ..Self::default()
+        }
+    }
+
+    /// A row for a probe that answered but had no window to report, which is not a failure.
+    fn note(label: &str, text: &str) -> Self {
+        Self {
+            label: label.to_string(),
+            detail: text.to_string(),
+            ..Self::default()
         }
     }
 
@@ -435,10 +498,10 @@ fn reached_label(raw: &str) -> String {
 /// All providers, each either a reading or the reason there isn't one.
 #[derive(Debug, Clone)]
 pub struct Limits {
-    pub claude: Result<ClaudeLimits, String>,
-    pub codex: Result<CodexLimits, String>,
-    pub kiro: Result<KiroLimits, String>,
-    pub cursor: Result<CursorLimits, String>,
+    pub claude: Result<ClaudeLimits, ProbeError>,
+    pub codex: Result<CodexLimits, ProbeError>,
+    pub kiro: Result<KiroLimits, ProbeError>,
+    pub cursor: Result<CursorLimits, ProbeError>,
 }
 
 impl Limits {
@@ -452,11 +515,7 @@ impl Limits {
 
     /// Whether either direct HTTP account probe was rate-limited.
     pub fn network_rate_limited(&self) -> bool {
-        let is_429 = |error: &String| {
-            error
-                .split(|c: char| !c.is_ascii_digit())
-                .any(|part| part == "429")
-        };
+        let is_429 = |error: &ProbeError| error.kind == FailureKind::RateLimited;
         self.claude.as_ref().err().is_some_and(is_429)
             || self.cursor.as_ref().err().is_some_and(is_429)
     }
@@ -487,14 +546,15 @@ impl Limits {
                             detail: String::new(),
                             resets: reset.and_then(|e| epoch_label(e, clock)),
                             identity: None,
+                            failure: None,
                         });
                     }
                 }
                 if out.len() == before {
-                    out.push(QuotaRow::reason("claude", "no windows reported"));
+                    out.push(QuotaRow::note("claude", "no windows reported"));
                 }
             }
-            Ok(_) => out.push(QuotaRow::reason("claude", "no windows reported")),
+            Ok(_) => out.push(QuotaRow::note("claude", "no windows reported")),
             Err(e) => out.push(QuotaRow::reason("claude", e)),
         }
         tag_rows(&mut out, mark, Agent::Claude);
@@ -522,6 +582,7 @@ impl Limits {
                             detail: String::new(),
                             resets: reset.and_then(epoch_label_date_time),
                             identity: None,
+                            failure: None,
                         });
                     }
                 }
@@ -537,6 +598,7 @@ impl Limits {
                         detail: "not reported".to_string(),
                         resets: None,
                         identity: None,
+                        failure: None,
                     });
                 }
                 if let Some(monthly) = monthly_used {
@@ -561,6 +623,7 @@ impl Limits {
                         detail,
                         resets: c.individual_reset.and_then(epoch_label_date_time),
                         identity: None,
+                        failure: None,
                     });
                     any_window = true;
                 }
@@ -586,10 +649,11 @@ impl Limits {
                         detail,
                         resets: None,
                         identity: None,
+                        failure: None,
                     });
                 }
             }
-            Ok(c) => out.push(QuotaRow::reason(
+            Ok(c) => out.push(QuotaRow::note(
                 "codex",
                 &format!(
                     "no windows on {} plan",
@@ -614,8 +678,9 @@ impl Limits {
                 },
                 resets: k.reset_date.clone(),
                 identity: None,
+                failure: None,
             }),
-            Ok(_) => out.push(QuotaRow::reason("kiro", "no usage reported")),
+            Ok(_) => out.push(QuotaRow::note("kiro", "no usage reported")),
             Err(e) => out.push(QuotaRow::reason("kiro", e)),
         }
         tag_rows(&mut out, mark, Agent::Kiro);
@@ -667,7 +732,7 @@ impl Limits {
                     });
                 }
             }
-            Ok(_) => out.push(QuotaRow::reason("cursor", "no usage reported")),
+            Ok(_) => out.push(QuotaRow::note("cursor", "no usage reported")),
             Err(e) => out.push(QuotaRow::reason("cursor", e)),
         }
         tag_rows(&mut out, mark, Agent::Cursor);
@@ -966,11 +1031,7 @@ pub fn rows_are_rate_limited(rows: &[QuotaRow]) -> bool {
     rows.iter()
         .filter(|row| matches!(row.agent, Agent::Claude | Agent::Cursor))
         .filter(|row| row.used_percent.is_none())
-        .any(|row| {
-            row.detail
-                .split(|c: char| !c.is_ascii_digit())
-                .any(|part| part == "429")
-        })
+        .any(|row| row.failure == Some(FailureKind::RateLimited))
 }
 
 /// Stamp a provider onto the rows a section just produced.
@@ -1021,7 +1082,10 @@ pub fn account_quota_rows(
         // A second Cursor login runs its turns fine; only its figure is
         // unavailable, and saying so beats showing the other login's.
         (Slot::Isolated { .. }, Agent::Cursor) => {
-            limits.cursor = Err("usage for a second Cursor login is not available".into())
+            limits.cursor = Err(ProbeError::new(
+                FailureKind::Unsupported,
+                "usage for a second Cursor login is not available",
+            ))
         }
     }
     let identity = limits
@@ -1083,10 +1147,10 @@ pub fn fetch(home: &Path) -> Limits {
 
 fn fetch_parallel<C, D, K, U>(claude: C, codex: D, kiro: K, cursor: U) -> Limits
 where
-    C: FnOnce() -> Result<ClaudeLimits, String> + Send,
-    D: FnOnce() -> Result<CodexLimits, String> + Send,
-    K: FnOnce() -> Result<KiroLimits, String> + Send,
-    U: FnOnce() -> Result<CursorLimits, String> + Send,
+    C: FnOnce() -> Result<ClaudeLimits, ProbeError> + Send,
+    D: FnOnce() -> Result<CodexLimits, ProbeError> + Send,
+    K: FnOnce() -> Result<KiroLimits, ProbeError> + Send,
+    U: FnOnce() -> Result<CursorLimits, ProbeError> + Send,
 {
     std::thread::scope(|scope| {
         let claude = scope.spawn(claude);
@@ -1128,9 +1192,12 @@ fn kiro_probe_home(home: &Path) -> PathBuf {
     home.join(".mindplayer").join("kiro-probe").join(".kiro")
 }
 
-pub fn kiro_limits(home: &Path) -> Result<KiroLimits, String> {
+pub fn kiro_limits(home: &Path) -> Result<KiroLimits, ProbeError> {
     if !home.join(".kiro").exists() {
-        return Err("no local Kiro profile".into());
+        return Err(ProbeError::new(
+            FailureKind::SignIn,
+            "no local Kiro profile",
+        ));
     }
     let mut command = Command::new("kiro-cli");
     command
@@ -1148,10 +1215,43 @@ pub fn kiro_limits(home: &Path) -> Result<KiroLimits, String> {
         .filter(|part| !part.trim().is_empty())
         .collect::<Vec<_>>()
         .join("\n");
-    if !status.success() {
-        return Err(format!("kiro-cli /usage exited with {status}"));
+    if let Some(failure) = kiro_reported_failure(&output) {
+        return Err(failure);
     }
-    parse_kiro_usage(&output)
+    if !status.success() {
+        return Err(ProbeError::new(
+            FailureKind::Temporary,
+            format!("kiro-cli /usage exited with {status}"),
+        ));
+    }
+    parse_kiro_usage(&output).map_err(|e| ProbeError::new(FailureKind::Unreadable, e))
+}
+
+/// The failure kiro-cli prints in place of a report while still exiting 0; only known markers are named, never the line itself.
+pub fn kiro_reported_failure(output: &str) -> Option<ProbeError> {
+    let lower = strip_ansi(output).to_ascii_lowercase();
+    if !lower.contains("failed to retrieve usage") && !lower.contains("not logged in") {
+        return None;
+    }
+    let marker = [
+        "accessdenied",
+        "invalid token",
+        "expired",
+        "not logged in",
+        "unauthorized",
+    ]
+    .into_iter()
+    .find(|marker| lower.contains(marker));
+    Some(match marker {
+        Some(marker) => ProbeError::new(
+            FailureKind::SignIn,
+            format!("kiro-cli refused the usage request ({marker})"),
+        ),
+        None => ProbeError::new(
+            FailureKind::Temporary,
+            "kiro-cli failed to retrieve usage information",
+        ),
+    })
 }
 
 /// Parse the stable, human-readable report emitted by
@@ -1256,6 +1356,16 @@ fn strip_ansi(input: &str) -> String {
     out
 }
 
+/// A CLI that is not installed cannot report anything, which is not mindplayer's fault.
+fn spawn_error(label: &str, e: &std::io::Error) -> ProbeError {
+    let kind = if e.kind() == std::io::ErrorKind::NotFound {
+        FailureKind::Unsupported
+    } else {
+        FailureKind::Internal
+    };
+    ProbeError::new(kind, format!("cannot start {label}: {e}"))
+}
+
 /// Run a probe to completion with nothing of the user's terminal on its stdio.
 ///
 /// A command handed the parent's tty on fd 0 can write to it — `kiro-cli` sends
@@ -1269,14 +1379,12 @@ fn run_bounded(
     mut command: Command,
     timeout: Duration,
     label: &str,
-) -> Result<(std::process::ExitStatus, String, String), String> {
+) -> Result<(std::process::ExitStatus, String, String), ProbeError> {
     command
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    let mut child = command
-        .spawn()
-        .map_err(|e| format!("cannot start {label}: {e}"))?;
+    let mut child = command.spawn().map_err(|e| spawn_error(label, &e))?;
     let mut stdout = child
         .stdout
         .take()
@@ -1309,7 +1417,10 @@ fn run_bounded(
             let _ = child.wait();
             let _ = stdout_reader.join();
             let _ = stderr_reader.join();
-            return Err(format!("{label} timed out"));
+            return Err(ProbeError::new(
+                FailureKind::Temporary,
+                format!("{label} timed out"),
+            ));
         }
         std::thread::sleep(Duration::from_millis(50));
     };
@@ -1331,17 +1442,19 @@ fn run_bounded(
 /// Fetch Cursor account quota from the same first-party endpoint used by
 /// CodexBar. Only the Cursor Agent's macOS Keychain credential is used: browser
 /// cookies and project/session data are never inspected or transmitted.
-pub fn cursor_limits(home: &Path) -> Result<CursorLimits, String> {
+pub fn cursor_limits(home: &Path) -> Result<CursorLimits, ProbeError> {
     let token = cursor_access_token(home)?;
-    let cookie = cursor_cookie_from_access_token(&token)?;
+    let cookie = cursor_cookie_from_access_token(&token)
+        .map_err(|e| ProbeError::new(FailureKind::SignIn, e))?;
     let body = cursor_curl_json(&cookie)?;
+    let unreadable = |e: String| ProbeError::new(FailureKind::Unreadable, e);
     let value: Value = serde_json::from_str(&body)
-        .map_err(|e| format!("unparsable response from /api/usage-summary: {e}"))?;
-    let parsed = parse_cursor_usage(&value)?;
+        .map_err(|e| unreadable(format!("unparsable response from /api/usage-summary: {e}")))?;
+    let parsed = parse_cursor_usage(&value).map_err(unreadable)?;
     if parsed.has_any() {
         Ok(parsed)
     } else {
-        Err("response carried no account quota".into())
+        Err(unreadable("response carried no account quota".into()))
     }
 }
 
@@ -1478,11 +1591,14 @@ pub fn parse_cursor_usage(body: &Value) -> Result<CursorLimits, String> {
     })
 }
 
-fn cursor_access_token(home: &Path) -> Result<String, String> {
+fn cursor_access_token(home: &Path) -> Result<String, ProbeError> {
     #[cfg(target_os = "macos")]
     {
         if !is_real_home(home) {
-            return Err("Cursor Keychain lookup is disabled for a non-user home".into());
+            return Err(ProbeError::new(
+                FailureKind::Unsupported,
+                "Cursor Keychain lookup is disabled for a non-user home",
+            ));
         }
         let mut command = Command::new("/usr/bin/security");
         command.args([
@@ -1495,18 +1611,27 @@ fn cursor_access_token(home: &Path) -> Result<String, String> {
         ]);
         let (status, stdout, _) = run_bounded(command, KEYCHAIN_TIMEOUT, "security(1)")?;
         if !status.success() {
-            return Err("no Cursor Agent access token in macOS Keychain".into());
+            return Err(ProbeError::new(
+                FailureKind::SignIn,
+                "no Cursor Agent access token in macOS Keychain",
+            ));
         }
         let token = stdout.trim_end_matches(['\r', '\n']);
         if token.is_empty() || token.chars().any(char::is_control) {
-            return Err("Cursor Agent access token is empty or malformed".into());
+            return Err(ProbeError::new(
+                FailureKind::SignIn,
+                "Cursor Agent access token is empty or malformed",
+            ));
         }
         Ok(token.to_string())
     }
     #[cfg(not(target_os = "macos"))]
     {
         let _ = home;
-        Err("Cursor account quota authentication is currently supported on macOS".into())
+        Err(ProbeError::new(
+            FailureKind::Unsupported,
+            "Cursor account quota authentication is currently supported on macOS",
+        ))
     }
 }
 
@@ -1583,7 +1708,7 @@ fn base64url_decode(input: &str) -> Option<Vec<u8>> {
 
 /// Call only the fixed Cursor endpoint. The cookie is in a mode-0600 config,
 /// never argv; redirects are disabled and curl's default rc is disabled first.
-fn cursor_curl_json(cookie: &str) -> Result<String, String> {
+fn cursor_curl_json(cookie: &str) -> Result<String, ProbeError> {
     let path = std::env::temp_dir().join(format!(
         "mindplayer-cursor-usage-{}-{}.curlrc",
         std::process::id(),
@@ -1593,23 +1718,11 @@ fn cursor_curl_json(cookie: &str) -> Result<String, String> {
         .map_err(|e| format!("cannot stage Cursor curl config: {e}"))?;
     let output = probe_output(Command::new("curl").args(curl_args()).arg(&path));
     let _ = std::fs::remove_file(&path);
-    let output = output.map_err(|e| format!("cannot run curl for Cursor usage: {e}"))?;
+    let output = output.map_err(|e| spawn_error("curl for Cursor usage", &e))?;
     if !output.status.success() {
-        return Err(cursor_curl_failure(
-            &output.status.to_string(),
-            &output.stderr,
-        ));
+        return Err(curl_failure(&output.status.to_string(), &output.stderr));
     }
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
-}
-
-fn cursor_curl_failure(status: &str, stderr: &[u8]) -> String {
-    let detail = String::from_utf8_lossy(stderr);
-    let rate_limited = detail
-        .split(|c: char| !c.is_ascii_digit())
-        .any(|part| part == "429");
-    let suffix = if rate_limited { ": HTTP 429" } else { "" };
-    format!("Cursor usage request failed ({status}){suffix}")
 }
 
 fn cursor_curl_config(cookie: &str) -> String {
@@ -1627,22 +1740,28 @@ fn cursor_curl_config(cookie: &str) -> String {
 // ── Codex ──────────────────────────────────────────────────────────────────
 
 /// Live account limits from Codex's app-server.
-pub fn codex_limits(home: &Path) -> Result<CodexLimits, String> {
+pub fn codex_limits(home: &Path) -> Result<CodexLimits, ProbeError> {
     codex_limits_in(&home.join(".codex"))
 }
 
 /// The same reading, given the directory Codex calls `CODEX_HOME` — which is
 /// `~/.codex` for the login this machine came with, and the slot itself for an
 /// account of its own.
-pub fn codex_limits_in(codex_home: &Path) -> Result<CodexLimits, String> {
+pub fn codex_limits_in(codex_home: &Path) -> Result<CodexLimits, ProbeError> {
     let live = codex_app_server_limits(codex_home, CODEX_APP_SERVER_TIMEOUT)?;
     if live.has_any() {
         return Ok(live);
     }
-    Err("Codex app-server response carried no account limits".into())
+    Err(ProbeError::new(
+        FailureKind::Unreadable,
+        "Codex app-server response carried no account limits",
+    ))
 }
 
-fn codex_app_server_limits(codex_home: &Path, timeout: Duration) -> Result<CodexLimits, String> {
+fn codex_app_server_limits(
+    codex_home: &Path,
+    timeout: Duration,
+) -> Result<CodexLimits, ProbeError> {
     let mut command = Command::new(codex_binary());
     let response = run_codex_app_server_rate_limits(&mut command, codex_home, timeout)?;
     parse_codex_app_server_response(&response)
@@ -1653,7 +1772,7 @@ fn codex_app_server_limits_with_binary(
     codex_bin: &Path,
     codex_home: &Path,
     timeout: Duration,
-) -> Result<CodexLimits, String> {
+) -> Result<CodexLimits, ProbeError> {
     let mut command = Command::new(codex_bin);
     let response = run_codex_app_server_rate_limits(&mut command, codex_home, timeout)?;
     parse_codex_app_server_response(&response)
@@ -1681,7 +1800,7 @@ fn run_codex_app_server_rate_limits(
     command: &mut Command,
     codex_home: &Path,
     timeout: Duration,
-) -> Result<Value, String> {
+) -> Result<Value, ProbeError> {
     configure_codex_app_server_command(command, codex_home);
     command
         .stdin(Stdio::piped())
@@ -1689,7 +1808,7 @@ fn run_codex_app_server_rate_limits(
         .stderr(Stdio::piped());
     let mut child = command
         .spawn()
-        .map_err(|e| format!("cannot start codex app-server: {e}"))?;
+        .map_err(|e| spawn_error("codex app-server", &e))?;
     let cleanup = |child: &mut std::process::Child| {
         kill_codex_app_server(child);
         let _ = child.wait();
@@ -1761,7 +1880,7 @@ fn run_codex_app_server_rate_limits(
         cleanup(&mut child);
         let _ = stdout_reader.join();
         let _ = stderr_reader.join();
-        return Err(format!("cannot write to codex app-server: {e}"));
+        return Err(format!("cannot write to codex app-server: {e}").into());
     }
     let start = Instant::now();
     match wait_for_json_rpc_id(&mut child, &rx, start, timeout, 1) {
@@ -1771,7 +1890,10 @@ fn run_codex_app_server_rate_limits(
             cleanup(&mut child);
             let _ = stdout_reader.join();
             let _ = stderr_reader.join();
-            return Err("codex app-server initialize failed".into());
+            return Err(ProbeError::new(
+                FailureKind::Temporary,
+                "codex app-server initialize failed",
+            ));
         }
         Err(e) => {
             drop(stdin);
@@ -1788,7 +1910,7 @@ fn run_codex_app_server_rate_limits(
             cleanup(&mut child);
             let _ = stdout_reader.join();
             let _ = stderr_reader.join();
-            return Err(format!("cannot write to codex app-server: {e}"));
+            return Err(format!("cannot write to codex app-server: {e}").into());
         }
     }
 
@@ -1823,19 +1945,22 @@ fn wait_for_json_rpc_id(
     start: Instant,
     timeout: Duration,
     id: i64,
-) -> Result<Value, String> {
+) -> Result<Value, ProbeError> {
+    let temporary = |detail: String| ProbeError::new(FailureKind::Temporary, detail);
     loop {
         if start.elapsed() >= timeout {
-            return Err("codex app-server timed out".into());
+            return Err(temporary("codex app-server timed out".into()));
         }
         if let Some(status) = child
             .try_wait()
             .map_err(|e| format!("cannot wait for codex app-server: {e}"))?
         {
             if status.success() {
-                return Err("codex app-server exited before rate limits response".into());
+                return Err(temporary(
+                    "codex app-server exited before rate limits response".into(),
+                ));
             }
-            return Err(format!("codex app-server exited with {status}"));
+            return Err(temporary(format!("codex app-server exited with {status}")));
         }
         match rx.recv_timeout(Duration::from_millis(50)) {
             Ok(line) => {
@@ -1848,22 +1973,25 @@ fn wait_for_json_rpc_id(
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {}
             Err(mpsc::RecvTimeoutError::Disconnected) => {
-                return Err("codex app-server closed stdout before rate limits response".into());
+                return Err(temporary(
+                    "codex app-server closed stdout before rate limits response".into(),
+                ));
             }
         }
     }
 }
 
-fn parse_codex_app_server_response(response: &Value) -> Result<CodexLimits, String> {
-    if rpc_error(response).is_some() {
-        return Err("codex app-server rate limits unavailable".into());
+fn parse_codex_app_server_response(response: &Value) -> Result<CodexLimits, ProbeError> {
+    if let Some(error) = rpc_error(response) {
+        return Err(codex_rpc_failure(error));
     }
+    let unreadable = |detail: &str| ProbeError::new(FailureKind::Unreadable, detail);
     let result = response
         .get("result")
-        .ok_or_else(|| "codex app-server response had no result".to_string())?;
+        .ok_or_else(|| unreadable("codex app-server response had no result"))?;
     let rate_limits = result
         .get("rateLimits")
-        .ok_or_else(|| "codex app-server response had no rateLimits".to_string())?;
+        .ok_or_else(|| unreadable("codex app-server response had no rateLimits"))?;
     let mut limits = parse_codex_app_server_rate_limits(rate_limits);
     // `accountId` sits beside `rateLimits`, not inside it, so the window parser
     // never sees it.
@@ -1873,6 +2001,25 @@ fn parse_codex_app_server_response(response: &Value) -> Result<CodexLimits, Stri
         .filter(|id| !id.is_empty())
         .map(str::to_string);
     Ok(limits)
+}
+
+/// Only a known marker in the RPC error picks the kind; the payload itself is never shown.
+fn codex_rpc_failure(error: &Value) -> ProbeError {
+    let signed_out = error
+        .get("message")
+        .and_then(Value::as_str)
+        .is_some_and(|m| m.to_ascii_lowercase().contains("authentication required"));
+    if signed_out {
+        ProbeError::new(
+            FailureKind::SignIn,
+            "codex account authentication required to read rate limits",
+        )
+    } else {
+        ProbeError::new(
+            FailureKind::Temporary,
+            "codex app-server rate limits unavailable",
+        )
+    }
 }
 
 fn rpc_error(response: &Value) -> Option<&Value> {
@@ -2125,7 +2272,7 @@ pub enum KeychainFallback {
     Refuse,
 }
 
-pub fn claude_limits(home: &Path) -> Result<ClaudeLimits, String> {
+pub fn claude_limits(home: &Path) -> Result<ClaudeLimits, ProbeError> {
     claude_limits_in(&home.join(".claude"), KeychainFallback::Allow)
 }
 
@@ -2133,16 +2280,17 @@ pub fn claude_limits(home: &Path) -> Result<ClaudeLimits, String> {
 pub fn claude_limits_in(
     config_dir: &Path,
     fallback: KeychainFallback,
-) -> Result<ClaudeLimits, String> {
+) -> Result<ClaudeLimits, ProbeError> {
     let token = claude_token_in(config_dir, fallback)?;
     let body = curl_json(CLAUDE_USAGE_URL, &token)?;
+    let unreadable = |detail: String| ProbeError::new(FailureKind::Unreadable, detail);
     let v: Value = serde_json::from_str(&body)
-        .map_err(|e| format!("unparsable response from /api/oauth/usage: {e}"))?;
+        .map_err(|e| unreadable(format!("unparsable response from /api/oauth/usage: {e}")))?;
     let parsed = parse_claude_usage(&v);
     if parsed.has_any() {
         Ok(parsed)
     } else {
-        Err("response carried no window utilization".into())
+        Err(unreadable("response carried no window utilization".into()))
     }
 }
 
@@ -2152,7 +2300,8 @@ pub fn claude_limits_in(
 /// Both are searched for `claudeAiOauth.accessToken` specifically. The same
 /// Keychain item also holds unrelated `mcpOAuth` entries for MCP servers; those
 /// are not subscription tokens and must not be sent to `/api/oauth/usage`.
-fn claude_token_in(config_dir: &Path, fallback: KeychainFallback) -> Result<String, String> {
+fn claude_token_in(config_dir: &Path, fallback: KeychainFallback) -> Result<String, ProbeError> {
+    let signed_out = |detail: &str| ProbeError::new(FailureKind::SignIn, detail);
     let file = config_dir.join(".credentials.json");
     if let Ok(raw) = std::fs::read_to_string(&file) {
         if let Some(t) = token_from_credentials(&raw) {
@@ -2160,7 +2309,9 @@ fn claude_token_in(config_dir: &Path, fallback: KeychainFallback) -> Result<Stri
         }
     }
     if fallback == KeychainFallback::Refuse {
-        return Err("this account keeps no credentials of its own yet".into());
+        return Err(signed_out(
+            "this account keeps no credentials of its own yet",
+        ));
     }
     // The login Keychain is machine-global, so it is the right fallback only
     // when this really is the user's own config directory. A caller pointing at
@@ -2173,7 +2324,7 @@ fn claude_token_in(config_dir: &Path, fallback: KeychainFallback) -> Result<Stri
         let mut blobs = Vec::new();
         for args in keychain_lookups(user.as_deref()) {
             let out = probe_output(std::process::Command::new("security").args(&args))
-                .map_err(|e| format!("cannot run security(1): {e}"))?;
+                .map_err(|e| spawn_error("security(1)", &e))?;
             if out.status.success() {
                 blobs.push(String::from_utf8_lossy(&out.stdout).into_owned());
             }
@@ -2182,10 +2333,10 @@ fn claude_token_in(config_dir: &Path, fallback: KeychainFallback) -> Result<Stri
             return Ok(t);
         }
         if !blobs.is_empty() {
-            return Err("keychain item has no claudeAiOauth token".into());
+            return Err(signed_out("keychain item has no claudeAiOauth token"));
         }
     }
-    Err("no subscription OAuth token found".into())
+    Err(signed_out("no subscription OAuth token found"))
 }
 
 /// The keychain service name Claude Code files its login JSON under.
@@ -2278,7 +2429,7 @@ fn curl_args() -> Vec<String> {
 /// The token is passed in a 0600 config file, never on the command line, so it
 /// cannot be read out of `ps` by any other process on the machine. The file is
 /// removed as soon as curl returns.
-fn curl_json(url: &str, token: &str) -> Result<String, String> {
+fn curl_json(url: &str, token: &str) -> Result<String, ProbeError> {
     let path = std::env::temp_dir().join(format!(
         "mindplayer-usage-{}-{}.curlrc",
         std::process::id(),
@@ -2292,28 +2443,38 @@ fn curl_json(url: &str, token: &str) -> Result<String, String> {
             .arg(&path),
     );
     let _ = std::fs::remove_file(&path);
-    let out = out.map_err(|e| format!("cannot run curl: {e}"))?;
+    let out = out.map_err(|e| spawn_error("curl", &e))?;
     if !out.status.success() {
-        return Err(curl_failure(&out.stderr));
+        return Err(curl_failure(&out.status.to_string(), &out.stderr));
     }
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
-/// Why a probe failed, in the reader's terms.
-///
-/// A 429 is not a broken request — it is the account's own limit answering, and
-/// saying so keeps a reader from debugging curl. The number stays in the text
-/// because [`Limits::network_rate_limited`] reads it to set the backoff.
-fn curl_failure(stderr: &[u8]) -> String {
-    let detail = String::from_utf8_lossy(stderr);
-    let detail = detail.trim();
-    if detail
-        .split(|c: char| !c.is_ascii_digit())
-        .any(|part| part == "429")
-    {
-        return "rate limited by the account API (HTTP 429)".to_string();
+/// Why an account API request failed: the HTTP status curl reports decides the kind, and anything else is the network.
+fn curl_failure(status: &str, stderr: &[u8]) -> ProbeError {
+    let detail = String::from_utf8_lossy(stderr).trim().to_string();
+    let detail = if detail.is_empty() {
+        format!("curl exited with {status}")
+    } else {
+        detail
+    };
+    match http_status_in(&detail) {
+        Some(429) => ProbeError::new(
+            FailureKind::RateLimited,
+            "rate limited by the account API (HTTP 429)",
+        ),
+        Some(401 | 403) => ProbeError::new(FailureKind::SignIn, detail),
+        _ => ProbeError::new(FailureKind::Temporary, detail),
     }
-    format!("curl failed: {detail}")
+}
+
+/// The status in curl's `--fail` message, `The requested URL returned error: 401`.
+fn http_status_in(curl_error: &str) -> Option<u16> {
+    let (_, rest) = curl_error.split_once("returned error:")?;
+    rest.split(|c: char| !c.is_ascii_digit())
+        .find(|part| !part.is_empty())?
+        .parse()
+        .ok()
 }
 
 /// A curl config.
@@ -2654,7 +2815,8 @@ mod tests {
         let fixture =
             std::env::temp_dir().join(format!("mp-cursor-fixture-home-{}", std::process::id()));
         let err = cursor_access_token(&fixture).unwrap_err();
-        assert!(err.contains("non-user home"), "{err}");
+        assert!(err.detail.contains("non-user home"), "{err}");
+        assert_eq!(err.kind, FailureKind::Unsupported);
     }
 
     #[test]
@@ -2673,15 +2835,16 @@ mod tests {
         assert!(cookie_lines[0].starts_with("header ="), "{cfg}");
     }
 
-    /// "curl failed: curl: (56) The requested URL returned error: 429" tells a
-    /// reader to go looking for a broken request when nothing is broken: the
-    /// account simply asked too often. The row says that instead, and still
-    /// carries the number the backoff matches on.
+    /// A 429 reads as the account's own limit with kind RateLimited, which is what the backoff keys on.
     #[test]
     fn a_rate_limited_probe_reads_as_a_limit_rather_than_a_curl_error() {
-        let error = curl_failure(b"curl: (56) The requested URL returned error: 429\n");
+        let error = curl_failure(
+            "exit status: 22",
+            b"curl: (56) The requested URL returned error: 429\n",
+        );
+        assert_eq!(error.kind, FailureKind::RateLimited);
         assert!(
-            !error.contains("curl"),
+            !error.detail.contains("curl"),
             "curl's own wording is not the reason a reader needs: {error}"
         );
         let limits = Limits {
@@ -2700,18 +2863,21 @@ mod tests {
     /// clue for a DNS failure or a timeout.
     #[test]
     fn a_probe_that_failed_for_another_reason_keeps_the_curl_detail() {
-        let error = curl_failure(b"curl: (6) Could not resolve host: api.anthropic.com");
-        assert!(error.contains("Could not resolve host"), "{error}");
-        assert!(!error.contains("429"), "{error}");
+        let error = curl_failure(
+            "exit status: 6",
+            b"curl: (6) Could not resolve host: api.anthropic.com",
+        );
+        assert!(error.detail.contains("Could not resolve host"), "{error}");
+        assert_eq!(error.kind, FailureKind::Temporary);
     }
 
     #[test]
     fn cursor_429_survives_curl_failure_formatting_and_triggers_backoff() {
-        let error = cursor_curl_failure(
+        let error = curl_failure(
             "exit status: 22",
             b"curl: (22) The requested URL returned error: 429",
         );
-        assert!(error.contains("429"), "{error}");
+        assert_eq!(error.kind, FailureKind::RateLimited);
         let limits = Limits {
             claude: Ok(Default::default()),
             codex: Ok(Default::default()),
@@ -3179,8 +3345,9 @@ done
             Duration::from_secs(2),
         )
         .unwrap_err();
-        assert_eq!(err, "codex app-server rate limits unavailable");
-        assert!(!err.contains("secret"), "{err}");
+        assert_eq!(err.detail, "codex app-server rate limits unavailable");
+        assert_eq!(err.kind, FailureKind::Temporary);
+        assert!(!err.detail.contains("secret"), "{err}");
     }
 
     #[cfg(unix)]
@@ -3202,7 +3369,7 @@ done
             Duration::from_secs(2),
         )
         .unwrap_err();
-        assert_eq!(err, "codex app-server initialize failed");
+        assert_eq!(err.detail, "codex app-server initialize failed");
     }
 
     #[cfg(unix)]
@@ -3220,7 +3387,7 @@ sleep 10
             Duration::from_millis(100),
         )
         .unwrap_err();
-        assert_eq!(err, "codex app-server timed out");
+        assert_eq!(err.detail, "codex app-server timed out");
         assert!(started.elapsed() < Duration::from_secs(2));
     }
 
@@ -3444,7 +3611,8 @@ sleep 10
         let empty = std::env::temp_dir().join(format!("mp-limits-home-{}", std::process::id()));
         std::fs::create_dir_all(&empty).unwrap();
         let err = claude_token_in(&empty.join(".claude"), KeychainFallback::Allow).unwrap_err();
-        assert_eq!(err, "no subscription OAuth token found", "{err}");
+        assert_eq!(err.detail, "no subscription OAuth token found", "{err}");
+        assert_eq!(err.kind, FailureKind::SignIn);
     }
 
     /// An account with its own home must never be shown the machine-global
@@ -3455,7 +3623,7 @@ sleep 10
         std::fs::create_dir_all(&slot).unwrap();
         let err = claude_token_in(&slot, KeychainFallback::Refuse).unwrap_err();
         assert_eq!(
-            err, "this account keeps no credentials of its own yet",
+            err.detail, "this account keeps no credentials of its own yet",
             "{err}"
         );
     }
@@ -3569,8 +3737,9 @@ sleep 10
                 detail: "639.7/10000 cr".into(),
                 resets: Some("2026-10-01".into()),
                 identity: None,
+                failure: None,
             },
-            QuotaRow::reason("codex", "no window reported"),
+            QuotaRow::note("codex", "no window reported"),
         ];
         let before = chrono::Utc::now().timestamp();
         save_quota_cache(home, &rows, BUILD);
@@ -3601,7 +3770,14 @@ sleep 10
             Some(rows.clone()),
             "an empty save must not erase the last real reading"
         );
-        save_quota_cache(home, &[QuotaRow::reason("cursor", "HTTP 429")], BUILD);
+        save_quota_cache(
+            home,
+            &[QuotaRow::reason(
+                "cursor",
+                &ProbeError::new(FailureKind::RateLimited, "HTTP 429"),
+            )],
+            BUILD,
+        );
         assert_eq!(
             load_quota_cache(home, BUILD).map(|(rows, _)| rows),
             Some(rows),
@@ -3632,6 +3808,7 @@ sleep 10
             detail: String::new(),
             resets: None,
             identity: None,
+            failure: None,
         }];
         save_quota_cache(home, &theirs, "0.33.0");
 
@@ -3654,6 +3831,7 @@ sleep 10
             detail: String::new(),
             resets: Some("09-19".into()),
             identity: None,
+            failure: None,
         }];
         save_quota_cache(home, &mine, "0.34.0");
         assert_eq!(
@@ -3886,19 +4064,19 @@ fn provider_fetches_overlap_so_kiro_is_not_starved_by_slow_predecessors() {
     let _ = fetch_parallel(
         move || {
             observe(&claude_probe.0, &claude_probe.1);
-            Err::<ClaudeLimits, _>("synthetic".to_string())
+            Err::<ClaudeLimits, _>(ProbeError::from("synthetic"))
         },
         move || {
             observe(&codex_probe.0, &codex_probe.1);
-            Err::<CodexLimits, _>("synthetic".to_string())
+            Err::<CodexLimits, _>(ProbeError::from("synthetic"))
         },
         move || {
             observe(&kiro_probe.0, &kiro_probe.1);
-            Err::<KiroLimits, _>("synthetic".to_string())
+            Err::<KiroLimits, _>(ProbeError::from("synthetic"))
         },
         move || {
             observe(&cursor_probe.0, &cursor_probe.1);
-            Err::<CursorLimits, _>("synthetic".to_string())
+            Err::<CursorLimits, _>(ProbeError::from("synthetic"))
         },
     );
 
@@ -4047,6 +4225,7 @@ mod shared_login_tests {
             detail: "detail".into(),
             resets: Some("09-26".into()),
             identity: identity.map(str::to_string),
+            failure: None,
         }
     }
 
@@ -4146,5 +4325,87 @@ mod shared_login_tests {
         let mut rows = vec![codex_row("work", Some("acct-1"), 93.0), kiro];
         mark_shared_logins(&mut rows);
         assert_eq!(rows[1].used_percent, Some(20.0));
+    }
+}
+
+/// A failed reading carries what kind of failure it was, decided where the failure happens.
+#[cfg(test)]
+mod failure_kind_tests {
+    use super::*;
+
+    /// Measured on 2026-10-06: kiro-cli prints this and still exits 0 when its usage token is refused.
+    #[test]
+    fn a_refused_kiro_token_reads_as_sign_in_without_echoing_the_line() {
+        let output = "\u{1b}[33m[warn]\u{1b}[0m agent \"infra\" not found, using \"kiro_default\"\nFailed to retrieve usage information: AccessDeniedError [AccessDeniedException]: Invalid token\n";
+        let failure = kiro_reported_failure(output).expect("the refusal was not noticed");
+        assert_eq!(failure.kind, FailureKind::SignIn);
+        assert_eq!(
+            failure.detail,
+            "kiro-cli refused the usage request (accessdenied)"
+        );
+    }
+
+    #[test]
+    fn another_kiro_failure_is_temporary_and_a_report_is_no_failure() {
+        let failure =
+            kiro_reported_failure("Failed to retrieve usage information: dispatch failure\n")
+                .unwrap();
+        assert_eq!(failure.kind, FailureKind::Temporary);
+        assert!(!failure.detail.contains("dispatch"), "{failure}");
+        assert_eq!(
+            kiro_reported_failure("Estimated Usage | resets on 2026-11-01 | Pro\n"),
+            None
+        );
+    }
+
+    #[test]
+    fn curl_reports_decide_the_kind_by_http_status_and_keep_curls_words() {
+        let refused = curl_failure(
+            "exit status: 22",
+            b"curl: (22) The requested URL returned error: 401",
+        );
+        assert_eq!(refused.kind, FailureKind::SignIn);
+        let dropped = curl_failure(
+            "exit status: 56",
+            b"curl: (56) Recv failure: Connection reset by peer",
+        );
+        assert_eq!(dropped.kind, FailureKind::Temporary);
+        assert!(dropped.detail.contains("Connection reset"), "{dropped}");
+        let silent = curl_failure("exit status: 56", b"");
+        assert_eq!(silent.detail, "curl exited with exit status: 56");
+    }
+
+    /// Measured on 2026-10-06 against codex 0.160.1 with an empty CODEX_HOME.
+    #[test]
+    fn a_codex_without_a_login_reads_as_sign_in() {
+        let response = serde_json::json!({"error":{"code":-32600,"message":"codex account authentication required to read rate limits"},"id":2});
+        let failure = parse_codex_app_server_response(&response).unwrap_err();
+        assert_eq!(failure.kind, FailureKind::SignIn);
+    }
+
+    #[test]
+    fn a_failed_row_says_its_kind_and_an_empty_answer_is_not_a_failure() {
+        let limits = Limits {
+            claude: Ok(ClaudeLimits::default()),
+            codex: Err(ProbeError::new(
+                FailureKind::Temporary,
+                "codex app-server timed out",
+            )),
+            kiro: Err(ProbeError::new(
+                FailureKind::SignIn,
+                "no local Kiro profile",
+            )),
+            cursor: Ok(CursorLimits::default()),
+        };
+        let rows = limits.quota_rows();
+        let kind_of = |agent: Agent| rows.iter().find(|r| r.agent == agent).unwrap().failure;
+        assert_eq!(kind_of(Agent::Codex), Some(FailureKind::Temporary));
+        assert_eq!(kind_of(Agent::Kiro), Some(FailureKind::SignIn));
+        assert_eq!(
+            kind_of(Agent::Claude),
+            None,
+            "no windows is an answer, not a failure"
+        );
+        assert_eq!(kind_of(Agent::Cursor), None);
     }
 }

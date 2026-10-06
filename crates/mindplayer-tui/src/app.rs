@@ -387,6 +387,8 @@ pub struct App {
     /// uncategorized bucket). Filled by `rebuild_visible` so a *folded* header
     /// can still show its tally — counting visible rows would report zero.
     pub category_counts: HashMap<Option<String>, usize>,
+    /// Uncategorized sessions in the recent band and in the older band.
+    pub loose_counts: [usize; 2],
     /// Number of leading `visible` rows (headers included) belonging to
     /// categories touched within the last 24h; the rest are older. Computed in
     /// `rebuild_visible` so the list renderer draws the section headers from one
@@ -707,6 +709,7 @@ impl App {
             selected: 0,
             recent_count: 0,
             category_counts: HashMap::new(),
+            loose_counts: [0; 2],
             show_archived: false,
             hero_visible: false,
             list_rows: 0,

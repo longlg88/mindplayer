@@ -29,7 +29,7 @@ mod which_account {
         let pending = app.extra_sessions.last().unwrap();
         assert!(pending.file.as_os_str().is_empty());
         let marks = app.account_marks().unwrap();
-        assert_eq!(marks.label_for(pending), Some(second.name.as_str()));
+        assert_eq!(marks.label_for(pending), Some((second.name.as_str(), 1)));
     }
 
     #[test]
@@ -42,31 +42,33 @@ mod which_account {
         );
     }
 
+    /// A blank meant "the account in use", which nothing on screen said, so every row of a provider with two logins names its own.
     #[test]
-    fn only_the_session_that_is_elsewhere_is_named() {
-        let (app, kept, second) = app_with_two_codex();
+    fn every_row_of_a_provider_with_two_logins_names_its_account() {
+        let (mut app, kept, second) = app_with_two_codex();
+        app.accounts.push(Account::inherited(Agent::Claude));
         let home = limits_home_for_app();
         let marks = app.account_marks().expect("two accounts and no marks");
 
-        let mut on_current = session("a", Agent::Codex, false);
-        on_current.file = kept.session_root(&home).join("2026/09/15/a.jsonl");
-        assert_eq!(
-            marks.label_for(&on_current),
-            None,
-            "the account new sessions already use does not need saying"
-        );
+        let mut on_kept = session("a", Agent::Codex, false);
+        on_kept.file = kept.session_root(&home).join("2026/09/15/a.jsonl");
+        assert_eq!(marks.label_for(&on_kept), Some((kept.name.as_str(), 0)));
 
-        let mut elsewhere = session("b", Agent::Codex, false);
-        elsewhere.file = second.session_root(&home).join("2026/09/15/b.jsonl");
+        let mut on_second = session("b", Agent::Codex, false);
+        on_second.file = second.session_root(&home).join("2026/09/15/b.jsonl");
+        assert_eq!(marks.label_for(&on_second), Some(("other", 1)));
+
+        let lone = session("c", Agent::Claude, false);
         assert_eq!(
-            marks.label_for(&elsewhere),
-            Some("other"),
-            "a session on another login is indistinguishable from the rest"
+            marks.label_for(&lone),
+            None,
+            "a provider with one login has nothing to tell apart"
         );
+        assert_eq!(marks.width(), kept.name.len().max("other".len()));
     }
 
     #[test]
-    fn the_marks_follow_the_account_in_use_rather_than_a_fixed_one() {
+    fn switching_the_account_in_use_does_not_rename_a_row() {
         let (mut app, kept, second) = app_with_two_codex();
         let home = limits_home_for_app();
         app.open_accounts();
@@ -77,15 +79,11 @@ mod which_account {
         let marks = app.account_marks().unwrap();
         let mut old = session("a", Agent::Codex, false);
         old.file = kept.session_root(&home).join("2026/09/15/a.jsonl");
-        assert_eq!(
-            marks.label_for(&old),
-            Some(kept.name.as_str()),
-            "after switching, the old sessions are the ones somewhere else"
-        );
+        assert_eq!(marks.label_for(&old), Some((kept.name.as_str(), 0)));
 
         let mut new = session("b", Agent::Codex, false);
         new.file = second.session_root(&home).join("2026/09/15/b.jsonl");
-        assert_eq!(marks.label_for(&new), None);
+        assert_eq!(marks.label_for(&new), Some((second.name.as_str(), 1)));
     }
 }
 

@@ -3957,7 +3957,10 @@ fn a_failed_reading_falls_back_to_the_last_good_one() {
                 credits_total: Some(10_000.0),
                 ..Default::default()
             }),
-            cursor: Err("curl: (56) The requested URL returned error: 429".into()),
+            cursor: Err(mindplayer_core::limits::ProbeError::new(
+                mindplayer_core::limits::FailureKind::RateLimited,
+                "curl: (56) The requested URL returned error: 429",
+            )),
         }
         .quota_rows(),
     );
@@ -4006,7 +4009,10 @@ fn a_failed_claude_probe_restores_both_cached_windows() {
     ));
     app.limits = Some(
         mindplayer_core::limits::Limits {
-            claude: Err("curl failed: HTTP 429".into()),
+            claude: Err(mindplayer_core::limits::ProbeError::new(
+                mindplayer_core::limits::FailureKind::RateLimited,
+                "curl failed: HTTP 429",
+            )),
             codex: Err("not under test".into()),
             kiro: Err("not under test".into()),
             cursor: Err("not under test".into()),
@@ -4125,7 +4131,10 @@ fn a_sibling_refresh_holds_back_an_instance_that_already_has_a_reading() {
     let mut app = isolated_app();
     app.limits = Some(
         mindplayer_core::limits::Limits {
-            claude: Err("curl failed: curl: (56) The requested URL returned error: 429".into()),
+            claude: Err(mindplayer_core::limits::ProbeError::new(
+                mindplayer_core::limits::FailureKind::RateLimited,
+                "curl failed: curl: (56) The requested URL returned error: 429",
+            )),
             codex: Err("not under test".into()),
             kiro: Err("not under test".into()),
             cursor: Err("not under test".into()),
@@ -4220,7 +4229,10 @@ fn a_429_account_response_defers_the_next_fetch() {
             claude: Ok(Default::default()),
             codex: Ok(Default::default()),
             kiro: Ok(Default::default()),
-            cursor: Err("curl failed: response status 429".into()),
+            cursor: Err(mindplayer_core::limits::ProbeError::new(
+                mindplayer_core::limits::FailureKind::RateLimited,
+                "curl failed: response status 429",
+            )),
         }
         .quota_rows(),
     })
@@ -4254,7 +4266,10 @@ fn a_run_of_429s_stops_growing_the_wait_at_a_cap_that_still_looks_again_within_t
         tx.send(crate::app::UsageReading {
             unusable: Vec::new(),
             rows: mindplayer_core::limits::Limits {
-                claude: Err("rate limited by the account API (HTTP 429)".into()),
+                claude: Err(mindplayer_core::limits::ProbeError::new(
+                    mindplayer_core::limits::FailureKind::RateLimited,
+                    "rate limited by the account API (HTTP 429)",
+                )),
                 codex: Ok(Default::default()),
                 kiro: Ok(Default::default()),
                 cursor: Ok(Default::default()),

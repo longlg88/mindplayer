@@ -964,7 +964,17 @@ impl App {
     /// Every usable login of each provider, the one a new pane would start on leading.
     pub(crate) fn new_session_choices(&self) -> Vec<mindplayer_core::accounts::Account> {
         let mut out = Vec::new();
-        for agent in mindplayer_core::accounts::MULTI_ACCOUNT_AGENTS {
+        let shown = || {
+            mindplayer_core::accounts::MULTI_ACCOUNT_AGENTS
+                .into_iter()
+                .filter(|agent| !self.provider_turned_off(*agent))
+        };
+        let agents: Vec<Agent> = if shown().next().is_some() {
+            shown().collect()
+        } else {
+            mindplayer_core::accounts::MULTI_ACCOUNT_AGENTS.to_vec()
+        };
+        for agent in agents {
             // The one this provider would start on leads, so Enter on a fresh
             // install still does what it always did.
             let preferred = self.account_for(agent);
@@ -977,6 +987,12 @@ impl App {
             );
         }
         out
+    }
+
+    /// True when a provider has logins and every one of them is off, which is how a provider that is not used drops out of the picker and the footer.
+    pub(crate) fn provider_turned_off(&self, agent: Agent) -> bool {
+        let mut logins = self.accounts.iter().filter(|a| a.provider == agent);
+        logins.clone().next().is_some() && logins.all(|a| a.disabled)
     }
 
     /// What each row reads as: the provider alone while it has one login, and
@@ -1034,7 +1050,18 @@ impl App {
     /// reading at all until it has run something. A login that is configured
     /// is a login whose usage matters.
     pub fn quota_rows(&self) -> Vec<mindplayer_core::limits::QuotaRow> {
-        self.quota_view().0
+        let mut rows = self.quota_view().0;
+        // A login that is off is not one in use, so only the Accounts screen keeps showing it.
+        rows.retain(|row| {
+            if row.account.is_empty() {
+                return !self.provider_turned_off(row.agent);
+            }
+            !self
+                .accounts
+                .iter()
+                .any(|a| a.provider == row.agent && a.name == row.account && a.disabled)
+        });
+        rows
     }
 
     /// The same rows, for the Accounts screen.

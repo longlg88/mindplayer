@@ -232,3 +232,28 @@ mod asking_too_often {
         assert!(!rows_are_rate_limited(&[local]));
     }
 }
+
+/// A login that is off drops out of the footer, cached reading included, but the Accounts screen still shows it.
+#[test]
+fn a_login_turned_off_leaves_the_footer_but_not_the_accounts_screen() {
+    let mut app = App::new();
+    app.accounts = MULTI_ACCOUNT_AGENTS.map(Account::inherited).to_vec();
+    let readings = vec![
+        row(Agent::Codex, "default", "codex", 10.0),
+        row(Agent::Kiro, "default", "kiro", 40.0),
+        row(Agent::Cursor, "", "cursor", 50.0),
+    ];
+    app.quota_cache = Some((readings.clone(), chrono::Utc::now()));
+    app.limits = Some(readings);
+    for a in &mut app.accounts {
+        a.disabled = matches!(a.provider, Agent::Kiro | Agent::Cursor);
+    }
+
+    let footer: Vec<Agent> = app.quota_rows().iter().map(|r| r.agent).collect();
+    assert_eq!(footer, vec![Agent::Codex], "{footer:?}");
+    let screen: Vec<Agent> = app.quota_rows_all().iter().map(|r| r.agent).collect();
+    assert!(
+        screen.contains(&Agent::Kiro) && screen.contains(&Agent::Cursor),
+        "{screen:?}"
+    );
+}

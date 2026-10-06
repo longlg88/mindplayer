@@ -478,3 +478,50 @@ fn the_footer_groups_each_platform_and_names_it_once() {
         "a platform with one login was labelled anyway:\n{screen}"
     );
 }
+
+/// The session list's account column, as drawn: every row of a provider with two logins names its own, a lone provider leaves the cell blank.
+#[test]
+fn the_session_list_names_each_rows_account() {
+    let mut app = app_on_main();
+    let home = limits_home_for_app();
+    let second = Account::isolated(&home, Agent::Codex, "other").unwrap();
+    app.accounts.push(second.clone());
+    let kept = app.accounts[0].clone();
+    let mut on_kept = super::tests::session("kept-row", Agent::Codex, false);
+    on_kept.file = kept.session_root(&home).join("2026/10/06/a.jsonl");
+    on_kept.cwd = "/work/projdir".into();
+    let mut on_second = super::tests::session("second-row", Agent::Codex, false);
+    on_second.file = second.session_root(&home).join("2026/10/06/b.jsonl");
+    on_second.cwd = "/work/projdir".into();
+    let mut lone = super::tests::session("lone-row", Agent::Claude, false);
+    lone.cwd = "/work/projdir".into();
+    app.all_sessions = vec![on_kept, on_second, lone];
+    app.rebuild_visible();
+
+    let screen = painted(&mut app, 160, 30);
+    let line = |title: &str| {
+        screen
+            .lines()
+            .find(|l| l.contains(title))
+            .unwrap_or_else(|| panic!("{title} not drawn:\n{screen}"))
+            .to_string()
+    };
+    assert!(
+        line("kept-row").contains(&format!("codex  {}", kept.name)),
+        "{screen}"
+    );
+    assert!(line("second-row").contains("codex  other"), "{screen}");
+    assert!(!line("lone-row").contains(&kept.name) && !line("lone-row").contains("other"));
+    assert!(
+        !screen.contains("projdir"),
+        "one directory on every row was drawn anyway:\n{screen}"
+    );
+
+    app.all_sessions[2].cwd = "/work/elsewhere".into();
+    app.rebuild_visible();
+    let screen = painted(&mut app, 160, 30);
+    assert!(
+        screen.contains("projdir") && screen.contains("elsewhere"),
+        "{screen}"
+    );
+}

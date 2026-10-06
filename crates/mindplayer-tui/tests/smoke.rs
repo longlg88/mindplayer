@@ -47,6 +47,9 @@ const TITLE_B: &str = "MPTESTBRVO";
 /// any static UI chrome, so seeing it proves the keystrokes reached the child.
 const TYPED_TOKEN: &str = "zqxj";
 const OLDER_TRACE_PROMPT: &str = "older trace prompt";
+const FIXTURE_CONFIG_OLD: &str = "model = \"fixture-old\"\n";
+const FIXTURE_CONFIG_NEW: &str = "model = \"fixture-new\"\n";
+const FIXTURE_AUTH_SENTINEL: &str = "fixture-auth-sentinel\n";
 
 /// Distinctive token typed into the agent pane, so the open-in-browser
 /// scenarios can assert the pane still shows the agent (never a preview) after
@@ -150,6 +153,23 @@ fn append_codex_observer_event(path: &Path, command_marker: &str, total_tokens: 
     .expect("append final token_count");
 }
 
+fn append_handoff_turn(path: &Path) {
+    let mut file = std::fs::OpenOptions::new()
+        .append(true)
+        .open(path)
+        .expect("open codex transcript for handoff append");
+    writeln!(
+        file,
+        "{{\"type\":\"response_item\",\"payload\":{{\"type\":\"message\",\"role\":\"user\",\"content\":[{{\"type\":\"input_text\",\"text\":\"handoff smoke request\"}}]}}}}"
+    )
+    .expect("append handoff user turn");
+    writeln!(
+        file,
+        "{{\"type\":\"response_item\",\"payload\":{{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{{\"type\":\"output_text\",\"text\":\"handoff smoke answer\"}}]}}}}"
+    )
+    .expect("append handoff assistant turn");
+}
+
 fn append_long_codex_execution(path: &Path, final_marker: &str) {
     let mut file = std::fs::OpenOptions::new()
         .append(true)
@@ -217,6 +237,7 @@ struct Mp {
     child: Box<dyn portable_pty::Child + Send + Sync>,
     _master: Box<dyn MasterPty + Send>,
     _tmp: PathBuf,
+    codex_marker_dir: PathBuf,
     /// Absolute path to a real `.html` fixture the open-in-browser scenarios can
     /// type into the Ctrl-P popup / select from the picker. Only read by the
     /// macOS-only open-in-browser tests (`open_in_browser` itself is
@@ -236,12 +257,26 @@ impl Mp {
     /// Spawn the compiled binary against a temp home seeded with two synthetic
     /// Codex sessions and a fake `codex` on PATH.
     fn launch() -> Mp {
-        Self::launch_with_size(ROWS, COLS)
+        Self::launch_with_options(ROWS, COLS, false, false, false, true)
     }
 
     /// Spawn with an explicit PTY size so smoke coverage can exercise narrow
     /// observer layout without depending on the developer's terminal.
     fn launch_with_size(rows: u16, cols: u16) -> Mp {
+        Self::launch_with_options(rows, cols, false, false, false, false)
+    }
+
+    /// Spawn with optional ambient Codex selection and account-role fixtures.
+    /// The fixture is written before App starts so startup preference resolution
+    /// is exercised through the real binary, not by mutating App internals.
+    fn launch_with_options(
+        rows: u16,
+        cols: u16,
+        ambient_isolated: bool,
+        isolated_primary: bool,
+        with_accounts: bool,
+        enable_cursor: bool,
+    ) -> Mp {
         let tmp = unique_tmp();
 
         // Fully isolate every store the binary touches from the developer's real
@@ -254,6 +289,7 @@ impl Mp {
         let state_dir = tmp.join("state");
         let audit_dir = tmp.join("audit");
         let prompts_dir = tmp.join("prompts");
+        let codex_marker_dir = tmp.join("codex-markers");
         let scope = tmp.join("scope"); // session cwd + launch dir
         let bindir = tmp.join("bin");
         for d in [
@@ -265,20 +301,101 @@ impl Mp {
             &state_dir,
             &audit_dir,
             &prompts_dir,
+            &codex_marker_dir,
             &scope,
             &bindir,
         ] {
             std::fs::create_dir_all(d).expect("create dir");
         }
 
-        // Fake `codex`: print a readiness banner, then become `cat` so the PTY
-        // stays open and the child tty echoes typed input back to its screen.
-        // It ignores `resume <id>` args entirely — we only exercise MindPlayer's
-        // own key handling, never a real agent.
+        let isolated_home = home
+            .join(".mindplayer")
+            .join("accounts")
+            .join("codex")
+            .join("isolated");
+        {
+            let (default_role, isolated_role) = if isolated_primary {
+                ("fallback", "primary")
+            } else {
+                ("primary", "fallback")
+            };
+            let mut accounts = serde_json::json!([
+                {
+                    "provider": "codex",
+                    "name": "default",
+                    "slot": { "kind": "inherited" },
+                    "role": default_role,
+                    "disabled": false
+                },
+                {
+                    "provider": "claude",
+                    "name": "default",
+                    "slot": { "kind": "inherited" },
+                    "role": "primary",
+                    "disabled": true
+                },
+                {
+                    "provider": "kiro",
+                    "name": "default",
+                    "slot": { "kind": "inherited" },
+                    "role": "primary",
+                    "disabled": true
+                },
+                {
+                    "provider": "cursor",
+                    "name": "default",
+                    "slot": { "kind": "inherited" },
+                    "role": "primary",
+                    "disabled": !enable_cursor
+                }
+            ]);
+            if with_accounts {
+                accounts.as_array_mut().unwrap().push(serde_json::json!({
+                    "provider": "codex",
+                    "name": "isolated",
+                    "slot": { "kind": "isolated", "path": isolated_home },
+                    "role": isolated_role,
+                    "disabled": false
+                }));
+            }
+            let accounts_path = home.join(".mindplayer").join("accounts.json");
+            std::fs::create_dir_all(accounts_path.parent().unwrap()).expect("create accounts dir");
+            std::fs::write(
+                accounts_path,
+                serde_json::to_vec_pretty(&accounts).expect("serialize account fixture"),
+            )
+            .expect("write account fixture");
+            if with_accounts {
+                let canonical_codex_home = home.join(".codex");
+                std::fs::create_dir_all(&canonical_codex_home)
+                    .expect("create canonical Codex home");
+                std::fs::write(canonical_codex_home.join("config.toml"), FIXTURE_CONFIG_NEW)
+                    .expect("write canonical Codex config");
+                std::fs::create_dir_all(&isolated_home).expect("create isolated Codex home");
+                std::fs::write(isolated_home.join("config.toml"), FIXTURE_CONFIG_OLD)
+                    .expect("write isolated Codex config");
+                std::fs::write(isolated_home.join("auth.json"), FIXTURE_AUTH_SENTINEL)
+                    .expect("write isolated auth sentinel");
+            }
+        }
+
+        // Fake `codex`: answer non-interactive probes immediately, record only
+        // account selection and argv for pane children, then become `cat` so
+        // the PTY stays open and the child tty echoes typed input.
         write_script(
             &bindir.join("codex"),
-            "#!/bin/sh\nprintf 'PANE-READY\\n'\nexec cat\n",
+            &format!(
+                "#!/bin/sh\n\nif [ \"$1 $2\" = \"login status\" ]; then\n  printf 'logged in\\n'\n  exit 0\nfi\nif [ \"$1\" = \"app-server\" ]; then\n  printf 'app-server ready\\n'\n  exit 0\nfi\nif [ -n \"$MINDPLAYER_PANE_ID\" ]; then\n  marker='{}'\n  printf 'CODEX_HOME=%s\\n' \"$CODEX_HOME\" > \"$marker/$MINDPLAYER_PANE_ID.txt\"\n  for arg in \"$@\"; do printf 'ARG=%s\\n' \"$arg\" >> \"$marker/$MINDPLAYER_PANE_ID.txt\"; done\n  printf 'CONFIG_CONTENT_BEGIN\\n' >> \"$marker/$MINDPLAYER_PANE_ID.txt\"\n  cat \"$CODEX_HOME/config.toml\" >> \"$marker/$MINDPLAYER_PANE_ID.txt\" 2>/dev/null\n  printf 'CONFIG_CONTENT_END\\n' >> \"$marker/$MINDPLAYER_PANE_ID.txt\"\nfi\nprintf 'PANE-READY\\n'\nexec cat\n",
+                codex_marker_dir.display()
+            ),
         );
+        if enable_cursor {
+            write_script(
+                &bindir.join("agent"),
+                "#!/bin/sh\nif [ \"$1\" = \"status\" ]; then printf 'logged in\\n'; exit 0; fi\nprintf 'PANE-READY\\n'\nexec cat\n",
+            );
+            write_script(&bindir.join("security"), "#!/bin/sh\nexit 1\n");
+        }
 
         // Fake `open` (the macOS launcher MindPlayer shells out to): append its
         // argv to a marker file so a test can assert exactly what path it was
@@ -317,7 +434,10 @@ impl Mp {
             })
             .expect("openpty");
 
-        let mut cmd = CommandBuilder::new(env!("CARGO_BIN_EXE_mindplayer"));
+        let binary = std::env::var_os("MINDPLAYER_TEST_BINARY")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_mindplayer")));
+        let mut cmd = CommandBuilder::new(binary);
         cmd.cwd(&scope);
         cmd.env("TERM", "xterm-256color");
         cmd.env("HOME", &home);
@@ -328,6 +448,10 @@ impl Mp {
         cmd.env("MINDPLAYER_STATE", &state_dir);
         cmd.env("MINDPLAYER_AUDIT", &audit_dir);
         cmd.env("MINDPLAYER_PROMPTS_DIR", &prompts_dir);
+        cmd.env("MINDPLAYER_TEST_MARKER_DIR", &codex_marker_dir);
+        if ambient_isolated {
+            cmd.env("CODEX_HOME", &isolated_home);
+        }
         // Prepend the fake-bin dir so `codex` resolves to our stub, keeping the
         // rest of PATH so the inner `sh` wrapper still works.
         let path = std::env::var("PATH").unwrap_or_default();
@@ -367,6 +491,7 @@ impl Mp {
             child,
             _master: pair.master,
             _tmp: tmp,
+            codex_marker_dir,
             #[cfg(target_os = "macos")]
             html_fixture,
             #[cfg(target_os = "macos")]
@@ -428,6 +553,70 @@ impl Mp {
 
     fn wait_for(&self, needle: &str, within: Duration) -> bool {
         self.wait_until(within, |s| s.contains(needle))
+    }
+
+    fn wait_for_codex_home(&self, expected: &Path, within: Duration) {
+        let expected = expected.display().to_string();
+        let deadline = Instant::now() + within;
+        loop {
+            if let Ok(entries) = std::fs::read_dir(&self.codex_marker_dir) {
+                for entry in entries.flatten() {
+                    if let Ok(contents) = std::fs::read_to_string(entry.path()) {
+                        if contents
+                            .lines()
+                            .any(|line| line == format!("CODEX_HOME={expected}").as_str())
+                        {
+                            return;
+                        }
+                    }
+                }
+            }
+            if Instant::now() >= deadline {
+                let markers = std::fs::read_dir(&self.codex_marker_dir)
+                    .ok()
+                    .into_iter()
+                    .flat_map(|entries| entries.flatten())
+                    .filter_map(|entry| std::fs::read_to_string(entry.path()).ok())
+                    .collect::<Vec<_>>()
+                    .join("\n---\n");
+                panic!(
+                    "expected Codex child CODEX_HOME={expected:?} within {within:?}; markers:\n{markers}"
+                );
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    fn wait_for_codex_marker(&self, expected_home: &Path, expected_config: &str) {
+        let expected_home = expected_home.display().to_string();
+        let deadline = Instant::now() + STEP_TIMEOUT;
+        loop {
+            if let Ok(entries) = std::fs::read_dir(&self.codex_marker_dir) {
+                for entry in entries.flatten() {
+                    if let Ok(contents) = std::fs::read_to_string(entry.path()) {
+                        if contents.contains(&format!("CODEX_HOME={expected_home}"))
+                            && contents.contains(expected_config)
+                        {
+                            return;
+                        }
+                    }
+                }
+            }
+            if Instant::now() >= deadline {
+                panic!(
+                    "expected Codex marker for home {expected_home:?} and config {expected_config:?}"
+                );
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    fn canonical_config(&self) -> PathBuf {
+        self._tmp.join("home/.codex/config.toml")
+    }
+
+    fn isolated_auth(&self) -> PathBuf {
+        isolated_codex_home(self).join("auth.json")
     }
 
     /// Assert a substring shows up, dumping the live screen on failure.
@@ -894,4 +1083,175 @@ fn cursor_is_available_in_new_and_handoff_pickers() {
     mp.send(b"h");
     mp.expect("Handoff", STEP_TIMEOUT, "handoff picker opened");
     mp.expect("cursor", STEP_TIMEOUT, "Cursor appears in handoff picker");
+}
+
+fn isolated_codex_home(mp: &Mp) -> PathBuf {
+    mp._tmp
+        .join("home")
+        .join(".mindplayer")
+        .join("accounts")
+        .join("codex")
+        .join("isolated")
+}
+
+#[test]
+fn new_session_explicit_isolated_choice_launches_on_isolated_codex_home() {
+    let mut mp = Mp::launch_with_options(ROWS, COLS, false, false, true, false);
+    mp.start_into_main_list();
+    mp.send(b"n");
+    mp.expect("New session", STEP_TIMEOUT, "new-session picker opened");
+    mp.expect(
+        "codex · isolated",
+        STEP_TIMEOUT,
+        "isolated Codex choice is visible",
+    );
+    mp.send(b"\x1b[B");
+    mp.expect(
+        "▶ codex · isolated",
+        STEP_TIMEOUT,
+        "isolated choice selected",
+    );
+    mp.send(b"\r\r");
+    mp.expect(
+        PANE_READY,
+        STEP_TIMEOUT,
+        "isolated new-session pane came up",
+    );
+    mp.wait_for_codex_marker(&isolated_codex_home(&mp), FIXTURE_CONFIG_NEW);
+    assert_eq!(
+        std::fs::read_to_string(mp.isolated_auth()).unwrap(),
+        FIXTURE_AUTH_SENTINEL
+    );
+}
+
+#[test]
+fn new_session_explicit_inherited_choice_pins_primary_home_over_ambient_isolated() {
+    let mut mp = Mp::launch_with_options(ROWS, COLS, true, false, true, false);
+    mp.start_into_main_list();
+    mp.send(b"n");
+    mp.expect("New session", STEP_TIMEOUT, "new-session picker opened");
+    mp.send(b"\x1b[B");
+    mp.expect(
+        "▶ codex · default",
+        STEP_TIMEOUT,
+        "inherited choice selected",
+    );
+    mp.send(b"\r\r");
+    mp.expect(
+        PANE_READY,
+        STEP_TIMEOUT,
+        "inherited new-session pane came up",
+    );
+    mp.wait_for_codex_home(&mp._tmp.join("home").join(".codex"), STEP_TIMEOUT);
+}
+
+#[test]
+fn handoff_to_isolated_account_launches_on_isolated_codex_home() {
+    let mut mp = Mp::launch_with_options(ROWS, COLS, false, false, true, false);
+    mp.start_into_main_list();
+    append_handoff_turn(&mp.codex_brvo_file);
+    mp.send(b"h");
+    mp.expect("Handoff", STEP_TIMEOUT, "handoff picker opened");
+    mp.send(b"\x1b[B");
+    mp.expect(
+        "▶ isolated",
+        STEP_TIMEOUT,
+        "isolated handoff target selected",
+    );
+    mp.send(b"\r");
+    mp.expect(PANE_READY, STEP_TIMEOUT, "isolated handoff pane came up");
+    mp.wait_for_codex_marker(&isolated_codex_home(&mp), FIXTURE_CONFIG_NEW);
+    assert_eq!(
+        std::fs::read_to_string(mp.isolated_auth()).unwrap(),
+        FIXTURE_AUTH_SENTINEL
+    );
+}
+
+#[test]
+fn later_new_session_reads_updated_shared_canonical_codex_config() {
+    let mut mp = Mp::launch_with_options(ROWS, COLS, false, false, true, false);
+    mp.start_into_main_list();
+
+    mp.send(b"n");
+    mp.expect(
+        "New session",
+        STEP_TIMEOUT,
+        "first new-session picker opened",
+    );
+    mp.send(b"\x1b[B\r\r");
+    mp.expect(PANE_READY, STEP_TIMEOUT, "first isolated pane came up");
+    mp.wait_for_codex_marker(&isolated_codex_home(&mp), FIXTURE_CONFIG_NEW);
+
+    std::fs::write(mp.canonical_config(), "model = \"fixture-next\"\n")
+        .expect("update canonical Codex config");
+    mp.send(b"\x18");
+    mp.expect("multi-select", STEP_TIMEOUT, "returned to session list");
+    mp.send(b"n");
+    mp.expect(
+        "New session",
+        STEP_TIMEOUT,
+        "second new-session picker opened",
+    );
+    mp.send(b"\x1b[B\r\r");
+    mp.wait_for_codex_marker(&isolated_codex_home(&mp), "model = \"fixture-next\"");
+    assert_eq!(
+        std::fs::read_to_string(mp.isolated_auth()).unwrap(),
+        FIXTURE_AUTH_SENTINEL
+    );
+}
+
+#[test]
+fn default_new_session_prefers_ambient_isolated_codex_home() {
+    let mut mp = Mp::launch_with_options(ROWS, COLS, true, false, true, false);
+    mp.start_into_main_list();
+    mp.send(b"n");
+    mp.expect("New session", STEP_TIMEOUT, "new-session picker opened");
+    mp.expect(
+        "▶ codex · isolated",
+        STEP_TIMEOUT,
+        "ambient isolated choice is preferred",
+    );
+    mp.send(b"\r\r");
+    mp.expect(PANE_READY, STEP_TIMEOUT, "default new-session pane came up");
+    mp.wait_for_codex_home(&isolated_codex_home(&mp), STEP_TIMEOUT);
+}
+
+#[test]
+fn accounts_primary_switch_wins_for_later_new_session_over_ambient_isolated() {
+    let mut mp = Mp::launch_with_options(ROWS, COLS, true, true, true, false);
+    mp.start_into_main_list();
+
+    // The fixture starts with isolated primary and inherited fallback. Accounts
+    // opens on the first Codex entry, inherited, so `w` changes the persisted
+    // provider primary without relying on list ordering inside the test.
+    mp.send(b"u");
+    mp.expect("Accounts", STEP_TIMEOUT, "accounts screen opened");
+    mp.expect(
+        "default",
+        STEP_TIMEOUT,
+        "inherited Codex account is selected",
+    );
+    mp.send(b"w");
+    mp.expect(
+        "new codex sessions will use default",
+        STEP_TIMEOUT,
+        "primary switch confirmed",
+    );
+    mp.send(b"q");
+    mp.expect_absent("Accounts", STEP_TIMEOUT, "accounts screen closed");
+
+    mp.send(b"n");
+    mp.expect("New session", STEP_TIMEOUT, "new-session picker opened");
+    mp.expect(
+        "▶ codex · default",
+        STEP_TIMEOUT,
+        "switched primary leads new-session choices",
+    );
+    mp.send(b"\r\r");
+    mp.expect(
+        PANE_READY,
+        STEP_TIMEOUT,
+        "post-switch new-session pane came up",
+    );
+    mp.wait_for_codex_home(&mp._tmp.join("home").join(".codex"), STEP_TIMEOUT);
 }

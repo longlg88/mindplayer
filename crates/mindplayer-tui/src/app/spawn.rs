@@ -392,6 +392,9 @@ impl App {
                         let _ = self.save_state();
                     }
                     self.new_baselines.remove(&extra.id);
+                    if let Some(account) = self.pane_accounts.remove(&extra.id) {
+                        self.pane_accounts.insert(real_id.clone(), account);
+                    }
                     claimed.insert(real_id);
                     // The real session is already in `all_sessions`; drop the extra.
                 }
@@ -437,6 +440,10 @@ impl App {
                     && baseline.is_none_or(|b| !b.contains(&s.id))
                     && s.agent == extra.agent
                     && s.cwd == extra.cwd
+                    && self.pane_accounts.get(&extra.id).is_none_or(|(provider, name)| {
+                        let owner = self.account_of_session(s);
+                        owner.provider == *provider && owner.name == *name
+                    })
                     && s.started_at.is_some_and(|t| t >= after)
             })
             .max_by_key(|s| s.started_at)
@@ -472,6 +479,7 @@ impl App {
                 .is_some_and(|t| now.signed_duration_since(t) > CLOSED_EXTRA_GRACE)
             {
                 self.new_baselines.remove(&extra.id);
+                self.pane_accounts.remove(&extra.id);
                 continue;
             }
             match self.adopt_match(&extra, &claimed) {
@@ -482,6 +490,7 @@ impl App {
                     }
                     self.new_baselines.remove(&extra.id);
                     archived_any = true;
+                    self.pane_accounts.remove(&extra.id);
                 }
                 None => still.push(extra),
             }

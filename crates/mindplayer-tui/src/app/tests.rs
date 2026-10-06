@@ -229,12 +229,15 @@ fn new_session_persists_then_reconciles() {
 }
 
 /// A real session written by the agent for a new session created just now.
-fn late_disk_session(id: &str, agent: Agent, cwd: &str) -> Session {
+fn late_disk_session(app: &App, id: &str, agent: Agent, cwd: &str) -> Session {
     Session {
         id: id.into(),
         agent,
         cwd: PathBuf::from(cwd),
-        file: PathBuf::new(),
+        file: app
+            .account_for(agent)
+            .session_root(&limits_home_for_app())
+            .join(format!("{id}.jsonl")),
         started_at: Some(chrono::Utc::now()),
         last_active: Some(chrono::Utc::now()),
         last_prompt_at: None,
@@ -281,7 +284,7 @@ fn a_closed_new_sessions_late_file_is_archived_not_shown() {
     app.close_selected();
 
     // The agent writes the file after the close; the scan picks it up.
-    app.all_sessions = vec![late_disk_session("real-late", Agent::Codex, "/work")];
+    app.all_sessions = vec![late_disk_session(&app, "real-late", Agent::Codex, "/work")];
     app.merge_extras();
     app.rebuild_visible();
 
@@ -322,7 +325,12 @@ fn a_closed_placeholder_does_not_take_the_session_an_open_pane_just_wrote() {
         .map(|s| s.id.clone())
         .expect("the open pane has a placeholder");
 
-    app.all_sessions = vec![late_disk_session("real-second", Agent::Codex, "/work")];
+    app.all_sessions = vec![late_disk_session(
+        &app,
+        "real-second",
+        Agent::Codex,
+        "/work",
+    )];
     app.merge_extras();
     app.rebuild_visible();
 
@@ -357,7 +365,12 @@ fn a_closed_new_session_stops_claiming_files_after_the_grace_window() {
     for extra in &mut app.closed_extras {
         extra.started_at = Some(chrono::Utc::now() - chrono::Duration::minutes(6));
     }
-    app.all_sessions = vec![late_disk_session("started-by-hand", Agent::Codex, "/work")];
+    app.all_sessions = vec![late_disk_session(
+        &app,
+        "started-by-hand",
+        Agent::Codex,
+        "/work",
+    )];
     app.merge_extras();
     app.rebuild_visible();
 
@@ -378,12 +391,12 @@ fn reaping_never_archives_a_pre_existing_session() {
     let mut app = isolated_app_at(tmp.clone());
     app.scope = Scope::WorkingDir(PathBuf::from("/work"));
     // Present before the new session is created → in its baseline.
-    app.all_sessions = vec![late_disk_session("older", Agent::Codex, "/work")];
+    app.all_sessions = vec![late_disk_session(&app, "older", Agent::Codex, "/work")];
     app.request_new(Agent::Codex, "bar");
     app.selected = app.row_of_session("new:codex:1").unwrap();
     app.close_selected();
 
-    app.all_sessions = vec![late_disk_session("older", Agent::Codex, "/work")];
+    app.all_sessions = vec![late_disk_session(&app, "older", Agent::Codex, "/work")];
     app.merge_extras();
     app.rebuild_visible();
 
@@ -4402,6 +4415,20 @@ mod account_selection {
     }
 
     #[test]
+    fn an_ambient_codex_home_selects_the_matching_isolated_login() {
+        let home = std::env::temp_dir().join("mp-account-pick");
+        let (app, second) = app_with_two_codex_accounts(&home);
+        assert_eq!(
+            app.account_for_with_ambient_codex_home(
+                Agent::Codex,
+                Some(second.slot_path().as_path()),
+            )
+            .name,
+            second.name
+        );
+    }
+
+    #[test]
     fn a_disabled_primary_is_passed_over() {
         let home = std::env::temp_dir().join("mp-account-pick");
         let (mut app, second) = app_with_two_codex_accounts(&home);
@@ -4454,6 +4481,32 @@ mod account_selection {
             1,
             "cursor holds no second account but must still be scanned"
         );
+    }
+
+    #[test]
+    fn a_new_pane_does_not_adopt_another_accounts_transcript() {
+        let home = super::super::limits_home_for_app();
+        let (mut app, second) = app_with_two_codex_accounts(&home);
+        app.request_new_on(&second, "");
+        let pending_id = app.pending.as_ref().unwrap().session_id.clone();
+        let cwd = app.pending.as_ref().unwrap().command.cwd.clone();
+
+        let mut other = session("other-account-session", Agent::Codex, false);
+        other.cwd = cwd.clone();
+        other.started_at = Some(Utc::now());
+        other.file = app.accounts[0].session_root(&home).join("other.jsonl");
+        app.all_sessions = vec![other];
+        app.merge_extras();
+        assert_eq!(app.active.as_deref(), Some(pending_id.as_str()));
+
+        let mut owned = session("selected-account-session", Agent::Codex, false);
+        owned.cwd = cwd;
+        owned.started_at = Some(Utc::now());
+        owned.file = second.session_root(&home).join("owned.jsonl");
+        app.all_sessions.retain(|s| s.id != pending_id);
+        app.all_sessions.push(owned);
+        app.merge_extras();
+        assert_eq!(app.active.as_deref(), Some("selected-account-session"));
     }
 }
 
@@ -4686,6 +4739,25 @@ mod new_session_account_picker {
         assert_ne!(
             pending.command.program, "sh",
             "no sign-in on the plain path"
+        );
+    }
+
+    #[test]
+    fn selecting_a_non_primary_login_starts_that_login() {
+        let mut accounts = base();
+        let second = second_codex();
+        accounts.push(second.clone());
+        let mut app = app_with(accounts);
+
+        app.choose_new_account(&second);
+        app.confirm_new_session();
+
+        let pending = app.pending.as_ref().expect("a pane was queued");
+        assert_eq!(pending.command.env, second.launch_env());
+        assert_ne!(
+            pending.command.env,
+            app.account_for(Agent::Codex).launch_env(),
+            "explicitly selecting the second login must not fall back to the primary"
         );
     }
 

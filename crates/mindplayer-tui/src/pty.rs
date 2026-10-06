@@ -298,6 +298,18 @@ impl PtyWriter {
 
 impl PtySession {
     pub fn spawn(cmd: &MpCommand, session_id: &str, rows: u16, cols: u16) -> Result<Self> {
+        // All Codex entry points (new, resume, handoff, login) select their
+        // credentials through CODEX_HOME. Share only preferences, and stop
+        // visibly on a preparation error instead of silently using stale ones.
+        if let Some((_, codex_home)) = cmd.env.set.iter().find(|(key, _)| key == "CODEX_HOME") {
+            let home = std::env::var_os("HOME")
+                .ok_or_else(|| anyhow::anyhow!("could not share Codex config: HOME is not set"))?;
+            mindplayer_core::codex_config::prepare(
+                std::path::Path::new(codex_home),
+                std::path::Path::new(&home),
+            )
+            .map_err(|e| anyhow::anyhow!("could not share Codex config: {e}"))?;
+        }
         let rows = rows.max(1);
         let cols = cols.max(1);
         let pty_system = native_pty_system();

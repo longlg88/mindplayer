@@ -23,6 +23,16 @@ mod which_account {
     use super::*;
 
     #[test]
+    fn a_new_pane_shows_its_selected_account_before_a_transcript_exists() {
+        let (mut app, _, second) = app_with_two_codex();
+        app.request_new_on(&second, "isolated");
+        let pending = app.extra_sessions.last().unwrap();
+        assert!(pending.file.as_os_str().is_empty());
+        let marks = app.account_marks().unwrap();
+        assert_eq!(marks.label_for(pending), Some(second.name.as_str()));
+    }
+
+    #[test]
     fn nothing_is_marked_while_every_provider_has_one_login() {
         let mut app = App::new();
         app.accounts = MULTI_ACCOUNT_AGENTS.map(Account::inherited).to_vec();
@@ -104,6 +114,33 @@ mod handing_over {
                 agent.as_str()
             );
         }
+    }
+
+    #[test]
+    fn the_primary_login_leads_the_handoff_targets() {
+        let (mut app, kept, second) = app_with_two_codex();
+        app.accounts.push(Account::inherited(Agent::Claude));
+
+        let targets = app.handoff_targets();
+        let codex: Vec<_> = targets
+            .into_iter()
+            .filter(|account| account.provider == Agent::Codex)
+            .map(|account| account.name)
+            .collect();
+
+        assert_eq!(codex, vec![kept.name.clone(), second.name.clone()]);
+
+        app.open_accounts();
+        app.accounts_panel.as_mut().unwrap().selected = 2;
+        app.accounts_make_primary();
+
+        let targets = app.handoff_targets();
+        let codex: Vec<_> = targets
+            .into_iter()
+            .filter(|account| account.provider == Agent::Codex)
+            .map(|account| account.name)
+            .collect();
+        assert_eq!(codex, vec![second.name, kept.name]);
     }
 
     #[test]

@@ -190,6 +190,21 @@ fn an_account_that_is_off_cannot_be_chosen_or_started() {
 }
 
 #[test]
+fn explicit_primary_selection_overrides_the_startup_codex_home() {
+    let mut app = open();
+    let second = Account::isolated(&limits_home_for_app(), Agent::Codex, "work").unwrap();
+    app.preferred_codex_home = Some(second.slot_path());
+    app.accounts.push(second.clone());
+    assert_eq!(app.account_for(Agent::Codex).name, second.name);
+
+    select(&mut app, Agent::Codex);
+    app.accounts_make_primary();
+
+    assert_eq!(app.account_for(Agent::Codex).name, DEFAULT_ACCOUNT);
+    assert!(app.preferred_codex_home.is_none());
+}
+
+#[test]
 fn enter_starts_a_session_on_the_highlighted_account() {
     let mut app = open();
     let home = limits_home_for_app();

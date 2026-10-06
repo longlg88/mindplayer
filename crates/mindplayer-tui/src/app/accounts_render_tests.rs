@@ -525,3 +525,70 @@ fn the_session_list_names_each_rows_account() {
         "{screen}"
     );
 }
+
+/// A failed reading says what to do in the footer, and the Accounts screen keeps the cause for debugging.
+#[test]
+fn a_failed_reading_says_what_to_do_and_the_accounts_screen_keeps_the_cause() {
+    use mindplayer_core::limits::{FailureKind, QuotaRow};
+    let mut app = app_on_main();
+    let other = Account::isolated(&limits_home_for_app(), Agent::Codex, "other").unwrap();
+    app.accounts.push(other);
+    let failed = |agent: Agent, account: &str, detail: &str, kind: FailureKind| QuotaRow {
+        label: agent.as_str().into(),
+        agent,
+        account: account.into(),
+        detail: detail.into(),
+        failure: Some(kind),
+        ..Default::default()
+    };
+    app.limits = Some(vec![
+        QuotaRow {
+            label: "codex weekly".into(),
+            agent: Agent::Codex,
+            account: "default".into(),
+            used_percent: Some(5.0),
+            resets: Some("10-13 16:22".into()),
+            ..Default::default()
+        },
+        failed(
+            Agent::Codex,
+            "other",
+            "codex account authentication required to read rate limits",
+            FailureKind::SignIn,
+        ),
+        failed(
+            Agent::Kiro,
+            "default",
+            "kiro-cli refused the usage request (accessdenied)",
+            FailureKind::SignIn,
+        ),
+        failed(
+            Agent::Cursor,
+            "default",
+            "curl: (56) Recv failure: Connection reset by peer",
+            FailureKind::Temporary,
+        ),
+    ]);
+    app.limits_retry_at = Some(std::time::Instant::now() + std::time::Duration::from_secs(240));
+
+    let screen = painted(&mut app, 160, 40);
+    for hint in [
+        "5.0%",
+        "sign-in needed · press u, then l on this account",
+        "sign-in needed · run: kiro-cli user login",
+        "temporarily unavailable · retrying in 4m · Ctrl-R now",
+    ] {
+        assert!(screen.contains(hint), "footer lacks {hint:?}:\n{screen}");
+    }
+    assert!(
+        !screen.contains("Recv failure") && !screen.contains("accessdenied"),
+        "the footer still prints the raw cause:\n{screen}"
+    );
+
+    app.open_accounts();
+    let screen = painted(&mut app, 160, 40);
+    assert!(
+        screen.contains("Recv failure") && screen.contains("refused the usage request"),
+        "the Accounts screen lost the cause:\n{screen}"
+    );
+}

@@ -1332,8 +1332,10 @@ fn session_list(f: &mut Frame, app: &mut App, area: Rect, now: DateTime<Utc>) {
     // Fill the pane: title gets whatever width is left after border, status
     // badge, agent, time, identity, and usage columns.
     let show_id = area.width >= 58;
-    let show_cwd = area.width >= 78;
-    let identity_width = usize::from(show_id) * 11 + usize::from(show_cwd) * 11;
+    // One directory on every row says nothing, so the column only appears once the list spans two.
+    let show_cwd = area.width >= 78 && listed_cwds_differ(app);
+    let account_width = account_marks.as_ref().map_or(0, |m| m.width() + 1);
+    let identity_width = usize::from(show_id) * 11 + usize::from(show_cwd) * 11 + account_width;
     // 39 = status badge + agent bar/tag + time + thread prefix + the 2-col
     // multi-select mark column + the 1-col in-progress rail prepended to
     // every row.
@@ -1392,7 +1394,10 @@ fn session_list(f: &mut Frame, app: &mut App, area: Rect, now: DateTime<Utc>) {
             Row::Session(_) => None,
         };
         if let Some(cat) = cat {
-            let count = app.category_session_count(cat.as_deref());
+            let count = match cat.as_deref() {
+                Some(id) => app.category_session_count(Some(id)),
+                None => app.loose_session_count(is_recent),
+            };
             let (glyph, label) = match &cat {
                 Some(id) => (
                     if app.state.is_collapsed(id) {
@@ -1537,6 +1542,7 @@ fn session_list(f: &mut Frame, app: &mut App, area: Rect, now: DateTime<Utc>) {
                     format!("{tag} "),
                     Style::default().fg(tag_color).add_modifier(Modifier::BOLD),
                 ),
+                account_cell(account_marks.as_ref(), s),
                 // last-active recency: the list is sorted newest-first, so this
                 // column descends from top to bottom.
                 Span::styled(format!("{when:>4} "), Style::default().fg(DIM)),
@@ -1546,14 +1552,6 @@ fn session_list(f: &mut Frame, app: &mut App, area: Rect, now: DateTime<Utc>) {
                     title_style,
                 ),
             ];
-            // Only where it differs from the account this provider starts on,
-            // so the row that is somewhere else is the one that stands out.
-            if let Some(name) = account_marks.as_ref().and_then(|m| m.label_for(s)) {
-                spans.push(Span::styled(
-                    format!("  {name}"),
-                    Style::default().fg(CATEGORY),
-                ));
-            }
             if show_id {
                 spans.push(Span::styled(
                     format!("  {}", short(&s.id)),
@@ -2915,15 +2913,50 @@ fn short(id: &str) -> String {
 /// estimated from the transcript, so it carries a `~` to keep it from reading
 /// as a count. Nothing to show reads "—", never `0`, which would claim the
 /// session spent nothing.
+/// Colors for a provider's logins in list order; the machine's own login stays quiet.
+const ACCOUNT_TONES: [Color; 4] = [DIM, CATEGORY, PREVIEW, ZOOM];
+
+/// The account column: the login's name on rows of a provider with several, blank padding on the rest, nothing when no provider has a second login.
+fn account_cell(
+    marks: Option<&crate::app::accounts_panel::AccountMarks>,
+    s: &Session,
+) -> Span<'static> {
+    let Some(marks) = marks else {
+        return Span::raw("");
+    };
+    let width = marks.width();
+    match marks.label_for(s) {
+        Some((name, tone)) => Span::styled(
+            format!("{:<width$} ", truncate(name, width)),
+            Style::default().fg(ACCOUNT_TONES[tone % ACCOUNT_TONES.len()]),
+        ),
+        None => Span::raw(" ".repeat(width + 1)),
+    }
+}
+
+/// True when the listed sessions sit in more than one directory.
+fn listed_cwds_differ(app: &App) -> bool {
+    let mut first: Option<&Path> = None;
+    (0..app.visible.len())
+        .filter_map(|row| app.session_at(row))
+        .any(|s| match first {
+            None => {
+                first = Some(s.cwd.as_path());
+                false
+            }
+            Some(cwd) => cwd != s.cwd.as_path(),
+        })
+}
+
 fn usage_cell(s: &Session) -> String {
     match s.agent {
         Agent::Kiro => match s.context_pct {
-            Some(p) => format!("{p:.0}%"),
+            Some(p) => format!("ctx {p:.0}%"),
             None => "—".to_string(),
         },
         Agent::Cursor if s.tokens.total == 0 => "—".to_string(),
-        Agent::Cursor => format!("~{}", human_tokens(s.tokens.total)),
-        Agent::Codex | Agent::Claude => human_tokens(s.tokens.total),
+        Agent::Cursor => format!("~{} tok", human_tokens(s.tokens.total)),
+        Agent::Codex | Agent::Claude => format!("{} tok", human_tokens(s.tokens.total)),
     }
 }
 
@@ -3339,8 +3372,8 @@ mod tests {
     /// actually reported.
     #[test]
     fn an_estimated_total_is_marked_and_a_measured_one_is_not() {
-        assert_eq!(usage_cell(&session(Agent::Cursor, 6_200_000)), "~6.2M");
-        assert_eq!(usage_cell(&session(Agent::Claude, 6_200_000)), "6.2M");
+        assert_eq!(usage_cell(&session(Agent::Cursor, 6_200_000)), "~6.2M tok");
+        assert_eq!(usage_cell(&session(Agent::Claude, 6_200_000)), "6.2M tok");
     }
 
     /// Zero here means "nothing on disk to estimate from", and a session that

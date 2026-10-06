@@ -1034,11 +1034,11 @@ fn search_filters_visible_sessions_by_label_or_title() {
 }
 
 #[test]
-fn visible_groups_thread_roots_by_agent_type() {
+fn visible_orders_thread_roots_newest_first_regardless_of_agent() {
     let now = chrono::Utc::now();
     // Keep every session within a few seconds of `now` so they're all
     // "recent" (the rolling 24h window, not a calendar day) and land in the
-    // same band — this test checks agent grouping, not the recent/older split.
+    // same band — this test checks ordering within a band, not the split.
     let mut codex_old = session("codex-old", Agent::Codex, false);
     codex_old.last_active = Some(now - chrono::Duration::seconds(20));
     let mut codex_new = session("codex-new", Agent::Codex, false);
@@ -1048,7 +1048,7 @@ fn visible_groups_thread_roots_by_agent_type() {
     let mut codex_child = session("codex-child", Agent::Codex, false);
     codex_child.last_active = Some(now);
     let mut kiro = session("kiro-one", Agent::Kiro, false);
-    kiro.last_active = Some(now);
+    kiro.last_active = Some(now - chrono::Duration::seconds(2));
 
     let mut app = app_with(vec![kiro, claude_parent, codex_old, codex_new, codex_child]);
     app.state.set_handoff_link(
@@ -1065,11 +1065,11 @@ fn visible_groups_thread_roots_by_agent_type() {
     assert_eq!(
         ids,
         vec![
-            "codex-new",
-            "codex-old",
             "claude-parent",
             "codex-child",
-            "kiro-one"
+            "kiro-one",
+            "codex-new",
+            "codex-old"
         ]
     );
 }
@@ -3379,6 +3379,28 @@ fn a_folded_category_still_reports_its_session_count() {
         2,
         "but the tally still describes what is inside"
     );
+}
+
+/// Each band's uncategorized header counts its own rows; both used to show the total of the two.
+#[test]
+fn each_band_counts_its_own_uncategorized_sessions() {
+    let now = chrono::Utc::now();
+    let mut topic = session("topic", Agent::Codex, false);
+    topic.last_active = Some(now);
+    let mut fresh = session("fresh", Agent::Claude, false);
+    fresh.last_active = Some(now);
+    let mut stale = vec![];
+    for id in ["old-1", "old-2", "old-3"] {
+        let mut s = session(id, Agent::Codex, false);
+        s.last_active = Some(now - chrono::Duration::days(10));
+        stale.push(s);
+    }
+    let mut sessions = vec![topic, fresh];
+    sessions.extend(stale);
+    let mut app = app_with(sessions);
+    categorize(&mut app, "topic", &["topic"]);
+    assert_eq!(app.loose_session_count(true), 1);
+    assert_eq!(app.loose_session_count(false), 3);
 }
 
 // --- category context sync --------------------------------------------------

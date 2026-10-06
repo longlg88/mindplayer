@@ -59,18 +59,19 @@ pub(crate) struct AccountMarks {
     home: PathBuf,
     accounts: Vec<Account>,
     pane_accounts: HashMap<String, (Agent, String)>,
-    /// The account each provider currently starts sessions on.
-    in_use: Vec<(Agent, String)>,
+    /// Providers with more than one login, the only ones whose rows carry a name.
+    several: Vec<Agent>,
 }
 
+/// The longest account name the session list gives room to before cutting it.
+pub(crate) const ACCOUNT_COLUMN_MAX: usize = 12;
+
 impl AccountMarks {
-    /// The account this session belongs to, when that is not the one its
-    /// provider starts new sessions on.
-    ///
-    /// Saying so on every row would repeat one fact thousands of times; saying
-    /// it only where it differs makes the row that is elsewhere the one that
-    /// stands out — which is the question a reader actually has.
-    pub(crate) fn label_for(&self, session: &Session) -> Option<&str> {
+    /// The account this session belongs to and its position among its provider's logins, for every row of a provider with more than one login.
+    pub(crate) fn label_for(&self, session: &Session) -> Option<(&str, usize)> {
+        if !self.several.contains(&session.agent) {
+            return None;
+        }
         let owner = mindplayer_core::accounts::owner_of(
             &self.accounts,
             session.agent,
@@ -83,43 +84,41 @@ impl AccountMarks {
             .filter(|(agent, _)| *agent == session.agent)
             .map(|(_, name)| name.as_str())
             .unwrap_or(&owner.name);
-        let current = self
-            .in_use
-            .iter()
-            .find(|(agent, _)| *agent == session.agent)
-            .map(|(_, name)| name.as_str())?;
-        if owner_name == current {
-            return None;
-        }
         self.accounts
             .iter()
-            .find(|a| a.provider == session.agent && a.name == owner_name)
-            .map(|a| a.name.as_str())
+            .filter(|a| a.provider == session.agent)
+            .enumerate()
+            .find(|(_, a)| a.name == owner_name)
+            .map(|(i, a)| (a.name.as_str(), i))
+    }
+
+    /// The width of the account column: the longest name it can show, capped.
+    pub(crate) fn width(&self) -> usize {
+        self.accounts
+            .iter()
+            .filter(|a| self.several.contains(&a.provider))
+            .map(|a| a.name.chars().count())
+            .max()
+            .unwrap_or(0)
+            .min(ACCOUNT_COLUMN_MAX)
     }
 }
 
 impl App {
-    /// Account labels for the session list, or `None` when no provider has a
-    /// second account — then every row would carry the same answer.
+    /// Account labels for the session list, or `None` when no provider has a second account and the column would be empty.
     pub(crate) fn account_marks(&self) -> Option<AccountMarks> {
-        let has_a_choice = MULTI_ACCOUNT_AGENTS.iter().any(|agent| {
-            self.accounts
-                .iter()
-                .filter(|a| a.provider == *agent)
-                .count()
-                > 1
-        });
-        if !has_a_choice {
+        let several: Vec<Agent> = MULTI_ACCOUNT_AGENTS
+            .into_iter()
+            .filter(|agent| self.provider_has_several_logins(*agent))
+            .collect();
+        if several.is_empty() {
             return None;
         }
         Some(AccountMarks {
             home: limits_home_for_app(),
             accounts: self.accounts.clone(),
             pane_accounts: self.pane_accounts.clone(),
-            in_use: MULTI_ACCOUNT_AGENTS
-                .iter()
-                .map(|agent| (*agent, self.account_for(*agent).name))
-                .collect(),
+            several,
         })
     }
 

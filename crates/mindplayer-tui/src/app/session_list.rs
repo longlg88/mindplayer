@@ -201,9 +201,8 @@ impl App {
                 app.is_running(&s.id) || touched_recently(s, now)
             })
         };
-        groups.sort_by_cached_key(|(root, indices)| {
+        groups.sort_by_cached_key(|(_, indices)| {
             let recent_rank = u8::from(!group_is_recent(self, indices));
-            let section_agent = self.thread_root_agent_for_indices(root, indices);
             let best_status = indices
                 .iter()
                 .map(|&i| status_rank(self.session_status(&self.all_sessions[i].id)))
@@ -213,12 +212,8 @@ impl App {
                 .iter()
                 .filter_map(|&i| self.all_sessions[i].last_active)
                 .max();
-            (
-                recent_rank,
-                best_status,
-                agent_rank(section_agent),
-                std::cmp::Reverse(latest),
-            )
+            // Time, not provider, follows status, so the list is newest first as its title says.
+            (recent_rank, best_status, std::cmp::Reverse(latest))
         });
         // Second tier: bucket the thread groups by category, preserving the
         // order just established. A category inherits the best rank among its
@@ -268,6 +263,8 @@ impl App {
         if loose_total > 0 {
             self.category_counts.insert(None, loose_total);
         }
+        let count = |threads: &[Vec<usize>]| threads.iter().map(|t| t.len()).sum();
+        self.loose_counts = [count(&recent_loose), count(&older_loose)];
 
         self.visible = Vec::new();
         for (cat, threads) in &recent_buckets {
@@ -883,6 +880,11 @@ impl App {
 
     /// How many sessions a category holds, folded or not — see
     /// [`App::category_counts`].
+    /// Loose sessions in the recent band, or in the older one, for the uncategorized header that band carries.
+    pub fn loose_session_count(&self, recent: bool) -> usize {
+        self.loose_counts[usize::from(!recent)]
+    }
+
     pub fn category_session_count(&self, cat_id: Option<&str>) -> usize {
         self.category_counts
             .get(&cat_id.map(str::to_string))
@@ -904,20 +906,6 @@ impl App {
 
     pub fn session_depth(&self, id: &str) -> usize {
         usize::from(self.state.handoff_parent(id).is_some())
-    }
-
-    pub(crate) fn thread_root_agent_for_indices(&self, root: &str, indices: &[usize]) -> Agent {
-        self.all_sessions
-            .iter()
-            .find(|s| s.id == root)
-            .map(|s| s.agent)
-            .or_else(|| {
-                indices
-                    .first()
-                    .and_then(|&i| self.all_sessions.get(i))
-                    .map(|s| s.agent)
-            })
-            .unwrap_or(Agent::Codex)
     }
 
     pub fn thread_child_count(&self, id: &str) -> usize {

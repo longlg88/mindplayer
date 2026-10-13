@@ -179,17 +179,18 @@ pub enum SessionStatus {
     Blocked,
     /// Live PTY producing output right now.
     Working,
+    /// The agent completed its latest turn; the live prompt is ready again.
+    Completed,
     /// Live PTY, but quiet (running, nothing happening).
     Idle,
-    /// Child has exited; final frame kept. See [`status_rank`] — this is the
-    /// single highest-priority status, ahead of even Blocked.
+    /// Child has exited; final frame kept. Distinct from turn completion.
     Ended,
     /// Not running inside MindPlayer (a history entry).
     Inactive,
 }
 
-/// Sort rank for the herdr-style rollup: a session that just finished (Ended)
-/// is the single highest priority — there's nothing left for the agent to do,
+/// Sort rank for the herdr-style rollup: a just-completed turn or exited pane
+/// has the highest priority — there's nothing left for the agent to do,
 /// everything left is on the user, which outranks even an approval prompt or
 /// a still-working turn. Historical, never-live sessions (Inactive) rank
 /// last since there's no fresh event demanding attention. Recency breaks ties
@@ -197,6 +198,7 @@ pub enum SessionStatus {
 fn status_rank(s: SessionStatus) -> u8 {
     match s {
         SessionStatus::Ended => 0,
+        SessionStatus::Completed => 0,
         SessionStatus::Blocked => 1,
         SessionStatus::Working => 2,
         SessionStatus::Idle => 3,
@@ -443,6 +445,15 @@ pub struct App {
     /// `hook_status_due`. Read by [`Self::session_status`] in place of the
     /// screen-text heuristic whenever an entry exists here.
     pub hook_status: HashMap<String, crate::agent_hooks::HookReading>,
+    /// Events present before this pane/turn started must not be resurrected.
+    hook_floor: HashMap<String, crate::agent_hooks::HookReading>,
+    /// The child keeps its original MINDPLAYER_PANE_ID after ID adoption.
+    hook_source_ids: HashMap<String, String>,
+    /// Codex's append-only lifecycle records work without account-specific hooks.
+    codex_turns: HashMap<String, crate::turn_status::TurnStatusReader>,
+    submitted_at: HashMap<String, Instant>,
+    /// Input boundaries recorded before a new pane discovers its rollout path.
+    synthetic_turn_cutoffs: HashMap<String, DateTime<Utc>>,
     /// When the next hook-state-file poll is due. Same purpose as
     /// `html_candidates_due` — bounds the per-tick filesystem reads to an
     /// interval instead of every frame.
@@ -652,6 +663,7 @@ pub struct PendingSpawn {
     pub focus_after_spawn: bool,
 }
 
+#[derive(Clone)]
 struct DeferredInitialInput {
     bytes: Vec<u8>,
     queued_at: Instant,
@@ -723,6 +735,11 @@ impl App {
             html_seen: HashMap::new(),
             html_candidates_due: None,
             hook_status: HashMap::new(),
+            hook_floor: HashMap::new(),
+            hook_source_ids: HashMap::new(),
+            codex_turns: HashMap::new(),
+            submitted_at: HashMap::new(),
+            synthetic_turn_cutoffs: HashMap::new(),
             hook_status_due: None,
             html_preview_picker: None,
             link_picker: None,
@@ -1179,6 +1196,7 @@ fn status_label(status: SessionStatus) -> &'static str {
     match status {
         SessionStatus::Blocked => "blocked",
         SessionStatus::Working => "working",
+        SessionStatus::Completed => "completed",
         SessionStatus::Idle => "idle",
         SessionStatus::Ended => "ended",
         SessionStatus::Inactive => "inactive",

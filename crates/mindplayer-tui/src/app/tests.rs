@@ -199,6 +199,9 @@ fn new_session_persists_then_reconciles() {
     let syn = app.session_at(0).unwrap();
     assert!(syn.id.starts_with("new:"));
     assert_eq!(syn.title, "🏷 deploy check");
+    let synthetic_id = syn.id.clone();
+    app.hook_source_ids
+        .insert(synthetic_id.clone(), synthetic_id.clone());
 
     // A later scan discovers the real session (same agent/cwd, started after).
     let real = Session {
@@ -224,6 +227,11 @@ fn new_session_persists_then_reconciles() {
     assert!(app.all_sessions.iter().all(|s| !s.id.starts_with("new:")));
     assert_eq!(app.visible.len(), 1);
     assert_eq!(app.session_at(0).unwrap().id, "real-1234");
+    assert_eq!(
+        app.hook_source_ids.get("real-1234"),
+        Some(&synthetic_id),
+        "child hook identity survives adoption"
+    );
 
     let _ = std::fs::remove_file(&tmp);
 }
@@ -2366,6 +2374,124 @@ fn only_submit_keys_mark_user_turn_submitted() {
     assert!(!input_submits_turn(b"\x1b[A"));
     assert!(input_submits_turn(b"\r"));
     assert!(input_submits_turn(b"hello\n"));
+}
+
+#[test]
+fn approving_a_tool_keeps_the_current_codex_turn_correlation() {
+    use std::io::Write;
+    let id = "approval-current-turn";
+    let path = scratch_state_path(id).with_file_name("rollout.jsonl");
+    std::fs::write(
+        &path,
+        "{\"type\":\"event_msg\",\"payload\":{\"type\":\"task_started\",\"turn_id\":\"active\"}}\n",
+    )
+    .unwrap();
+    let mut codex = session(id, Agent::Codex, false);
+    codex.file = path.clone();
+    let mut app = app_with(vec![codex]);
+    let command = mindplayer_core::Command {
+        program: "cat".into(),
+        args: Vec::new(),
+        cwd: PathBuf::new(),
+        env: Default::default(),
+    };
+    app.ptys
+        .insert(id.into(), PtySession::spawn(&command, id, 6, 20).unwrap());
+    app.focus_or_add_pane(id);
+    let mut reader = crate::turn_status::TurnStatusReader::new_from_start(path.clone());
+    assert!(reader.poll());
+    app.codex_turns.insert(id.into(), reader);
+    app.hook_status.insert(
+        id.into(),
+        crate::agent_hooks::HookReading {
+            status: SessionStatus::Blocked,
+            event_epoch_secs: 1,
+            revision: 0,
+        },
+    );
+    assert_eq!(app.session_status(id), SessionStatus::Blocked);
+    app.send_to_pty(b"\r");
+    assert_eq!(app.session_status(id), SessionStatus::Working);
+    writeln!(std::fs::OpenOptions::new().append(true).open(&path).unwrap(),
+        "{{\"type\":\"event_msg\",\"payload\":{{\"type\":\"task_complete\",\"turn_id\":\"active\"}}}}").unwrap();
+    assert!(app.codex_turns.get_mut(id).unwrap().poll());
+    assert_eq!(app.session_status(id), SessionStatus::Completed);
+    app.ptys.clear();
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn failed_input_delivery_restores_completion_and_tracking() {
+    let id = "new:failed-delivery";
+    let mut app = app_with(vec![session(id, Agent::Codex, false)]);
+    let path = scratch_state_path("failed-native-delivery").with_file_name("rollout.jsonl");
+    std::fs::write(&path, "{\"type\":\"event_msg\",\"payload\":{\"type\":\"task_started\",\"turn_id\":\"active\"}}\n{\"type\":\"event_msg\",\"payload\":{\"type\":\"task_complete\",\"turn_id\":\"active\"}}\n").unwrap();
+    let mut reader = crate::turn_status::TurnStatusReader::new_from_start(path.clone());
+    assert!(reader.poll());
+    app.codex_turns.insert(id.into(), reader);
+    let command = mindplayer_core::Command {
+        program: "cat".into(),
+        args: Vec::new(),
+        cwd: PathBuf::new(),
+        env: Default::default(),
+    };
+    app.ptys
+        .insert(id.into(), PtySession::spawn(&command, id, 6, 20).unwrap());
+    let reading = crate::agent_hooks::HookReading {
+        status: SessionStatus::Completed,
+        event_epoch_secs: 1,
+        revision: 0,
+    };
+    app.hook_status.insert(id.into(), reading);
+    app.hook_floor.insert(id.into(), reading);
+    let at = Instant::now();
+    app.submitted_at.insert(id.into(), at);
+    assert!(!app.dispatch_turn_input(id, true, |_| false));
+    assert_eq!(app.hook_status.get(id), Some(&reading));
+    assert_eq!(app.hook_floor.get(id), Some(&reading));
+    assert_eq!(app.submitted_at.get(id), Some(&at));
+    assert!(!app.synthetic_turn_cutoffs.contains_key(id));
+    assert_eq!(app.session_status(id), SessionStatus::Completed);
+    app.ptys.clear();
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn automatic_new_prompt_invalidates_an_active_native_turn() {
+    use std::io::Write;
+    let id = "automatic-turn-boundary";
+    let path = scratch_state_path(id).with_file_name("rollout.jsonl");
+    std::fs::write(
+        &path,
+        "{\"type\":\"event_msg\",\"payload\":{\"type\":\"task_started\",\"turn_id\":\"old\"}}\n",
+    )
+    .unwrap();
+    let mut app = app_with(vec![session(id, Agent::Codex, false)]);
+    let command = mindplayer_core::Command {
+        program: "cat".into(),
+        args: Vec::new(),
+        cwd: PathBuf::new(),
+        env: Default::default(),
+    };
+    app.ptys
+        .insert(id.into(), PtySession::spawn(&command, id, 6, 20).unwrap());
+    let mut reader = crate::turn_status::TurnStatusReader::new_from_start(path.clone());
+    assert!(reader.poll());
+    app.codex_turns.insert(id.into(), reader);
+    assert_eq!(app.session_status(id), SessionStatus::Working);
+    assert!(app.dispatch_turn_input(id, true, |_| true));
+    writeln!(
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap(),
+        "{{\"type\":\"event_msg\",\"payload\":{{\"type\":\"task_complete\",\"turn_id\":\"old\"}}}}"
+    )
+    .unwrap();
+    assert!(!app.codex_turns.get_mut(id).unwrap().poll());
+    assert_eq!(app.codex_turns[id].status(), None);
+    app.ptys.clear();
+    std::fs::remove_file(path).unwrap();
 }
 
 #[test]

@@ -24,6 +24,7 @@
 //! A missing window is never rendered as `0%` — that would read as "plenty left".
 
 use crate::session::Agent;
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::io::{BufRead, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -40,7 +41,7 @@ use serde_json::Value;
 /// multi-hundred-megabyte file to be thorough.
 #[cfg(test)]
 const ROLLOUT_TAIL_BYTES: u64 = 1 << 20;
-const QUOTA_CACHE_SOURCE: &str = "app-server-rate-limits-v2";
+const QUOTA_CACHE_SOURCE: &str = "app-server-rate-limits-v3-user";
 
 /// Claude's OAuth usage endpoint and the beta header it requires.
 const CLAUDE_USAGE_URL: &str = "https://api.anthropic.com/api/oauth/usage";
@@ -67,6 +68,8 @@ const KIRO_USAGE_TIMEOUT: Duration = Duration::from_secs(60);
 /// The Codex app-server read is a footer decoration and must not block the UI
 /// when the local daemon/auth path is unavailable.
 const CODEX_APP_SERVER_TIMEOUT: Duration = Duration::from_secs(8);
+/// Identity is optional: older servers may never answer `account/read`.
+const CODEX_IDENTITY_GRACE: Duration = Duration::from_millis(250);
 /// Same reason as the keychain constants above: only macOS shells out to
 /// `security(1)`, so elsewhere this bound has nothing to bound.
 #[cfg(target_os = "macos")]
@@ -112,13 +115,17 @@ pub struct CodexLimits {
     /// `codex` pool and a `premium` pool with separate balances — so a bare
     /// number says nothing about what ran out.
     pub limit_id: Option<String>,
-    /// Who the provider says this reading belongs to. Two logins can resolve
-    /// to one provider account, and this is the only thing that says so.
+    /// The workspace associated with the snapshot, NOT the individual login.
     pub account_id: Option<String>,
+    /// Opaque workspace + normalized email fingerprint from `account/read`.
+    /// Unknown identity must never suppress another profile's usage.
+    pub user: Option<String>,
     /// Set when the account has actually hit a limit. This is the one field
     /// here that calls for action, so it outranks the balance on screen.
     pub rate_limit_reached: Option<String>,
     pub spend_control_reached: bool,
+    /// Whether Codex will still permit included usage.
+    pub ordinary_usage_allowed: Option<bool>,
 }
 
 impl CodexLimits {
@@ -126,10 +133,16 @@ impl CodexLimits {
     pub fn has_any(&self) -> bool {
         self.primary.is_some()
             || self.secondary.is_some()
-            || self.individual_remaining_percent.is_some()
+            || self.credit_remaining().is_some()
             || self.credit_balance.is_some()
             || self.credits_unlimited
             || self.rate_limit_reached.is_some()
+            || self.ordinary_usage_allowed == Some(false)
+    }
+
+    fn credit_remaining(&self) -> Option<f64> {
+        self.individual_remaining_percent
+            .filter(|_| self.individual_limit.is_none_or(|limit| limit > 0.0))
     }
 }
 
@@ -288,6 +301,12 @@ pub struct QuotaRow {
     /// Set when there is no reading because the probe failed; `detail` then holds the cause.
     #[serde(default)]
     pub failure: Option<FailureKind>,
+    /// This row is a spending cap rather than an included-usage window.
+    #[serde(default)]
+    pub spend_cap: bool,
+    /// The provider refused ordinary usage for this account.
+    #[serde(default)]
+    pub blocked: bool,
 }
 
 /// What a row read back from a cache written before providers were recorded
@@ -308,6 +327,8 @@ impl Default for QuotaRow {
             resets: None,
             identity: None,
             failure: None,
+            spend_cap: false,
+            blocked: false,
         }
     }
 }
@@ -547,6 +568,8 @@ impl Limits {
                             resets: reset.and_then(|e| epoch_label(e, clock)),
                             identity: None,
                             failure: None,
+                            spend_cap: false,
+                            blocked: false,
                         });
                     }
                 }
@@ -583,27 +606,17 @@ impl Limits {
                             resets: reset.and_then(epoch_label_date_time),
                             identity: None,
                             failure: None,
+                            spend_cap: false,
+                            blocked: c.ordinary_usage_allowed == Some(false),
                         });
                     }
                 }
-                let monthly_used = c
-                    .individual_remaining_percent
+                let credits_used = c
+                    .credit_remaining()
                     .map(|remaining| (100.0 - remaining).clamp(0.0, 100.0));
-                if !any_window && monthly_used.is_some() {
-                    out.push(QuotaRow {
-                        label: "codex weekly".into(),
-                        agent: default_row_agent(),
-                        account: String::new(),
-                        used_percent: None,
-                        detail: "not reported".to_string(),
-                        resets: None,
-                        identity: None,
-                        failure: None,
-                    });
-                }
-                if let Some(monthly) = monthly_used {
+                if let Some(credits) = credits_used {
                     let mut detail = codex_individual_detail(c);
-                    if codex_monthly_limit_reached(c) {
+                    if !any_window && codex_credit_cap_reached(c) {
                         let reached = c
                             .rate_limit_reached
                             .as_deref()
@@ -616,14 +629,16 @@ impl Limits {
                         };
                     }
                     out.push(QuotaRow {
-                        label: "codex monthly".into(),
+                        label: "codex credits".into(),
                         agent: default_row_agent(),
                         account: String::new(),
-                        used_percent: Some(monthly),
+                        used_percent: Some(credits),
                         detail,
                         resets: c.individual_reset.and_then(epoch_label_date_time),
                         identity: None,
                         failure: None,
+                        spend_cap: any_window,
+                        blocked: c.ordinary_usage_allowed == Some(false),
                     });
                     any_window = true;
                 }
@@ -650,7 +665,15 @@ impl Limits {
                         resets: None,
                         identity: None,
                         failure: None,
+                        spend_cap: false,
+                        blocked: c.ordinary_usage_allowed == Some(false),
                     });
+                }
+                if c.ordinary_usage_allowed == Some(false) {
+                    for row in out.iter_mut().skip(mark) {
+                        row.blocked = true;
+                        row.detail = "blocked".into();
+                    }
                 }
             }
             Ok(c) => out.push(QuotaRow::note(
@@ -679,6 +702,8 @@ impl Limits {
                 resets: k.reset_date.clone(),
                 identity: None,
                 failure: None,
+                spend_cap: false,
+                blocked: false,
             }),
             Ok(_) => out.push(QuotaRow::note("kiro", "no usage reported")),
             Err(e) => out.push(QuotaRow::reason("kiro", e)),
@@ -796,19 +821,23 @@ impl Limits {
                         parts.push(format!("{} {p:.0}%", window_label(window)));
                     }
                 }
-                if let Some(remaining) = c.individual_remaining_percent {
+                if let Some(remaining) = c.credit_remaining() {
                     let monthly = (100.0 - remaining).clamp(0.0, 100.0);
                     let detail = codex_individual_detail(c);
                     if detail.is_empty() {
-                        parts.push(format!("monthly {monthly:.0}%"));
+                        parts.push(format!("credits {monthly:.0}%"));
                     } else {
-                        parts.push(format!("monthly {monthly:.0}% {detail}"));
+                        parts.push(format!("credits {monthly:.0}% {detail}"));
                     }
                 }
                 // A limit that was actually hit leads: it is the only thing here
                 // the user can act on, and a balance beside it is background.
-                if let Some(reached) = c.rate_limit_reached.as_deref() {
-                    parts.push(reached_label(reached));
+                if c.ordinary_usage_allowed == Some(false) {
+                    parts.push("blocked".into());
+                } else if c.primary.is_none() && c.secondary.is_none() {
+                    if let Some(reached) = c.rate_limit_reached.as_deref() {
+                        parts.push(reached_label(reached));
+                    }
                 }
                 // The pool is named unless it is the plain `codex` one, which
                 // the line already starts with — snapshots also carry a
@@ -914,7 +943,7 @@ fn codex_individual_detail(c: &CodexLimits) -> String {
     }
 }
 
-fn codex_monthly_limit_reached(c: &CodexLimits) -> bool {
+fn codex_credit_cap_reached(c: &CodexLimits) -> bool {
     c.individual_remaining_percent
         .is_some_and(|remaining| remaining <= 0.0)
         || c.spend_control_reached
@@ -1088,11 +1117,7 @@ pub fn account_quota_rows(
             ))
         }
     }
-    let identity = limits
-        .codex
-        .as_ref()
-        .ok()
-        .and_then(|c| c.account_id.clone());
+    let identity = limits.codex.as_ref().ok().and_then(|c| c.user.clone());
     let mut rows = limits.quota_rows();
     rows.retain(|row| row.agent == account.provider);
     for row in &mut rows {
@@ -1108,7 +1133,7 @@ pub fn account_quota_rows(
 /// completes without asking which account, so the slot ends up on the first
 /// one. Both rows are then correct and identical, which reads as the feature
 /// being broken rather than as the accounts being the same. The provider's own
-/// id is the only thing that can tell those apart.
+/// individual identity (not a shared workspace ID) tells those apart.
 ///
 /// The first account to carry an id keeps its figures; later ones lose their
 /// gauge and say whose reading they would have repeated.
@@ -1763,8 +1788,8 @@ fn codex_app_server_limits(
     timeout: Duration,
 ) -> Result<CodexLimits, ProbeError> {
     let mut command = Command::new(codex_binary());
-    let response = run_codex_app_server_rate_limits(&mut command, codex_home, timeout)?;
-    parse_codex_app_server_response(&response)
+    let (response, account) = run_codex_app_server_rate_limits(&mut command, codex_home, timeout)?;
+    codex_limits_from_exchange(&response, account.as_ref())
 }
 
 #[cfg(test)]
@@ -1774,8 +1799,8 @@ fn codex_app_server_limits_with_binary(
     timeout: Duration,
 ) -> Result<CodexLimits, ProbeError> {
     let mut command = Command::new(codex_bin);
-    let response = run_codex_app_server_rate_limits(&mut command, codex_home, timeout)?;
-    parse_codex_app_server_response(&response)
+    let (response, account) = run_codex_app_server_rate_limits(&mut command, codex_home, timeout)?;
+    codex_limits_from_exchange(&response, account.as_ref())
 }
 
 fn codex_binary() -> &'static str {
@@ -1800,7 +1825,7 @@ fn run_codex_app_server_rate_limits(
     command: &mut Command,
     codex_home: &Path,
     timeout: Duration,
-) -> Result<Value, ProbeError> {
+) -> Result<(Value, Option<Value>), ProbeError> {
     configure_codex_app_server_command(command, codex_home);
     command
         .stdin(Stdio::piped())
@@ -1874,6 +1899,12 @@ fn run_codex_app_server_rate_limits(
         "method": "account/rateLimits/read",
         "params": null
     });
+    let account_read = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 3,
+        "method": "account/read",
+        "params": { "refreshToken": false }
+    });
 
     if let Err(e) = writeln!(stdin, "{initialize}") {
         drop(stdin);
@@ -1883,8 +1914,8 @@ fn run_codex_app_server_rate_limits(
         return Err(format!("cannot write to codex app-server: {e}").into());
     }
     let start = Instant::now();
-    match wait_for_json_rpc_id(&mut child, &rx, start, timeout, 1) {
-        Ok(value) if rpc_error(&value).is_none() => {}
+    match wait_for_json_rpc_id(&mut child, &rx, start, timeout, 1, None) {
+        Ok((value, _)) if rpc_error(&value).is_none() => {}
         Ok(_) => {
             drop(stdin);
             cleanup(&mut child);
@@ -1904,7 +1935,7 @@ fn run_codex_app_server_rate_limits(
         }
     }
 
-    for message in [initialized, read] {
+    for message in [initialized, account_read, read] {
         if let Err(e) = writeln!(stdin, "{message}") {
             drop(stdin);
             cleanup(&mut child);
@@ -1914,7 +1945,7 @@ fn run_codex_app_server_rate_limits(
         }
     }
 
-    let response = wait_for_json_rpc_id(&mut child, &rx, start, timeout, 2);
+    let response = wait_for_json_rpc_id(&mut child, &rx, start, timeout, 2, Some(3));
     drop(stdin);
     cleanup(&mut child);
     let _ = stdout_reader.join();
@@ -1945,40 +1976,88 @@ fn wait_for_json_rpc_id(
     start: Instant,
     timeout: Duration,
     id: i64,
-) -> Result<Value, ProbeError> {
+    optional_id: Option<i64>,
+) -> Result<(Value, Option<Value>), ProbeError> {
     let temporary = |detail: String| ProbeError::new(FailureKind::Temporary, detail);
+    let mut required = None;
+    let mut optional = None;
+    let mut identity_deadline = None;
     loop {
-        if start.elapsed() >= timeout {
+        let expired = start.elapsed() >= timeout;
+        if optional_id.is_none()
+            || optional.is_some()
+            || expired
+            || identity_deadline.is_some_and(|deadline| Instant::now() >= deadline)
+        {
+            if let Some(value) = required.take() {
+                return Ok((value, optional));
+            }
+        }
+        if expired {
             return Err(temporary("codex app-server timed out".into()));
         }
-        if let Some(status) = child
-            .try_wait()
-            .map_err(|e| format!("cannot wait for codex app-server: {e}"))?
+        match rx
+            .recv_timeout(Duration::from_millis(50).min(timeout.saturating_sub(start.elapsed())))
         {
-            if status.success() {
-                return Err(temporary(
-                    "codex app-server exited before rate limits response".into(),
-                ));
-            }
-            return Err(temporary(format!("codex app-server exited with {status}")));
-        }
-        match rx.recv_timeout(Duration::from_millis(50)) {
             Ok(line) => {
                 let Ok(value) = serde_json::from_str::<Value>(&line) else {
                     continue;
                 };
-                if value.get("id").and_then(Value::as_i64) == Some(id) {
-                    return Ok(value);
+                match value.get("id").and_then(Value::as_i64) {
+                    Some(response_id) if response_id == id => {
+                        // Failed usage does not need optional identity enrichment.
+                        if rpc_error(&value).is_some() {
+                            return Ok((value, optional));
+                        }
+                        required = Some(value);
+                        identity_deadline = Some(Instant::now() + CODEX_IDENTITY_GRACE);
+                    }
+                    Some(response_id) if Some(response_id) == optional_id => {
+                        optional = Some(value);
+                    }
+                    _ => {}
                 }
             }
-            Err(mpsc::RecvTimeoutError::Timeout) => {}
-            Err(mpsc::RecvTimeoutError::Disconnected) => {
-                return Err(temporary(
-                    "codex app-server closed stdout before rate limits response".into(),
-                ));
+            Err(error) => {
+                // Drain queued responses before checking exit: a short-lived
+                // wrapper may have already written the complete exchange.
+                let status = child
+                    .try_wait()
+                    .map_err(|e| format!("cannot wait for codex app-server: {e}"))?;
+                if status.is_some() || matches!(error, mpsc::RecvTimeoutError::Disconnected) {
+                    if let Some(value) = required {
+                        return Ok((value, optional));
+                    }
+                    return Err(temporary("codex app-server closed before response".into()));
+                }
             }
         }
     }
+}
+
+fn codex_limits_from_exchange(
+    response: &Value,
+    account_response: Option<&Value>,
+) -> Result<CodexLimits, ProbeError> {
+    let mut limits = parse_codex_app_server_response(response)?;
+    let account = account_response
+        .filter(|response| rpc_error(response).is_none())
+        .and_then(|response| response.pointer("/result/account"));
+    if let (Some(workspace), Some(account)) = (limits.account_id.as_deref(), account) {
+        if account.get("type").and_then(Value::as_str) == Some("chatgpt") {
+            if let Some(email) = account.get("email").and_then(Value::as_str) {
+                let email = email.trim().to_lowercase();
+                if !email.is_empty() {
+                    // Do not put an email into the serialized footer cache.
+                    // This is an equality fingerprint, not a security token.
+                    let mut hash = DefaultHasher::new();
+                    (workspace, email).hash(&mut hash);
+                    limits.user = Some(format!("codex-user-{:016x}", hash.finish()));
+                }
+            }
+        }
+    }
+    Ok(limits)
 }
 
 fn parse_codex_app_server_response(response: &Value) -> Result<CodexLimits, ProbeError> {
@@ -2000,6 +2079,7 @@ fn parse_codex_app_server_response(response: &Value) -> Result<CodexLimits, Prob
         .and_then(Value::as_str)
         .filter(|id| !id.is_empty())
         .map(str::to_string);
+    limits.ordinary_usage_allowed = result.get("ordinaryUsageAllowed").and_then(Value::as_bool);
     Ok(limits)
 }
 
@@ -2082,14 +2162,15 @@ pub fn parse_codex_app_server_rate_limits(rl: &Value) -> CodexLimits {
         rate_limit_reached: rl
             .get("rateLimitReachedType")
             .and_then(Value::as_str)
-            .map(str::to_string)
-            .or_else(|| spend_control_reached.then_some("spend_control_reached".to_string())),
+            .map(str::to_string),
         plan_type: rl
             .get("planType")
             .and_then(Value::as_str)
             .map(str::to_string),
         spend_control_reached,
+        ordinary_usage_allowed: None,
         account_id: None,
+        user: None,
     }
 }
 
@@ -2249,7 +2330,9 @@ pub fn parse_codex_rate_limits(rl: &Value) -> CodexLimits {
             .and_then(Value::as_str)
             .map(str::to_string),
         spend_control_reached: false,
+        ordinary_usage_allowed: None,
         account_id: None,
+        user: None,
     }
 }
 
@@ -2592,7 +2675,7 @@ mod tests {
     }
 
     #[cfg(unix)]
-    fn fake_codex_script(body: &str) -> tempfile::TempDir {
+    pub(super) fn fake_codex_script(body: &str) -> tempfile::TempDir {
         use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("codex");
@@ -3231,15 +3314,12 @@ Since your account is through your organization, contact your administrator.
             .into_iter()
             .filter(|row| row.agent == Agent::Codex)
             .collect();
-        assert_eq!(rows.len(), 2, "{rows:?}");
-        assert_eq!(rows[0].label, "codex weekly");
-        assert_eq!(rows[0].used_percent, None, "{rows:?}");
-        assert_eq!(rows[0].detail, "not reported");
-        assert_eq!(rows[1].label, "codex monthly");
-        assert_eq!(rows[1].used_percent, Some(100.0), "{rows:?}");
-        assert_eq!(rows[1].detail, "workspace limit reached · 2500/2500");
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        assert_eq!(rows[0].label, "codex credits");
+        assert_eq!(rows[0].used_percent, Some(100.0), "{rows:?}");
+        assert_eq!(rows[0].detail, "workspace limit reached · 2500/2500");
         assert_eq!(
-            rows[1].resets.as_deref(),
+            rows[0].resets.as_deref(),
             epoch_label_date_time(1790812800).as_deref()
         );
         assert!(
@@ -3277,17 +3357,95 @@ Since your account is through your organization, contact your administrator.
             .into_iter()
             .filter(|row| row.agent == Agent::Codex)
             .collect();
-        assert_eq!(rows.len(), 2, "{rows:?}");
-        assert_eq!(rows[0].label, "codex weekly");
-        assert_eq!(rows[0].used_percent, None, "{rows:?}");
-        assert_eq!(rows[0].detail, "not reported");
-        assert_eq!(rows[1].label, "codex monthly");
-        assert_eq!(rows[1].used_percent, Some(10.0), "{rows:?}");
-        assert_eq!(rows[1].detail, "206.7/2000");
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        assert_eq!(rows[0].label, "codex credits");
+        assert_eq!(rows[0].used_percent, Some(10.0), "{rows:?}");
+        assert_eq!(rows[0].detail, "206.7/2000");
         assert_eq!(
-            rows[1].resets.as_deref(),
+            rows[0].resets.as_deref(),
             epoch_label_date_time(1790812800).as_deref()
         );
+    }
+
+    #[test]
+    fn a_spend_cap_beside_a_window_is_soft_but_backend_refusal_blocks() {
+        let response = serde_json::json!({
+            "result": {
+                "ordinaryUsageAllowed": true,
+                "rateLimits": {
+                    "primary": {"usedPercent": 5, "windowDurationMins": 10080},
+                    "individualLimit": {"limit": "500", "used": "500", "remainingPercent": 0},
+                    "spendControlReached": true
+                }
+            }
+        });
+        let codex = parse_codex_app_server_response(&response).unwrap();
+        let rows = Limits {
+            claude: Err("not under test".into()),
+            codex: Ok(codex),
+            kiro: Err("not under test".into()),
+            cursor: Err("not under test".into()),
+        }
+        .quota_rows()
+        .into_iter()
+        .filter(|row| row.agent == Agent::Codex)
+        .collect::<Vec<_>>();
+        assert_eq!(rows.len(), 2, "{rows:?}");
+        assert!(rows
+            .iter()
+            .any(|row| row.label == "codex credits" && row.spend_cap));
+        assert!(rows.iter().all(|row| !row.blocked));
+
+        let refused = serde_json::json!({
+            "result": {
+                "ordinaryUsageAllowed": false,
+                "rateLimits": {
+                    "primary": {"usedPercent": 5, "windowDurationMins": 10080}
+                }
+            }
+        });
+        let rows = Limits {
+            claude: Err("not under test".into()),
+            codex: Ok(parse_codex_app_server_response(&refused).unwrap()),
+            kiro: Err("not under test".into()),
+            cursor: Err("not under test".into()),
+        }
+        .quota_rows()
+        .into_iter()
+        .filter(|row| row.agent == Agent::Codex)
+        .collect::<Vec<_>>();
+        assert!(
+            rows.iter()
+                .all(|row| row.blocked && row.detail == "blocked"),
+            "{rows:?}"
+        );
+    }
+
+    #[test]
+    fn a_zero_credit_cap_does_not_draw_an_exhausted_allowance() {
+        let response = json!({"result": {
+            "ordinaryUsageAllowed": true,
+            "rateLimits": {
+                "primary": {"usedPercent": 5, "windowDurationMins": 10080},
+                "individualLimit": {"limit": "0", "used": "0", "remainingPercent": 0},
+                "spendControlReached": true
+            }
+        }});
+        let rows = Limits {
+            claude: Err("not under test".into()),
+            codex: Ok(parse_codex_app_server_response(&response).unwrap()),
+            kiro: Err("not under test".into()),
+            cursor: Err("not under test".into()),
+        }
+        .quota_rows()
+        .into_iter()
+        .filter(|row| row.agent == Agent::Codex)
+        .collect::<Vec<_>>();
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        assert_eq!(rows[0].label, "codex weekly");
+        assert_eq!(rows[0].used_percent, Some(5.0));
+        assert_eq!(rows[0].detail, "");
+        assert!(!rows[0].blocked);
     }
 
     #[cfg(unix)]
@@ -3738,6 +3896,8 @@ sleep 10
                 resets: Some("2026-10-01".into()),
                 identity: None,
                 failure: None,
+                spend_cap: false,
+                blocked: false,
             },
             QuotaRow::note("codex", "no window reported"),
         ];
@@ -3809,6 +3969,8 @@ sleep 10
             resets: None,
             identity: None,
             failure: None,
+            spend_cap: false,
+            blocked: false,
         }];
         save_quota_cache(home, &theirs, "0.33.0");
 
@@ -3832,6 +3994,8 @@ sleep 10
             resets: Some("09-19".into()),
             identity: None,
             failure: None,
+            spend_cap: false,
+            blocked: false,
         }];
         save_quota_cache(home, &mine, "0.34.0");
         assert_eq!(
@@ -4226,6 +4390,8 @@ mod shared_login_tests {
             resets: Some("09-26".into()),
             identity: identity.map(str::to_string),
             failure: None,
+            spend_cap: false,
+            blocked: false,
         }
     }
 
@@ -4257,6 +4423,106 @@ mod shared_login_tests {
         });
         let limits = parse_codex_app_server_response(&response).unwrap();
         assert!(limits.account_id.is_none());
+    }
+
+    #[test]
+    fn two_people_in_one_workspace_keep_their_own_usage() {
+        let response = serde_json::json!({"result": {
+            "accountId": "workspace-shared",
+            "rateLimits": {"primary": {"usedPercent": 5, "windowDurationMins": 10080}}
+        }});
+        let account = |email: &str| {
+            serde_json::json!({"result": {"account": {
+                "type": "chatgpt", "email": email, "planType": "business"
+            }}})
+        };
+        let first =
+            codex_limits_from_exchange(&response, Some(&account("one@example.com"))).unwrap();
+        let second =
+            codex_limits_from_exchange(&response, Some(&account("two@example.com"))).unwrap();
+        let again =
+            codex_limits_from_exchange(&response, Some(&account(" ONE@example.com "))).unwrap();
+        assert_eq!(first.account_id, second.account_id);
+        assert!(first.user.is_some());
+        assert_ne!(first.user, second.user);
+        assert_eq!(first.user, again.user);
+        assert!(!first.user.as_ref().unwrap().contains('@'));
+
+        let mut rows = vec![
+            codex_row("kr", first.user.as_deref(), 5.0),
+            codex_row("codex-2", second.user.as_deref(), 65.0),
+            codex_row("com", again.user.as_deref(), 5.0),
+        ];
+        mark_shared_logins(&mut rows);
+        assert_eq!(rows[1].used_percent, Some(65.0));
+        assert_eq!(rows[2].detail, "same login as kr");
+
+        let mut another_workspace = response.clone();
+        another_workspace["result"]["accountId"] = "workspace-other".into();
+        let other =
+            codex_limits_from_exchange(&another_workspace, Some(&account("one@example.com")))
+                .unwrap();
+        assert_ne!(
+            first.user, other.user,
+            "one user's two workspaces can have different quotas"
+        );
+    }
+
+    #[test]
+    fn workspace_id_without_a_verified_user_is_not_login_identity() {
+        let response = serde_json::json!({"result": {
+            "accountId": "workspace-shared", "rateLimits": {"primary": {"usedPercent": 5}}
+        }});
+        for account in [
+            None,
+            Some(serde_json::json!({"error": {"message": "unsupported"}})),
+            Some(serde_json::json!({"result": {"account": null}})),
+            Some(serde_json::json!({"result": {"account": {"type": "chatgpt", "email": null}}})),
+            Some(serde_json::json!({"result": {"account": {"type": "chatgpt", "email": " "}}})),
+        ] {
+            let limits = codex_limits_from_exchange(&response, account.as_ref()).unwrap();
+            assert!(limits.user.is_none());
+            assert_eq!(limits.primary, Some(5.0));
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn account_and_usage_rpc_responses_can_arrive_in_either_order() {
+        let fake = super::tests::fake_codex_script(
+            r#"#!/bin/sh
+account='{"id":3,"result":{"account":{"type":"chatgpt","email":"one@example.com","planType":"business"}}}'
+while IFS= read -r line; do
+  case "$line" in
+    *'"method":"initialize"'*) printf '%s\n' '{"id":1,"result":{}}' ;;
+    *'"method":"account/read"'*)
+      case "$CODEX_HOME" in *identity-first) printf '%s\n' "$account" ;; esac ;;
+    *'"method":"account/rateLimits/read"'*)
+      printf '%s\n' '{"id":2,"result":{"accountId":"workspace-shared","ordinaryUsageAllowed":true,"rateLimits":{"primary":{"usedPercent":5,"windowDurationMins":10080}}}}'
+      case "$CODEX_HOME" in *limits-first) printf '%s\n' "$account" ;; esac ;;
+  esac
+done
+"#,
+        );
+        let root = tempfile::tempdir().unwrap();
+        let mut fingerprints = Vec::new();
+        for order in ["identity-first", "limits-first", "identity-unavailable"] {
+            let limits = codex_app_server_limits_with_binary(
+                &fake.path().join("codex"),
+                &root.path().join(order),
+                Duration::from_secs(2),
+            )
+            .unwrap();
+            assert_eq!(limits.primary, Some(5.0));
+            assert_eq!(limits.ordinary_usage_allowed, Some(true));
+            if order == "identity-unavailable" {
+                assert!(limits.user.is_none());
+            } else {
+                assert!(limits.user.is_some());
+                fingerprints.push(limits.user);
+            }
+        }
+        assert_eq!(fingerprints[0], fingerprints[1]);
     }
 
     #[test]
@@ -4302,7 +4568,7 @@ mod shared_login_tests {
         let mut rows = vec![
             codex_row("work", Some("acct-1"), 93.0),
             QuotaRow {
-                label: "codex monthly".into(),
+                label: "codex credits".into(),
                 ..codex_row("work", Some("acct-1"), 10.0)
             },
         ];

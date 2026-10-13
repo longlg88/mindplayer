@@ -41,6 +41,8 @@ jobs:
         run: cargo fmt --all --check
       - name: clippy (deny warnings)
         run: cargo clippy --all-targets -- -D warnings
+      - name: vendored terminal protocol regressions
+        run: cargo test --manifest-path crates/vt100-mp/Cargo.toml
       - name: tests
         # Hermetic: no codex/claude/kiro CLIs are invoked — tests run against
         # fixtures and an isolated state file. MINDPLAYER_STATE keeps any stray

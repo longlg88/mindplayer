@@ -56,9 +56,39 @@ none  = docs, chore, ci, test, style
 
 ### Unreleased
 
+- Keep Codex's addressed viewport and cursor stable while reflowing history on
+  resize, resize embedded PTYs before the first zoom/layout draw, honor history
+  purge and synchronized presentation, and clamp restored cursors after shrink.
 - Clarify selected-turn token totals with model-call count and latest-call
   usage, make wrapped Trace execution logs mouse-scrollable, and avoid
   transient/repeated redraws while entering or observing a new session.
+- Show Codex Business `individualLimit` as a credits/spend-cap row instead of
+  presenting it as a monthly usage window, and mark accounts blocked only when
+  the app-server refuses ordinary usage.
+
+### v0.55.2 — 2026-10-13
+
+- Rename account display labels without moving provider homes, preserving
+  Codex's absolute rollout paths and stores used by other running processes.
+- Refuse new account names whose directories are already in use, so an old
+  label cannot silently reuse a renamed account's credentials.
+
+### v0.55.1 — 2026-10-13
+
+- Distinguish Codex users within one Business workspace using optional
+  `account/read` identity; a workspace ID alone no longer hides another user's
+  quota. Accept either RPC response order and retain usage if identity is absent.
+- Hide zero-credit spend caps, use amber for a soft exhausted cap, and preserve
+  duplicate-login explanations on credit rows.
+- Accept Korean-IME and uppercase Accounts shortcuts, and relabel usage plus
+  discard stale in-flight readings after account rename.
+- Cover account entry, refresh, rename, credential preservation, and shared-login
+  rendering with real-PTY tests that can target the locally installed executable.
+
+### v0.55.0
+
+- Correct Codex Business quota semantics and preserve per-login account identity
+  in the quota footer.
 
 ### v0.43.0 — 2026-09-21
 

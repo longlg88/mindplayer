@@ -280,13 +280,14 @@ impl App {
         if self.ended.contains(&session.id) {
             return false;
         }
-        if let Some(pty) = self.ptys.get_mut(&session.id) {
-            if pty.looks_idle() {
-                if !pty.paste_and_submit(&input) {
+        if self.ptys.contains_key(&session.id) {
+            if self.ptys[&session.id].looks_idle() {
+                if !self.dispatch_turn_input(&session.id, true, |p| p.paste_and_submit(&input)) {
                     self.status = format!("failed to submit input to {}", short(&session.id));
                     return false;
                 }
                 self.turn_submitted.insert(session.id.clone());
+                self.submitted_at.insert(session.id.clone(), Instant::now());
                 self.out_at.insert(session.id.clone(), Instant::now());
             } else {
                 self.queue_initial_input(session.id.clone(), input);
@@ -353,6 +354,40 @@ impl App {
                     }
                     if self.turn_submitted.remove(&extra.id) {
                         self.turn_submitted.insert(real_id.clone());
+                    }
+                    if let Some(at) = self.submitted_at.remove(&extra.id) {
+                        self.submitted_at.insert(real_id.clone(), at);
+                    }
+                    if let Some(reading) = self.hook_status.remove(&extra.id) {
+                        self.hook_status.insert(real_id.clone(), reading);
+                    }
+                    if let Some(reading) = self.hook_floor.remove(&extra.id) {
+                        self.hook_floor.insert(real_id.clone(), reading);
+                    }
+                    let source = self
+                        .hook_source_ids
+                        .remove(&extra.id)
+                        .unwrap_or_else(|| extra.id.clone());
+                    self.hook_source_ids.insert(real_id.clone(), source);
+                    if self.ptys.contains_key(&real_id) {
+                        if let Some(s) = self.all_sessions.iter().find(|s| {
+                            s.id == real_id
+                                && s.agent == Agent::Codex
+                                && !s.file.as_os_str().is_empty()
+                        }) {
+                            let reader = match self.synthetic_turn_cutoffs.remove(&extra.id) {
+                                Some(cutoff) => {
+                                    crate::turn_status::TurnStatusReader::new_from_start_since(
+                                        s.file.clone(),
+                                        cutoff,
+                                    )
+                                }
+                                None => crate::turn_status::TurnStatusReader::new_from_start(
+                                    s.file.clone(),
+                                ),
+                            };
+                            self.codex_turns.insert(real_id.clone(), reader);
+                        }
                     }
                     if let Some(synced_at) = self.thread_sync_at.remove(&extra.id) {
                         self.thread_sync_at.insert(real_id.clone(), synced_at);
@@ -521,6 +556,25 @@ impl App {
         self.out_seq.remove(&id);
         self.out_at.remove(&id);
         self.turn_submitted.remove(&id);
+        self.submitted_at.remove(&id);
+        self.hook_status.remove(&id);
+        self.hook_floor.remove(&id);
+        self.hook_source_ids.insert(id.clone(), id.clone());
+        self.codex_turns.remove(&id);
+        self.synthetic_turn_cutoffs.remove(&id);
+        if let Some(reading) = crate::agent_hooks::read_hook_status(&id) {
+            self.hook_floor.insert(id.clone(), reading);
+        }
+        if let Some(s) = self
+            .all_sessions
+            .iter()
+            .find(|s| s.id == id && s.agent == Agent::Codex && !s.file.as_os_str().is_empty())
+        {
+            self.codex_turns.insert(
+                id.clone(),
+                crate::turn_status::TurnStatusReader::new(s.file.clone()),
+            );
+        }
         let (rows, cols) = self
             .pane_sizes
             .get(&id)
@@ -590,23 +644,26 @@ impl App {
             .collect();
         let mut sent = false;
         for id in ready {
-            let Some(input) = self.pending_initial_inputs.get(&id) else {
+            let Some(input) = self.pending_initial_inputs.get(&id).cloned() else {
                 continue;
             };
-            let Some(pty) = self.ptys.get_mut(&id) else {
+            if !self.ptys.contains_key(&id) {
                 continue;
-            };
-            if !pty.paste_and_submit(&input.bytes) {
+            }
+            if !self.dispatch_turn_input(&id, true, |p| p.paste_and_submit(&input.bytes)) {
                 self.status = format!("failed to submit initial context to {}", short(&id));
                 continue;
             }
             // Replay whatever the user typed while this was held, now that it
             // can no longer land in the middle of the queued prompt.
             if !input.held_input.is_empty() {
-                pty.send(&input.held_input);
+                if let Some(pty) = self.ptys.get_mut(&id) {
+                    pty.send(&input.held_input);
+                }
             }
             self.pending_initial_inputs.remove(&id);
             self.turn_submitted.insert(id.clone());
+            self.submitted_at.insert(id.clone(), Instant::now());
             self.out_at.insert(id.clone(), Instant::now());
             self.status = format!("submitted initial context to {}", short(&id));
             sent = true;

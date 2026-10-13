@@ -86,6 +86,10 @@ impl Row {
     }
 
     pub fn resize(&mut self, len: u16, cell: crate::cell::Cell) {
+        if len < self.cols() {
+            self.truncate(len);
+            return;
+        }
         self.cells.resize(usize::from(len), cell);
         self.wrapped = false;
     }

@@ -12,6 +12,7 @@ mod pty;
 mod render_writer;
 mod terminal_view;
 mod text_input;
+mod turn_status;
 mod ui;
 mod walker;
 
@@ -757,10 +758,11 @@ fn handle_main_key(app: &mut App, key: KeyEvent) {
         } else {
             // Anything but a second `x` calls the pending erase off, so it can
             // only happen on two deliberate presses in a row.
-            if !matches!(key.code, KeyCode::Char('x')) {
+            let shortcut = normalize_shortcut(key.code);
+            if !matches!(shortcut, KeyCode::Char('x')) {
                 app.accounts_cancel_remove();
             }
-            match key.code {
+            match shortcut {
                 KeyCode::Esc | KeyCode::Char('q') => app.close_accounts(),
                 KeyCode::Up | KeyCode::Char('k') => app.accounts_move(-1),
                 KeyCode::Down | KeyCode::Char('j') => app.accounts_move(1),
@@ -1472,6 +1474,29 @@ mod tests {
         );
         assert!(app.accounts_panel.is_none(), "q did not close the screen");
         assert!(!app.should_quit, "q closed the app instead of the screen");
+    }
+
+    #[test]
+    fn u_then_korean_r_starts_account_rename() {
+        let mut app = main_app();
+        app.accounts = vec![mindplayer_core::accounts::Account::inherited(Agent::Codex)];
+
+        handle_main_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('u'), KeyModifiers::NONE),
+        );
+        handle_main_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('ㄱ'), KeyModifiers::NONE),
+        );
+
+        assert_eq!(
+            app.accounts_panel
+                .as_ref()
+                .and_then(|p| p.new_name.as_deref()),
+            Some("default"),
+            "the Accounts screen must normalize the Korean-IME r shortcut"
+        );
     }
 
     /// The list's single-letter shortcuts have to survive a Korean IME, which

@@ -235,9 +235,8 @@ fn enter_starts_a_session_on_the_highlighted_account() {
     );
 }
 
-/// A misspelled account has to be fixable, and for an isolated one the name
-/// is its directory — the two cannot drift apart or a later account of the old
-/// name lands on this one's login.
+/// Account labels can change; provider homes cannot. Codex persists absolute
+/// rollout paths, and another process may still be using the original home.
 mod renaming {
     use super::*;
     use mindplayer_core::accounts::{slot_dir, Slot};
@@ -285,8 +284,14 @@ mod renaming {
     }
 
     #[test]
-    fn the_login_moves_with_the_name() {
+    fn renaming_keeps_the_provider_home_and_absolute_session_paths() {
         let (mut app, old) = with_slot("rn-move-from");
+        let rollout = old.join("sessions/record.jsonl");
+        std::fs::create_dir_all(rollout.parent().unwrap()).unwrap();
+        std::fs::write(&rollout, "session history\n").unwrap();
+        let index = old.join("absolute-rollout-path");
+        std::fs::write(&index, rollout.to_string_lossy().as_bytes()).unwrap();
+        let original_env = app.accounts.last().unwrap().launch_env();
         type_name(&mut app, "rn-move-to");
 
         let renamed = app
@@ -303,16 +308,45 @@ mod renaming {
             panic!("an isolated account lost its slot");
         };
         assert_eq!(
-            path,
-            &slot_dir(&limits_home_for_app(), Agent::Codex, "rn-move-to"),
-            "the stored path still points at the old directory"
+            path, &old,
+            "changing a display name must not move the provider's home"
         );
         assert!(
             path.join("auth.json").is_file(),
-            "the login did not come along: {path:?}"
+            "the login was lost: {path:?}"
         );
-        assert!(!old.exists(), "the old directory was left behind: {old:?}");
+        assert_eq!(renamed.launch_env(), original_env);
+        assert!(rollout.is_file(), "the provider's indexed path disappeared");
+        assert_eq!(
+            std::fs::read_to_string(index).unwrap(),
+            rollout.to_string_lossy()
+        );
+        assert!(!slot_dir(&limits_home_for_app(), Agent::Codex, "rn-move-to").exists());
         let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn the_old_name_cannot_create_a_second_account_on_the_retained_home() {
+        let (mut app, dir) = with_slot("rn-reuse-from");
+        type_name(&mut app, "rn-reuse-to");
+        let before = app.accounts.len();
+        app.accounts_start_add();
+        for c in "rn-reuse-from".chars() {
+            app.accounts_name_push(c);
+        }
+        app.accounts_confirm_add();
+        assert_eq!(
+            app.accounts.len(),
+            before,
+            "the old name reused an existing login"
+        );
+        assert!(app.accounts_panel.as_ref().unwrap().error.is_some());
+        let _ = std::fs::remove_dir_all(dir);
+        let _ = std::fs::remove_dir_all(slot_dir(
+            &limits_home_for_app(),
+            Agent::Codex,
+            "rn-reuse-to",
+        ));
     }
 
     #[test]
@@ -368,6 +402,61 @@ mod renaming {
         assert!(app.accounts.iter().any(|a| a.name == "rn-busy"));
         assert!(app.accounts_panel.as_ref().unwrap().error.is_some());
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn renaming_relabels_usage_and_discards_an_old_refresh() {
+        let (mut app, dir) = with_slot("rn-quota-from");
+        let row = mindplayer_core::limits::QuotaRow {
+            label: "codex weekly".into(),
+            agent: Agent::Codex,
+            account: "rn-quota-from".into(),
+            used_percent: Some(42.0),
+            ..Default::default()
+        };
+        let duplicate = mindplayer_core::limits::QuotaRow {
+            account: "other-slot".into(),
+            used_percent: None,
+            detail: "same login as rn-quota-from".into(),
+            ..row.clone()
+        };
+        app.limits = Some(vec![row.clone(), duplicate]);
+        app.quota_cache = Some((vec![row], chrono::Utc::now()));
+        app.unusable_waiting
+            .push(app.accounts.last().unwrap().clone());
+        let (tx, rx) = std::sync::mpsc::channel();
+        app.limits_rx = Some(rx);
+        app.limits_started = Some(std::time::Instant::now());
+        app.limits_retry_at = Some(std::time::Instant::now() + std::time::Duration::from_secs(60));
+
+        type_name(&mut app, "rn-quota-to");
+
+        assert_eq!(app.limits.as_ref().unwrap()[0].account, "rn-quota-to");
+        assert_eq!(
+            app.limits.as_ref().unwrap()[1].detail,
+            "same login as rn-quota-to"
+        );
+        assert_eq!(app.unusable_waiting[0], *app.accounts.last().unwrap());
+        assert_eq!(
+            app.quota_cache.as_ref().unwrap().0[0].account,
+            "rn-quota-to"
+        );
+        assert!(
+            app.limits_rx.is_none(),
+            "the old worker result was retained"
+        );
+        assert!(app.limits_started.is_none());
+        assert!(app.limits_retry_at.is_none());
+        assert!(app.limits_force_refresh);
+        assert!(tx
+            .send(UsageReading {
+                rows: vec![],
+                unusable: vec![]
+            })
+            .is_err());
+
+        let _ = std::fs::remove_dir_all(dir);
+        let _ = std::fs::remove_dir_all(app.accounts.last().unwrap().slot_path());
     }
 }
 

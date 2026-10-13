@@ -95,7 +95,13 @@ fn quota_row_spans(
         Some(used) => {
             let filled = ((used / 100.0) * QUOTA_GAUGE_CELLS as f64).round() as usize;
             let filled = filled.min(QUOTA_GAUGE_CELLS);
-            let tier = quota_tier(used);
+            let tier = if row.blocked {
+                ERROR
+            } else if row.spend_cap && used > 90.0 {
+                ZOOM
+            } else {
+                quota_tier(used)
+            };
             spans.push(Span::styled(
                 format!(
                     "{}{}",
@@ -122,11 +128,15 @@ fn quota_row_spans(
     } else if !row.detail.is_empty() {
         spans.push(Span::styled(
             format!("  {}", row.detail),
-            Style::default().fg(if row.used_percent.is_some_and(|used| used >= 100.0) {
-                ERROR
-            } else {
-                DIM
-            }),
+            Style::default().fg(
+                if row.blocked
+                    || (row.used_percent.is_some_and(|used| used >= 100.0) && !row.spend_cap)
+                {
+                    ERROR
+                } else {
+                    DIM
+                },
+            ),
         ));
     }
     if let Some(resets) = row.resets.as_deref() {
@@ -854,9 +864,15 @@ fn main_view(f: &mut Frame, app: &mut App) {
     for row in &mut quota_rows {
         // Keep the footer compact; the Accounts screen retains the reported
         // usage/limit figures. The exhausted state must still be explicit.
-        if row.agent == Agent::Codex && row.label == "codex monthly" {
-            row.detail = if row.used_percent.is_some_and(|used| used >= 100.0) {
-                "limit reached".into()
+        if row.agent == Agent::Codex && row.label == "codex credits" && row.used_percent.is_some() {
+            row.detail = if row.blocked {
+                "blocked".into()
+            } else if row.used_percent.is_some_and(|used| used >= 100.0) {
+                if row.spend_cap {
+                    "credit cap reached".into()
+                } else {
+                    "limit reached".into()
+                }
             } else {
                 String::new()
             };
@@ -1508,10 +1524,11 @@ fn session_list(f: &mut Frame, app: &mut App, area: Rect, now: DateTime<Utc>) {
             // Clear, fixed-width status badge so it's easy to scan a column of
             // running / working / done sessions.
             let (badge, badge_color, badge_bold) = match app.session_status(&s.id) {
-                SessionStatus::Blocked => ("● blocked", Color::Rgb(245, 180, 90), true),
-                SessionStatus::Working => ("● working", Color::Green, true),
-                SessionStatus::Idle => ("● idle   ", IDLE, false),
-                SessionStatus::Ended => ("○ done   ", Color::Rgb(150, 120, 120), false),
+                SessionStatus::Blocked => ("! blocked", WAITING_BORDER, true),
+                SessionStatus::Working => ("● working", WORKING_BORDER, true),
+                SessionStatus::Completed => ("✓ done   ", COMPLETED_BORDER, true),
+                SessionStatus::Idle => ("○ idle   ", UNCATEGORIZED_BORDER, false),
+                SessionStatus::Ended => ("○ ended  ", ENDED_BORDER, false),
                 SessionStatus::Inactive => ("         ", DIM, false),
             };
             let mut badge_style = Style::default().fg(badge_color);
@@ -1709,10 +1726,11 @@ fn session_list(f: &mut Frame, app: &mut App, area: Rect, now: DateTime<Utc>) {
                     Style::default().fg(DIM),
                 )),
                 Line::from(vec![
-                    Span::styled("● blocked", Style::default().fg(Color::Rgb(245, 180, 90))),
-                    Span::styled("   ● working", Style::default().fg(Color::Green)),
-                    Span::styled("   ● idle", Style::default().fg(IDLE)),
-                    Span::styled("   ○ done", Style::default().fg(Color::Rgb(150, 120, 120))),
+                    Span::styled("! blocked", Style::default().fg(WAITING_BORDER)),
+                    Span::styled("   ● working", Style::default().fg(WORKING_BORDER)),
+                    Span::styled("   ○ idle", Style::default().fg(UNCATEGORIZED_BORDER)),
+                    Span::styled("   ✓ done", Style::default().fg(COMPLETED_BORDER)),
+                    Span::styled("   ○ ended", Style::default().fg(ENDED_BORDER)),
                 ]),
             )
         };
@@ -2309,7 +2327,7 @@ fn render_pane(
     pane_focused: bool,
     zoomed: bool,
     // The category this pane's cell belongs to: its name goes in front of the
-    // session name and its colour on the border, so a stack is identifiable
+    // session name, with its colour confined to the title, so a stack is identifiable
     // without costing the grid a header row.
     cell: Option<(&str, Color)>,
 ) {
@@ -2321,17 +2339,8 @@ fn render_pane(
     // as the status dot) makes "which session is this" readable at a glance
     // without stealing a content row from the terminal view.
     //
-    // Focus gets its own glyph (▸), not just the accent-colored border: the
-    // idle status dot is drawn in that same accent color, so a focused+idle
-    // pane would otherwise read as just "blue" — shape, not hue, is what
-    // actually disambiguates focus from status here.
-    let mut title_spans: Vec<Span> = Vec::new();
-    if let Some((label, color)) = cell {
-        title_spans.push(Span::styled(
-            format!(" {label}"),
-            Style::default().fg(color).add_modifier(Modifier::BOLD),
-        ));
-    }
+    // Focus uses a glyph and mirrored corners, never a status-colour override.
+    // Status comes before any truncatable category/name, even in a narrow pane.
     let title = Line::from(vec![
         if pane_focused {
             Span::styled(
@@ -2342,6 +2351,14 @@ fn render_pane(
             Span::raw("")
         },
         Span::styled(dot, Style::default().fg(dot_color)),
+        if let Some((label, color)) = cell {
+            Span::styled(
+                format!("{label} "),
+                Style::default().fg(color).add_modifier(Modifier::BOLD),
+            )
+        } else {
+            Span::raw("")
+        },
         Span::styled(
             format!(" {name} "),
             Style::default()
@@ -2386,25 +2403,17 @@ fn render_pane(
             Span::raw("")
         },
     ]);
-    let mut title = title;
-    if !title_spans.is_empty() {
-        title_spans.extend(title.spans);
-        title = Line::from(title_spans);
-    }
-    // Border shape marks focus, border colour marks category and attention.
+    // Shape marks focus; colour always marks status, including in zoom.
     let (border_type, weight) = pane_border_for(pane_focused, zoomed);
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(border_type)
         .title(title)
-        .border_style(match (zoomed, pane_focused) {
-            (true, _) => Style::default().fg(ZOOM).add_modifier(Modifier::BOLD),
-            (_, true) => Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
-            // Never dimmed: at this weight a dim frame reads as a grey slab.
-            _ => Style::default()
-                .fg(pane_border_color(app, sid, ended, cell.map(|(_, c)| c)))
+        .border_style(
+            Style::default()
+                .fg(pane_border_color(app, sid, ended))
                 .add_modifier(weight),
-        });
+        );
     let inner = block.inner(pane_area);
     f.render_widget(block, pane_area);
     app.pane_sizes
@@ -2431,9 +2440,12 @@ fn render_pane(
     }
 
     let selection = app.selection_for_pane(sid);
-    if let Some(pty) = app.ptys.get(sid) {
+    if let Some(pty) = app.ptys.get_mut(sid) {
+        // Resize before sampling the screen: the first zoom/resize frame must
+        // use this pane's geometry, not cells from its previous dimensions.
+        pty.resize(inner.height.max(1), inner.width.max(1));
         if let Ok(parser) = pty.parser().lock() {
-            let screen = parser.screen();
+            let screen = parser.render_screen();
             f.render_widget(TerminalView::new(screen).with_selection(selection), inner);
             if pane_focused && !ended && !screen.hide_cursor() {
                 let (row, col) = screen.cursor_position();
@@ -2461,7 +2473,10 @@ const UNCATEGORIZED_BORDER: Color = Color::Rgb(140, 148, 162);
 /// Border colour for a session that has stopped and wants you. With every pane
 /// at the same weight this is what makes one stand out, so it is the one colour
 /// on screen no category is ever assigned.
-const WAITING_BORDER: Color = Color::Rgb(224, 128, 92);
+const WAITING_BORDER: Color = Color::Rgb(255, 183, 131);
+const WORKING_BORDER: Color = Color::Rgb(240, 212, 120);
+const COMPLETED_BORDER: Color = Color::Rgb(145, 217, 174);
+const ENDED_BORDER: Color = Color::Rgb(174, 183, 198);
 
 /// Which border a pane gets, and whether it is emboldened.
 ///
@@ -2471,8 +2486,7 @@ const WAITING_BORDER: Color = Color::Rgb(224, 128, 92);
 /// like a wireframe.
 ///
 /// That uniform weight costs the attention channel, so attention moves to
-/// colour: a session waiting on you takes the alert colour (see
-/// `pane_border_color`), everything else keeps its category's. The status dot in
+/// colour: each live state has a consistent colour (see `pane_dot`). The glyph in
 /// each title carries the same signal in text, so nothing depends on colour
 /// alone.
 ///
@@ -2485,19 +2499,9 @@ fn pane_border_for(focused: bool, zoomed: bool) -> (BorderType, Modifier) {
     (BorderType::QuadrantOutside, Modifier::BOLD)
 }
 
-/// A pane's border colour: the alert colour while it waits on you, otherwise its
-/// category's (or a neutral when it has none). Focus and zoom are handled by the
-/// caller, which overrides both.
-fn pane_border_color(app: &App, sid: &str, ended: bool, cat: Option<Color>) -> Color {
-    if ended
-        || matches!(
-            app.session_status(sid),
-            SessionStatus::Blocked | SessionStatus::Ended
-        )
-    {
-        return WAITING_BORDER;
-    }
-    cat.unwrap_or(UNCATEGORIZED_BORDER)
+/// Status owns the entire frame. Focus, zoom and category cannot override it.
+fn pane_border_color(app: &App, sid: &str, ended: bool) -> Color {
+    pane_dot(app, sid, ended).1
 }
 
 /// What a pane shows instead of an empty screen when its child failed to start.
@@ -2526,14 +2530,15 @@ fn render_pane_failure(f: &mut Frame, reason: &str, area: Rect) {
 
 fn pane_dot(app: &App, sid: &str, ended: bool) -> (&'static str, Color) {
     if ended {
-        return ("○ ", Color::Rgb(150, 120, 120));
+        return ("○ ", ENDED_BORDER);
     }
     match app.session_status(sid) {
-        SessionStatus::Blocked => ("● ", Color::Rgb(245, 180, 90)),
-        SessionStatus::Working => ("● ", Color::Green),
-        SessionStatus::Idle => ("● ", IDLE),
-        SessionStatus::Ended => ("○ ", Color::Rgb(150, 120, 120)),
-        SessionStatus::Inactive => ("  ", DIM),
+        SessionStatus::Blocked => ("! ", WAITING_BORDER),
+        SessionStatus::Working => ("● ", WORKING_BORDER),
+        SessionStatus::Completed => ("✓ ", COMPLETED_BORDER),
+        SessionStatus::Idle => ("○ ", UNCATEGORIZED_BORDER),
+        SessionStatus::Ended => ("○ ", ENDED_BORDER),
+        SessionStatus::Inactive => ("○ ", UNCATEGORIZED_BORDER),
     }
 }
 
@@ -3274,6 +3279,7 @@ fn accounts_popup(f: &mut Frame, app: &App) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::pty::PtySession;
 
     #[test]
     fn prompt_text_estimate_is_local_and_utf8_aware() {
@@ -3292,7 +3298,7 @@ mod tests {
     }
 
     #[test]
-    fn both_codex_accounts_render_weekly_and_monthly_in_the_footer() {
+    fn both_codex_accounts_render_weekly_and_credits_in_the_footer() {
         use mindplayer_core::accounts::Account;
         use mindplayer_core::limits::QuotaRow;
         use ratatui::{backend::TestBackend, Terminal};
@@ -3320,7 +3326,7 @@ mod tests {
                             ..Default::default()
                         },
                         QuotaRow {
-                            label: "codex monthly".into(),
+                            label: "codex credits".into(),
                             agent: Agent::Codex,
                             account: account.into(),
                             used_percent: Some(if exhausted { 100.0 } else { 10.0 }),
@@ -3328,6 +3334,8 @@ mod tests {
                             resets: Some("10-01 09:00".into()),
                             identity: None,
                             failure: None,
+                            spend_cap: true,
+                            blocked: false,
                         },
                     ]
                 })
@@ -3341,7 +3349,7 @@ mod tests {
                 .map(|y| (0..width).map(|x| buffer[(x, y)].symbol()).collect())
                 .collect();
             for account in ["work", "personal"] {
-                for period in ["weekly", "monthly"] {
+                for period in ["weekly", "credits"] {
                     assert!(
                         lines
                             .iter()
@@ -3352,11 +3360,11 @@ mod tests {
             }
             let exhausted = lines
                 .iter()
-                .find(|line| line.contains("personal monthly"))
+                .find(|line| line.contains("personal credits"))
                 .unwrap();
             assert!(
                 exhausted.contains("100.0%")
-                    && exhausted.contains("limit reached")
+                    && exhausted.contains("credit cap reached")
                     && exhausted.contains("10-01 09:00"),
                 "{exhausted}"
             );
@@ -3372,6 +3380,25 @@ mod tests {
     }
 
     #[test]
+    fn a_soft_credit_cap_is_amber_but_backend_refusal_is_red() {
+        let row = mindplayer_core::limits::QuotaRow {
+            label: "codex credits".into(),
+            used_percent: Some(100.0),
+            spend_cap: true,
+            ..Default::default()
+        };
+        let spans = quota_row_spans(&row, 20, None);
+        assert_eq!(spans[1].style.fg, Some(ZOOM));
+        assert_eq!(spans[2].style.fg, Some(ZOOM));
+        let blocked = mindplayer_core::limits::QuotaRow {
+            blocked: true,
+            ..row
+        };
+        let spans = quota_row_spans(&blocked, 20, None);
+        assert_eq!(spans[1].style.fg, Some(ERROR));
+    }
+
+    #[test]
     fn codex_monthly_limit_and_unknown_weekly_are_distinct_for_both_accounts() {
         use mindplayer_core::limits::QuotaRow;
         for account in ["work", "personal"] {
@@ -3383,7 +3410,7 @@ mod tests {
                 ..Default::default()
             };
             let monthly = QuotaRow {
-                label: format!("{account} monthly"),
+                label: format!("{account} credits"),
                 agent: Agent::Codex,
                 account: account.into(),
                 used_percent: Some(100.0),
@@ -3391,6 +3418,8 @@ mod tests {
                 resets: Some("10-01 09:00".into()),
                 identity: None,
                 failure: None,
+                spend_cap: false,
+                blocked: false,
             };
             let weekly_line = Line::from(quota_row_spans(&weekly, 20, None));
             let monthly_spans = quota_row_spans(&monthly, 20, None);
@@ -3515,6 +3544,156 @@ mod tests {
         );
     }
 
+    struct QuietPtyFixture {
+        app: App,
+        state_dir: PathBuf,
+    }
+
+    fn isolated_app() -> App {
+        let mut app = App::new();
+        let state_dir =
+            std::env::temp_dir().join(format!("mindplayer-ui-geometry-{}", std::process::id()));
+        std::fs::create_dir_all(&state_dir).unwrap();
+        app.state_path = state_dir.join("state.json");
+        app.audit_path = state_dir.join("audit.jsonl");
+        app.state = mindplayer_core::State::default();
+        app.walker_choice = crate::walker::index_of(crate::walker::DEFAULT_ID);
+        app
+    }
+
+    impl QuietPtyFixture {
+        fn new(rows: u16, cols: u16) -> Self {
+            let mut app = isolated_app();
+            let state_dir = app
+                .state_path
+                .parent()
+                .expect("isolated state has a parent")
+                .to_path_buf();
+            app.screen = Screen::Main;
+            app.focus = Focus::Terminal;
+            app.panes = vec!["ui-geometry-left".into(), "ui-geometry-right".into()];
+            app.focused = 0;
+            app.active = app.panes.first().cloned();
+
+            for id in &app.panes {
+                let command = mindplayer_core::Command {
+                    program: "cat".into(),
+                    args: Vec::new(),
+                    cwd: PathBuf::new(),
+                    env: Default::default(),
+                };
+                let pty = PtySession::spawn(&command, id, rows, cols)
+                    .unwrap_or_else(|error| panic!("spawn quiet PTY {id}: {error}"));
+                app.ptys.insert(id.clone(), pty);
+            }
+
+            Self { app, state_dir }
+        }
+
+        fn assert_visible_dimensions(&self) {
+            assert_eq!(
+                self.app.pane_sizes.len(),
+                if self.app.zoomed { 1 } else { 2 },
+                "pane size cache must contain exactly the visible panes"
+            );
+            for (id, &(rows, cols)) in &self.app.pane_sizes {
+                let pty = self
+                    .app
+                    .ptys
+                    .get(id)
+                    .unwrap_or_else(|| panic!("visible pane {id} has no PTY"));
+                assert_eq!(
+                    (pty.rows, pty.cols),
+                    (rows, cols),
+                    "public PTY dimensions drifted from pane geometry for {id}"
+                );
+                let parser = pty.parser().lock().unwrap();
+                assert_eq!(
+                    parser.screen().size(),
+                    (rows, cols),
+                    "parser dimensions drifted from pane geometry for {id}"
+                );
+            }
+        }
+    }
+
+    impl Drop for QuietPtyFixture {
+        fn drop(&mut self) {
+            self.app.ptys.clear();
+            let _ = std::fs::remove_dir_all(&self.state_dir);
+        }
+    }
+
+    #[test]
+    fn first_draw_keeps_visible_pty_geometry_in_sync_across_resize_and_zoom() {
+        use ratatui::{backend::TestBackend, Terminal};
+
+        let mut fixture = QuietPtyFixture::new(8, 20);
+        let mut terminal = Terminal::new(TestBackend::new(120, 32)).unwrap();
+
+        terminal
+            .draw(|frame| render(frame, &mut fixture.app))
+            .unwrap();
+        fixture.assert_visible_dimensions();
+
+        terminal.backend_mut().resize(84, 26);
+        terminal
+            .draw(|frame| render(frame, &mut fixture.app))
+            .unwrap();
+        fixture.assert_visible_dimensions();
+
+        fixture.app.toggle_zoom();
+        terminal.backend_mut().resize(108, 30);
+        terminal
+            .draw(|frame| render(frame, &mut fixture.app))
+            .unwrap();
+        fixture.assert_visible_dimensions();
+
+        fixture.app.toggle_zoom();
+        terminal.backend_mut().resize(72, 24);
+        terminal
+            .draw(|frame| render(frame, &mut fixture.app))
+            .unwrap();
+        fixture.assert_visible_dimensions();
+    }
+
+    #[test]
+    fn pane_presents_completed_synchronized_frames_not_partial_repaints() {
+        use ratatui::{backend::TestBackend, Terminal};
+
+        let mut fixture = QuietPtyFixture::new(8, 20);
+        let mut terminal = Terminal::new(TestBackend::new(120, 32)).unwrap();
+        terminal
+            .draw(|frame| render(frame, &mut fixture.app))
+            .unwrap();
+        let id = fixture.app.panes[0].clone();
+        let parser = fixture.app.ptys[&id].parser().clone();
+        parser
+            .lock()
+            .unwrap()
+            .process(b"\x1b[HOLD-FRAME\x1b[?2026h\x1b[HPARTIAL-NEW");
+        terminal
+            .draw(|frame| render(frame, &mut fixture.app))
+            .unwrap();
+        let text = |terminal: &Terminal<TestBackend>| -> String {
+            terminal
+                .backend()
+                .buffer()
+                .content()
+                .iter()
+                .map(|c| c.symbol())
+                .collect()
+        };
+        assert!(text(&terminal).contains("OLD-FRAME"));
+        assert!(!text(&terminal).contains("PARTIAL-NEW"));
+        parser.lock().unwrap().process(b"\x1b[?2026l");
+        terminal
+            .draw(|frame| render(frame, &mut fixture.app))
+            .unwrap();
+        assert!(text(&terminal).contains("PARTIAL-NEW"));
+        assert!(!text(&terminal).contains("OLD-FRAME"));
+    }
+
     /// The guard that stops this from breaking a third time: whatever the
     /// shortcut list grows into, the popup it is drawn in must be tall enough
     /// for all of it at the width the popup actually asks for.
@@ -3562,6 +3741,130 @@ mod tests {
         assert_eq!(focused, BorderType::QuadrantInside);
         assert_eq!(zoomed, focused, "zoom reads as focus");
         assert_ne!(plain, focused);
+    }
+
+    #[test]
+    fn pane_status_border_survives_focus_zoom_category_and_narrow_width() {
+        use ratatui::{backend::TestBackend, Terminal};
+
+        let mut fixture = QuietPtyFixture::new(6, 10);
+        let id = fixture.app.panes[0].clone();
+        for (status, expected) in [
+            (SessionStatus::Idle, Color::Rgb(140, 148, 162)),
+            (SessionStatus::Working, Color::Rgb(240, 212, 120)),
+            (SessionStatus::Completed, Color::Rgb(145, 217, 174)),
+            (SessionStatus::Blocked, Color::Rgb(255, 183, 131)),
+            (SessionStatus::Ended, Color::Rgb(174, 183, 198)),
+        ] {
+            fixture.app.hook_status.insert(
+                id.clone(),
+                crate::agent_hooks::HookReading {
+                    status,
+                    event_epoch_secs: 1,
+                    revision: 0,
+                },
+            );
+            for width in [12, 24, 48] {
+                for (focused, zoomed) in [(false, false), (true, false), (true, true)] {
+                    let mut terminal = Terminal::new(TestBackend::new(width, 8)).unwrap();
+                    terminal
+                        .draw(|frame| {
+                            render_pane(
+                                frame,
+                                &mut fixture.app,
+                                &id,
+                                0,
+                                7,
+                                Rect::new(0, 0, width, 8),
+                                focused,
+                                zoomed,
+                                Some(("long-category-name", CATEGORY)),
+                            )
+                        })
+                        .unwrap();
+                    assert_eq!(
+                        terminal.backend().buffer()[(0, 2)].fg,
+                        expected,
+                        "{status:?} width={width} focused={focused} zoomed={zoomed}"
+                    );
+                    assert_eq!(terminal.backend().buffer()[(width - 1, 2)].fg, expected);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn narrow_pane_keeps_status_glyph_before_long_category() {
+        use ratatui::{backend::TestBackend, Terminal};
+
+        let mut fixture = QuietPtyFixture::new(6, 10);
+        let id = fixture.app.panes[0].clone();
+        fixture.app.hook_status.insert(
+            id.clone(),
+            crate::agent_hooks::HookReading {
+                status: SessionStatus::Blocked,
+                event_epoch_secs: 1,
+                revision: 0,
+            },
+        );
+        let mut terminal = Terminal::new(TestBackend::new(12, 8)).unwrap();
+        terminal
+            .draw(|frame| {
+                render_pane(
+                    frame,
+                    &mut fixture.app,
+                    &id,
+                    0,
+                    7,
+                    Rect::new(0, 0, 12, 8),
+                    false,
+                    false,
+                    Some(("long-category-name", CATEGORY)),
+                )
+            })
+            .unwrap();
+        assert_eq!(terminal.backend().buffer()[(1, 0)].symbol(), "!");
+    }
+
+    #[test]
+    fn codex_stop_without_a_correlated_completion_is_only_idle() {
+        let mut fixture = QuietPtyFixture::new(6, 10);
+        let id = fixture.app.panes[0].clone();
+        let mut codex = session(Agent::Codex, 0);
+        codex.id = id.clone();
+        fixture.app.all_sessions = vec![codex];
+        fixture.app.hook_status.insert(
+            id.clone(),
+            crate::agent_hooks::HookReading {
+                status: SessionStatus::Completed,
+                event_epoch_secs: 1,
+                revision: 0,
+            },
+        );
+        assert_eq!(fixture.app.session_status(&id), SessionStatus::Idle);
+    }
+
+    #[test]
+    fn bracketed_multiline_paste_keeps_completion_until_enter() {
+        let mut fixture = QuietPtyFixture::new(6, 10);
+        let id = fixture.app.panes[0].clone();
+        fixture.app.hook_status.insert(
+            id.clone(),
+            crate::agent_hooks::HookReading {
+                status: SessionStatus::Completed,
+                event_epoch_secs: 1,
+                revision: 0,
+            },
+        );
+        fixture.app.ptys[&id]
+            .parser()
+            .lock()
+            .unwrap()
+            .process(b"\x1b[?2004h");
+        assert!(fixture.app.paste_to_pty("draft\nsecond line"));
+        assert_eq!(fixture.app.session_status(&id), SessionStatus::Completed);
+        fixture.app.send_to_pty(b"\r");
+        assert_eq!(fixture.app.session_status(&id), SessionStatus::Working);
     }
 
     /// The colour has to carry attention now that weight is uniform, so the

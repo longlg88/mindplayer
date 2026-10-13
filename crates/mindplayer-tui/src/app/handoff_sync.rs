@@ -341,15 +341,11 @@ impl App {
         if self.ended.contains(&id) {
             return false;
         }
-        let injected = self.ptys.get_mut(&id).is_some_and(|pty| {
-            if pty.looks_idle() {
-                pty.paste_and_submit(&sync.input)
-            } else {
-                false
-            }
-        });
+        let injected = self.ptys.get(&id).is_some_and(|p| p.looks_idle())
+            && self.dispatch_turn_input(&id, true, |p| p.paste_and_submit(&sync.input));
         if injected {
             self.turn_submitted.insert(id.clone());
+            self.submitted_at.insert(id.clone(), Instant::now());
             self.status = format!(
                 "synced peer lanes into {} ({} chars, {})",
                 short(&id),
@@ -437,15 +433,11 @@ impl App {
         if self.ended.contains(&id) {
             return false;
         }
-        let injected = self.ptys.get_mut(&id).is_some_and(|pty| {
-            if pty.looks_idle() {
-                pty.paste_and_submit(&sync.input)
-            } else {
-                false
-            }
-        });
+        let injected = self.ptys.get(&id).is_some_and(|p| p.looks_idle())
+            && self.dispatch_turn_input(&id, true, |p| p.paste_and_submit(&sync.input));
         if injected {
             self.turn_submitted.insert(id.clone());
+            self.submitted_at.insert(id.clone(), Instant::now());
             self.status = format!(
                 "category sync into {} ({} chars)",
                 short(&id),

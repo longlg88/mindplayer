@@ -253,6 +253,8 @@ pub struct PtySession {
     /// output: a completed turn prints one last batch and returns to a prompt,
     /// but that final output should not keep the row marked Working.
     idle: Arc<AtomicBool>,
+    /// Only pending synchronized frames need a timeout check on idle ticks.
+    synchronized_pending: Arc<AtomicBool>,
     pub rows: u16,
     pub cols: u16,
 }
@@ -379,6 +381,7 @@ impl PtySession {
         let blocked = Arc::new(AtomicBool::new(false));
         let busy = Arc::new(AtomicBool::new(false));
         let idle = Arc::new(AtomicBool::new(false));
+        let synchronized_pending = Arc::new(AtomicBool::new(false));
 
         {
             let parser = parser.clone();
@@ -387,6 +390,7 @@ impl PtySession {
             let blocked = blocked.clone();
             let busy = busy.clone();
             let idle = idle.clone();
+            let synchronized_pending = synchronized_pending.clone();
             thread::spawn(move || {
                 let mut buf = [0u8; 8192];
                 loop {
@@ -395,6 +399,8 @@ impl PtySession {
                         Ok(n) => {
                             if let Ok(mut p) = parser.lock() {
                                 p.process(&buf[..n]);
+                                synchronized_pending
+                                    .store(p.synchronized_update_pending(), Ordering::Relaxed);
                                 // Recompute the screen heuristics while we hold
                                 // the lock, so the UI hot path never has to.
                                 let screen = p.screen().contents();
@@ -410,6 +416,13 @@ impl PtySession {
                         Err(_) => break,
                     }
                 }
+                // An interrupted synchronized repaint must not hide the
+                // child's final output after it exits (and redraws go idle).
+                if let Ok(mut p) = parser.lock() {
+                    p.end_synchronized_update();
+                    synchronized_pending.store(false, Ordering::Relaxed);
+                }
+                dirty.store(true, Ordering::Relaxed);
             });
         }
 
@@ -427,6 +440,7 @@ impl PtySession {
             blocked,
             busy,
             idle,
+            synchronized_pending,
             rows,
             cols,
         })
@@ -434,7 +448,18 @@ impl PtySession {
 
     /// Returns true (and resets) if the screen changed since the last check.
     pub fn take_dirty(&self) -> bool {
-        self.dirty.swap(false, Ordering::Relaxed)
+        let mut expired = false;
+        // Startup and idle repaint output intentionally do not stamp working
+        // activity. Schedule timeout recovery independently of that badge so
+        // a missing end marker cannot leave an otherwise idle pane frozen.
+        if self.synchronized_pending.load(Ordering::Relaxed) {
+            if let Ok(mut parser) = self.parser.try_lock() {
+                expired = parser.expire_synchronized_update();
+                self.synchronized_pending
+                    .store(parser.synchronized_update_pending(), Ordering::Relaxed);
+            }
+        }
+        self.dirty.swap(false, Ordering::Relaxed) || expired
     }
 
     /// Monotonic output-read count (never reset). The app diffs this against a
@@ -597,17 +622,28 @@ impl PtySession {
         if rows == self.rows && cols == self.cols {
             return;
         }
+        // Keep the parser lock across TIOCSWINSZ: the child can repaint as
+        // soon as SIGWINCH fires, and its output must see the new dimensions.
+        let Ok(mut p) = self.parser.lock() else {
+            return;
+        };
+        if self
+            .master
+            .resize(PtySize {
+                rows,
+                cols,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .is_err()
+        {
+            return;
+        }
+        p.set_size(rows, cols);
+        self.synchronized_pending.store(false, Ordering::Relaxed);
         self.rows = rows;
         self.cols = cols;
-        let _ = self.master.resize(PtySize {
-            rows,
-            cols,
-            pixel_width: 0,
-            pixel_height: 0,
-        });
-        if let Ok(mut p) = self.parser.lock() {
-            p.set_size(rows, cols);
-        }
+        self.dirty.store(true, Ordering::Relaxed);
     }
 
     /// True while the child process is still running. Records the exit so a
@@ -1675,6 +1711,31 @@ mod tests {
 mod vt100_reflow {
     use vt100::Parser;
 
+    #[test]
+    fn a_one_column_pane_can_receive_and_repaint_wide_text_after_shrink() {
+        let mut parser = Parser::new(3, 8, 100);
+        parser.process("한국어".as_bytes());
+        parser.set_size(3, 1);
+        parser.process("\x1b[H한\x1b[Hok".as_bytes());
+        assert_eq!(parser.screen().size(), (3, 1));
+        assert!(parser.screen().contents().contains('k'));
+        parser.set_size(3, 8);
+        parser.process("\x1b[2J\x1b[H한국어".as_bytes());
+        assert_eq!(parser.screen().contents(), "한국어");
+    }
+
+    #[test]
+    fn shrinking_an_addressed_row_does_not_leave_half_a_wide_glyph() {
+        let mut parser = Parser::new(3, 8, 100);
+        parser.process("\x1b[HAB한\x1b[2;1H한글".as_bytes());
+        parser.set_size(3, 3);
+        parser.process(b"\x1b[1;3Hx\x1b[2;3Hy");
+        assert_eq!(
+            parser.screen().rows(0, 3).collect::<Vec<_>>(),
+            ["ABx", "한y", ""]
+        );
+    }
+
     /// The pane as drawn: one string per row, blanks as spaces, so a test sees
     /// the shape a user sees rather than the text with padding stripped out.
     fn painted(p: &Parser) -> Vec<String> {
@@ -1843,6 +1904,133 @@ mod vt100_reflow {
         }
     }
 
+    #[test]
+    fn rewrapping_history_keeps_the_live_viewport_and_cursor_at_their_addresses() {
+        let mut p = Parser::new(8, 20, 100);
+        for i in 0..20 {
+            p.process(format!("history {i} has a long wrapped transcript line\r\n").as_bytes());
+        }
+        p.process(b"\x1b[2J\x1b[2;1Hlive row\x1b[4;1H> draft");
+        let before = painted(&p);
+        let cursor = p.screen().cursor_position();
+
+        for cols in [60, 12, 40, 20, 60, 20] {
+            p.set_size(8, cols);
+            let after = painted(&p);
+            assert_eq!(
+                after[1],
+                before[1].chars().take(cols.into()).collect::<String>()
+            );
+            assert_eq!(
+                after[3], "> draft",
+                "live prompt moved at width {cols}: {after:#?}"
+            );
+            assert_eq!(
+                p.screen().cursor_position(),
+                cursor,
+                "cursor moved at width {cols}"
+            );
+        }
+    }
+
+    #[test]
+    fn reflow_keeps_a_painted_footer_at_its_original_row() {
+        let mut p = Parser::new(8, 20, 100);
+        for i in 0..6 {
+            p.process(format!("line {i} is longer than twenty columns wide\r\n").as_bytes());
+        }
+        p.process(b"\x1b[8;1H\x1b[K> draft");
+        p.set_size(8, 60);
+        let seen = painted(&p);
+        assert_eq!(seen[7], "> draft", "footer moved: {seen:#?}");
+    }
+
+    #[test]
+    fn severe_height_shrink_retains_the_addressed_footer_and_its_cursor() {
+        for cols in [12, 20, 40] {
+            let mut parser = Parser::new(8, 20, 100);
+            for i in 0..12 {
+                parser.process(format!("history {i} is a long streamed line\r\n").as_bytes());
+            }
+            parser.process(b"\x1b[7;1H\x1b[K> draft\x1b[8;1H\x1b[Kstatus\x1b[7;6H");
+            parser.set_size(3, cols);
+            let rows = painted(&parser);
+            assert_eq!(rows[1], "> draft", "footer lost at width {cols}: {rows:#?}");
+            assert_eq!(rows[2], "status", "status lost at width {cols}: {rows:#?}");
+            assert_eq!(parser.screen().cursor_position(), (1, 5));
+        }
+    }
+
+    #[test]
+    fn an_addressed_suffix_taller_than_the_new_pane_keeps_its_tail() {
+        let mut parser = Parser::new(8, 20, 100);
+        for row in 1..=8 {
+            parser.process(format!("\x1b[{row};1Hrow {row}").as_bytes());
+        }
+        parser.process(b"\x1b[7;5H");
+        parser.set_size(3, 12);
+        assert_eq!(painted(&parser), ["row 6", "row 7", "row 8"]);
+        assert_eq!(parser.screen().cursor_position(), (1, 4));
+        parser.set_scrollback(100);
+        assert!(parser.screen().contents().contains("row 1"));
+    }
+
+    #[test]
+    fn a_cursor_in_the_cropped_part_of_an_addressed_suffix_clamps_to_the_top() {
+        let mut parser = Parser::new(8, 20, 100);
+        for row in 1..=8 {
+            parser.process(format!("\x1b[{row};1Hrow {row}").as_bytes());
+        }
+        parser.process(b"\x1b[3;5H");
+        parser.set_size(3, 12);
+        assert_eq!(painted(&parser), ["row 6", "row 7", "row 8"]);
+        assert_eq!(parser.screen().cursor_position(), (0, 4));
+    }
+
+    #[test]
+    fn height_only_shrink_ignores_unused_bottom_rows_and_bounds_a_saved_cursor() {
+        let mut parser = Parser::new(8, 20, 100);
+        parser.process(b"\x1b[8;20H\x1b7\x1b[4;1H> draft\x1b[4;4H");
+        parser.set_size(3, 20);
+        assert_eq!(painted(&parser), ["", "", "> draft"]);
+        assert_eq!(parser.screen().cursor_position(), (2, 3));
+        parser.process(b"\x1b8");
+        assert_eq!(parser.screen().cursor_position(), (2, 19));
+    }
+
+    #[test]
+    fn restoring_a_cursor_saved_before_shrinking_stays_inside_the_screen() {
+        let mut p = Parser::new(8, 40, 100);
+        p.process(b"\x1b[8;40H\x1b7");
+        p.set_size(3, 20);
+        p.process(b"\x1b8");
+        assert_eq!(p.screen().cursor_position(), (2, 19));
+        p.process(b"x");
+        assert_eq!(painted(&p)[2], format!("{}x", " ".repeat(19)));
+    }
+
+    #[test]
+    fn codex_history_replay_discards_the_previous_scrollback() {
+        let mut p = Parser::new(6, 24, 100);
+        for cycle in 0..3 {
+            p.process(b"\x1b[r\x1b[0m\x1b[H\x1b[2J\x1b[3J\x1b[H");
+            for i in 0..12 {
+                p.process(format!("cycle-{cycle} line-{i}\r\n").as_bytes());
+            }
+            p.set_scrollback(100);
+            let history = p.screen().contents();
+            assert!(history.contains(&format!("cycle-{cycle}")), "{history}");
+            if cycle > 0 {
+                assert!(
+                    !history.contains(&format!("cycle-{}", cycle - 1)),
+                    "stale history: {history}"
+                );
+            }
+            p.set_scrollback(0);
+            p.set_size(6, if cycle % 2 == 0 { 20 } else { 24 });
+        }
+    }
+
     /// A painted row the rewrap pushes into scrollback is history, so a later narrowing wraps it instead of cutting it.
     #[test]
     fn a_painted_row_pushed_off_by_a_resize_rewraps_later() {
@@ -1953,5 +2141,74 @@ mod account_env {
             text.contains("leak=[]"),
             "an ambient variable survived into the pane, so the slot does not decide the account: {text:?}"
         );
+    }
+}
+
+#[cfg(test)]
+mod synchronized_presentation {
+    use super::*;
+
+    fn fixture(id: &str, pause: bool) -> PtySession {
+        let script = format!(
+            "printf 'old\\033[?2026h\\rnew'; {}",
+            if pause { "sleep 3" } else { ":" }
+        );
+        PtySession::spawn(
+            &MpCommand {
+                program: "sh".into(),
+                args: vec!["-c".into(), script],
+                cwd: std::env::temp_dir(),
+                env: Default::default(),
+            },
+            id,
+            4,
+            24,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn an_idle_pane_requests_a_redraw_when_a_missing_end_marker_expires() {
+        let session = fixture("mp-sync-timeout-test", true);
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while !session.synchronized_pending.load(Ordering::Relaxed) {
+            assert!(Instant::now() < deadline, "child never began its frame");
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(
+            session.parser.lock().unwrap().render_screen().contents(),
+            "old"
+        );
+        session.take_dirty(); // Consume the output notification, then go idle.
+        loop {
+            if session.take_dirty() {
+                assert_eq!(
+                    session.parser.lock().unwrap().render_screen().contents(),
+                    "new"
+                );
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "idle frame timeout did not request a redraw"
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    #[test]
+    fn eof_releases_the_final_frame_even_without_an_end_marker() {
+        let session = fixture("mp-sync-eof-test", false);
+        let deadline = Instant::now() + Duration::from_secs(3);
+        loop {
+            let parser = session.parser.lock().unwrap();
+            if parser.screen().contents() == "new" && !parser.synchronized_update_pending() {
+                assert_eq!(parser.render_screen().contents(), "new");
+                break;
+            }
+            drop(parser);
+            assert!(Instant::now() < deadline, "EOF left the presentation held");
+            thread::sleep(Duration::from_millis(10));
+        }
     }
 }

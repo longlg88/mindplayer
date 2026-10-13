@@ -369,8 +369,14 @@ pub fn forget_login(account: &Account, home: &Path) -> Result<(), String> {
     let Slot::Isolated { path } = &account.slot else {
         return Err("the login already on this machine is not MindPlayer's to delete".into());
     };
-    let expected = accounts_dir(home, account.provider).join(&account.name);
-    if path != &expected {
+    // Rename changes the display label, not the provider's directory. Keep
+    // deletion bounded to one safe slot directly under this provider's root.
+    let parent = accounts_dir(home, account.provider);
+    let safe_slot = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| check_name(name).is_ok());
+    if path.parent() != Some(parent.as_path()) || !safe_slot {
         return Err(format!(
             "this account's home is not one MindPlayer made ({}), so it is left alone",
             path.display()
@@ -859,6 +865,29 @@ mod forget_login_tests {
         let home = home();
         let err = forget_login(&Account::inherited(Agent::Codex), &home).unwrap_err();
         assert!(err.contains("not MindPlayer's to delete"), "{err}");
+    }
+
+    #[test]
+    fn a_renamed_account_still_owns_its_original_home() {
+        let home = home();
+        let mut account = Account::isolated(&home, Agent::Codex, "before-rename").unwrap();
+        let path = account.slot_path();
+        std::fs::create_dir_all(&path).unwrap();
+        std::fs::write(path.join("auth.json"), "test login").unwrap();
+        account.name = "after-rename".into();
+        forget_login(&account, &home).unwrap();
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn a_provider_root_is_never_an_account_home() {
+        let home = home();
+        let root = accounts_dir(&home, Agent::Codex);
+        std::fs::create_dir_all(&root).unwrap();
+        let mut account = Account::isolated(&home, Agent::Codex, "spare").unwrap();
+        account.slot = Slot::Isolated { path: root.clone() };
+        assert!(forget_login(&account, &home).is_err());
+        assert!(root.exists());
     }
 
     /// The path is checked against where MindPlayer puts slots rather than

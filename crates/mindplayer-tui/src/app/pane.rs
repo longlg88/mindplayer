@@ -12,6 +12,17 @@ const HTML_CANDIDATE_POLL_INTERVAL: Duration = Duration::from_secs(3);
 /// the main thread, not a background sweep like the `.html` candidate walk —
 /// a short interval is cheap here.
 const HOOK_STATUS_POLL_INTERVAL: Duration = Duration::from_millis(500);
+
+fn restore_tracking<T>(map: &mut HashMap<String, T>, id: &str, previous: Option<T>) {
+    match previous {
+        Some(value) => {
+            map.insert(id.to_string(), value);
+        }
+        None => {
+            map.remove(id);
+        }
+    }
+}
 /// Only `.html` files modified within this window of "now" count as candidates.
 /// A session cwd that happens to be a large monorepo root can hold hundreds of
 /// stale `.html` files — e.g. a dated-report dump with one file generated per
@@ -384,6 +395,16 @@ impl App {
             .retain(|id| self.ptys.contains_key(id) && !self.ended.contains(id));
         self.thread_sync_at
             .retain(|id, _| self.ptys.contains_key(id) && !self.ended.contains(id));
+        self.codex_turns
+            .retain(|id, _| self.ptys.contains_key(id) && !self.ended.contains(id));
+        self.hook_floor
+            .retain(|id, _| self.ptys.contains_key(id) && !self.ended.contains(id));
+        self.hook_source_ids
+            .retain(|id, _| self.ptys.contains_key(id) && !self.ended.contains(id));
+        self.submitted_at
+            .retain(|id, _| self.ptys.contains_key(id) && !self.ended.contains(id));
+        self.synthetic_turn_cutoffs
+            .retain(|id, _| self.ptys.contains_key(id) && !self.ended.contains(id));
         changed
     }
 
@@ -391,9 +412,13 @@ impl App {
     /// this to keep redrawing so a badge can decay from working → idle even
     /// with no new events.
     pub fn any_recent_activity(&self) -> bool {
-        self.out_at
+        self.submitted_at
             .iter()
             .any(|(id, t)| !self.ended.contains(id) && t.elapsed() < WORKING_HOLD)
+            || self
+                .out_at
+                .iter()
+                .any(|(id, t)| !self.ended.contains(id) && t.elapsed() < WORKING_HOLD)
     }
 
     /// Status of session `id` for the list badge. A Claude/Codex pane with a
@@ -409,8 +434,39 @@ impl App {
         let Some(pty) = self.ptys.get(id) else {
             return SessionStatus::Inactive;
         };
+        let native = self.codex_turns.get(id).and_then(|r| r.status());
+        if pty.looks_blocked()
+            || self
+                .hook_status
+                .get(id)
+                .is_some_and(|r| r.status == SessionStatus::Blocked)
+        {
+            return SessionStatus::Blocked;
+        }
+        if let Some(status) = native {
+            return status;
+        }
+        // Local delivery invalidates the last completion immediately, before
+        // the agent has repainted its old input prompt or written a start event.
+        if self
+            .submitted_at
+            .get(id)
+            .is_some_and(|at| at.elapsed() < WORKING_HOLD)
+        {
+            return SessionStatus::Working;
+        }
         if let Some(reading) = self.hook_status.get(id) {
-            return reading.status;
+            let codex = self
+                .all_sessions
+                .iter()
+                .any(|s| s.id == id && s.agent == Agent::Codex);
+            // Stop alone cannot distinguish successful Codex completion from
+            // interruption. Codex green requires its correlated rollout event.
+            return if codex && reading.status == SessionStatus::Completed {
+                SessionStatus::Idle
+            } else {
+                reading.status
+            };
         }
         classify_live_session_status(
             pty.looks_blocked(),
@@ -435,6 +491,28 @@ impl App {
         let mut changed = false;
         let live_ids: Vec<String> = self.ptys.keys().cloned().collect();
         for id in &live_ids {
+            if self.ended.contains(id) {
+                continue;
+            }
+            if let Some(session) = self
+                .all_sessions
+                .iter()
+                .find(|s| &s.id == id && s.agent == Agent::Codex && !s.file.as_os_str().is_empty())
+            {
+                if self
+                    .codex_turns
+                    .get(id)
+                    .is_none_or(|r| r.file() != session.file)
+                {
+                    self.codex_turns.insert(
+                        id.clone(),
+                        crate::turn_status::TurnStatusReader::new(session.file.clone()),
+                    );
+                }
+            }
+            if let Some(reader) = self.codex_turns.get_mut(id) {
+                changed |= reader.poll();
+            }
             let supports = self
                 .all_sessions
                 .iter()
@@ -443,7 +521,13 @@ impl App {
             if !supports {
                 continue;
             }
-            let reading = crate::agent_hooks::read_hook_status(id);
+            let source = self
+                .hook_source_ids
+                .get(id)
+                .map(String::as_str)
+                .unwrap_or(id);
+            let reading = crate::agent_hooks::read_hook_status(source)
+                .filter(|r| self.hook_floor.get(id) != Some(r));
             match (reading, self.hook_status.get(id).copied()) {
                 (Some(r), Some(prev)) if r == prev => {}
                 (None, None) => {}
@@ -461,6 +545,69 @@ impl App {
         // Drop cached readings for panes that no longer exist (closed/ended).
         self.hook_status.retain(|id, _| self.ptys.contains_key(id));
         changed
+    }
+
+    /// Capture provenance before dispatch, so a fast agent cannot write a new
+    /// completion before the old event has been invalidated. No file is deleted.
+    fn reset_turn_status(&mut self, id: &str, force_reset: bool) {
+        // Enter can approve a tool in the current turn, not start a new turn.
+        // Keep its correlation ID until a native start event supersedes it.
+        let preserve_active = !force_reset
+            && matches!(
+                self.session_status(id),
+                SessionStatus::Working | SessionStatus::Blocked
+            );
+        if !preserve_active && mindplayer_core::session::is_synthetic_id(id) {
+            self.synthetic_turn_cutoffs
+                .insert(id.to_string(), Utc::now());
+        }
+        let source = self
+            .hook_source_ids
+            .get(id)
+            .map(String::as_str)
+            .unwrap_or(id);
+        if let Some(reading) = crate::agent_hooks::read_hook_status(source) {
+            self.hook_floor.insert(id.to_string(), reading);
+        }
+        self.hook_status.remove(id);
+        if let Some(reader) = self.codex_turns.get_mut(id).filter(|_| !preserve_active) {
+            reader.reset_at_end();
+        }
+        self.submitted_at.remove(id);
+        self.hook_status_due = None;
+    }
+
+    /// Reset against the pre-delivery file boundary, but roll back if the
+    /// writer did not accept the input. Automatic new prompts force a reset;
+    /// ordinary Enter may instead approve/steer the currently running turn.
+    pub(super) fn dispatch_turn_input(
+        &mut self,
+        id: &str,
+        force_reset: bool,
+        send: impl FnOnce(&mut PtySession) -> bool,
+    ) -> bool {
+        if !self.ptys.contains_key(id) {
+            return false;
+        }
+        let previous = (
+            self.hook_status.get(id).copied(),
+            self.hook_floor.get(id).copied(),
+            self.codex_turns.get(id).cloned(),
+            self.submitted_at.get(id).copied(),
+            self.synthetic_turn_cutoffs.get(id).copied(),
+            self.hook_status_due,
+        );
+        self.reset_turn_status(id, force_reset);
+        if self.ptys.get_mut(id).is_some_and(send) {
+            return true;
+        }
+        restore_tracking(&mut self.hook_status, id, previous.0);
+        restore_tracking(&mut self.hook_floor, id, previous.1);
+        restore_tracking(&mut self.codex_turns, id, previous.2);
+        restore_tracking(&mut self.submitted_at, id, previous.3);
+        restore_tracking(&mut self.synthetic_turn_cutoffs, id, previous.4);
+        self.hook_status_due = previous.5;
+        false
     }
 
     /// Log a `SessionStatusChange` for every live session whose computed
@@ -1006,10 +1153,15 @@ impl App {
             return;
         }
         if let Some(id) = self.focused_pane().map(str::to_string) {
-            if let Some(pty) = self.ptys.get_mut(&id) {
-                if pty.send_key(bytes) && input_submits_turn(bytes) {
-                    self.turn_submitted.insert(id);
-                }
+            let interrupt = bytes == b"\x1b" || bytes == b"\x03";
+            let delivered = if input_submits_turn(bytes) || interrupt {
+                self.dispatch_turn_input(&id, interrupt, |p| p.send_key(bytes))
+            } else {
+                self.ptys.get_mut(&id).is_some_and(|p| p.send_key(bytes))
+            };
+            if delivered && input_submits_turn(bytes) {
+                self.submitted_at.insert(id.clone(), Instant::now());
+                self.turn_submitted.insert(id);
             }
         }
     }
@@ -1035,15 +1187,22 @@ impl App {
         }
         // Never held for a pending initial input, unlike typing: a dropped path only reaches the child as a paste, now.
         if let Some(id) = self.focused_pane().map(str::to_string) {
-            if let Some(pty) = self.ptys.get_mut(&id) {
-                if !pty.paste(text) {
-                    return false;
-                }
-                if input_submits_turn(text.as_bytes()) {
-                    self.turn_submitted.insert(id);
-                }
-                return true;
+            let submits = input_submits_turn(text.as_bytes())
+                && self.ptys.get(&id).is_some_and(|p| {
+                    p.parser()
+                        .lock()
+                        .is_ok_and(|p| !p.screen().bracketed_paste())
+                });
+            let delivered = if submits {
+                self.dispatch_turn_input(&id, false, |p| p.paste(text))
+            } else {
+                self.ptys.get_mut(&id).is_some_and(|p| p.paste(text))
+            };
+            if delivered && submits {
+                self.turn_submitted.insert(id.clone());
+                self.submitted_at.insert(id, Instant::now());
             }
+            return delivered;
         }
         false
     }

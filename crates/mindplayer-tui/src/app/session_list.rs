@@ -1013,7 +1013,7 @@ impl App {
         };
         let id = session.id.clone();
         match self.session_status(&id) {
-            SessionStatus::Idle => {
+            SessionStatus::Idle | SessionStatus::Completed => {
                 mindplayer_core::log_event_to(
                     &self.audit_path,
                     mindplayer_core::AuditEvent::CatchupBegin {

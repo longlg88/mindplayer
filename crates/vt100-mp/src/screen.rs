@@ -73,6 +73,7 @@ pub struct Screen {
     icon_name: String,
 
     modes: u8,
+    synchronized_update_start: Option<std::time::Instant>,
     mouse_protocol_mode: MouseProtocolMode,
     mouse_protocol_encoding: MouseProtocolEncoding,
 
@@ -97,6 +98,7 @@ impl Screen {
             icon_name: String::default(),
 
             modes: 0,
+            synchronized_update_start: None,
             mouse_protocol_mode: MouseProtocolMode::default(),
             mouse_protocol_encoding: MouseProtocolEncoding::default(),
 
@@ -111,6 +113,37 @@ impl Screen {
         self.grid.set_size(crate::grid::Size { rows, cols });
         self.alternate_grid
             .set_size(crate::grid::Size { rows, cols });
+    }
+
+    pub(crate) fn synchronized_update_start(&self) -> Option<std::time::Instant> {
+        self.synchronized_update_start
+    }
+
+    pub(crate) fn end_synchronized_update(&mut self) {
+        self.synchronized_update_start = None;
+    }
+
+    pub(crate) fn presentation_snapshot(&self) -> Self {
+        Self {
+            grid: self.grid.visible_snapshot(),
+            alternate_grid: self.alternate_grid.visible_snapshot(),
+            attrs: self.attrs,
+            saved_attrs: self.saved_attrs,
+            title: self.title.clone(),
+            icon_name: self.icon_name.clone(),
+            modes: self.modes
+                | if self.scrollback() > 0 {
+                    MODE_HIDE_CURSOR
+                } else {
+                    0
+                },
+            synchronized_update_start: None,
+            mouse_protocol_mode: self.mouse_protocol_mode,
+            mouse_protocol_encoding: self.mouse_protocol_encoding,
+            audible_bell_count: self.audible_bell_count,
+            visual_bell_count: self.visual_bell_count,
+            errors: self.errors,
+        }
     }
 
     /// Returns the current size of the terminal.
@@ -767,6 +800,13 @@ impl Screen {
             // width() can only return 0, 1, or 2
             .unwrap();
 
+        // A two-cell glyph cannot be drawn in a one-column pane. Such panes
+        // occur temporarily during window shrink; do not underflow or create
+        // an orphan wide cell while waiting for the application's repaint.
+        if width > size.cols {
+            return;
+        }
+
         // it doesn't make any sense to wrap if the last column in a row
         // didn't already have contents. don't try to handle the case where a
         // character wraps because there was only one column left in the
@@ -1121,6 +1161,7 @@ impl Screen {
             0 => self.grid_mut().erase_all_forward(attrs),
             1 => self.grid_mut().erase_all_backward(attrs),
             2 => self.grid_mut().erase_all(attrs),
+            3 => self.grid_mut().clear_scrollback(),
             n => {
                 log::debug!("unhandled ED mode: {n}");
             }
@@ -1226,6 +1267,7 @@ impl Screen {
                     self.enter_alternate_grid();
                 }
                 &[2004] => self.set_mode(MODE_BRACKETED_PASTE),
+                &[2026] => self.synchronized_update_start = Some(std::time::Instant::now()),
                 ns => {
                     if log::log_enabled!(log::Level::Debug) {
                         let n = if ns.len() == 1 {
@@ -1285,6 +1327,7 @@ impl Screen {
                     self.decrc();
                 }
                 &[2004] => self.clear_mode(MODE_BRACKETED_PASTE),
+                &[2026] => self.end_synchronized_update(),
                 ns => {
                     if log::log_enabled!(log::Level::Debug) {
                         let n = if ns.len() == 1 {

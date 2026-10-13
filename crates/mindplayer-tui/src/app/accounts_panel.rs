@@ -5,9 +5,7 @@
 //! session stays automatic — see `App::account_for`.
 
 use super::*;
-use mindplayer_core::accounts::{
-    save_accounts, Account, AccountError, Role, Slot, MULTI_ACCOUNT_AGENTS,
-};
+use mindplayer_core::accounts::{save_accounts, Account, AccountError, Role, MULTI_ACCOUNT_AGENTS};
 
 /// Marks a pane that is signing an account in rather than running a session.
 pub(crate) const LOGIN_PREFIX: &str = "login:";
@@ -544,6 +542,18 @@ impl App {
             self.set_error(AccountError::Duplicate(account.name).to_string());
             return;
         }
+        // A renamed account keeps its original provider home. Reusing its old
+        // label must not point a second account at the same credentials.
+        let path = account.slot_path();
+        if self
+            .accounts
+            .iter()
+            .any(|a| !a.is_inherited() && a.slot_path() == path)
+            || std::fs::symlink_metadata(&path).is_ok()
+        {
+            self.set_error("a directory for that name is already in use — choose another name");
+            return;
+        }
         if let Err(e) = mindplayer_core::private::create_dir_private(&account.slot_path()) {
             self.set_error(format!("could not make a home for this account: {e}"));
             return;
@@ -565,10 +575,9 @@ impl App {
 
     /// Give the account at `i` a new name.
     ///
-    /// For an isolated account the name is its directory, so the directory
-    /// moves with it — keeping the two in step is what stops a later account
-    /// of the old name from landing on this one's login. The inherited account
-    /// owns no directory, so there it is only a label.
+    /// Only the display label changes. Provider stores can contain absolute
+    /// session paths and can be in use by another process, so their home must
+    /// remain stable even when this app has no pane running on the account.
     fn finish_rename(&mut self, i: usize, name: &str) {
         let Some(account) = self.accounts.get(i).cloned() else {
             return;
@@ -594,24 +603,9 @@ impl App {
             return;
         }
 
-        if let Slot::Isolated { path } = &account.slot {
-            let moved =
-                mindplayer_core::accounts::slot_dir(&limits_home_for_app(), account.provider, name);
-            if moved.exists() {
-                self.set_error("a directory of that name is already there");
-                return;
-            }
-            // A slot that was never written (a sign-in abandoned before it
-            // finished) has nothing to move; the new path is made on demand.
-            if path.exists() {
-                if let Err(e) = std::fs::rename(path, &moved) {
-                    self.set_error(format!("could not move this account's home: {e}"));
-                    return;
-                }
-            }
-            self.accounts[i].slot = Slot::Isolated { path: moved };
-        }
         self.accounts[i].name = name.to_string();
+        let renamed = self.accounts[i].clone();
+        self.relabel_usage_after_rename(&account, &renamed);
         self.persist_accounts();
         self.accounts_cancel_add();
         self.clear_error();
@@ -620,6 +614,51 @@ impl App {
             account.provider.as_str(),
             account.name
         );
+    }
+
+    /// A usage worker captures account names before it starts. Drop that
+    /// worker on rename so its old rows cannot land after the rename, and
+    /// relabel readings already on screen until the forced replacement lands.
+    fn relabel_usage_after_rename(&mut self, old: &Account, renamed: &Account) {
+        let old_reference = format!("same login as {}", old.name);
+        let new_reference = format!("same login as {}", renamed.name);
+        let relabel = |rows: &mut Vec<mindplayer_core::limits::QuotaRow>| {
+            for row in rows {
+                if row.agent == old.provider {
+                    if row.account == old.name {
+                        row.account.clone_from(&renamed.name);
+                    }
+                    if row.detail == old_reference {
+                        row.detail.clone_from(&new_reference);
+                    }
+                }
+            }
+        };
+        if let Some(rows) = self.limits.as_mut() {
+            relabel(rows);
+        }
+        if let Some((rows, _)) = self.quota_cache.as_mut() {
+            relabel(rows);
+        }
+
+        // The worker still runs detached, but dropping its receiver makes its
+        // old UsageReading unadoptable. The normal three-second loop starts a
+        // replacement fetch because this flag bypasses the cache gate.
+        self.limits_rx = None;
+        self.limits_started = None;
+        self.limits_retry_at = None;
+        self.limits_force_refresh = true;
+
+        let old_key = unusable_key(old);
+        let new_key = unusable_key(renamed);
+        if self.unusable_asked.remove(&old_key) {
+            self.unusable_asked.insert(new_key);
+        }
+        for account in &mut self.unusable_waiting {
+            if account.provider == old.provider && account.name == old.name {
+                account.clone_from(renamed);
+            }
+        }
     }
 
     /// Sign the highlighted account in again, for one whose login has lapsed.

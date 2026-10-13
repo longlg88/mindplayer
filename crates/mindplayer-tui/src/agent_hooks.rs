@@ -26,6 +26,8 @@ pub fn supports_hooks(agent: Agent) -> bool {
 pub struct HookReading {
     pub status: SessionStatus,
     pub event_epoch_secs: u64,
+    /// File revision distinguishes two events written in the same second.
+    pub revision: u128,
 }
 
 /// Only a `Working` reading goes stale — the agent may have crashed or been
@@ -74,6 +76,7 @@ fn parse_hook_state(raw: &str, now_epoch_secs: u64) -> Option<HookReading> {
     Some(HookReading {
         status,
         event_epoch_secs: ts,
+        revision: 0,
     })
 }
 
@@ -81,9 +84,18 @@ fn parse_hook_state(raw: &str, now_epoch_secs: u64) -> Option<HookReading> {
 /// there's no hook data yet, the file is unreadable/corrupt, or a `Working`
 /// reading has gone stale (see [`WORKING_TRUST_WINDOW`]).
 pub fn read_hook_status(pane_id: &str) -> Option<HookReading> {
-    let raw = fs::read_to_string(hook_state_path(pane_id)).ok()?;
+    let path = hook_state_path(pane_id);
+    let raw = fs::read_to_string(&path).ok()?;
     let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
-    parse_hook_state(&raw, now)
+    let mut reading = parse_hook_state(&raw, now)?;
+    reading.revision = fs::metadata(path)
+        .ok()?
+        .modified()
+        .ok()?
+        .duration_since(UNIX_EPOCH)
+        .ok()?
+        .as_nanos();
+    Some(reading)
 }
 
 // --- hook script + installer -------------------------------------------

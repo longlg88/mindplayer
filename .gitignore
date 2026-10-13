@@ -1,6 +1,8 @@
 # Rust
 target/
 **/target/
+# The separately tested vendored library is not a workspace member.
+/crates/vt100-mp/Cargo.lock
 
 # Node / Tauri frontend
 app/node_modules/

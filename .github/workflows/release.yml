@@ -27,6 +27,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --all --check
       - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo test --manifest-path crates/vt100-mp/Cargo.toml
       # --test-threads=1: many tests mutate the process-global MINDPLAYER_STATE
       # env var (guarded pairwise by a same-file mutex, but std::env::set_var
       # is documented as unsound to call concurrently with ANY other thread's

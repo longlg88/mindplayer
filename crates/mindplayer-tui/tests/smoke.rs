@@ -24,11 +24,22 @@
 //! observable scenario 1 needs.
 
 use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
+use ratatui::{
+    backend::{Backend, ClearType, CrosstermBackend, WindowSize},
+    buffer::Cell,
+    layout::Rect,
+    prelude::{Position, Size},
+    text::Line,
+    widgets::Paragraph,
+    Terminal, TerminalOptions, Viewport,
+};
+use std::collections::{BTreeMap, BTreeSet};
+use std::io::stdout;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const ROWS: u16 = 40;
 const COLS: u16 = 140;
@@ -50,6 +61,15 @@ const OLDER_TRACE_PROMPT: &str = "older trace prompt";
 const FIXTURE_CONFIG_OLD: &str = "model = \"fixture-old\"\n";
 const FIXTURE_CONFIG_NEW: &str = "model = \"fixture-new\"\n";
 const FIXTURE_AUTH_SENTINEL: &str = "fixture-auth-sentinel\n";
+const INLINE_FIXTURE_TEST: &str = "ratatui_inline_painter_fixture";
+
+#[derive(Clone, Copy)]
+enum CodexFixture {
+    Echo,
+    InlinePainter,
+    TaskStatus,
+    AccountQuota,
+}
 
 /// Distinctive token typed into the agent pane, so the open-in-browser
 /// scenarios can assert the pane still shows the agent (never a preview) after
@@ -93,17 +113,30 @@ fn write_script(path: &Path, body: &str) {
 /// user message that becomes the session title.
 fn seed_codex_session(codex_dir: &Path, scope_cwd: &Path, id: &str, title: &str) -> PathBuf {
     let cwd = scope_cwd.display();
-    let contents = format!(
-        "{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"{id}\",\"cwd\":\"{cwd}\",\"timestamp\":\"2026-07-13T10:00:00Z\"}}}}\n\
-         {{\"type\":\"response_item\",\"payload\":{{\"role\":\"user\",\"content\":[{{\"text\":\"{title}\"}}]}}}}\n"
-    );
     // Path shape mirrors the real store, but discovery walks recursively so only
     // the `.jsonl` extension actually matters.
     let dir = codex_dir.join("2026").join("07").join("13");
     std::fs::create_dir_all(&dir).expect("create codex dir");
     let file = dir.join(format!("rollout-2026-07-13T10-00-00-{id}.jsonl"));
+    let contents = format!(
+        "{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"{id}\",\"cwd\":\"{cwd}\",\"timestamp\":\"2026-07-13T10:00:00Z\",\"rollout_path\":\"{rollout_path}\"}}}}\n\
+         {{\"type\":\"response_item\",\"payload\":{{\"role\":\"user\",\"content\":[{{\"text\":\"{title}\"}}]}}}}\n"
+        , rollout_path = file.display()
+    );
     std::fs::write(&file, contents).expect("write codex session");
     file
+}
+
+fn append_codex_task_event(path: &Path, event: &str, turn_id: &str) {
+    let mut file = std::fs::OpenOptions::new()
+        .append(true)
+        .open(path)
+        .expect("open codex transcript for task event");
+    writeln!(
+        file,
+        "{{\"timestamp\":\"2026-07-13T10:00:00Z\",\"type\":\"event_msg\",\"payload\":{{\"type\":\"{event}\",\"turn_id\":\"{turn_id}\"}}}}"
+    )
+    .expect("append codex task event");
 }
 
 /// Append one synthetic Codex turn plus the native cumulative token-count
@@ -277,6 +310,64 @@ impl Mp {
         with_accounts: bool,
         enable_cursor: bool,
     ) -> Mp {
+        Self::launch_with_options_and_fixture(
+            rows,
+            cols,
+            ambient_isolated,
+            isolated_primary,
+            with_accounts,
+            enable_cursor,
+            CodexFixture::Echo,
+        )
+    }
+
+    fn launch_inline_fixture() -> Mp {
+        Self::launch_with_options_and_fixture(
+            ROWS,
+            COLS,
+            false,
+            false,
+            false,
+            false,
+            CodexFixture::InlinePainter,
+        )
+    }
+
+    fn launch_task_status_fixture() -> Mp {
+        Self::launch_with_options_and_fixture(
+            ROWS,
+            COLS,
+            false,
+            false,
+            false,
+            false,
+            CodexFixture::TaskStatus,
+        )
+    }
+
+    fn launch_account_quota_fixture() -> Mp {
+        Self::launch_with_options_and_fixture(
+            ROWS,
+            COLS,
+            false,
+            false,
+            true,
+            false,
+            CodexFixture::AccountQuota,
+        )
+    }
+
+    fn launch_with_options_and_fixture(
+        rows: u16,
+        cols: u16,
+        ambient_isolated: bool,
+        isolated_primary: bool,
+        with_accounts: bool,
+        enable_cursor: bool,
+        fixture: CodexFixture,
+    ) -> Mp {
+        let inline_fixture = matches!(fixture, CodexFixture::InlinePainter);
+        let stale_completion = matches!(fixture, CodexFixture::TaskStatus);
         let tmp = unique_tmp();
 
         // Fully isolate every store the binary touches from the developer's real
@@ -382,10 +473,35 @@ impl Mp {
         // Fake `codex`: answer non-interactive probes immediately, record only
         // account selection and argv for pane children, then become `cat` so
         // the PTY stays open and the child tty echoes typed input.
+        let app_server = if matches!(fixture, CodexFixture::AccountQuota) {
+            r#"case "$CODEX_HOME" in
+  */.codex) email='one@example.com'; percent=10; cap=0 ;;
+  *) email='two@example.com'; percent=65; cap=500 ;;
+esac
+if [ -f "$CODEX_HOME/usage-percent" ]; then
+  IFS= read -r percent < "$CODEX_HOME/usage-percent"
+fi
+if [ -f "$CODEX_HOME/usage-email" ]; then
+  IFS= read -r email < "$CODEX_HOME/usage-email"
+fi
+while IFS= read -r line; do
+  case "$line" in
+    *'"method":"initialize"'*) printf '%s\n' '{"id":1,"result":{}}' ;;
+    *'"method":"account/read"'*)
+      printf '{"id":3,"result":{"account":{"type":"chatgpt","email":"%s","planType":"business"}}}\n' "$email" ;;
+    *'"method":"account/rateLimits/read"'*)
+      printf '{"id":2,"result":{"accountId":"workspace-shared","ordinaryUsageAllowed":true,"rateLimits":{"primary":{"usedPercent":%s,"windowDurationMins":10080},"individualLimit":{"limit":"%s","used":"%s","remainingPercent":0},"spendControlReached":true}}}\n' "$percent" "$cap" "$cap" ;;
+  esac
+done
+exit 0"#
+        } else {
+            "printf 'app-server ready\\n'\nexit 0"
+        };
         write_script(
             &bindir.join("codex"),
             &format!(
-                "#!/bin/sh\n\nif [ \"$1 $2\" = \"login status\" ]; then\n  printf 'logged in\\n'\n  exit 0\nfi\nif [ \"$1\" = \"app-server\" ]; then\n  printf 'app-server ready\\n'\n  exit 0\nfi\nif [ -n \"$MINDPLAYER_PANE_ID\" ]; then\n  marker='{}'\n  printf 'CODEX_HOME=%s\\n' \"$CODEX_HOME\" > \"$marker/$MINDPLAYER_PANE_ID.txt\"\n  for arg in \"$@\"; do printf 'ARG=%s\\n' \"$arg\" >> \"$marker/$MINDPLAYER_PANE_ID.txt\"; done\n  printf 'CONFIG_CONTENT_BEGIN\\n' >> \"$marker/$MINDPLAYER_PANE_ID.txt\"\n  cat \"$CODEX_HOME/config.toml\" >> \"$marker/$MINDPLAYER_PANE_ID.txt\" 2>/dev/null\n  printf 'CONFIG_CONTENT_END\\n' >> \"$marker/$MINDPLAYER_PANE_ID.txt\"\nfi\nprintf 'PANE-READY\\n'\nexec cat\n",
+                "#!/bin/sh\n\nif [ \"$1 $2\" = \"login status\" ]; then\n  printf 'logged in\\n'\n  exit 0\nfi\nif [ \"$1\" = \"app-server\" ]; then\n  {app_server}\nfi\nif [ \"$MINDPLAYER_RATATUI_FIXTURE\" = \"1\" ]; then\n  exec \"$MINDPLAYER_SMOKE_TEST_BINARY\" --exact {} --ignored --nocapture\nfi\nif [ -n \"$MINDPLAYER_PANE_ID\" ]; then\n  marker='{}'\n  printf 'CODEX_HOME=%s\\n' \"$CODEX_HOME\" > \"$marker/$MINDPLAYER_PANE_ID.txt\"\n  for arg in \"$@\"; do printf 'ARG=%s\\n' \"$arg\" >> \"$marker/$MINDPLAYER_PANE_ID.txt\"; done\n  printf 'CONFIG_CONTENT_BEGIN\\n' >> \"$marker/$MINDPLAYER_PANE_ID.txt\"\n  cat \"$CODEX_HOME/config.toml\" >> \"$marker/$MINDPLAYER_PANE_ID.txt\" 2>/dev/null\n  printf 'CONFIG_CONTENT_END\\n' >> \"$marker/$MINDPLAYER_PANE_ID.txt\"\nfi\nprintf 'PANE-READY\\n'\nexec cat\n",
+                INLINE_FIXTURE_TEST,
                 codex_marker_dir.display()
             ),
         );
@@ -422,8 +538,16 @@ impl Mp {
         std::fs::write(&html_fixture, "<html><body>hi</body></html>\n")
             .expect("write html fixture");
 
-        let codex_alfa_file = seed_codex_session(&codex_dir, &scope, "codex-alfa-0001", TITLE_A);
+        let alfa_root = if with_accounts {
+            isolated_home.join("sessions")
+        } else {
+            codex_dir.clone()
+        };
+        let codex_alfa_file = seed_codex_session(&alfa_root, &scope, "codex-alfa-0001", TITLE_A);
         let codex_brvo_file = seed_codex_session(&codex_dir, &scope, "codex-brvo-0002", TITLE_B);
+        if stale_completion {
+            append_codex_task_event(&codex_alfa_file, "task_complete", "stale");
+        }
 
         let pair = native_pty_system()
             .openpty(PtySize {
@@ -440,6 +564,12 @@ impl Mp {
         let mut cmd = CommandBuilder::new(binary);
         cmd.cwd(&scope);
         cmd.env("TERM", "xterm-256color");
+        // Crossterm 0.28.1 suppresses ANSI colors when NO_COLOR is set. The
+        // parent test runner may intentionally export it, but this real-PTY
+        // fixture must receive the production RGB escape sequences.
+        cmd.env_remove("NO_COLOR");
+        cmd.env_remove("CLICOLOR");
+        cmd.env_remove("CLICOLOR_FORCE");
         cmd.env("HOME", &home);
         cmd.env("MINDPLAYER_CODEX_DIR", &codex_dir);
         cmd.env("MINDPLAYER_CLAUDE_DIR", &claude_dir);
@@ -449,6 +579,13 @@ impl Mp {
         cmd.env("MINDPLAYER_AUDIT", &audit_dir);
         cmd.env("MINDPLAYER_PROMPTS_DIR", &prompts_dir);
         cmd.env("MINDPLAYER_TEST_MARKER_DIR", &codex_marker_dir);
+        cmd.env(
+            "MINDPLAYER_SMOKE_TEST_BINARY",
+            std::env::current_exe().expect("locate smoke test binary"),
+        );
+        if inline_fixture {
+            cmd.env("MINDPLAYER_RATATUI_FIXTURE", "1");
+        }
         if ambient_isolated {
             cmd.env("CODEX_HOME", &isolated_home);
         }
@@ -532,9 +669,148 @@ impl Mp {
         String::from_utf8_lossy(&self.raw_output.lock().unwrap()).contains(needle)
     }
 
+    fn has_border_foreground(&self, expected: vt100::Color) -> bool {
+        const BORDER_GLYPHS: &[&str] = &[
+            "│", "┃", "╎", "╏", "┌", "┐", "└", "┘", "╭", "╮", "╰", "╯", "▗", "▖", "▝", "▘", "▐",
+            "▌",
+        ];
+        let parser = self.parser.lock().unwrap();
+        let screen = parser.screen();
+        let (rows, cols) = screen.size();
+        let matches = (0..rows)
+            .flat_map(|row| (0..cols).filter_map(move |col| screen.cell(row, col)))
+            .filter(|cell| {
+                cell.fgcolor() == expected
+                    && BORDER_GLYPHS.iter().any(|glyph| cell.contents() == *glyph)
+            })
+            .count();
+        matches >= 2
+    }
+
+    fn border_cells(&self) -> Vec<(u16, u16, String, vt100::Color)> {
+        const BORDER_GLYPHS: &[&str] = &[
+            "│", "┃", "╎", "╏", "┌", "┐", "└", "┘", "╭", "╮", "╰", "╯", "▗", "▖", "▝", "▘", "▐",
+            "▌",
+        ];
+        let parser = self.parser.lock().unwrap();
+        let screen = parser.screen();
+        let (rows, cols) = screen.size();
+        (0..rows)
+            .flat_map(|row| {
+                (0..cols).filter_map(move |col| {
+                    let cell = screen.cell(row, col)?;
+                    BORDER_GLYPHS
+                        .iter()
+                        .any(|glyph| cell.contents() == *glyph)
+                        .then(|| (row, col, cell.contents(), cell.fgcolor()))
+                })
+            })
+            .collect()
+    }
+
+    fn expect_foreground(&self, expected: vt100::Color, within: Duration, ctx: &str) {
+        assert!(
+            self.wait_until(within, |_| self.has_border_foreground(expected)),
+            "{ctx}: expected foreground {expected:?} on screen within {within:?}.\n\
+             ---- border cells ----\n{:?}\n---- screen ----\n{}\n----------------",
+            self.border_cells(),
+            self.screen(),
+        );
+    }
+
+    fn expect_foreground_transition_absent(
+        &self,
+        expected: vt100::Color,
+        within: Duration,
+        ctx: &str,
+    ) {
+        assert!(
+            self.wait_until(within, |_| !self.has_border_foreground(expected)),
+            "{ctx}: foreground {expected:?} did not clear within {within:?}.\n\
+             ---- screen ----\n{}\n----------------",
+            self.screen()
+        );
+    }
+
+    fn expect_foreground_absent(&self, expected: vt100::Color, within: Duration, ctx: &str) {
+        let deadline = Instant::now() + within;
+        while Instant::now() < deadline {
+            assert!(
+                !self.has_border_foreground(expected),
+                "{ctx}: foreground {expected:?} reappeared during the continuous absence window.\n\
+                 ---- screen ----\n{}\n----------------",
+                self.screen()
+            );
+            std::thread::sleep(Duration::from_millis(25));
+        }
+    }
+
+    fn expect_size(&self, rows: u16, cols: u16, within: Duration, ctx: &str) {
+        assert!(
+            self.wait_until(within, |_| self.parser.lock().unwrap().screen().size()
+                == (rows, cols)),
+            "{ctx}: expected PTY frame size {rows}x{cols}.\n---- screen ----\n{}\n----------------",
+            self.screen()
+        );
+    }
+
+    fn write_hook_status(&self, event: &str) {
+        let deadline = Instant::now() + STEP_TIMEOUT;
+        let pane_id = loop {
+            if let Ok(entries) = std::fs::read_dir(&self.codex_marker_dir) {
+                if let Some(id) = entries
+                    .flatten()
+                    .filter_map(|entry| entry.path().file_stem().map(|s| s.to_os_string()))
+                    .next()
+                {
+                    break id;
+                }
+            }
+            if Instant::now() >= deadline {
+                panic!("pane marker did not appear before writing hook status");
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        let hooks = self._tmp.join("home/.mindplayer/hooks");
+        std::fs::create_dir_all(&hooks).expect("create isolated hook directory");
+        let ts = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock after epoch")
+            .as_secs();
+        std::fs::write(
+            hooks.join(pane_id).with_extension("json"),
+            format!("{{\"event\":\"{event}\",\"ts\":{ts}}}\n"),
+        )
+        .expect("write isolated hook status");
+    }
+
+    fn task_status_file(&self) -> &Path {
+        &self.codex_alfa_file
+    }
+
     fn send(&mut self, bytes: &[u8]) {
         self.writer.write_all(bytes).expect("write to pty");
         self.writer.flush().expect("flush pty");
+    }
+
+    /// Resize the outer PTY exactly like a real terminal window resize. Update
+    /// the parser first so bytes emitted during SIGWINCH handling are decoded
+    /// against the new grid before the master ioctl can wake the child.
+    fn resize(&mut self, rows: u16, cols: u16) {
+        let rows = rows.max(1);
+        let cols = cols.max(1);
+        {
+            let mut parser = self.parser.lock().unwrap();
+            parser.set_size(rows, cols);
+        }
+        self._master
+            .resize(PtySize {
+                rows,
+                cols,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .expect("resize outer PTY");
     }
 
     /// Poll the rendered screen until `pred` holds or `within` elapses.
@@ -663,9 +939,605 @@ impl Mp {
     }
 }
 
+const IDLE_BORDER: vt100::Color = vt100::Color::Rgb(140, 148, 162);
+const WORKING_BORDER: vt100::Color = vt100::Color::Rgb(240, 212, 120);
+const COMPLETED_BORDER: vt100::Color = vt100::Color::Rgb(145, 217, 174);
+const ENDED_BORDER: vt100::Color = vt100::Color::Rgb(174, 183, 198);
+
+#[test]
+fn codex_task_events_drive_correlated_status_colors() {
+    let mut mp = Mp::launch_task_status_fixture();
+    mp.start_into_main_list();
+    mp.send(b"\r");
+    mp.expect(PANE_READY, STEP_TIMEOUT, "agent pane came up");
+
+    // The stale completion was present before startup and must not mark the
+    // newly opened live pane done.
+    mp.expect_foreground(IDLE_BORDER, STEP_TIMEOUT, "startup status is idle");
+    mp.expect_foreground_absent(
+        COMPLETED_BORDER,
+        Duration::from_millis(250),
+        "stale completion is ignored",
+    );
+
+    append_codex_task_event(mp.task_status_file(), "task_started", "fresh");
+    mp.expect_foreground(WORKING_BORDER, STEP_TIMEOUT, "fresh task starts working");
+
+    append_codex_task_event(mp.task_status_file(), "task_complete", "other");
+    mp.expect_foreground_absent(
+        COMPLETED_BORDER,
+        Duration::from_millis(650),
+        "mismatched completion does not finish the fresh turn",
+    );
+    mp.expect_foreground(
+        WORKING_BORDER,
+        STEP_TIMEOUT,
+        "mismatched completion leaves task working",
+    );
+
+    append_codex_task_event(mp.task_status_file(), "task_complete", "fresh");
+    mp.expect_foreground(
+        COMPLETED_BORDER,
+        STEP_TIMEOUT,
+        "matching completion marks the fresh turn done",
+    );
+}
+
+#[test]
+fn completed_status_survives_focus_zoom_and_narrow_resize() {
+    let mut mp = Mp::launch_task_status_fixture();
+    mp.start_into_main_list();
+    mp.send(b"\r");
+    mp.expect(PANE_READY, STEP_TIMEOUT, "agent pane came up");
+    append_codex_task_event(mp.task_status_file(), "task_started", "fresh");
+    mp.expect_foreground(WORKING_BORDER, STEP_TIMEOUT, "task is working");
+    append_codex_task_event(mp.task_status_file(), "task_complete", "fresh");
+    mp.expect_foreground(COMPLETED_BORDER, STEP_TIMEOUT, "task is complete");
+
+    mp.send(b"\t");
+    mp.send(b"\x1a"); // zoom
+    mp.resize(24, 12);
+    mp.expect_size(24, 12, STEP_TIMEOUT, "narrow resize settles");
+    mp.expect_foreground(
+        COMPLETED_BORDER,
+        STEP_TIMEOUT,
+        "focus, zoom, and narrow resize preserve the completed frame",
+    );
+}
+
+#[test]
+fn local_input_and_interrupt_clear_completion() {
+    let mut mp = Mp::launch_task_status_fixture();
+    mp.start_into_main_list();
+    mp.send(b"\r");
+    mp.expect(PANE_READY, STEP_TIMEOUT, "agent pane came up");
+    append_codex_task_event(mp.task_status_file(), "task_started", "fresh");
+    append_codex_task_event(mp.task_status_file(), "task_complete", "fresh");
+    mp.expect_foreground(COMPLETED_BORDER, STEP_TIMEOUT, "task is complete");
+
+    mp.send(b"\r");
+    mp.expect_foreground_transition_absent(
+        COMPLETED_BORDER,
+        STEP_TIMEOUT,
+        "local Enter clears completion before the next rollout append",
+    );
+    append_codex_task_event(mp.task_status_file(), "task_complete", "fresh");
+    mp.expect_foreground_absent(
+        COMPLETED_BORDER,
+        Duration::from_millis(650),
+        "duplicate old completion after Enter is ignored",
+    );
+
+    append_codex_task_event(mp.task_status_file(), "task_started", "fresh2");
+    mp.expect_foreground(WORKING_BORDER, STEP_TIMEOUT, "new turn starts after Enter");
+    append_codex_task_event(mp.task_status_file(), "task_complete", "fresh2");
+    mp.expect_foreground(
+        COMPLETED_BORDER,
+        STEP_TIMEOUT,
+        "new turn completion is observed",
+    );
+    mp.send(b"\x1b");
+    mp.expect_foreground_transition_absent(
+        COMPLETED_BORDER,
+        STEP_TIMEOUT,
+        "Esc clears completion before delayed rollout data",
+    );
+    mp.expect_foreground_absent(
+        COMPLETED_BORDER,
+        Duration::from_millis(650),
+        "interrupted input does not stay done",
+    );
+    append_codex_task_event(mp.task_status_file(), "task_complete", "fresh2");
+    mp.expect_foreground_absent(
+        COMPLETED_BORDER,
+        Duration::from_millis(650),
+        "delayed completion from interrupted turn stays non-green",
+    );
+}
+
+#[test]
+fn isolated_permission_hook_renders_blocked_border() {
+    let mut mp = Mp::launch_task_status_fixture();
+    mp.start_into_main_list();
+    mp.send(b"\r");
+    mp.expect(PANE_READY, STEP_TIMEOUT, "agent pane came up");
+    mp.write_hook_status("PermissionRequest");
+    mp.expect_foreground(
+        vt100::Color::Rgb(255, 183, 131),
+        STEP_TIMEOUT,
+        "isolated permission hook marks pane blocked",
+    );
+}
+
+#[test]
+fn process_exit_uses_ended_border_color() {
+    let mut mp = Mp::launch_task_status_fixture();
+    mp.start_into_main_list();
+    mp.send(b"\r");
+    mp.expect(PANE_READY, STEP_TIMEOUT, "agent pane came up");
+    mp.send(b"\x04"); // EOF for the fake codex's `cat` child.
+    mp.expect_foreground(ENDED_BORDER, STEP_TIMEOUT, "exited pane is ended");
+}
+
 impl Drop for Mp {
     fn drop(&mut self) {
         let _ = self.child.kill();
+    }
+}
+
+/// The parent MindPlayer owns the pane PTY and deliberately does not answer a
+/// child cursor-position query. Keep the real Crossterm backend for all ANSI
+/// painting, but provide the inline viewport's initial cursor position without
+/// adding a fake terminal emulator to the test.
+struct FixtureBackend(CrosstermBackend<std::io::Stdout>);
+
+impl Backend for FixtureBackend {
+    fn draw<'a, I>(&mut self, content: I) -> std::io::Result<()>
+    where
+        I: Iterator<Item = (u16, u16, &'a Cell)>,
+    {
+        self.0.draw(content)
+    }
+
+    fn hide_cursor(&mut self) -> std::io::Result<()> {
+        self.0.hide_cursor()
+    }
+
+    fn show_cursor(&mut self) -> std::io::Result<()> {
+        self.0.show_cursor()
+    }
+
+    fn get_cursor_position(&mut self) -> std::io::Result<Position> {
+        Ok(Position { x: 0, y: 0 })
+    }
+
+    fn set_cursor_position<P: Into<Position>>(&mut self, position: P) -> std::io::Result<()> {
+        self.0.set_cursor_position(position)
+    }
+
+    fn clear(&mut self) -> std::io::Result<()> {
+        self.0.clear()
+    }
+
+    fn clear_region(&mut self, clear_type: ClearType) -> std::io::Result<()> {
+        self.0.clear_region(clear_type)
+    }
+
+    fn size(&self) -> std::io::Result<Size> {
+        self.0.size()
+    }
+
+    fn window_size(&mut self) -> std::io::Result<WindowSize> {
+        self.0.window_size()
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Backend::flush(&mut self.0)
+    }
+}
+
+/// Child process used only by the resize regression. It is launched through
+/// the fake `codex` wrapper as a real process in the pane PTY, so ratatui's
+/// Crossterm backend sees the same inline viewport and terminal size changes
+/// as an installed Codex TUI would. The loop intentionally repaints after
+/// every observed `terminal::size()` change and keeps a small transcript in
+/// the PTY's scrollback via ratatui's inline insertion API.
+#[test]
+#[ignore = "launched as a bounded child process by the resize regression"]
+fn ratatui_inline_painter_fixture() {
+    if std::env::var_os("MINDPLAYER_RATATUI_FIXTURE") != Some("1".into()) {
+        return;
+    }
+    let pane = std::env::var("MINDPLAYER_PANE_ID")
+        .unwrap_or_else(|_| "fixture".to_string())
+        .chars()
+        .filter(char::is_ascii_alphanumeric)
+        .rev()
+        .take(6)
+        .collect::<String>();
+    let pane = pane.chars().rev().collect::<String>();
+    let mut terminal = Terminal::with_options(
+        FixtureBackend(CrosstermBackend::new(stdout())),
+        TerminalOptions {
+            viewport: Viewport::Inline(8),
+        },
+    )
+    .expect("create inline ratatui fixture terminal");
+
+    let (mut last_cols, mut last_rows) =
+        crossterm::terminal::size().expect("fixture terminal size");
+    for index in 0..24 {
+        let line = Line::from(format!("MPFIX-{pane}-SCROLL-{index:02}"));
+        terminal
+            .insert_before(1, |buffer| {
+                buffer.set_line(0, 0, &line, buffer.area.width);
+            })
+            .expect("insert fixture scrollback line");
+    }
+
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let mut tick = 0u64;
+    while Instant::now() < deadline {
+        let (cols, rows) = crossterm::terminal::size().expect("read fixture terminal size");
+        if (cols, rows) != (last_cols, last_rows) {
+            let mut output = stdout();
+            output
+                .write_all(b"\x1b[r\x1b[0m\x1b[H\x1b[2J\x1b[3J\x1b[H\x1b[?2026h")
+                .expect("write Codex resize sequence");
+            output.flush().expect("flush Codex resize sequence");
+            terminal
+                .resize(Rect::new(0, 0, cols, rows))
+                .expect("resize inline fixture terminal");
+            output
+                .write_all(b"\x1b[?2026l")
+                .expect("write synchronized-update end");
+            output.flush().expect("flush synchronized-update end");
+            last_cols = cols;
+            last_rows = rows;
+        }
+        terminal
+            .draw(|frame| {
+                let lines = vec![
+                    Line::from(format!("MPFIX-{pane}-TICK-{tick}-SIZE-{cols}x{rows}")),
+                    Line::from(format!("MPFIX-{pane}-ROW-01 stable semantic row")),
+                    Line::from(format!("MPFIX-{pane}-ROW-02 stable semantic row")),
+                    Line::from(format!("MPFIX-{pane}-PROMPT> ready")),
+                ];
+                frame.render_widget(Paragraph::new(lines), frame.area());
+            })
+            .expect("paint inline fixture");
+        tick = tick.wrapping_add(1);
+        std::thread::sleep(Duration::from_millis(35));
+    }
+}
+
+fn fixture_size_tokens(screen: &str) -> Vec<String> {
+    screen
+        .lines()
+        .flat_map(|line| line.split("MPFIX-").skip(1))
+        .filter_map(|rest| rest.split_whitespace().next())
+        .filter_map(|word| word.split_once("-SIZE-").map(|(_, size)| size.to_string()))
+        .map(|size| format!("SIZE-{size}"))
+        .collect()
+}
+
+fn fixture_semantic_positions(screen: &str) -> (Vec<usize>, Vec<usize>, Vec<usize>) {
+    let mut row_one = Vec::new();
+    let mut row_two = Vec::new();
+    let mut prompts = Vec::new();
+    for (index, line) in screen.lines().enumerate() {
+        if line.contains("ROW-01") {
+            row_one.push(index);
+        }
+        if line.contains("ROW-02") {
+            row_two.push(index);
+        }
+        if line.contains("PROMPT>") {
+            prompts.push(index);
+        }
+    }
+    (row_one, row_two, prompts)
+}
+
+fn fixture_tick_tokens(screen: &str) -> BTreeSet<String> {
+    screen
+        .lines()
+        .flat_map(|line| line.split("MPFIX-").skip(1))
+        .filter_map(|rest| rest.split_whitespace().next())
+        .filter(|word| word.contains("-TICK-") && word.contains("-SIZE-"))
+        .map(|word| format!("MPFIX-{word}"))
+        .collect()
+}
+
+/// Return the latest complete repaint epoch for each fixture pane. A geometry
+/// token can be present in a stale snapshot while the child is still inside
+/// its synchronized update; the per-pane tick is the evidence that a newly
+/// sized frame has actually been painted.
+fn fixture_tick_epochs(screen: &str) -> BTreeMap<String, String> {
+    screen
+        .lines()
+        .flat_map(|line| line.split("MPFIX-").skip(1))
+        .filter_map(|rest| rest.split_whitespace().next())
+        .filter_map(|word| {
+            let (pane, _) = word.split_once("-TICK-")?;
+            if !word.contains("-SIZE-") {
+                return None;
+            }
+            Some((pane.to_string(), format!("MPFIX-{word}")))
+        })
+        .collect()
+}
+
+fn wait_for_stable_fixture_geometry(
+    mp: &Mp,
+    expected_panes: usize,
+    different_from: Option<&[String]>,
+    ctx: &str,
+) -> Vec<String> {
+    let deadline = Instant::now() + STEP_TIMEOUT;
+    let mut previous = None;
+    let mut consecutive = 0;
+    loop {
+        let screen = mp.screen();
+        let sizes = fixture_size_tokens(&screen);
+        let ready = screen.matches("ROW-01").count() == expected_panes
+            && screen.matches("ROW-02").count() == expected_panes
+            && screen.matches("PROMPT>").count() == expected_panes
+            && sizes.len() == expected_panes
+            && sizes.windows(2).all(|pair| pair[0] == pair[1]);
+        if ready {
+            if previous.as_ref() == Some(&sizes) {
+                consecutive += 1;
+            } else {
+                previous = Some(sizes.clone());
+                consecutive = 1;
+            }
+            if consecutive >= 3 && different_from.is_none_or(|baseline| sizes != baseline) {
+                return sizes;
+            }
+        } else {
+            previous = None;
+            consecutive = 0;
+        }
+        if Instant::now() >= deadline {
+            panic!("{ctx}: fixture geometry did not settle\n{screen}");
+        }
+        std::thread::sleep(Duration::from_millis(45));
+    }
+}
+
+/// Wait for two successive, complete repaint epochs at the requested
+/// geometry, returning only after the semantic rows are stable across those
+/// epochs. This synchronizes on the fixture's actual tick marker rather than
+/// treating matching size/count metadata as proof that the resize repaint is
+/// finished.
+fn wait_for_confirmed_fixture_repaint(
+    mp: &Mp,
+    expected_sizes: &[String],
+    expected_panes: usize,
+    ctx: &str,
+) {
+    assert_eq!(
+        expected_sizes.len(),
+        expected_panes,
+        "{ctx}: expected pane count"
+    );
+    assert!(
+        expected_sizes.windows(2).all(|pair| pair[0] == pair[1]),
+        "{ctx}: expected one uniform geometry per pane, got {expected_sizes:?}"
+    );
+
+    let deadline = Instant::now() + STEP_TIMEOUT;
+    let mut previous_epochs: Option<BTreeMap<String, String>> = None;
+    let mut stable_positions = None;
+    let mut consecutive = 0;
+    loop {
+        let screen = mp.screen();
+        let sizes = fixture_size_tokens(&screen);
+        let epochs = fixture_tick_epochs(&screen);
+        let counts_match = screen.matches("ROW-01").count() == expected_panes
+            && screen.matches("ROW-02").count() == expected_panes
+            && screen.matches("PROMPT>").count() == expected_panes;
+        let geometry_match = sizes == expected_sizes;
+        let complete_frame = epochs.len() == expected_panes;
+
+        if counts_match && geometry_match && complete_frame {
+            if let Some(previous) = &previous_epochs {
+                let all_panes_repainted = epochs
+                    .iter()
+                    .all(|(pane, epoch)| previous.get(pane).is_some_and(|old| old != epoch));
+                if all_panes_repainted {
+                    let positions = fixture_semantic_positions(&screen);
+                    if stable_positions.as_ref() == Some(&positions) {
+                        consecutive += 1;
+                    } else {
+                        stable_positions = Some(positions);
+                        consecutive = 1;
+                    }
+                    if consecutive >= 2 {
+                        return;
+                    }
+                }
+            }
+            previous_epochs = Some(epochs);
+        } else {
+            previous_epochs = None;
+            stable_positions = None;
+            consecutive = 0;
+        }
+
+        if Instant::now() >= deadline {
+            panic!("{ctx}: no confirmed repaint at {expected_sizes:?}\n{screen}");
+        }
+        std::thread::sleep(Duration::from_millis(35));
+    }
+}
+
+fn assert_steady_fixture_repaints(
+    mp: &Mp,
+    expected_sizes: &[String],
+    expected_panes: usize,
+    ctx: &str,
+) {
+    wait_for_confirmed_fixture_repaint(mp, expected_sizes, expected_panes, ctx);
+    let first = mp.screen();
+    let positions = fixture_semantic_positions(&first);
+    assert_eq!(
+        first.matches("ROW-01").count(),
+        expected_panes,
+        "{ctx}: ROW-01 count\n{first}"
+    );
+    assert_eq!(
+        first.matches("ROW-02").count(),
+        expected_panes,
+        "{ctx}: ROW-02 count\n{first}"
+    );
+    assert_eq!(
+        first.matches("PROMPT>").count(),
+        expected_panes,
+        "{ctx}: prompt count\n{first}"
+    );
+    assert!(
+        !positions.0.is_empty(),
+        "{ctx}: ROW-01 has no physical position\n{first}"
+    );
+    assert_eq!(
+        fixture_size_tokens(&first),
+        expected_sizes,
+        "{ctx}: geometry\n{first}"
+    );
+
+    let deadline = Instant::now() + Duration::from_millis(450);
+    let mut ticks = BTreeSet::new();
+    while Instant::now() < deadline {
+        let screen = mp.screen();
+        assert_eq!(
+            screen.matches("ROW-01").count(),
+            expected_panes,
+            "{ctx}: ROW-01 drifted\n{screen}"
+        );
+        assert_eq!(
+            screen.matches("ROW-02").count(),
+            expected_panes,
+            "{ctx}: ROW-02 drifted\n{screen}"
+        );
+        assert_eq!(
+            screen.matches("PROMPT>").count(),
+            expected_panes,
+            "{ctx}: prompt drifted\n{screen}"
+        );
+        assert_eq!(
+            fixture_semantic_positions(&screen),
+            positions,
+            "{ctx}: semantic rows moved\n{screen}"
+        );
+        assert_eq!(
+            fixture_size_tokens(&screen),
+            expected_sizes,
+            "{ctx}: geometry drifted\n{screen}"
+        );
+        ticks.extend(fixture_tick_tokens(&screen));
+        std::thread::sleep(Duration::from_millis(45));
+    }
+    assert!(
+        ticks.len() >= 3,
+        "{ctx}: fixture did not produce three repaint ticks\n{}",
+        mp.screen()
+    );
+}
+
+/// Outer resize regression for Codex's inline (non-alternate-screen) painter.
+///
+/// Two real pane children render ratatui inline viewports with scrollback and
+/// a prompt. The parent PTY is resized wide -> narrow -> wide, then the live
+/// view is zoomed and restored three times. Each settled frame must retain the
+/// same physical semantic rows and prompts across changing repaint ticks; the
+/// fixture's visible geometry must follow the child PTY's actual
+/// `terminal::size()` and restore exactly.
+#[test]
+fn inline_codex_painter_preserves_rows_and_prompts_across_resize_and_zoom() {
+    let mut mp = Mp::launch_inline_fixture();
+    mp.start_into_main_list();
+
+    mp.send(b"v");
+    mp.expect("space marks", STEP_TIMEOUT, "multi-select enabled");
+    mp.send(b" ");
+    mp.expect("1 marked", STEP_TIMEOUT, "first fixture session marked");
+    mp.send(b"\x1b[B");
+    mp.send(b" ");
+    mp.expect("2 marked", STEP_TIMEOUT, "second fixture session marked");
+    mp.send(b"\r");
+    mp.expect("PROMPT>", STEP_TIMEOUT, "inline fixture prompt painted");
+    assert!(
+        mp.wait_until(STEP_TIMEOUT, |screen| {
+            screen.matches("ROW-01").count() == 2
+                && screen.matches("ROW-02").count() == 2
+                && screen.matches("PROMPT>").count() == 2
+                && fixture_size_tokens(screen).len() == 2
+        }),
+        "both inline fixtures must paint their rows and prompts.\n{}",
+        mp.screen()
+    );
+
+    let wide_sizes = wait_for_stable_fixture_geometry(&mp, 2, None, "initial wide frame geometry");
+    assert_steady_fixture_repaints(&mp, &wide_sizes, 2, "initial wide frame");
+
+    let mut narrow_sizes = None;
+    for cycle in 1..=3 {
+        mp.resize(32, 88);
+        assert!(
+            mp.wait_until(STEP_TIMEOUT, |screen| {
+                screen.matches("ROW-01").count() == 2
+                    && screen.matches("ROW-02").count() == 2
+                    && screen.matches("PROMPT>").count() == 2
+                    && fixture_size_tokens(screen).len() == 2
+                    && fixture_size_tokens(screen) != wide_sizes
+            }),
+            "narrow resize cycle {cycle} did not settle.\n{}",
+            mp.screen()
+        );
+        let sizes = wait_for_stable_fixture_geometry(
+            &mp,
+            2,
+            Some(&wide_sizes),
+            &format!("narrow cycle {cycle}"),
+        );
+        if let Some(expected) = &narrow_sizes {
+            assert_eq!(&sizes, expected, "narrow geometry changed on cycle {cycle}");
+        } else {
+            narrow_sizes = Some(sizes.clone());
+        }
+        assert_steady_fixture_repaints(&mp, &sizes, 2, &format!("narrow cycle {cycle}"));
+        assert!(
+            !mp.screen().contains("SCROLL-"),
+            "visible fixture history must stay cleared after the resize sequence in cycle {cycle}.\n{}",
+            mp.screen()
+        );
+
+        mp.resize(ROWS, COLS);
+        assert!(
+            mp.wait_until(STEP_TIMEOUT, |screen| fixture_size_tokens(screen)
+                == wide_sizes),
+            "wide restore in cycle {cycle} did not reach exact original geometry.\n{}",
+            mp.screen()
+        );
+        assert_steady_fixture_repaints(&mp, &wide_sizes, 2, &format!("wide cycle {cycle}"));
+
+        mp.send(b"\x1a");
+        mp.expect("ZOOMED", STEP_TIMEOUT, "zoom enabled");
+        let zoom_sizes =
+            wait_for_stable_fixture_geometry(&mp, 1, None, &format!("zoom cycle {cycle}"));
+        assert_steady_fixture_repaints(&mp, &zoom_sizes, 1, &format!("zoom cycle {cycle}"));
+
+        mp.send(b"\x1a");
+        mp.expect_absent("ZOOMED", STEP_TIMEOUT, "zoom restored");
+        assert!(
+            mp.wait_until(STEP_TIMEOUT, |screen| fixture_size_tokens(screen)
+                == wide_sizes),
+            "zoom restore in cycle {cycle} did not reach exact wide geometry.\n{}",
+            mp.screen()
+        );
+        assert_steady_fixture_repaints(&mp, &wide_sizes, 2, &format!("zoom restore cycle {cycle}"));
     }
 }
 
@@ -1092,6 +1964,156 @@ fn isolated_codex_home(mp: &Mp) -> PathBuf {
         .join("accounts")
         .join("codex")
         .join("isolated")
+}
+
+#[test]
+fn codex_usage_separates_workspace_members_and_refreshes_after_u_enter() {
+    let mut mp = Mp::launch_account_quota_fixture();
+    mp.start_into_main_list();
+    mp.expect(
+        "65.0%",
+        STEP_TIMEOUT,
+        "second workspace member keeps its own usage",
+    );
+    mp.expect(
+        "10.0%",
+        STEP_TIMEOUT,
+        "first workspace member keeps its own usage",
+    );
+    assert!(!mp.screen().contains("same login"), "{}", mp.screen());
+    assert!(
+        !mp.screen().contains("default credits"),
+        "zero cap must not draw 100%: {}",
+        mp.screen()
+    );
+    mp.expect(
+        "credit cap reached",
+        STEP_TIMEOUT,
+        "positive cap is separate from weekly usage",
+    );
+
+    mp.send(b"u");
+    mp.expect("Accounts", STEP_TIMEOUT, "accounts opened");
+    mp.send(b"\r");
+    mp.expect(PANE_READY, STEP_TIMEOUT, "first account entered");
+    mp.wait_for_codex_home(&mp._tmp.join("home/.codex"), STEP_TIMEOUT);
+    mp.send(b"\x18");
+    mp.expect("multi-select", STEP_TIMEOUT, "return to list");
+    mp.send(b"u");
+    mp.expect("Accounts", STEP_TIMEOUT, "accounts reopened");
+    mp.send(b"\x1b[B\r");
+    mp.wait_for_codex_home(&isolated_codex_home(&mp), STEP_TIMEOUT);
+    std::fs::write(isolated_codex_home(&mp).join("usage-percent"), "73\n").unwrap();
+    mp.send(b"\x18");
+    mp.expect("multi-select", STEP_TIMEOUT, "return from second account");
+    mp.send(b"\x12");
+    mp.expect(
+        "73.0%",
+        STEP_TIMEOUT,
+        "Ctrl-R refresh reads the second account's latest usage",
+    );
+    assert!(!mp.screen().contains("same login"), "{}", mp.screen());
+
+    // A real duplicate still gets an explanation on ALL rows, including credits.
+    std::fs::write(
+        isolated_codex_home(&mp).join("usage-email"),
+        "one@example.com\n",
+    )
+    .unwrap();
+    mp.send(b"\x12");
+    mp.expect(
+        "same login as default",
+        STEP_TIMEOUT,
+        "duplicate login is identified",
+    );
+    assert!(
+        mp.wait_until(STEP_TIMEOUT, |screen| screen.lines().any(|line| line
+            .contains("isolated credits")
+            && line.contains("same login as default"))),
+        "{}",
+        mp.screen()
+    );
+}
+
+#[test]
+fn account_rename_from_korean_ime_preserves_login_and_refreshes_usage() {
+    let mut mp = Mp::launch_account_quota_fixture();
+    mp.start_into_main_list();
+    let original_home = isolated_codex_home(&mp);
+    let original_rollout = mp.codex_alfa_file.clone();
+
+    // Resume a rollout that physically belongs to the isolated account before
+    // relabelling it. The marker proves the pre-rename session uses this home.
+    mp.send(b"/");
+    mp.expect("type to filter", STEP_TIMEOUT, "session search opened");
+    mp.send(b"alfa\r");
+    mp.expect(PANE_READY, STEP_TIMEOUT, "isolated rollout resumed");
+    mp.wait_for_codex_home(&original_home, STEP_TIMEOUT);
+    mp.send(b"\x11"); // Ctrl-Q closes the focused pane so rename is allowed.
+    mp.expect("multi-select", STEP_TIMEOUT, "returned to the session list");
+
+    mp.expect("10.0%", STEP_TIMEOUT, "usage fixture ready");
+    mp.send(b"u");
+    mp.expect("Accounts", STEP_TIMEOUT, "accounts opened");
+    mp.send(b"\x1b[B");
+    mp.send("ㄱ".as_bytes());
+    mp.expect(
+        "Rename account",
+        STEP_TIMEOUT,
+        "Korean physical r opens rename",
+    );
+    mp.send(b"\x7f\x7f\x7f\x7f\x7f\x7f\x7f\x7frenamed\r");
+    mp.expect_absent("Rename account", STEP_TIMEOUT, "rename was accepted");
+    let accounts = mindplayer_core::accounts::load_accounts(&mp._tmp.join("home"));
+    let renamed = accounts
+        .iter()
+        .find(|account| {
+            account.provider == mindplayer_core::session::Agent::Codex && account.name == "renamed"
+        })
+        .expect("renamed account persisted");
+    assert_eq!(renamed.slot_path(), original_home);
+    assert!(original_home.is_dir(), "the isolated home must not move");
+    assert!(!original_home.with_file_name("renamed").exists());
+    assert!(
+        original_rollout.is_file(),
+        "the original rollout must remain"
+    );
+    assert_eq!(
+        std::fs::read_to_string(original_home.join("auth.json")).unwrap(),
+        FIXTURE_AUTH_SENTINEL
+    );
+    mp.send(b"q");
+    mp.expect(
+        "renamed weekly",
+        STEP_TIMEOUT,
+        "renamed quota label reaches footer",
+    );
+    mp.expect_absent(
+        "isolated weekly",
+        STEP_TIMEOUT,
+        "old label cannot return from stale worker",
+    );
+    mp.send(b"u");
+    mp.expect("Accounts", STEP_TIMEOUT, "accounts reopened after rename");
+    mp.send(b"\x1b[B");
+    mp.send(b"q");
+    mp.expect_absent("Accounts", STEP_TIMEOUT, "accounts closed after reopen");
+
+    // The same discovered rollout must still resume from the unchanged home
+    // after the account has the new display label.
+    mp.send(b"/");
+    mp.expect("type to filter", STEP_TIMEOUT, "session search reopened");
+    mp.send(b"alfa\r");
+    mp.expect(PANE_READY, STEP_TIMEOUT, "renamed account rollout resumed");
+    mp.wait_for_codex_home(&original_home, STEP_TIMEOUT);
+    assert!(
+        original_rollout.is_file(),
+        "the original rollout must remain"
+    );
+    assert_eq!(
+        std::fs::read_to_string(original_home.join("auth.json")).unwrap(),
+        FIXTURE_AUTH_SENTINEL
+    );
 }
 
 #[test]

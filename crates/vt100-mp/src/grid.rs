@@ -83,10 +83,27 @@ impl Grid {
         self.size
     }
 
+    /// A bounded presentation copy, never a clone of the full scrollback.
+    pub(crate) fn visible_snapshot(&self) -> Self {
+        Self {
+            size: self.size,
+            pos: self.pos,
+            saved_pos: self.saved_pos,
+            rows: self.visible_rows().cloned().collect(),
+            scroll_top: self.scroll_top,
+            scroll_bottom: self.scroll_bottom,
+            origin_mode: self.origin_mode,
+            saved_origin_mode: self.saved_origin_mode,
+            scrollback: std::collections::VecDeque::new(),
+            scrollback_len: 0,
+            scrollback_offset: 0,
+        }
+    }
+
     pub fn set_size(&mut self, size: Size) {
         // Reflow rebuilds every row at the new width, so the plain per-row
         // resize below must not run after it and clear the wrap flags again.
-        let reflowed = size.cols != self.size.cols && self.can_reflow();
+        let reflowed = size.cols > 1 && size != self.size && self.can_reflow();
         if reflowed {
             self.reflow(size);
         } else if size.cols != self.size.cols {
@@ -138,6 +155,25 @@ impl Grid {
     /// cursor is carried by tracking its offset within its own logical line.
     fn reflow(&mut self, size: Size) {
         let cursor_row = self.scrollback.len() + usize::from(self.pos.row);
+        // A trailing addressed viewport belongs to the application's repaint
+        // coordinates. Rewrapping history must not bottom-align that viewport
+        // or move its cursor through the unused rows below it. Streamed rows
+        // after an addressed row still belong to the transcript and may flow.
+        let after_streamed = self
+            .rows
+            .iter()
+            .rposition(|row| {
+                !row.painted()
+                    && (0..row.cols())
+                        .any(|c| row.get(c).is_some_and(crate::cell::Cell::has_contents))
+            })
+            .map_or(0, |i| i + 1);
+        let fixed_start = self
+            .rows
+            .iter()
+            .enumerate()
+            .skip(after_streamed)
+            .find_map(|(i, row)| row.painted().then_some(i));
         // Blank rows below the last written one are unused screen, not content.
         // Rewrapping them as if they were lines would push real text up into
         // scrollback every time the pane is resized.
@@ -153,15 +189,37 @@ impl Grid {
             .last()
             .unwrap_or(0)
             .max(cursor_row);
-        let (lines, cursor) = self.logical_lines(cursor_row, usize::from(self.pos.col), last_used);
+        // Keep addressed rows at their coordinates when they fit. On height
+        // shrink, reserve room for the meaningful suffix (including its
+        // cursor), cropping its top only if the suffix itself is too tall.
+        // Unused blank rows below it must not displace the prompt.
+        let pinned = fixed_start.map(|start| {
+            let end = (last_used.saturating_sub(self.scrollback.len()) + 1)
+                .max(start + 1)
+                .min(self.rows.len());
+            let retained_start = start.max(end.saturating_sub(usize::from(size.rows)));
+            let target = start.min(usize::from(size.rows) - (end - retained_start));
+            (retained_start, end, target)
+        });
+        let row_count = pinned.map_or(last_used + 1, |(start, _, _)| self.scrollback.len() + start);
+        let (lines, cursor) = self.logical_lines(cursor_row, usize::from(self.pos.col), row_count);
         let (mut rows, cursor) = Self::rewrap(&lines, size.cols, cursor);
 
-        let wanted = usize::from(size.rows);
+        let wanted = pinned.map_or(usize::from(size.rows), |(_, _, target)| target);
         while rows.len() < wanted {
             rows.push(crate::row::Row::new(size.cols));
         }
         let scrolled_off = rows.len() - wanted;
-        self.rows = rows.split_off(scrolled_off);
+        let mut live = rows.split_off(scrolled_off);
+        if let Some((start, end, _)) = pinned {
+            for row in &self.rows[start..end] {
+                let mut row = row.clone();
+                row.resize(size.cols, crate::cell::Cell::default());
+                live.push(row);
+            }
+            live.resize(usize::from(size.rows), crate::row::Row::new(size.cols));
+        }
+        self.rows = live;
         // Pushed off the screen by the rewrap, a painted row is history like one scrolled off.
         for row in &mut rows {
             row.paint(false);
@@ -178,6 +236,11 @@ impl Grid {
                     .min(size.rows - 1),
                 col: col.min(size.cols - 1),
             };
+        } else if let Some((start, _, target)) = pinned {
+            self.pos.row = u16::try_from(target + usize::from(self.pos.row).saturating_sub(start))
+                .unwrap_or(size.rows - 1)
+                .min(size.rows - 1);
+            self.pos.col = self.pos.col.min(size.cols - 1);
         }
         self.scrollback_offset = self.scrollback_offset.min(self.scrollback.len());
     }
@@ -191,7 +254,7 @@ impl Grid {
         &self,
         cursor_row: usize,
         cursor_col: usize,
-        last_used: usize,
+        row_count: usize,
     ) -> (Vec<LogicalLine>, Option<(usize, usize)>) {
         let mut lines: Vec<LogicalLine> = Vec::new();
         let mut cursor = None;
@@ -200,7 +263,7 @@ impl Grid {
             .scrollback
             .iter()
             .chain(self.rows.iter())
-            .take(last_used + 1)
+            .take(row_count)
             .enumerate()
         {
             // A row the application addressed directly is one row of a screen
@@ -269,6 +332,9 @@ impl Grid {
                         *dst = cell.clone();
                     }
                 }
+                // Clipping must not leave the first half of a wide glyph at
+                // the right edge; a later repaint would access its lost half.
+                row.truncate(cols);
                 if at.is_none() && cursor.is_some_and(|(l, _)| l == index) {
                     let col = cursor.map_or(0, |(_, c)| c).min(width.saturating_sub(1));
                     at = Some((rows.len(), col as u16));
@@ -340,6 +406,14 @@ impl Grid {
     pub fn restore_cursor(&mut self) {
         self.pos = self.saved_pos;
         self.origin_mode = self.saved_origin_mode;
+        self.row_clamp_top(self.origin_mode);
+        self.row_clamp_bottom(self.origin_mode);
+        self.col_clamp();
+    }
+
+    pub fn clear_scrollback(&mut self) {
+        self.scrollback.clear();
+        self.scrollback_offset = 0;
     }
 
     /// The `rows`-tall window ending `scrollback_offset` rows back. The offset
@@ -939,4 +1013,24 @@ pub struct Size {
 pub struct Pos {
     pub row: u16,
     pub col: u16,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn presentation_snapshot_copies_only_visible_rows_not_history() {
+        let mut grid = Grid::new(Size { rows: 4, cols: 24 }, 5_000);
+        grid.allocate_rows();
+        grid.scrollback = std::iter::repeat_with(|| crate::row::Row::new(24))
+            .take(5_000)
+            .collect();
+        grid.scrollback_offset = 1_000;
+        let snapshot = grid.visible_snapshot();
+        assert_eq!(snapshot.rows.len(), 4);
+        assert!(snapshot.scrollback.is_empty());
+        assert_eq!(snapshot.scrollback_len, 0);
+        assert_eq!(snapshot.scrollback_offset, 0);
+    }
 }

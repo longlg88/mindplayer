@@ -5,53 +5,67 @@ import { connect } from 'node:net';
 import test from 'node:test';
 import { acceptWebSocket } from './websocket.mjs';
 
-const wait = (ms = 20) => new Promise((resolve) => setTimeout(resolve, ms));
 const maskPayload = (data, mask = Buffer.from([1, 2, 3, 4])) => {
   const encoded = Buffer.alloc(data.length);
   for (let i = 0; i < data.length; i++) encoded[i] = data[i] ^ mask[i & 3];
   return encoded;
 };
 
-async function start(options = {}) {
+async function start(t, options = {}) {
   const messages = [];
   let closeCount = 0;
+  let received;
+  let closed;
+  const message = new Promise(resolve => { received = resolve; });
+  const closing = new Promise(resolve => { closed = resolve; });
   const server = createServer();
+  const sockets = new Set();
+  const fixture = { server, messages, message, closing, get closeCount() { return closeCount; } };
+  server.on('connection', socket => {
+    sockets.add(socket);
+    socket.once('close', () => sockets.delete(socket));
+  });
+  t.after(async () => {
+    const stopped = server.listening ? new Promise(resolve => server.close(resolve)) : Promise.resolve();
+    const disconnected = [...sockets].map(socket => new Promise(resolve => socket.once('close', resolve)));
+    fixture.raw?.destroy();
+    for (const socket of sockets) socket.destroy();
+    await Promise.all(disconnected);
+    await stopped;
+    assert.equal(server.listening, false);
+    assert.equal(sockets.size, 0);
+  });
   server.on('upgrade', (request, socket, head) => {
     acceptWebSocket(request, socket, head, {
       ...options,
-      onMessage: (message) => messages.push(message),
-      onClose: () => { closeCount++; },
+      onMessage: (value) => { messages.push(value); received(value); },
+      onClose: () => { closeCount++; closed(); },
     });
   });
   server.listen(0, '127.0.0.1');
   await once(server, 'listening');
-  return { server, port: server.address().port, messages, get closeCount() { return closeCount; } };
+  fixture.port = server.address().port;
+  return fixture;
 }
 
-function stop(server) {
-  if (!server.listening) return;
-  server.closeAllConnections();
-  server.close();
-}
-
-test('performs a real handshake, receives text, sends text, and closes once', async () => {
-  const fixture = await start();
+test('performs a real handshake, receives text, sends text, and closes once', { timeout: 2000 }, async t => {
+  const fixture = await start(t);
   const client = new WebSocket(`ws://127.0.0.1:${fixture.port}`);
   const opened = once(client, 'open');
   await opened;
   client.send('hello');
-  await wait();
+  await fixture.message;
   assert.deepEqual(fixture.messages, ['hello']);
+  const closing = once(client, 'close');
   client.close(1000, 'done');
-  await once(client, 'close');
-  await wait();
+  await closing;
+  await fixture.closing;
   assert.equal(fixture.closeCount, 1);
-  await stop(fixture.server);
 });
 
-test('handles fragmented UTF-8 with a code point split across frames', async () => {
-  const fixture = await start();
-  const raw = connect(fixture.port, '127.0.0.1');
+test('handles fragmented UTF-8 with a code point split across frames', { timeout: 2000 }, async t => {
+  const fixture = await start(t);
+  const raw = fixture.raw = connect(fixture.port, '127.0.0.1');
   await once(raw, 'connect');
   const key = 'dGhlIHNhbXBsZSBub25jZQ==';
   raw.write(`GET / HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: ${key}\r\nSec-WebSocket-Version: 13\r\n\r\n`);
@@ -59,11 +73,10 @@ test('handles fragmented UTF-8 with a code point split across frames', async () 
   const mask = Buffer.from([1, 2, 3, 4]);
   raw.write(Buffer.concat([Buffer.from([0x01, 0x82]), mask, maskPayload(Buffer.from([0xf0, 0x9f]), mask)]));
   raw.write(Buffer.concat([Buffer.from([0x80, 0x82]), mask, maskPayload(Buffer.from([0x98, 0x80]), mask)]));
-  await wait();
+  await fixture.message;
   assert.deepEqual(fixture.messages, ['😀']);
   raw.destroy();
-  await wait(50);
-  await stop(fixture.server);
+  await fixture.closing;
 });
 
 function rawFrame({ first = 0x81, payload = Buffer.alloc(0), masked = true, mask = Buffer.from([1, 2, 3, 4]) } = {}) {
@@ -74,13 +87,12 @@ function rawFrame({ first = 0x81, payload = Buffer.alloc(0), masked = true, mask
   return Buffer.concat([header, mask, encoded]);
 }
 
-async function rawConnection() {
-  const fixture = await start();
-  const raw = connect(fixture.port, '127.0.0.1');
+async function rawConnection(t) {
+  const fixture = await start(t);
+  const raw = fixture.raw = connect(fixture.port, '127.0.0.1');
   await once(raw, 'connect');
   raw.write('GET / HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n');
   await once(raw, 'data');
-  fixture.raw = raw;
   return fixture;
 }
 
@@ -93,8 +105,8 @@ for (const [name, frame, code] of [
   ['rejects a reserved close code', rawFrame({ first: 0x88, payload: Buffer.from([3, 237]) }), 1002],
   ['rejects non-minimal payload lengths', Buffer.from([0x81, 0xfe, 0, 1, 1, 2, 3, 4, 0]), 1002],
 ]) {
-  test(name, { timeout: 2000 }, async () => {
-    const fixture = await rawConnection();
+  test(name, { timeout: 2000 }, async t => {
+    const fixture = await rawConnection(t);
     const closing = once(fixture.raw, 'data');
     fixture.raw.write(frame);
     const [response] = await closing;
@@ -102,14 +114,13 @@ for (const [name, frame, code] of [
     assert.equal(response.readUInt16BE(2), code);
     assert.deepEqual(fixture.messages, []);
     fixture.raw.end();
-    await wait(50);
+    await fixture.closing;
     assert.equal(fixture.closeCount, 1);
-    await stop(fixture.server);
   });
 }
 
-test('responds to ping with pong and rejects oversize messages', async () => {
-  const fixture = await start({ maxBytes: 4 });
+test('responds to ping with pong and rejects oversize messages', { timeout: 2000 }, async t => {
+  const fixture = await start(t, { maxBytes: 4 });
   const raw = fixture.raw = connect(fixture.port, '127.0.0.1');
   await once(raw, 'connect');
   raw.write('GET / HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n');
@@ -122,7 +133,6 @@ test('responds to ping with pong and rejects oversize messages', async () => {
   const [response] = await closing;
   assert.equal(response.readUInt16BE(2), 1009);
   raw.end();
-  await wait(50);
+  await fixture.closing;
   assert.equal(fixture.closeCount, 1);
-  await stop(fixture.server);
 });

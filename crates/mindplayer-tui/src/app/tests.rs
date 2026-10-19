@@ -50,8 +50,46 @@ pub(crate) fn use_state_path(path: PathBuf) {
     TEST_STATE_PATH.with(|c| *c.borrow_mut() = Some(path));
 }
 
+struct FreshLoginTestHome(PathBuf);
+
+impl FreshLoginTestHome {
+    fn new() -> Self {
+        for n in 0.. {
+            let path = std::env::temp_dir().join(format!(
+                "mp-fresh-login-{}-{:?}-{n}",
+                std::process::id(),
+                std::thread::current().id()
+            ));
+            match std::fs::create_dir(&path) {
+                Ok(()) => return Self(path),
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(e) => panic!("could not create a fresh-login test home: {e}"),
+            }
+        }
+        unreachable!("an unbounded range always has a free test home")
+    }
+}
+
+impl Drop for FreshLoginTestHome {
+    fn drop(&mut self) {
+        std::fs::remove_dir_all(&self.0).expect("remove this test's synthetic home");
+    }
+}
+
+/// Fresh-login tests own their home on their test thread; no process-wide env
+/// changes or another test's directories can decide which slot is available.
+pub(super) fn fresh_login_test_home() -> PathBuf {
+    thread_local! {
+        static HOME: FreshLoginTestHome = FreshLoginTestHome::new();
+    }
+    HOME.with(|home| home.0.clone())
+}
+
 pub(crate) fn isolated_app() -> App {
     let mut app = App::new();
+    app.startup_routing = crate::startup_routing::StartupRouting::confirmed(
+        crate::startup_routing::RoutingMode::Native,
+    );
     match TEST_STATE_PATH.with(|c| c.borrow().clone()) {
         // The test named a path: load whatever is there, so it can assert that a
         // fresh `App` reads back what an earlier one persisted.
@@ -77,6 +115,9 @@ pub(crate) fn isolated_app() -> App {
 /// reads better at the call site.
 pub(crate) fn isolated_app_at(state_path: PathBuf) -> App {
     let mut app = App::new();
+    app.startup_routing = crate::startup_routing::StartupRouting::confirmed(
+        crate::startup_routing::RoutingMode::Native,
+    );
     app.state_path = state_path;
     app.state = mindplayer_core::State::default();
     app.walker_choice = crate::walker::index_of(crate::walker::DEFAULT_ID);
@@ -103,6 +144,64 @@ fn app_with(sessions: Vec<Session>) -> App {
     app.all_sessions = sessions;
     app.rebuild_visible();
     app
+}
+
+#[test]
+fn unconfirmed_startup_keeps_pending_work_without_creating_a_pty() {
+    let mut app = isolated_app();
+    app.startup_routing = crate::startup_routing::StartupRouting::default();
+    app.pending = Some(PendingSpawn {
+        command: mindplayer_core::Command {
+            program: "sh".into(),
+            args: vec!["-c".into(), "exit 99".into()],
+            cwd: std::env::temp_dir(),
+            env: Default::default(),
+        },
+        session_id: "not-before-choice".into(),
+        initial_input: None,
+        focus_after_spawn: true,
+    });
+    app.spawn_pending();
+    assert!(app.pending.is_some());
+    assert!(app.ptys.is_empty());
+    assert!(app.status.contains("시작바"));
+    assert_eq!(app.startup_routing.mode(), None);
+}
+
+#[test]
+fn unverified_provider_accounts_are_blocked_before_native_or_wrapped_process_starts() {
+    for (provider, program) in [
+        (Agent::Codex, "codex"),
+        (Agent::Codex, "node"),
+        (Agent::Claude, "claude"),
+        (Agent::Claude, "node"),
+    ] {
+        let mut app = isolated_app();
+        app.accounts = vec![mindplayer_core::accounts::Account::inherited(provider)];
+        app.all_sessions = vec![session("provider-guard", provider, false)];
+        app.panes.push("provider-guard".into());
+        app.pending = Some(PendingSpawn {
+            command: mindplayer_core::Command {
+                program: program.into(),
+                args: vec!["resume".into()],
+                cwd: std::env::temp_dir(),
+                env: mindplayer_core::accounts::Account::inherited(provider).launch_env(),
+            },
+            session_id: "provider-guard".into(),
+            initial_input: None,
+            focus_after_spawn: true,
+        });
+
+        app.spawn_pending();
+
+        assert!(
+            app.ptys.is_empty(),
+            "an unbound {} login was spawned via {program}",
+            provider.as_str()
+        );
+        assert!(app.pending.is_none());
+        assert!(app.status.contains("로그인 확인 중"), "{}", app.status);
+    }
 }
 
 fn session_in(id: &str, agent: Agent, cwd: &str, title: &str) -> Session {
@@ -4784,12 +4883,7 @@ mod new_session_account_picker {
     }
 
     fn second_codex() -> Account {
-        Account::isolated(
-            &super::super::limits_home_for_app(),
-            Agent::Codex,
-            "personal",
-        )
-        .unwrap()
+        Account::isolated(&fresh_login_test_home(), Agent::Codex, "personal").unwrap()
     }
 
     fn pending_line(app: &App) -> String {
@@ -4799,6 +4893,57 @@ mod new_session_account_picker {
             .command
             .args
             .join(" ")
+    }
+
+    fn assert_renamed_home_is_not_reused(present: bool) {
+        let home = fresh_login_test_home();
+        let mut renamed = Account::isolated(&home, Agent::Codex, "codex-2").unwrap();
+        let original_path = renamed.slot_path();
+        renamed.name = "renamed".into();
+        if present {
+            mindplayer_core::private::create_dir_private(&original_path).unwrap();
+            std::fs::write(original_path.join("sentinel"), b"synthetic old login").unwrap();
+        }
+        let mut accounts = base();
+        accounts.push(renamed.clone());
+        let mut app = app_with(accounts);
+
+        app.choose_new_fresh_login(Agent::Codex);
+        app.confirm_new_session();
+
+        let fresh = app.accounts.last().expect("the new home was registered");
+        assert_ne!(
+            fresh.slot_path(),
+            original_path,
+            "fresh login reused the home still registered to a renamed account"
+        );
+        assert!(app.accounts.contains(&renamed));
+        assert!(fresh.slot_path().is_dir());
+        assert_eq!(
+            app.pending.as_ref().expect("a pane was queued").command.env,
+            fresh.launch_env()
+        );
+        if present {
+            assert_eq!(
+                std::fs::read(original_path.join("sentinel")).unwrap(),
+                b"synthetic old login"
+            );
+        } else {
+            assert!(
+                !original_path.exists(),
+                "a reserved absent home was created"
+            );
+        }
+    }
+
+    #[test]
+    fn fresh_login_skips_a_renamed_registered_home_when_absent() {
+        assert_renamed_home_is_not_reused(false);
+    }
+
+    #[test]
+    fn fresh_login_skips_a_renamed_registered_home_when_present() {
+        assert_renamed_home_is_not_reused(true);
     }
 
     /// Which login a session runs on is also which login a sign-in would be
@@ -4925,31 +5070,49 @@ mod new_session_account_picker {
     }
 
     #[test]
-    fn another_account_signs_in_to_a_home_of_its_own_then_starts() {
+    fn another_codex_account_signs_in_before_it_can_be_used() {
         let mut app = app_with(base());
+        app.startup_routing = crate::startup_routing::StartupRouting::confirmed(
+            crate::startup_routing::RoutingMode::Jev,
+        );
         app.choose_new_fresh_login(Agent::Codex);
         app.confirm_new_session();
 
         let fresh = app
             .accounts
             .iter()
-            .find(|a| a.provider == Agent::Codex && a.name == "codex-2")
+            .find(|a| a.provider == Agent::Codex && !a.is_inherited())
             .cloned()
             .expect("the sign-in got a home registered as an account");
         assert!(!fresh.is_inherited());
+        assert!(fresh.slot_path().starts_with(fresh_login_test_home()));
+        assert_eq!(std::fs::read_dir(fresh.slot_path()).unwrap().count(), 0);
 
-        let pending = app.pending.as_ref().expect("a pane was queued");
-        let line = pending_line(&app);
-        assert_eq!(pending.command.program, "sh");
-        assert!(
-            line.contains("codex login && exec codex"),
-            "sign in, then start in the same pane only if the sign-in finished: {line}"
-        );
+        let pending = app.pending.as_ref().expect("a login pane was queued");
+        assert_eq!(pending.command.program, "codex");
+        assert_eq!(pending.command.args, ["login"]);
         assert_eq!(
             pending.command.env,
             fresh.launch_env(),
-            "both halves must run in the new home"
+            "the login must be created in the new home"
         );
+        assert!(app.status.contains("요청한 세션을 이어"));
+    }
+
+    #[test]
+    fn native_fresh_codex_login_does_not_start_a_session_before_identity_binding() {
+        let mut app = app_with(base());
+        app.choose_new_fresh_login(Agent::Codex);
+        app.confirm_new_session();
+        let pending = app.pending.as_ref().expect("a pane was queued");
+        assert_eq!(pending.command.program, "codex");
+        assert_eq!(pending.command.args, ["login"]);
+        let fresh = app
+            .accounts
+            .iter()
+            .find(|account| account.provider == Agent::Codex && !account.is_inherited())
+            .unwrap();
+        assert_eq!(pending.command.env, fresh.launch_env());
     }
 
     /// The reconciler can only adopt a session discovery finds, and a new home
@@ -4964,10 +5127,10 @@ mod new_session_account_picker {
         let fresh = app
             .accounts
             .iter()
-            .find(|a| a.name == "codex-2")
+            .find(|a| a.provider == Agent::Codex && !a.is_inherited())
             .cloned()
             .unwrap();
-        let home = super::super::limits_home_for_app();
+        let home = fresh_login_test_home();
         assert!(
             app.scan_roots()
                 .iter()
@@ -4999,17 +5162,28 @@ mod new_session_account_picker {
     #[test]
     fn each_fresh_login_gets_its_own_home() {
         let mut app = app_with(base());
+        let mut homes = Vec::new();
         for _ in 0..2 {
             app.choose_new_fresh_login(Agent::Codex);
             app.confirm_new_session();
+            let fresh = app.accounts.last().unwrap();
+            let path = fresh.slot_path();
+            assert!(path.starts_with(fresh_login_test_home()));
+            assert_eq!(std::fs::read_dir(&path).unwrap().count(), 0);
+            assert_eq!(
+                app.pending.as_ref().unwrap().command.env,
+                fresh.launch_env()
+            );
+            homes.push(path);
         }
-        let names: Vec<&str> = app
+        let fresh: Vec<_> = app
             .accounts
             .iter()
             .filter(|a| a.provider == Agent::Codex && !a.is_inherited())
-            .map(|a| a.name.as_str())
             .collect();
-        assert_eq!(names, vec!["codex-2", "codex-3"]);
+        assert_eq!(fresh.len(), 2);
+        assert_ne!(fresh[0].name, fresh[1].name);
+        assert_ne!(homes[0], homes[1]);
     }
 
     #[test]

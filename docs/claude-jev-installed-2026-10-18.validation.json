@@ -1,0 +1,318 @@
+{
+  "schemaVersion": 1,
+  "scope": "Terminal MindPlayer: Codex and Claude Jev current-family model/effort selection; approved Claude native best-effort exception",
+  "source": {
+    "revision": "54529865aa69ef134c25b88a78c8139ce99b181f",
+    "dirty": true,
+    "version": "0.55.12",
+    "versionOverride": false,
+    "files": 123,
+    "manifest": "Cargo.toml/Cargo.lock plus sorted rg --files crates tools/local-model-router (.rs/.toml/.mjs/.json/.cjs/.ts); SHA256(path NUL SHA256(bytes) newline)",
+    "frozenBefore": "68d69068fc3ffc4afcc7b505b2c8073ed3d335c7627cf4166f2bbc2af916cb8b",
+    "frozenAfter": "68d69068fc3ffc4afcc7b505b2c8073ed3d335c7627cf4166f2bbc2af916cb8b"
+  },
+  "changedFiles": [
+    "tools/local-model-router/claude-policy.mjs",
+    "tools/local-model-router/claude-policy.test.mjs",
+    "tools/local-model-router/claude-run.mjs",
+    "tools/local-model-router/claude-run.test.mjs",
+    "tools/local-model-router/claude-broker.mjs",
+    "tools/local-model-router/claude-broker.test.mjs",
+    "tools/local-model-router/claude-mod.mjs",
+    "tools/local-model-router/claude-mod.test.mjs",
+    "tools/local-model-router/claude-integration.test.mjs",
+    "tools/local-model-router/claude-mod.native.test.ts",
+    "tools/local-model-router/service.mjs",
+    "tools/local-model-router/service.test.mjs",
+    "crates/mindplayer-tui/src/local_router.rs",
+    "crates/mindplayer-tui/tests/smoke.rs",
+    "README.md",
+    "tools/local-model-router/README.ko.md",
+    "docs/plans/jev-latest-family-claude-2026-10-18.md",
+    "AGENTS.md",
+    "docs/claude-jev-installed-2026-10-18.validation.json"
+  ],
+  "implementation": {
+    "claude": {
+      "light": "claude-haiku-5-5",
+      "standard": "claude-sonnet-5-5",
+      "frontier": "claude-opus-5-5",
+      "efforts": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
+      "reviewDeadline": "2026-11-18T00:00:00Z",
+      "basis": "Reviewed descriptor policy, not an entitlement API or perpetual latestness",
+      "integration": "Session-only native Mods overrides actual next({model,effort}); parent-only Jev policy/key with authenticated loopback broker",
+      "failure": "Observed Jev errors block the native request; absent/crashed/timed-out native extension can fall through (explicitly approved best-effort exception)"
+    },
+    "codex": "Previously reviewed current-family implementation included in this installation; fail-closed unchanged",
+    "privacy": "Bounded current user text only; no transcript/attachment bytes/account metadata sent to Jev; subagent ownership excluded",
+    "controls": "Native input, Escape, approvals, account home, cwd, new/resume/handoff and Ctrl-Q hide semantics preserved"
+  },
+  "simplifications": [
+    "Reuse existing Jev client, capacity rubric, status channel, embedded staging and native PTY lifecycle",
+    "No dependencies, desktop changes, global Claude plugin installation/settings changes, new auth workflow or replacement UI",
+    "Explicit Codex-only availability guard prevents widened session classification from changing Claude quota/identity handling"
+  ],
+  "verification": [
+    {
+      "command": "Node test runner over every tools/local-model-router/*.test.mjs with all MINDPLAYER_TEST_* opt-ins, NODE_OPTIONS and CODEX_HOME removed",
+      "exitCode": 0,
+      "tests": 635,
+      "passed": 604,
+      "failed": 0,
+      "skipped": 31,
+      "durationMs": 25509.50575
+    },
+    {
+      "command": "node --test claude-{policy,broker,mod,integration,run}.test.mjs (explicit five paths)",
+      "exitCode": 0,
+      "passed": 71,
+      "failed": 0,
+      "durationMs": 13342.107416,
+      "note": "Repeated on final production source after comment correction"
+    },
+    {
+      "command": "cargo test --locked -p mindplayer-tui local_router -- --nocapture --test-threads=1",
+      "exitCode": 0,
+      "passed": 21,
+      "failed": 0
+    },
+    {
+      "command": "cargo test --locked -p mindplayer-tui --test smoke claude_ -- --nocapture --test-threads=1 (source executable)",
+      "exitCode": 0,
+      "passed": 18,
+      "failed": 0,
+      "durationSeconds": 45.97
+    },
+    {
+      "command": "cargo test --locked -p mindplayer-tui --test smoke embedded_router_ -- --nocapture --test-threads=1 (source executable)",
+      "exitCode": 0,
+      "passed": 5,
+      "failed": 0,
+      "durationSeconds": 20.23
+    },
+    {
+      "command": "cargo test --locked --workspace --lib --bins -- --test-threads=1",
+      "exitCode": 0,
+      "note": "Default ignored tests remain ignored; real-account integration tests not selected"
+    },
+    {
+      "command": "cargo clippy --locked --workspace --all-targets -- -D warnings",
+      "exitCode": 0
+    },
+    {
+      "command": "cargo fmt --all -- --check",
+      "exitCode": 0
+    },
+    {
+      "command": "node --check on every .mjs file",
+      "exitCode": 0,
+      "passed": 54
+    },
+    {
+      "command": "git diff --check",
+      "exitCode": 0
+    },
+    {
+      "command": "env -u MINDPLAYER_VERSION -u MINDPLAYER_TEST_BINARY -u MINDPLAYER_TEST_REAL_JEV -u NODE_OPTIONS -u CODEX_HOME cargo build --locked --release -p mindplayer-tui",
+      "exitCode": 0,
+      "durationSeconds": 33.67
+    },
+    {
+      "command": "env MINDPLAYER_TEST_BINARY=/Users/eden.jang/.local/bin/mindplayer cargo test --locked -p mindplayer-tui --test smoke claude_ -- --nocapture --test-threads=1 (real-provider opt-ins removed)",
+      "exitCode": 0,
+      "passed": 18,
+      "failed": 0,
+      "durationSeconds": 44.1,
+      "note": "Exact installed executable; synthetic CLI/account fixtures; real PTY/new/resume/handoff/native bypass/account preservation/Ctrl-Q retention/quit cleanup;19 extracted assets match checkout byte-for-byte"
+    },
+    {
+      "command": "rg -n -i 'sendbird|delight' crates/mindplayer-core/src crates/mindplayer-tui/src tools/local-model-router -g '*.rs' -g '*.mjs' -g '!*.test.mjs'",
+      "exitCode": 1,
+      "note": "Expected no matches: production account labels/company names not hardcoded"
+    },
+    {
+      "command": "env MINDPLAYER_TEST_BINARY=/Users/eden.jang/.local/bin/mindplayer cargo test --locked -p mindplayer-tui --test smoke embedded_router_ -- --nocapture --test-threads=1 (real-provider opt-ins removed)",
+      "exitCode": 0,
+      "passed": 5,
+      "failed": 0,
+      "durationSeconds": 19.52,
+      "note": "Exact installed executable; current-family catalog/menu regression, A->B->C current choices, late ACK without reroute, new/resume/handoff bundle and cleanup"
+    }
+  ],
+  "nativeClaudeContract": {
+    "installedVersion": "2.1.302",
+    "binarySha256": "5262ce9de86243fed0d21edc39b271555d56780d0112e2b194439fe1c6662d37",
+    "moduleSha256": "4506f94cff314e30712b229e8d0e96cea03754ea12ea7c0bd583940c1ded39da",
+    "productionStage": {
+      "validateExitCode": 0,
+      "optionalManifestWarnings": 3,
+      "warningFields": [
+        "version",
+        "description",
+        "author"
+      ],
+      "pluginTestPassed": 9,
+      "pluginTestFailed": 0,
+      "durationSeconds": 0.53
+    },
+    "augmentedTestManifest": {
+      "strictValidateExitCode": 0,
+      "warningCount": 0,
+      "note": "Researcher added optional metadata only in private fixture; NOT production strict-validation evidence"
+    },
+    "scope": "Actual installed native dispatcher/testing engine with mocked HTTP/env/session/next; no provider inference, global settings/plugin/login changes"
+  },
+  "independentReview": {
+    "codeReviewer": {
+      "recommendation": "APPROVE",
+      "files": 17,
+      "findings": 0,
+      "scopedNodePassed": 71
+    },
+    "architect": {
+      "status": "CLEAR",
+      "scopedNodePassed": 71
+    },
+    "synthesis": "APPROVE for scoped source; installation acceptance recorded separately",
+    "diagnosticGap": "LSP tsc skipped without tsconfig; AST tooling unavailable; no JS typecheck clearance claimed"
+  },
+  "capturedRedContracts": [
+    "Cancellation after selected judgment leaked broker admission and permanently blocked attempt513; request/session/turn cancellation now releases and aborts actual consumer; 514-turn regression passes",
+    "Oversized local JSON bypassed Jev at64KiB; bounded prefix reaches actual policy once with truncated snapshot and conservative current fallback",
+    "Subagent start captured raw text despite agent-step bypass; admission guard and injected same-ID regression now pass; untagged later-step runtime reachability not claimed",
+    "Inherited broker URL/token leaked through childEnvironment; explicit stripping regression passes",
+    "Rust new test referenced private sibling Fixture; isolated task-owned root repair compiled",
+    "Broadened is_session changed Claude availability environment; explicit Codex-only production guard restores existing assertion",
+    "Six PTY fixtures misclassified MINDPLAYER_CLAUDE_DIR as broker state; narrow MINDPLAYER_CLAUDE_JEV_ namespace corrected without weakening exact key or lifecycle assertions"
+  ],
+  "signalProbe": {
+    "reportedBy": "Independent architect",
+    "scope": "Actual owned process group + production launcher/broker/stager, synthetic native child; no native Claude inference",
+    "sequence": "SIGTERM group then SIGHUP leader with200ms forced-kill budget",
+    "cases": 2,
+    "elapsedMs": [
+      110,
+      109
+    ],
+    "forcedKill": false,
+    "remainingPidPortRoot": false
+  },
+  "earlierLiveJevPolicyProof": {
+    "scope": "Three bounded public prompts through real ClaudeJevPolicy, before latest no-inference instruction; TypeSafe provider, not Vercel Gateway or Claude inference",
+    "selections": [
+      {
+        "model": "claude-haiku-5-5",
+        "effort": "low"
+      },
+      {
+        "model": "claude-opus-5-5",
+        "effort": "high"
+      },
+      {
+        "model": "claude-haiku-5-5",
+        "effort": "low"
+      }
+    ],
+    "gatewayCostUsd": null,
+    "notProofOf": [
+      "Claude serving-model identity or effective inference effort",
+      "Quality equivalence",
+      "Cost savings"
+    ]
+  },
+  "cleanup": {
+    "installed": {
+      "claude": {
+        "rootFamily": "mp-smoke-6824-0..17",
+        "retainedDiagnosticRoots": 18,
+        "liveRecordedPids": 0,
+        "recordedPidsChecked": 108,
+        "liveParents": 0,
+        "parentsChecked": 13,
+        "openBrokerPorts": 0,
+        "brokerPortsChecked": 3,
+        "pluginRootsRemaining": 0,
+        "pluginRootsChecked": 3
+      },
+      "codex": {
+        "rootFamily": "mp-smoke-8471-0..6",
+        "retainedDiagnosticRoots": 7,
+        "liveUiPids": 0,
+        "uiPidsChecked": 7,
+        "liveBackendPids": 0,
+        "backendPidsChecked": 7,
+        "openProxyPorts": 0,
+        "proxyPortsChecked": 7,
+        "note": "Only routing.jsonl remains in seven task-owned audit directories"
+      },
+      "suitePidsGone": true,
+      "remainingMatchingProcesses": 0,
+      "reportedBy": "Independent test-engineer; final read-only audit exit0",
+      "deletionsOrKills": false
+    },
+    "sourceRed": {
+      "rootFamily": "mp-smoke-97991-0..17",
+      "retainedDiagnosticRoots": 18,
+      "recordedPidsLive": 0,
+      "recordedPidsChecked": 108,
+      "parentPidsLive": 0,
+      "parentPidsChecked": 13,
+      "brokerPortsOpen": 0,
+      "brokerPortsChecked": 3,
+      "pluginRootsRemaining": 0,
+      "pluginRootsChecked": 3
+    },
+    "sourceGreen": {
+      "rootFamily": "mp-smoke-600-0..17",
+      "retainedDiagnosticRoots": 18,
+      "recordedPidsLive": 0,
+      "recordedPidsChecked": 106,
+      "parentPidsLive": 0,
+      "parentPidsChecked": 13,
+      "brokerPortsOpen": 0,
+      "brokerPortsChecked": 3,
+      "pluginRootsRemaining": 0,
+      "pluginRootsChecked": 3,
+      "note": "Root600-6 has no event log; all six new lifecycle cases audited"
+    }
+  },
+  "untouched": {
+    "desktop": {
+      "files": 24,
+      "manifestSha256Before": "b9076097dadd60a17ce3da7623af4c88a007025924b0e20bc7f33652e7bbe3e3",
+      "manifestSha256After": "b9076097dadd60a17ce3da7623af4c88a007025924b0e20bc7f33652e7bbe3e3"
+    },
+    "realCredentialsOrLoginsChanged": false,
+    "globalClaudeSettingsOrPluginsChanged": false,
+    "dependenciesAdded": false,
+    "commitOrPush": false
+  },
+  "remainingRisks": [
+    "Claude native Mods is best-effort only when the extension is absent/crashed/timed out; Codex remains fail-closed",
+    "Reviewed model set requires manual renewal by deadline; model access/quality/cost are not guaranteed",
+    "Actual Claude provider inference and serving effort were not run; native contract tests use mocked engine boundaries",
+    "Existing live panes are not hot-switched by binary replacement"
+  ],
+  "installation": {
+    "path": "/Users/eden.jang/.local/bin/mindplayer",
+    "version": "mindplayer 0.55.12",
+    "sha256": "212fdaf7a08be7d6792427d76e96bb68256ce70cd5df1ad40162f76b6997c6e6",
+    "releaseSha256": "212fdaf7a08be7d6792427d76e96bb68256ce70cd5df1ad40162f76b6997c6e6",
+    "previousSha256": "391b1ee07a166a9b9300b8d3e3bd35599b5e45ceaf2367be49e7f0c8d77918fe",
+    "rollbackPath": "/Users/eden.jang/.local/bin/mindplayer-claude-jev-rollback.lSSrUb/mindplayer",
+    "rollbackSha256": "391b1ee07a166a9b9300b8d3e3bd35599b5e45ceaf2367be49e7f0c8d77918fe",
+    "method": "Verified regular targets and unchanged backup, exclusive staged copy+checksum, atomic rename; no version override, desktop build or running-pane shutdown",
+    "behavioralAcceptance": {
+      "passed": 23,
+      "failed": 0,
+      "sourceFixtureBoundary": "Real MindPlayer/PTY/launcher/broker/staging; synthetic provider CLI and offline judgment fixtures, not native Claude provider inference"
+    }
+  },
+  "verifiedAt": "2026-10-18T11:41:02Z"
+}

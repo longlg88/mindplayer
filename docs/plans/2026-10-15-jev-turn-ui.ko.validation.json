@@ -1,0 +1,154 @@
+{
+  "anonymization": {
+    "date": "2026-10-17",
+    "accounts": "Display labels use work-account/personal-account; identifier keys use work_account/personal_account.",
+    "paths": "Evidence paths are relative to the repository root; .. retains locations outside it. Historical commands anchor external paths at ${PWD}. Evidence was not copied or moved.",
+    "history": "Original timestamps, hashes, results and caveats are retained. Labels and paths are anonymized representations; historical verification does not attest to edited bytes or current live state."
+  },
+  "anonymizationVerification": {
+    "verifiedAt": "2026-10-17T14:21:32.228Z",
+    "artifact": "docs/plans/2026-10-15-jev-turn-ui.ko.html",
+    "sha256": "4a9e6d73e0b68961b343ce2705a65843c1bada24b03a06b446b1ec8596c1ad1d",
+    "command": "MINDPLAYER_PLAYWRIGHT_MODULE=${PWD}/../../../../../../.npm/_npx/e41f203b7505f1fb/node_modules/playwright node docs/tests/jev-turn-ui.test.cjs",
+    "exitCode": 0,
+    "browser": "155.0.8059.80",
+    "viewports": [
+      1440,
+      969,
+      390
+    ],
+    "normalStates": 10,
+    "exceptionStates": 4,
+    "externalRequests": 0,
+    "errors": 0,
+    "screenshots": "../../../../../../../../var/folders/t8/nkh_jkgj0db5bs30rywyn4gr0000gq/T/mindplayer-jev-turn-ui-1n9Mn0",
+    "defaultBrowserOpenCommand": "open docs/plans/2026-10-15-jev-turn-ui.ko.html",
+    "defaultBrowserOpenExitCode": 0,
+    "prototypeOnly": true,
+    "actualJevCalls": 0,
+    "changedFiles": [
+      "crates/mindplayer-tui/src/app/accounts_render_tests.rs",
+      "docs/account-isolation-2026-10-17.validation.json",
+      "docs/account-usage-rename-validation-2026-10-13.json",
+      "docs/codex-account-rename-recovery-2026-10-13.md",
+      "docs/codex-auth-recovery-2026-10-17.validation.json",
+      "docs/jev-decision-boundary-0.55.8.validation.json",
+      "docs/jev-gateway-0.55.7.validation.json",
+      "docs/jev-native-queue-0.55.10.validation.json",
+      "docs/jev-routing-lifecycle-0.55.9.validation.json",
+      "docs/jev-startup-retry-0.55.11.validation.json",
+      "docs/jev-turn-routing-0.55.6.validation.json",
+      "docs/model-routing-options.ko.validation.json",
+      "docs/plans/2026-10-15-jev-turn-ui.ko.html",
+      "docs/plans/2026-10-15-jev-turn-ui.ko.validation.json",
+      "docs/report/2026-10-16-jev-decision-boundary-topology.ko.validation.json",
+      "docs/startup-routing-2026-10-17.validation.json",
+      "docs/tests/jev-turn-ui.test.cjs",
+      "tools/local-model-router/jev-integration.validation.json",
+      "tools/local-model-router/mindplayer-integration.validation.json"
+    ],
+    "literalAudit": {
+      "matches": 0,
+      "rgExitCode": 1,
+      "excludedDirectories": [
+        ".git",
+        "target",
+        "node_modules",
+        ".omc",
+        ".omx"
+      ],
+      "runtimeStateEdited": false
+    },
+    "historicalDataPreservation": {
+      "jsonFiles": 15,
+      "unchangedPrimitiveValues": 812,
+      "historicalDatesAndHashes": 184,
+      "objects": 314,
+      "arrays": 168,
+      "externalPathRoundTrips": 65,
+      "unrelatedDirtyRecordsUnchanged": 5
+    },
+    "accountRenderingTests": {
+      "command": "env -u MINDPLAYER_LIMITS_HOME -u MINDPLAYER_CONVO_DIR -u MINDPLAYER_AUDIT -u MINDPLAYER_PROMPTS_DIR cargo test --offline --locked -p mindplayer-tui --bin mindplayer accounts_render_tests -- --test-threads=1",
+      "exitCode": 0,
+      "passed": 15,
+      "failed": 0
+    },
+    "syntaxAndFormatting": {
+      "commands": [
+        "node --check docs/tests/jev-turn-ui.test.cjs",
+        "rustfmt --check --edition 2021 crates/mindplayer-tui/src/app/accounts_render_tests.rs",
+        "git diff --check -- docs tools/local-model-router/*.validation.json crates/mindplayer-tui/src/app/accounts_render_tests.rs"
+      ],
+      "exitCodes": [
+        0,
+        0,
+        0
+      ]
+    },
+    "staticAnalysis": {
+      "command": "cargo clippy --offline --locked -p mindplayer-tui --all-targets -- -D warnings",
+      "exitCode": 101,
+      "error": "E0433: mindplayer_core::claude_auth is unresolved at crates/mindplayer-tui/src/app/account_auth.rs:120.",
+      "scope": "The production-only identity probe uses #[cfg(not(test))], so rendering unit tests do not cover this unresolved module. Provider integration source is outside sanitization ownership and was left untouched."
+    }
+  },
+  "schemaVersion": 1,
+  "verifiedAt": "2026-10-15T13:26:51.170Z",
+  "artifact": "docs/plans/2026-10-15-jev-turn-ui.ko.html",
+  "sha256": "a9e6f4d609081d12c0ec50f9c0db634d31f1dccdceb3ad6357242227cf2d6cbf",
+  "sourceRevision": "54529865aa69ef134c25b88a78c8139ce99b181f",
+  "dirty": true,
+  "changedFiles": [
+    "AGENTS.md",
+    "DESIGN.md",
+    "docs/plans/2026-10-15-jev-turn-ui.ko.html",
+    "docs/plans/2026-10-15-jev-turn-ui.ko.validation.json",
+    "docs/tests/jev-turn-ui.test.cjs"
+  ],
+  "scope": "UI prototype only; no runtime edits/build/install/commit/push",
+  "simplifications": [
+    "Reuse the original input surface and one existing model/status line.",
+    "No model picker, enable switch, fixed/automatic mode, popup, sidebar, new dependency or external asset.",
+    "All ordinary journey screens visible without disclosures; only rationale and implementation caveats collapsed."
+  ],
+  "alternativesCompared": [
+    "Existing model line: selected",
+    "Per-judgment transcript messages: rejected",
+    "Persistent routing side panel: rejected"
+  ],
+  "verification": {
+    "command": "MINDPLAYER_PLAYWRIGHT_MODULE=${PWD}/../../../../../../.npm/_npx/e41f203b7505f1fb/node_modules/playwright node docs/tests/jev-turn-ui.test.cjs",
+    "exitCode": 0,
+    "output": [
+      "PASS static: Korean, valid script/IDs, no remote dependency/transport/storage/credential patterns",
+      "PASS journey: 10 stages, compose-before-submit, per-turn B→A→B, stable session/account/CWD, keyboard",
+      "PASS states/layout: 4 exception states, 4+3 panes, one model-line change, full-width quota",
+      "PASS browser: 1440/969/390px, horizontal scrolling, reduced motion, external requests=0, errors=0"
+    ],
+    "syntaxCheck": "node --check docs/tests/jev-turn-ui.test.cjs: exit 0",
+    "whitespaceCheck": "git diff --check: exit 0",
+    "browser": "155.0.8059.80",
+    "screenshots": "../../../../../../../../var/folders/t8/nkh_jkgj0db5bs30rywyn4gr0000gq/T/mindplayer-jev-turn-ui-oMElyN",
+    "viewports": [1440, 969, 390],
+    "normalStates": [
+      "session-list", "enter-session", "compose", "judging", "model-requested",
+      "running", "completed", "followup-judging", "followup-other-model", "next-turn-new-selection"
+    ],
+    "exceptionStates": ["active-turn-instruction", "selection-failed", "executed-model-unverified", "interrupted"],
+    "externalRequests": 0,
+    "consoleErrors": 0,
+    "visualInspection": ["desktop-top.png", "desktop-storyboard.png", "969-top.png", "390-top.png"],
+    "defaultBrowserOpenCommand": "open docs/plans/2026-10-15-jev-turn-ui.ko.html",
+    "defaultBrowserOpenExitCode": 0
+  },
+  "remainingRisks": [
+    "Synthetic UI states and virtual model A/B are not real model-selection or execution evidence.",
+    "Native model-line rendering integration, executed-model receipts and queued-turn ownership still need implementation/validation.",
+    "The failure-state hold behavior is a UI proposal, not a change to the installed fallback policy.",
+    "Screenshot Git/CWD error and interruption are not diagnosed or fixed by this document."
+  ],
+  "actualJevCalls": 0,
+  "credentialsAccessed": false,
+  "runtimeModified": false
+}

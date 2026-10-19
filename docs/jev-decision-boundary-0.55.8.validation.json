@@ -1,0 +1,656 @@
+{
+  "anonymization": {
+    "date": "2026-10-17",
+    "accounts": "Display labels use work-account/personal-account; identifier keys use work_account/personal_account.",
+    "paths": "Evidence paths are relative to the repository root; .. retains locations outside it. Historical commands anchor external paths at ${PWD}. Evidence was not copied or moved.",
+    "history": "Original timestamps, hashes, results and caveats are retained. Labels and paths are anonymized representations; historical verification does not attest to edited bytes or current live state."
+  },
+  "schemaVersion": 1,
+  "date": "2026-10-16",
+  "status": "verified-local-install",
+  "source": {
+    "repository": ".",
+    "revision": "54529865aa69ef134c25b88a78c8139ce99b181f",
+    "dirty": true,
+    "version": "0.55.8",
+    "versionOverrideUsed": false,
+    "existingChangesPreserved": true,
+    "committed": false,
+    "pushed": false,
+    "changedFilesThisTask": [
+      "Cargo.toml",
+      "Cargo.lock",
+      "DESIGN.md",
+      "README.md",
+      "crates/mindplayer-tui/src/local_router.rs",
+      "crates/mindplayer-tui/tests/smoke.rs",
+      "tools/local-model-router/rubric.mjs",
+      "tools/local-model-router/rubric.test.mjs",
+      "tools/local-model-router/jev.mjs",
+      "tools/local-model-router/jev.test.mjs",
+      "tools/local-model-router/service.mjs",
+      "tools/local-model-router/service.test.mjs",
+      "tools/local-model-router/router.mjs",
+      "tools/local-model-router/router.test.mjs",
+      "tools/local-model-router/decision-boundary.test.mjs",
+      "tools/local-model-router/mindplayer-jev-fixture.mjs",
+      "tools/local-model-router/README.ko.md",
+      "docs/jev-decision-boundary-0.55.8.validation.json"
+    ],
+    "fileSha256": {
+      "Cargo.toml": "a1e73f73adeabed937e984013c244fedc422bd122d5d3d0c377fccb8a73e84fa",
+      "Cargo.lock": "926a8fec89eb288b69b67b7aa518b2a2652548fda6778f36f0ed183e68952cd8",
+      "README.md": "e4f79a1df5fc17a91a0ef9a6419a91e721f1e4bb3b9e0b48ee2f3aa456e4d885",
+      "DESIGN.md": "07a3bdcf075fcd51844b7181d3ddf6f43789c55b6ca3ff0df0a4518f426b3485",
+      "crates/mindplayer-tui/src/local_router.rs": "e0cf6c2f13b6e015ec1bea4aef9530d82b070cd004780364a376f4403f79e2de",
+      "crates/mindplayer-tui/tests/smoke.rs": "805b6b4fbb8bca4f731e2676ed3c24d5a559d8962bab2c2d4a531d4fae7e909e",
+      "tools/local-model-router/run.mjs": "e312e9c1ae0ccea1e894b4eea3f14a7149bbe02207b137cb1ca060130b3e0845",
+      "tools/local-model-router/launch.mjs": "7f4cfb58fc9396279c82769032d51023efb8ff1f6d90f10b93bad9d50d3f9999",
+      "tools/local-model-router/router.mjs": "8dd5e6821859b74cad9ce9a37c5ee696ac19df32f9d37767700ef3fb6fcac2dd",
+      "tools/local-model-router/proxy.mjs": "aa189600cb177d7804a05566124737885b95480c98aa91d49d614e52b3350bac",
+      "tools/local-model-router/app-server.mjs": "eb2b670ff29501af8aff632df57ec8fe0c6fef0c8f8bd0d19990b21d5767610e",
+      "tools/local-model-router/websocket.mjs": "0983d8e2db0449458738459e464705c00b9eccb0cd49e1e6f7b9340d84fb750f",
+      "tools/local-model-router/jev.mjs": "843ee699bbf707131f7c98525d62675ab39b59256b3ec5f6d9ed0ed39edf5b85",
+      "tools/local-model-router/rubric.mjs": "ad67447aaeb504b7bf65a4c7a5af34ad6beeb6eb700482b070e4f4672b2743d7",
+      "tools/local-model-router/system-fetch.mjs": "de8d17c6117c210413ccbddf851ba17767e11139f7f2bf14d9c45f64d47bec1e",
+      "tools/local-model-router/policy.mjs": "93aaef61373d5248ac9b32aa396260762595381b504db91b7df56d1f53f4e5a2",
+      "tools/local-model-router/service.mjs": "9deedaeb009b21925c7de605dffa7371429bd4796c525a0cea1961a1c78c5c4a",
+      "tools/local-model-router/status.mjs": "16d314426255803fa9ca6f3b94b120d7fd9c0574c70b1e15a39e2227fa01ec56",
+      "tools/local-model-router/jev.test.mjs": "c17057b6b2b5e3c64485ae53e0a655e57b7b44e0b21a4ddd07e10b74da4a0eea",
+      "tools/local-model-router/rubric.test.mjs": "eedb797e808f7154b56f45b666a52384ccc137b2796fbdf5e013347ee18e73bb",
+      "tools/local-model-router/decision-boundary.test.mjs": "95b46f20f65e3c0d6150ff0ac3fc3ef2bce61e7bf0bc942a9b9568a6d3410b5d",
+      "tools/local-model-router/router.test.mjs": "ef1ac713647c10c05a3deff3635f896a18dc3fc4b4d6dbbab659703901407fc2",
+      "tools/local-model-router/service.test.mjs": "d5fb9758f12ab11e6c28c9ce02943fdaabcc2b35f786e25b330d9e3d62f2d011",
+      "tools/local-model-router/mindplayer-jev-fixture.mjs": "673dc166d60a7cf9dd6d1c46cf39b6597e399c6f89fb37231216f3a95cf6be5b",
+      "tools/local-model-router/README.ko.md": "9ab29d385274a07a2d024154c097455b3e3385e3f6a55b1e702fe7eb96fbf1a7"
+    }
+  },
+  "approvedDesign": {
+    "path": "docs/report/2026-10-16-jev-decision-boundary-topology.ko.html",
+    "sha256": "42288e36028408aceefff228960d45265243d283bb8370ddcb4a31b0c84981a3",
+    "modifiedThisTask": false
+  },
+  "implementation": {
+    "rubricVersion": "mindplayer-capacity-v1",
+    "semanticDecisionOwner": "external Jev",
+    "configurationApplicationOwner": "MindPlayer validates and applies exact model/effort to the next native user turn",
+    "defaultState": "bounded current prompt + sanitized previous accepted same-thread judgment; no transcript paging",
+    "snapshotBytes": 8192,
+    "requestBytes": 32768,
+    "responseBytes": 65536,
+    "defaultDeadlineMs": 5000,
+    "fullBudgetRegressionBytes": 23588,
+    "testBudgetBytes": 24576,
+    "previousDecisionFields": [
+      "model",
+      "effort",
+      "capability",
+      "contextSufficient",
+      "highConsequence",
+      "turnOutcome"
+    ],
+    "previousDecisionPromotedOnlyOnMatchingStartAcknowledgment": true,
+    "turnOutcomeIsNotGoalCompletion": true,
+    "priorSurvivesCompaction": true,
+    "unknownAfterRestart": true,
+    "binding": [
+      "generation",
+      "account fingerprint",
+      "thread ownership/object",
+      "typed request ID",
+      "context revision",
+      "catalog revision",
+      "policy digest",
+      "rubric version"
+    ],
+    "empiricalPolicyUnchanged": true,
+    "originalInputThreadAccountCwdPermissionsPreserved": true,
+    "activeTurnPinned": true,
+    "toolOutputsAndSteersBypassJudgment": true,
+    "automaticUltraSelection": false,
+    "automaticRetry": false,
+    "newDependencies": 0,
+    "newUiControls": 0
+  },
+  "simplifications": [
+    "Reuse the existing native UI and local bridge; no PIM, summary agent, model picker or side panel.",
+    "Replace default recent-transcript collection/paging for judgment with a small accepted prior judgment.",
+    "Share versioned general rubric; configuration question carries its own full selection instructions because questions are independent."
+  ],
+  "alternatives": [
+    {
+      "option": "Capability classification then local grade mapping",
+      "decision": "Retain only the explicit evidence-backed policy path; not the default without measured profiles."
+    },
+    {
+      "option": "Jev direct Choice over eligible exact model/effort configurations",
+      "decision": "Selected; matches the approved design and existing bridge."
+    },
+    {
+      "option": "Per-candidate sufficiency/cost scoring",
+      "decision": "Deferred; needs calibrated evaluation and comparable cost evidence."
+    }
+  ],
+  "verification": [
+    {
+      "command": "node --test --test-concurrency=1 --test-reporter=tap tools/local-model-router/*.test.mjs",
+      "exitCode": 0,
+      "passed": 367,
+      "failed": 0
+    },
+    {
+      "command": "env -u MINDPLAYER_VERSION cargo test --offline --locked --workspace -q -- --test-threads=2",
+      "exitCode": 0,
+      "passed": 776,
+      "failed": 0,
+      "ignored": 7,
+      "groups": [
+        {
+          "passed": 193,
+          "ignored": 1
+        },
+        {
+          "passed": 3
+        },
+        {
+          "passed": 0,
+          "ignored": 1
+        },
+        {
+          "passed": 4
+        },
+        {
+          "passed": 18
+        },
+        {
+          "passed": 533,
+          "ignored": 3
+        },
+        {
+          "passed": 25,
+          "ignored": 2
+        }
+      ]
+    },
+    {
+      "command": "cargo fmt --all -- --check",
+      "exitCode": 0
+    },
+    {
+      "command": "cargo clippy --offline --locked --workspace --all-targets -- -D warnings",
+      "exitCode": 0
+    },
+    {
+      "command": "git diff --check",
+      "exitCode": 0
+    },
+    {
+      "command": "env -u MINDPLAYER_VERSION cargo build --offline --locked --release -p mindplayer-tui --target-dir target",
+      "exitCode": 0
+    },
+    {
+      "command": "MINDPLAYER_TEST_REAL_JEV=0 MINDPLAYER_TEST_BINARY=${PWD}/../../../../../../.local/bin/mindplayer cargo test --offline --locked -p mindplayer-tui --test smoke embedded_router -q -- --test-threads=1",
+      "exitCode": 0,
+      "passed": 2,
+      "failed": 0,
+      "assetByteComparisons": 12
+    },
+    {
+      "command": "MINDPLAYER_TEST_REAL_JEV=1 MINDPLAYER_TEST_BINARY=${PWD}/../../../../../../.local/bin/mindplayer cargo test --offline --locked -p mindplayer-tui --test smoke installed_binary_uses_current_jev_provider_for_consecutive_turns -- --ignored --exact --test-threads=1 --nocapture",
+      "exitCode": 0,
+      "passed": 1,
+      "paidJevCalls": 3,
+      "codexInference": false
+    }
+  ],
+  "review": {
+    "nullEffortRegression": "Reproduced failure before fix; router now sends explicit null and ACK retains it; the next prompt keeps the exact baseline/prior. Targeted test and reviewer recheck pass.",
+    "newBoundaryTests": 10,
+    "findingsRemaining": 0
+  },
+  "installedJev": {
+    "proofPath": "../../../../../../../../private/tmp/mindplayer-0558-verification.BPHUIy/live-proof.json",
+    "proofSha256": "e8cff5a516597d1e9726ea19c5b7f39e0f14c9632c7b4396569d70e9f8db1ef1",
+    "acceptedConfigurations": [
+      {
+        "cwd": "target/tmp/mp-smoke-43062-0/scope",
+        "effort": "low",
+        "label": "A",
+        "model": "fixture-simple",
+        "threadId": "codex-alfa-0001"
+      },
+      {
+        "cwd": "target/tmp/mp-smoke-43062-0/scope",
+        "effort": "low",
+        "label": "B",
+        "model": "fixture-simple",
+        "threadId": "codex-alfa-0001"
+      },
+      {
+        "cwd": "target/tmp/mp-smoke-43062-0/scope",
+        "effort": "low",
+        "label": "C",
+        "model": "fixture-simple",
+        "threadId": "codex-alfa-0001"
+      }
+    ],
+    "auditRoot": "target/tmp/mp-smoke-43062-0/router-audits",
+    "authenticatedJev": true,
+    "automaticRetries": 0,
+    "checkoutAssetsByteEqual": 12,
+    "codexInference": false,
+    "gatewayPhysicalVersionAttested": false,
+    "installedBinary": "../../../../../../.local/bin/mindplayer",
+    "judgments": [
+      {
+        "capability": "unknown",
+        "confidence": 0.97,
+        "contextSufficient": 0.11,
+        "event": "jev-judged",
+        "executionBilling": "subscription",
+        "executionCostUsd": null,
+        "gatewayCostUsd": null,
+        "highConsequence": 0.17,
+        "latencyMs": 331,
+        "policyVersion": null,
+        "provider": "typesafe",
+        "requestId": 3,
+        "rubricVersion": "mindplayer-capacity-v1",
+        "threadId": "codex-alfa-0001",
+        "time": "2026-10-16T03:32:45.192Z",
+        "usage": {
+          "inputTokens": 1859,
+          "outputTokens": 128
+        }
+      },
+      {
+        "capability": "unknown",
+        "confidence": 0.76,
+        "contextSufficient": 0.14,
+        "event": "jev-judged",
+        "executionBilling": "subscription",
+        "executionCostUsd": null,
+        "gatewayCostUsd": null,
+        "highConsequence": 0.17,
+        "latencyMs": 198,
+        "policyVersion": null,
+        "provider": "typesafe",
+        "requestId": 4,
+        "rubricVersion": "mindplayer-capacity-v1",
+        "threadId": "codex-alfa-0001",
+        "time": "2026-10-16T03:32:45.411Z",
+        "usage": {
+          "inputTokens": 1927,
+          "outputTokens": 128
+        }
+      },
+      {
+        "capability": "unknown",
+        "confidence": 0.99,
+        "contextSufficient": 0.11,
+        "event": "jev-judged",
+        "executionBilling": "subscription",
+        "executionCostUsd": null,
+        "gatewayCostUsd": null,
+        "highConsequence": 0.17,
+        "latencyMs": 258,
+        "policyVersion": null,
+        "provider": "typesafe",
+        "requestId": 5,
+        "rubricVersion": "mindplayer-capacity-v1",
+        "threadId": "codex-alfa-0001",
+        "time": "2026-10-16T03:32:45.722Z",
+        "usage": {
+          "inputTokens": 1924,
+          "outputTokens": 128
+        }
+      }
+    ],
+    "markerDirectory": "target/tmp/mp-smoke-43062-0/router-markers",
+    "previousDecisionBound": [
+      false,
+      true,
+      true
+    ],
+    "promptFirstContract": "request-metadata",
+    "provider": "typesafe",
+    "responses": [
+      {
+        "capability": "unknown",
+        "configuration": {
+          "choice": "c0",
+          "confidence": 0.9,
+          "effort": "low",
+          "model": "fixture-simple",
+          "probabilities": {
+            "c0": 0.95,
+            "c1": 0.05
+          }
+        },
+        "contextSufficient": 0.11,
+        "event": "response",
+        "highConsequence": 0.17,
+        "label": "A",
+        "model": "jev-1.13.0",
+        "provider": "typesafe",
+        "status": 200,
+        "usage": {
+          "inputTokens": 1859,
+          "outputTokens": 128
+        }
+      },
+      {
+        "capability": "unknown",
+        "configuration": {
+          "choice": "c0",
+          "confidence": 0.24,
+          "effort": "low",
+          "model": "fixture-simple",
+          "probabilities": {
+            "c0": 0.62,
+            "c1": 0.38
+          }
+        },
+        "contextSufficient": 0.14,
+        "event": "response",
+        "highConsequence": 0.17,
+        "label": "B",
+        "model": "jev-1.13.0",
+        "provider": "typesafe",
+        "status": 200,
+        "usage": {
+          "inputTokens": 1927,
+          "outputTokens": 128
+        }
+      },
+      {
+        "capability": "unknown",
+        "configuration": {
+          "choice": "c0",
+          "confidence": 0.86,
+          "effort": "low",
+          "model": "fixture-simple",
+          "probabilities": {
+            "c0": 0.93,
+            "c1": 0.07
+          }
+        },
+        "contextSufficient": 0.11,
+        "event": "response",
+        "highConsequence": 0.17,
+        "label": "C",
+        "model": "jev-1.13.0",
+        "provider": "typesafe",
+        "status": 200,
+        "usage": {
+          "inputTokens": 1924,
+          "outputTokens": 128
+        }
+      }
+    ],
+    "rubricVersion": "mindplayer-capacity-v1",
+    "schemaVersion": 1,
+    "syntheticTurns": 3,
+    "version": "mindplayer 0.55.8"
+  },
+  "representativeExamples": {
+    "provider": "typesafe",
+    "rubricVersion": "mindplayer-capacity-v1",
+    "syntheticCatalog": true,
+    "codexInference": false,
+    "automaticRetries": 0,
+    "caseCount": 12,
+    "retainCount": 7,
+    "switchCount": 5,
+    "underCapacityRate": null,
+    "qualityOrCostGuarantee": false,
+    "rows": [
+      {
+        "id": "design-ko",
+        "language": "ko",
+        "prompt": "설계안을 만들어줘. 새 서비스의 데이터 일관성 요구와 여러 설계 대안의 트레이드오프를 비교해서 아직 정해지지 않은 접근법을 제안해.",
+        "model": "fixture-complex",
+        "effort": "high",
+        "reason": "catalog-guided-jev",
+        "changed": false,
+        "capability": "open_problem",
+        "contextSufficient": 0.36,
+        "highConsequence": 0.25,
+        "usage": {
+          "inputTokens": 1965,
+          "outputTokens": 129
+        },
+        "latencyMs": 261
+      },
+      {
+        "id": "design-en",
+        "language": "en",
+        "prompt": "Create a design document by filling the supplied approved template with these fixed facts: one process, one local file, no networking. Do not invent architecture.",
+        "model": "fixture-simple",
+        "effort": "low",
+        "reason": "catalog-guided-jev",
+        "changed": true,
+        "capability": "bounded_routine",
+        "contextSufficient": 0.23,
+        "highConsequence": 0.09,
+        "usage": {
+          "inputTokens": 1942,
+          "outputTokens": 131
+        },
+        "latencyMs": 193
+      },
+      {
+        "id": "line-ko",
+        "language": "ko",
+        "prompt": "이 line이 잘못됐으니까 수정해. 명시된 정답대로 return 2 + 2를 return 4로 바꾸고 다른 줄은 바꾸지 마.",
+        "model": "fixture-simple",
+        "effort": "low",
+        "reason": "catalog-guided-jev",
+        "changed": true,
+        "capability": "bounded_routine",
+        "contextSufficient": 0.38,
+        "highConsequence": 0.06,
+        "usage": {
+          "inputTokens": 1954,
+          "outputTokens": 131
+        },
+        "latencyMs": 177
+      },
+      {
+        "id": "line-en",
+        "language": "en",
+        "prompt": "Fix this incorrect line in a concurrent data-store transaction: the correct locking order is unknown. Investigate deadlock and data-integrity implications before proposing a fix.",
+        "model": "fixture-complex",
+        "effort": "high",
+        "reason": "catalog-guided-jev",
+        "changed": false,
+        "capability": "open_problem",
+        "contextSufficient": 0.15,
+        "highConsequence": 0.72,
+        "usage": {
+          "inputTokens": 1948,
+          "outputTokens": 129
+        },
+        "latencyMs": 174
+      },
+      {
+        "id": "pr-ko",
+        "language": "ko",
+        "prompt": "개발 다하고 PR 만들어. 여러 컴포넌트의 연동 방식은 아직 결정되지 않았고 개발, 통합 검증, 변경 조정까지 남아 있어.",
+        "model": "fixture-complex",
+        "effort": "high",
+        "reason": "catalog-guided-jev",
+        "changed": false,
+        "capability": "open_problem",
+        "contextSufficient": 0.19,
+        "highConsequence": 0.27,
+        "usage": {
+          "inputTokens": 1957,
+          "outputTokens": 129
+        },
+        "latencyMs": 259
+      },
+      {
+        "id": "pr-en",
+        "language": "en",
+        "prompt": "Create only the PR using this ready diff and the supplied fixed title and body. Development and required tests are already complete according to this explicit current request; do no further development.",
+        "model": "fixture-simple",
+        "effort": "low",
+        "reason": "catalog-guided-jev",
+        "changed": true,
+        "capability": "bounded_routine",
+        "contextSufficient": 0.28,
+        "highConsequence": 0.23,
+        "usage": {
+          "inputTokens": 1947,
+          "outputTokens": 131
+        },
+        "latencyMs": 212
+      },
+      {
+        "id": "deploy-ko",
+        "language": "ko",
+        "prompt": "머지된 거 확인했으면 릴리즈를 만들어 프로덕션에 배포해. 프로덕션 영향과 롤백 조건을 확인해야 하며 모델 선택이 배포 권한을 주지는 않아.",
+        "model": "fixture-complex",
+        "effort": "high",
+        "reason": "catalog-guided-jev",
+        "changed": false,
+        "capability": "multistep_coordination",
+        "contextSufficient": 0.25,
+        "highConsequence": 0.92,
+        "usage": {
+          "inputTokens": 1970,
+          "outputTokens": 134
+        },
+        "latencyMs": 186
+      },
+      {
+        "id": "deploy-en",
+        "language": "en",
+        "prompt": "After verifying the merge, release and deploy to production using an established runbook. Consider production failure impact and recovery burden; selection does not grant deployment authorization.",
+        "model": "fixture-complex",
+        "effort": "high",
+        "reason": "catalog-guided-jev",
+        "changed": false,
+        "capability": "multistep_coordination",
+        "contextSufficient": 0.16,
+        "highConsequence": 0.83,
+        "usage": {
+          "inputTokens": 1943,
+          "outputTokens": 134
+        },
+        "latencyMs": 185
+      },
+      {
+        "id": "report-ko",
+        "language": "ko",
+        "prompt": "daily report 작성해. 오늘 끝낸 일은 A와 B, 내일 할 일은 C야. 이 세 사실만 주어진 템플릿의 완료/예정 두 항목으로 정리해. 자료 수집이나 원인 분석은 하지 마.",
+        "model": "fixture-simple",
+        "effort": "low",
+        "reason": "catalog-guided-jev",
+        "changed": true,
+        "capability": "bounded_routine",
+        "contextSufficient": 0.75,
+        "highConsequence": 0.05,
+        "usage": {
+          "inputTokens": 1974,
+          "outputTokens": 131
+        },
+        "latencyMs": 206
+      },
+      {
+        "id": "report-en",
+        "language": "en",
+        "prompt": "Write a daily report by gathering information from several sources, resolving contradictory accounts, and investigating unresolved causes before synthesizing the report.",
+        "model": "fixture-complex",
+        "effort": "high",
+        "reason": "catalog-guided-jev",
+        "changed": false,
+        "capability": "open_problem",
+        "contextSufficient": 0.31,
+        "highConsequence": 0.17,
+        "usage": {
+          "inputTokens": 1939,
+          "outputTokens": 129
+        },
+        "latencyMs": 258
+      },
+      {
+        "id": "incident-ko",
+        "language": "ko",
+        "prompt": "장애 분석해. 원인은 아직 모르고 여러 가설이 경쟁하며 데이터 손실과 프로덕션 영향 범위도 불명확해. 증거를 비교해서 원인과 불확실성을 조사해.",
+        "model": "fixture-complex",
+        "effort": "high",
+        "reason": "catalog-guided-jev",
+        "changed": false,
+        "capability": "open_problem",
+        "contextSufficient": 0.35,
+        "highConsequence": 0.77,
+        "usage": {
+          "inputTokens": 1969,
+          "outputTokens": 129
+        },
+        "latencyMs": 167
+      },
+      {
+        "id": "incident-en",
+        "language": "en",
+        "prompt": "Summarize this already established incident analysis without new investigation: a cache timeout caused five minutes of delayed noncritical reports; no data was lost; retry resolved it. Use exactly those facts.",
+        "model": "fixture-simple",
+        "effort": "low",
+        "reason": "catalog-guided-jev",
+        "changed": true,
+        "capability": "bounded_routine",
+        "contextSufficient": 0.91,
+        "highConsequence": 0.09,
+        "usage": {
+          "inputTokens": 1951,
+          "outputTokens": 131
+        },
+        "latencyMs": 192
+      }
+    ],
+    "method": "12 distinct synthetic text requests through JevService/rubric extracted from the verified installed binary. Each starts independently at fixture-complex/high, no policy or prior; one actual Jev call each, no retry. Not native Codex inference or an evaluation of real model performance.",
+    "retentionRate": 0.5833333333333334,
+    "modelPerformanceGroundTruthAvailable": false,
+    "qualityPassThreshold": null
+  },
+  "installation": {
+    "path": "../../../../../../.local/bin/mindplayer",
+    "version": "mindplayer 0.55.8",
+    "builtAndInstalledSha256": "6ca7b398b15a1a4634bf38e0d2919c2ca8cfdfe6abc6bf9ac286ef579c084752",
+    "rollbackPath": "../../../../../../.mindplayer/mindplayer-rollback-0557.SKanrE/mindplayer",
+    "rollbackVersion": "mindplayer 0.55.7",
+    "rollbackSha256": "4d7867b6b07aa2feaa9693370c103f20e6c735c82c4a04c1e6d92c73890dc344",
+    "replacement": "source build, private staged file, byte comparison, rename"
+  },
+  "security": {
+    "credentialsPrinted": false,
+    "credentialProviderChanged": false,
+    "privateCredentialCopyRemovedOnTeardown": true,
+    "tlsVerificationPreserved": true,
+    "secretsScan": {
+      "credentialCount": 1,
+      "filesScanned": 37,
+      "credentialLeaks": 0,
+      "sourceHashMismatches": [],
+      "approvedDesignUnchanged": true,
+      "stagedCredentialRemoved": true,
+      "valuesPrinted": false
+    }
+  },
+  "officialReferences": [
+    "https://docs.typesafe.ai/llms.txt",
+    "https://docs.typesafe.ai/api",
+    "https://docs.typesafe.ai/primitives/choice",
+    "https://docs.typesafe.ai/concepts/state",
+    "https://docs.typesafe.ai/cookbooks/function_calling"
+  ],
+  "remainingRisks": [
+    "This turn verified the currently selected TypeSafe provider, not a new live Gateway run. Existing verified macOS Gateway transport and rounded-configuration guard remain unchanged.",
+    "Catalog choices are description-based. The 12 examples observe routing, not calibrated accuracy, under-capacity risk, actual model quality, price or subscription savings.",
+    "Codex UI/backend in installed PTY verification are synthetic. Requested configuration and native-style start acknowledgment are not physical serving-model/effort attestation.",
+    "Small prior judgments do not recover missing facts or full history. Absent or invalid prior state stays unknown; ambiguous/truncated/attached input may preserve baseline.",
+    "State is scoped to a bridge process. Existing running MindPlayer/panes keep old assets; restart MindPlayer and reopen the pane for this installation."
+  ]
+}

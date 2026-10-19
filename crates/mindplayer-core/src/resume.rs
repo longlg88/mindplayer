@@ -245,10 +245,35 @@ pub fn relogin(cwd: PathBuf, account: &Account) -> Result<Command, String> {
 /// holds whichever account the sign-in lands on. If the sign-in is abandoned the
 /// session never starts, because the two are joined with `&&`.
 pub fn login_then_start(cwd: PathBuf, account: &Account) -> Command {
+    let start = new_session(account.provider, cwd, account);
+    login_then_start_with(account, start)
+}
+
+/// Keep sign-in native, then hand over to the caller's prepared session
+/// command. The TUI uses this to route a fresh account's first conversation
+/// through the same local bridge as every other Codex session.
+pub fn login_then_start_with(account: &Account, start: Command) -> Command {
+    fn shell_word(value: &str) -> String {
+        if !value.is_empty()
+            && value
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"-/_=.".contains(&b))
+        {
+            value.into()
+        } else {
+            format!("'{}'", value.replace('\'', "'\\''"))
+        }
+    }
+    let cwd = start.cwd;
     let agent = account.provider;
     let program = agent.program();
     let login_args = login(agent, cwd.clone(), account).args.join(" ");
-    let start_args = new_session(agent, cwd.clone(), account).args.join(" ");
+    let start_args = start
+        .args
+        .iter()
+        .map(|s| shell_word(s))
+        .collect::<Vec<_>>()
+        .join(" ");
     // Printed first so it sits right above the sign-in link; the hint has no single quote to escape.
     // The chooser goes first so the browser is on it before the sign-in link
     // opens; `command -v` keeps the line quiet where `open` is not a thing.
@@ -261,7 +286,7 @@ pub fn login_then_start(cwd: PathBuf, account: &Account) -> Command {
         chooser,
         program,
         login_args,
-        program,
+        shell_word(&start.program),
         start_args
     );
     Command {
@@ -525,14 +550,34 @@ mod tests {
     }
 
     #[test]
-    fn the_existing_non_codex_login_launches_with_no_environment_change() {
-        for agent in [Agent::Claude, Agent::Kiro, Agent::Cursor] {
+    fn providers_without_a_required_identity_probe_keep_the_native_environment() {
+        for agent in [Agent::Kiro, Agent::Cursor] {
             let c = new_session(agent, PathBuf::from("/here"), &Account::inherited(agent));
             assert!(
                 c.env.is_empty(),
                 "{} gained an env it did not need",
                 agent.as_str()
             );
+        }
+    }
+
+    #[test]
+    fn inherited_claude_keeps_the_native_vault_and_clears_ambient_credentials() {
+        let account = Account::inherited(Agent::Claude);
+        for command in [
+            new_session(Agent::Claude, PathBuf::from("/here"), &account),
+            login(Agent::Claude, PathBuf::from("/here"), &account),
+        ] {
+            assert_eq!(command.env, account.launch_env());
+            assert!(command.env.set.is_empty());
+            for key in [
+                "CLAUDE_CONFIG_DIR",
+                "CLAUDE_SECURESTORAGE_CONFIG_DIR",
+                "ANTHROPIC_API_KEY",
+                "CLAUDE_CODE_OAUTH_TOKEN",
+            ] {
+                assert!(command.env.unset.iter().any(|name| name == key));
+            }
         }
     }
 
@@ -650,6 +695,38 @@ mod tests {
             !out.contains("stub start"),
             "a session started although the sign-in failed:\n{out}"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn prepared_launch_runs_after_login_without_shell_interpreting_its_arguments() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join("claude");
+        std::fs::write(&bin, "#!/bin/sh\nprintf 'login-finished\\n'\n").unwrap();
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let account = Account::inherited(Agent::Claude);
+        let literal = "한글 ' $(printf SHOULD_NOT_RUN) $PATH ; a folder";
+        let start = Command {
+            program: "/bin/sh".into(),
+            args: vec![
+                "-c".into(),
+                "printf '<%s>\\n' \"$@\"".into(),
+                "--".into(),
+                literal.into(),
+            ],
+            cwd: dir.path().to_path_buf(),
+            env: account.launch_env(),
+        };
+        let command = login_then_start_with(&account, start);
+        let output = std::process::Command::new(&command.program)
+            .args(&command.args)
+            .env("PATH", format!("{}:/usr/bin:/bin", dir.path().display()))
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        assert!(String::from_utf8_lossy(&output.stdout)
+            .ends_with(&format!("login-finished\n<{literal}>\n")));
     }
 }
 

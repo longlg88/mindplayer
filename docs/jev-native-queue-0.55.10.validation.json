@@ -1,0 +1,199 @@
+{
+  "anonymization": {
+    "date": "2026-10-17",
+    "accounts": "Display labels use work-account/personal-account; identifier keys use work_account/personal_account.",
+    "paths": "Evidence paths are relative to the repository root; .. retains locations outside it. Historical commands anchor external paths at ${PWD}. Evidence was not copied or moved.",
+    "history": "Original timestamps, hashes, results and caveats are retained. Labels and paths are anonymized representations; historical verification does not attest to edited bytes or current live state."
+  },
+  "schemaVersion": 1,
+  "validatedAt": "2026-10-16T08:28:21Z",
+  "status": "locally-installed-and-behaviorally-verified",
+  "version": "0.55.10",
+  "scope": "MindPlayer integrated Codex UI; each ordinary prompt, including input entered while busy, receives a fresh Jev decision before its own native turn starts with both model and effort",
+  "source": {
+    "repository": ".",
+    "head": "54529865aa69ef134c25b88a78c8139ce99b181f",
+    "dirty": true,
+    "builtFromUncommittedWorkingTree": true,
+    "preexistingUserChangesPreserved": true,
+    "versionFromCargoSource": true,
+    "environmentVersionOverrideUsed": false,
+    "committed": false,
+    "pushed": false,
+    "frozenAssetsSha256": {
+      "tools/native-codex/queue.patch": "1ab5ebea38506b2a76729050311e684edc35ba375880213395c22e1de8fec033",
+      "tools/local-model-router/run.mjs": "80f56ba40ff28937e1c7d405161fcb0775ead5070f55c5540298fb561d3c17fc",
+      "tools/local-model-router/router.mjs": "af3a93c8d91608b05b134aacaacf2b9a6dd0cce2d3672ba31eedc34c0c2cb6ef",
+      "tools/local-model-router/service.mjs": "40521142860f2b3548d8cb2670e5af65496a7438e7d900593ff3cd67012003f4",
+      "tools/local-model-router/private-ui.mjs": "e3377503b4b94e4607c67dd90e0e257ff891a7d2844b47ee56565ff398406133",
+      "tools/local-model-router/jev.mjs": "8d64fee0fcd075bd3663879b69b88a9c29f49f9a7654f1bde38cdd499748b9ee"
+    }
+  },
+  "installation": {
+    "sourceBinary": "target/release/mindplayer",
+    "installedBinary": "../../../../../../.local/bin/mindplayer",
+    "pathLookup": "../../../../../../.local/bin/mindplayer",
+    "versionOutput": "mindplayer 0.55.10",
+    "sourceAndInstalledSha256": "ce15dfcc0798772c5574f3c119c0f4053fe6913bfddbe6656079ea6340705ff5",
+    "rollback": {
+      "version": "0.55.9",
+      "preservedBeforeReplacement": true,
+      "binary": "../../../../../../.mindplayer/mindplayer-rollback-0559.zILd0G/mindplayer",
+      "sha256": "9a2b14c704dcbab0545d01bbd16ba0e27d1df05c7863daa3b82bf3c3e774e853"
+    },
+    "existingProcessesAndPanesReplaced": false,
+    "activation": "Use the newly installed MindPlayer executable and reopen the Codex pane; already running processes retain their original executable and behavior."
+  },
+  "privateCodex": {
+    "upstreamTag": "rust-v0.162.1",
+    "sourceRevision": "092d3acd6bec3e3a14bdc7e7a2810ab628ab759d",
+    "contract": "mindplayer-native-queue-v1",
+    "version": "0.162.1",
+    "buildProfile": "dev-small",
+    "rustToolchain": "1.95.0 isolated under the task temporary directory; global toolchain unchanged",
+    "newDependenciesAdded": false,
+    "lockfileNormalization": "Only pinned local workspace versions 0.0.0 to 0.162.1; no external dependency or checksum changes",
+    "activeManifest": "../../../../../../.mindplayer/native-codex/active.json",
+    "manifestSchemaVersion": 1,
+    "manifestFields": ["schemaVersion", "sourceRevision", "contract", "version", "binarySha256", "binary", "codeModeHostSha256", "codeModeHost"],
+    "binary": "../../../../../../.mindplayer/native-codex/builds/132c98b3d8c4fc39a1a4c337ce24e67f837d65ae39312c72812607d00c4e45a0/codex",
+    "binarySha256": "132c98b3d8c4fc39a1a4c337ce24e67f837d65ae39312c72812607d00c4e45a0",
+    "cliBuiltFromPinnedPatchedSource": true,
+    "codeModeHost": {
+      "binary": "../../../../../../.mindplayer/native-codex/builds/132c98b3d8c4fc39a1a4c337ce24e67f837d65ae39312c72812607d00c4e45a0/codex-code-mode-host",
+      "sha256": "0960435a104cf926e18bb938b8f6f8fcdf7e27be0c8d88e1911bc22a1de7d3e6",
+      "origin": "explicit-official-prebuilt",
+      "officialPackageVersion": "0.162.1",
+      "originalBinary": "../../../../../../../../opt/homebrew/lib/node_modules/@openai/codex/node_modules/@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/bin/codex-code-mode-host",
+      "originalUnchanged": true,
+      "sourceBuildAttested": false,
+      "sourceBuildGap": "Pinned upstream rusty_v8 150.4.0 archive returned HTTP 404; copied the existing matching official npm host into the private runtime instead of changing dependencies or omitting the host",
+      "upstreamHostStdioSuiteRun": false,
+      "compatibilityVerifiedByActualNativeToolExecution": true
+    },
+    "runtimeValidation": "Both sibling executables require exact hashes, safe owned regular executable files and private paths; revision/version/contract validated; missing or altered runtime fails closed without global Codex fallback",
+    "permissions": {"directoriesAndExecutables": "0700", "activeManifest": "0600"},
+    "globalCodex": {
+      "path": "../../../../../../../../opt/homebrew/bin/codex",
+      "version": "0.162.1",
+      "sha256": "61b0194f3bb6534439c8d26a3ed57d0805f84b884588b761795323eeb92fcf70",
+      "unchanged": true
+    }
+  },
+  "behavior": {
+    "ordinaryBusyEnter": "Separate native queue entries, each submitted once after successful prior completion; no merged steer",
+    "newTurnAtomicity": "mindplayerRequireNewTurn uses existing Core start_turn_if_idle; active collision rejects before input or settings mutation",
+    "modelAndEffort": "Both top-level request and collaboration settings updated together and compared with durable native turn_context",
+    "failedInterruptedOrRejectedQueue": "Retained as individual paused inputs; no automatic release or replay",
+    "preserved": ["idle !shell", "Esc", "approval response semantics", "input order and identity", "account isolation", "native permissions", "tool output and explicit steering", "existing panes", "global Codex installation"],
+    "ownership": "Accepted same-thread lifecycle ownership plus explicit local native picker provenance; helpers/subagents/ephemeral excluded; stale ACK cannot resurrect invalidated ownership",
+    "notImplemented": ["held-steer RPC", "fake successful ACK", "error-disguised queue", "global Enter rebinding", "automatic prompt replay", "silent baseline/global-runtime fallback"]
+  },
+  "finalInstalledLive": {
+    "log": "../../../../../../../../private/tmp/mindplayer-native-codex.MFgZts/live-installed-ship.log",
+    "command": "Explicit opt-in native-ui-live.test.mjs with MINDPLAYER_TEST_BINARY=${PWD}/../../../../../../.local/bin/mindplayer and the verified private CLI/host paths",
+    "passed": 14,
+    "failed": 0,
+    "skipped": 0,
+    "unitCases": 13,
+    "actualIntegrationCases": 1,
+    "launcher": "installed MindPlayer embedded router; actual scope picker, new Codex pane and native composer",
+    "installedBinarySha256": "ce15dfcc0798772c5574f3c119c0f4053fe6913bfddbe6656079ea6340705ff5",
+    "provider": "typesafe",
+    "actualJevTransports": 2,
+    "actualNativeInference": true,
+    "secondInputEnteredWhileFirstCommandActive": true,
+    "nativeQueueNotProxyQueue": true,
+    "privateCodeModeHostObserved": true,
+    "normalNativeShutdownBeforeForcedCleanup": true,
+    "servingAttestation": false,
+    "toolScope": "A single sleep 5 command in an isolated owned working directory; no tool-driven file operations, unrelated tools or network commands",
+    "observation": "Passive diagnostics_channel and native input/output observation; no mocked Jev, native inference, fetch response or selected settings",
+    "durableRolloutModelEffortMatched": true,
+    "proof": [
+      {
+        "requestId": 7,
+        "threadId": "01a143d0-cb6c-7463-8960-077fee15d063",
+        "turnId": "01a143d0-ced9-7512-a241-581b140abaab",
+        "model": "gpt-6.1-sol",
+        "effort": "medium",
+        "mindplayerRequireNewTurn": true,
+        "collaborationModel": "gpt-6.1-sol",
+        "collaborationEffort": "medium",
+        "status": "completed"
+      },
+      {
+        "requestId": 8,
+        "threadId": "01a143d0-cb6c-7463-8960-077fee15d063",
+        "turnId": "01a143d1-0514-7c50-9ade-9d5f969857e9",
+        "model": "gpt-6.1-sol",
+        "effort": "medium",
+        "mindplayerRequireNewTurn": true,
+        "collaborationModel": "gpt-6.1-sol",
+        "collaborationEffort": "medium",
+        "status": "completed"
+      }
+    ]
+  },
+  "regressions": {
+    "javascriptFinal": {"passed": 457, "failed": 0, "optInSkipped": 24, "log": "../../../../../../../../private/tmp/mindplayer-native-codex.MFgZts/node-ship-final.log"},
+    "rustFinalSerial": {"passed": 787, "failed": 0, "ignored": 7, "log": "../../../../../../../../private/tmp/mindplayer-native-codex.MFgZts/rust-ship-final.log"},
+    "exactInstalledSmoke": {"passed": 4, "failed": 0, "log": "../../../../../../../../private/tmp/mindplayer-native-codex.MFgZts/installed-smoke-ship.log"},
+    "privateRuntimeResolver": {"passed": 53, "failed": 0, "log": "../../../../../../../../private/tmp/mindplayer-native-codex.MFgZts/private-host-tests.log"},
+    "nativeRealPtySyntheticBackend": {"passed": 16, "failed": 0, "experimentalSkipped": 5, "unknownMethods": 0, "log": "../../../../../../../../private/tmp/mindplayer-native-codex.MFgZts/native-pty-installed-pair.log", "scope": "Real installed private UI and keymap, synthetic backend/Jev; not inference evidence"},
+    "pinnedSourceTests": {"nativeTuiPassed": 25, "protocolPassed": 3, "actualCoreAtomicityPassed": 1, "log": "../../../../../../../../private/tmp/mindplayer-native-codex.MFgZts/complete-build.log", "fullUpstreamSuiteRun": false},
+    "jevFocused": {"passed": 125, "failed": 0, "log": "../../../../../../../../private/tmp/mindplayer-native-codex.MFgZts/direct-rounding-green.log", "regressionFailedBeforeFix": true},
+    "format": "cargo fmt --all -- --check passed",
+    "clippy": "cargo clippy --workspace --all-targets --locked -- -D warnings passed",
+    "javascriptSyntax": "All local-model-router and native-codex .mjs syntax checks passed",
+    "javascriptSyntaxFiles": 36,
+    "whitespace": "git diff --check passed",
+    "receiptConsistency": "Source/runtime/installed/rollback hashes, actual installed version, exact live proof and removal of isolated authentication home verified",
+    "documentationSecretScan": "Saved Jev key checked for literal occurrence in final receipt and changed design/readme documents; none found; key never printed"
+  },
+  "liveDiscoveredFixesAndLimits": [
+    "The private CLI requires its matching Code Mode host for real model tool execution; CLI-only synthetic testing was insufficient. Both are now installed and validated.",
+    "The actual direct TypeSafe configuration Choice can contain cent-rounded probabilities with a sum of 0.99 or 1.01. The existing Gateway-only guard now applies to both providers only for configuration selection: cent-quantized values, feasible unit mass, invariant unique winner across rounding intervals; raw probabilities preserved. Capability Choice, Nouls and quality/cost policy checks remain strict. No normalization or retry.",
+    "Test fixture corrections use the actual available baseline, native rename before the test to avoid an ephemeral title helper, actual unifiedExecStartup tool origin, and a passive observer that does not instrument unrelated Node quota probes. These are not production fallback paths.",
+    "The final passive installed live gate contains no temporary response-clone diagnostic wrapper. Prior failed attempts and source-only successes are not substituted for final installed evidence.",
+    "Final full suites were run against frozen production assets. Earlier parallel deadline flakes and changing embedded asset snapshots are not counted as passes."
+  ],
+  "changedFileGroups": [
+    {"files": ["Cargo.toml", "Cargo.lock"], "purpose": "Source version 0.55.10"},
+    {"files": ["tools/native-codex/queue.patch", "tools/native-codex/build.mjs", "tools/native-codex/README.ko.md"], "purpose": "Pinned private native input queue, atomic new-turn contract, reproducible runtime pair and honest host origin"},
+    {"files": ["tools/local-model-router/run.mjs", "tools/local-model-router/proxy.mjs", "tools/local-model-router/router.mjs", "tools/local-model-router/service.mjs", "tools/local-model-router/private-ui.mjs", "tools/local-model-router/jev.mjs", "tools/local-model-router/README.ko.md"], "purpose": "Verified private launch, request ownership/lifecycle, atomic model-plus-effort submission and narrowly guarded configuration probabilities"},
+    {"files": ["crates/mindplayer-tui/src/local_router.rs", "crates/mindplayer-tui/tests/smoke.rs", "tools/local-model-router/*.test.mjs", "tools/local-model-router/native-queue-fixture.mjs", "tools/local-model-router/native-queue-pty.py"], "purpose": "Embedded asset and regression coverage, real native PTY and actual installed Jev/inference verification"},
+    {"files": ["DESIGN.md", "README.md", "docs/jev-native-queue-0.55.10.validation.json"], "purpose": "Completed behavior, installation evidence and explicit limits"}
+  ],
+  "simplifications": [
+    "Use the native UI queue and existing Core idle-only start instead of a second proxy queue, synthetic lifecycle ACKs, held steering or key rebinding.",
+    "Resolve one verified private executable for UI, probe and backend instead of selecting separate PATH versions.",
+    "Reuse the existing bounded configuration rounding guard for both providers; do not add a probability normalization, retry or dependency layer."
+  ],
+  "privacy": {
+    "apiKeyPrintedOrEmbeddedInReceipt": false,
+    "authCopiedOnlyIntoIsolatedOptInTestHome": true,
+    "testAuthAndTemporarySessionHomeCleaned": true,
+    "existingAccountHomesAndTranscriptsUnmodifiedByTest": true,
+    "noRawApiResponseOrUserPromptLoggedInReceipt": true,
+    "networkIsolationClaimed": false
+  },
+  "remainingRisks": [
+    "This proves selected and persisted native model/effort settings, not a server-internal serving attestation or measured quality/cost savings.",
+    "Actual live inference covered one available model/effort pair and two turns. Cross-model/effort changes, queue collisions and approvals have deterministic regression coverage, not exhaustive live-provider coverage.",
+    "The private native patch is pinned to upstream 0.162.1 and must be rebased and reverified on upgrades; its local dev-small CLI is not an optimized distribution build.",
+    "The matching official prebuilt Code Mode host was compatibility-tested through actual tool execution, but its pinned source build and upstream host stdio suite were unavailable because the V8 artifact returned 404.",
+    "Existing MindPlayer processes/panes are not hot-patched. Claude/Kiro/Cursor are outside this private Codex queue change.",
+    "Default suites intentionally skip credential-consuming and experimental opt-ins; the specific real Jev/native and installed smoke gates listed above were run separately."
+  ],
+  "workflow": {
+    "skills": ["openai-docs", "typesafe-ai", "code-review"],
+    "influence": "Pinned native API/typed Choice boundaries and independent architecture/code reviews; no invented serving attestation or relaxed evidence-backed quality policy",
+    "independentReview": {
+      "architecture": "CLEAR; exact installed SHA and 14/14 live evidence independently checked; installed-runtime release watch closed",
+      "codeReview": "APPROVE; Jev 125 and policy 79 tests independently rerun; installed hash/live evidence and final aggregate suite logs independently checked",
+      "remainingBlockers": 0,
+      "reviewersModifiedFiles": false
+    }
+  }
+}

@@ -53,6 +53,100 @@ fn the_cursor_opens_on_an_account_rather_than_a_heading() {
 }
 
 #[test]
+fn confirming_a_live_codex_identity_binds_the_selected_account() {
+    let mut app = open();
+    select(&mut app, Agent::Codex);
+    let selected_row = app.accounts_panel.as_ref().unwrap().selected;
+    let AccountRow::Entry(index) = app.account_rows()[selected_row] else {
+        panic!("Codex account row expected")
+    };
+    app.accounts_panel.as_mut().unwrap().confirm_identity = Some((
+        app.accounts[index].clone(),
+        "codex-user-test-fingerprint".into(),
+        std::env::temp_dir(),
+    ));
+
+    app.accounts_verify_identity();
+    assert!(
+        app.accounts[index].codex_identity.is_none(),
+        "confirmation requires a fresh read"
+    );
+    app.complete_account_checks_for_test(Ok(mindplayer_core::limits::CodexIdentity {
+        fingerprint: "codex-user-test-fingerprint".into(),
+        email: "person@example.test".into(),
+        workspace: "workspace-test".into(),
+    }));
+
+    assert_eq!(
+        app.accounts[index].codex_identity.as_deref(),
+        Some("codex-user-test-fingerprint")
+    );
+    assert!(app.status.contains("identity bound"));
+    assert!(app
+        .accounts_panel
+        .as_ref()
+        .unwrap()
+        .confirm_identity
+        .is_none());
+}
+
+#[test]
+fn inherited_codex_sign_in_is_available_without_logging_anyone_out() {
+    let mut app = open();
+    select(&mut app, Agent::Codex);
+    app.accounts_relogin();
+    let pending = app
+        .pending
+        .as_ref()
+        .expect("selected Codex login must be recoverable");
+    assert_eq!(pending.command.program, "codex");
+    assert_eq!(pending.command.args, ["login"]);
+    assert_eq!(
+        pending.command.env,
+        Account::inherited(Agent::Codex).launch_env()
+    );
+}
+
+#[test]
+fn inherited_claude_sign_in_is_available_without_logging_anyone_out() {
+    let mut app = open();
+    select(&mut app, Agent::Claude);
+    app.accounts_relogin();
+    let pending = app
+        .pending
+        .as_ref()
+        .expect("selected Claude login must be recoverable");
+    assert_eq!(pending.command.program, "claude");
+    assert_eq!(pending.command.args, ["auth", "login"]);
+    assert_eq!(
+        pending.command.env,
+        Account::inherited(Agent::Claude).launch_env()
+    );
+}
+
+#[test]
+fn arbitrary_claude_label_can_request_identity_verification() {
+    let mut app = super::tests::isolated_app();
+    let mut account = Account::inherited(Agent::Claude);
+    account.name = "research_lab_42".into();
+    app.accounts = vec![account];
+    app.open_accounts();
+    select(&mut app, Agent::Claude);
+    app.accounts_verify_identity();
+    let message = app
+        .accounts_panel
+        .as_ref()
+        .unwrap()
+        .error
+        .as_deref()
+        .unwrap_or("");
+    assert!(
+        message.contains("로그인 확인 중"),
+        "Claude verification was refused: {message}"
+    );
+}
+
+#[test]
 fn moving_stops_at_the_ends_instead_of_wrapping() {
     let mut app = open();
     app.accounts_move(-50);

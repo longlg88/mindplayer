@@ -1,0 +1,143 @@
+{
+  "anonymization": {
+    "date": "2026-10-17",
+    "accounts": "Display labels use work-account/personal-account; identifier keys use work_account/personal_account.",
+    "paths": "Evidence paths are relative to the repository root; .. retains locations outside it. Historical commands anchor external paths at ${PWD}. Evidence was not copied or moved.",
+    "history": "Original timestamps, hashes, results and caveats are retained. Labels and paths are anonymized representations; historical verification does not attest to edited bytes or current live state."
+  },
+  "validated_at": "2026-10-17 01:49:43 UTC",
+  "status": "prevention-fixed-and-installed; existing-login-restoration-pending",
+  "scope": "Codex fresh-login home isolation in the terminal app; not startup UI or model routing.",
+  "repository": ".",
+  "source_revision": "54529865aa69ef134c25b88a78c8139ce99b181f",
+  "source_dirty": true,
+  "preexisting_changes_preserved": true,
+  "commit_or_push": false,
+  "source_version": "0.55.10",
+  "version_bumped": false,
+  "version_override_used": false,
+  "installed_path": "../../../../../../.local/bin/mindplayer",
+  "installed_version_output": "mindplayer 0.55.10",
+  "release_matches_installed": true,
+  "installed_sha256": "d6676812732c10ebb8cbbfb1c13aae620a5f93056c99b4cc4b23672e413e1cf8",
+  "rollback": {
+    "path": "../../../../../../.mindplayer/mindplayer-account-isolation-rollback.sUlIQ3/mindplayer",
+    "sha256": "a86276bbee33b5bb807c4baf12ba249d98f245d25168383cddddc7e3524d7b05"
+  },
+  "diagnosis": {
+    "configured_enabled_codex_accounts": [
+      "work-account",
+      "personal-account"
+    ],
+    "distinct_real_homes": true,
+    "saved_identity_comparison": {
+      "same_user": true,
+      "same_workspace": true,
+      "same_normalized_email": true,
+      "independent_refresh_tokens": true
+    },
+    "observed_login_domain_category_for_both": "personal-account-domain",
+    "live_app_server_probe": {
+      "both_correct_CODEX_HOME_values_used": true,
+      "both_account_read_succeeded": true,
+      "both_rate_limits_read_succeeded": true,
+      "same_backend_workspace": true,
+      "same_verified_email": true,
+      "weekly_percent_at_probe": [
+        55,
+        55
+      ],
+      "inference_requested": false
+    },
+    "shared_config_forced_workspace_present": false,
+    "confirmed_defect": "Fresh login selected an unused display name but recursive directory creation accepted an occupied credential home, including after an account rename.",
+    "existing_credentials_provenance": "Unresolved: this defect does not establish how two currently distinct homes obtained the same real login. Refresh timestamps do not prove a new browser login.",
+    "duplicate_gauge_suppression": "Unchanged. It does not resolve the intended-login mismatch."
+  },
+  "changes": [
+    {
+      "file": "crates/mindplayer-core/src/accounts.rs",
+      "change": "Reserve an unoccupied home using exclusive mkdir at 0700; skip registered names/paths and occupied files, directories, symlinks; propagate other I/O errors."
+    },
+    {
+      "file": "crates/mindplayer-tui/src/app/spawn.rs",
+      "change": "Replace free-name plus recursive creation with the reservation helper."
+    },
+    {
+      "file": "crates/mindplayer-tui/src/app/tests.rs",
+      "change": "Own per-test synthetic homes and exercise renamed registered homes both present and absent."
+    },
+    {
+      "file": "crates/mindplayer-tui/tests/smoke.rs",
+      "change": "Drive actual executable n -> l -> Enter and prove existing credential homes are not reused or overwritten."
+    },
+    {
+      "file": "AGENTS.md",
+      "change": "Record that duplicate display handling is not authentication restoration; require atomic fresh-home allocation and explicit recovery boundaries."
+    }
+  ],
+  "simplifications": [
+    "One reservation operation replaces separate name selection and permissive recursive slot creation.",
+    "No new dependencies, quota heuristics, credential copying, or display-only workaround."
+  ],
+  "checks": {
+    "before_fix_tui_regressions": {
+      "passed": 0,
+      "failed": 2
+    },
+    "before_fix_installed_pty_regression": {
+      "passed": 0,
+      "failed": 1,
+      "assertion": "a new login must never reuse an existing credential home",
+      "binary_sha256": "a86276bbee33b5bb807c4baf12ba249d98f245d25168383cddddc7e3524d7b05"
+    },
+    "after_fix_core_reservation": {
+      "passed": 8,
+      "failed": 0
+    },
+    "after_fix_tui_account_picker": {
+      "passed": 18,
+      "failed": 0
+    },
+    "workspace": {
+      "command": "env -u MINDPLAYER_VERSION -u MINDPLAYER_TEST_BINARY -u MINDPLAYER_TEST_REAL_JEV CARGO_INCREMENTAL=0 cargo test --offline --locked --workspace -q -- --test-threads=2",
+      "passed": 825,
+      "failed": 0,
+      "ignored": 7
+    },
+    "formatting": "cargo fmt --all -- --check: passed",
+    "static_analysis": "CARGO_INCREMENTAL=0 cargo clippy --offline --locked --workspace --all-targets -- -D warnings: passed",
+    "whitespace": "git diff --check: passed",
+    "release_build": "CARGO_INCREMENTAL=0 cargo build --offline --locked --release -p mindplayer-tui --bin mindplayer: passed",
+    "installed_pty": {
+      "command": "env -u MINDPLAYER_VERSION -u MINDPLAYER_TEST_REAL_JEV CARGO_INCREMENTAL=0 MINDPLAYER_TEST_BINARY=${PWD}/../../../../../../.local/bin/mindplayer cargo test --offline --locked -p mindplayer-tui --test smoke -q -- --test-threads=2",
+      "passed": 32,
+      "failed": 0,
+      "ignored": 2,
+      "elapsed_seconds": 42.54,
+      "includes": "fresh_login_never_reuses_an_occupied_credential_home",
+      "authentication": "Synthetic provider fixtures only; not proof of restored real work-account credentials."
+    },
+    "actual_auth_files_unchanged_since_prevention_work": {
+      "work_account": true,
+      "personal_account": true
+    }
+  },
+  "safety": {
+    "actual_auth_overwritten": false,
+    "logout_executed": false,
+    "credentials_copied_for_this_work": false,
+    "running_user_panes_terminated": false,
+    "raw_email_token_workspace_id_logged": false
+  },
+  "remaining": [
+    "Real work-account and personal-account credentials still identify the same login; separate usage is not restored.",
+    "User must select recovery scope: MindPlayer-only isolated work-account home versus changing the inherited default Codex login; browser authentication is required.",
+    "No intended work-account credential was recovered from the inspected bounded auth/backup locations. Do not synthesize identity from labels or copy existing personal-account credentials.",
+    "Existing running MindPlayer instances keep their original executable until relaunched."
+  ],
+  "references": [
+    "https://learn.chatgpt.com/docs/auth",
+    "https://learn.chatgpt.com/docs/config-file/config-reference"
+  ]
+}

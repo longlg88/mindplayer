@@ -1,0 +1,109 @@
+{
+  "artifact": "Sense automatic-only design and Korean UI proposal",
+  "verified_at": "2026-10-13T13:40:48+09:00",
+  "source_snapshot_collected_at": "2026-10-13T13:18:47+09:00",
+  "repository": {
+    "head": "109c3e480d02edfadd02bb9e62460ac64558d3ff",
+    "preexisting_dirty_worktree": true,
+    "unrelated_user_changes_preserved": true,
+    "production_code_modified_by_this_task": false
+  },
+  "files": [
+    {"path":"docs/sense-model-ui.ko.html","bytes":13634,"sha256":"f931bdcf155cd899602f0ef4ee5b0224908b9bf094a687dc0482ca6a59b710bd"},
+    {"path":"docs/sense-model-topology.ko.html","bytes":27979,"sha256":"9f078af245813950d06c3e0e57cc2863c87b84e2df37a84386da274b07696ae5"}
+  ],
+  "static_validation": {
+    "method": "Read-only Node assert/VM/crypto inline validation; git diff --check",
+    "exit_codes": [0, 0],
+    "output": [
+      "PASS docs/sense-model-ui.ko.html: Korean, IDs, JS syntax, links, standalone assets, credential scan",
+      "PASS docs/sense-model-topology.ko.html: Korean, IDs, JS syntax, links, standalone assets, credential scan",
+      "PASS topology=8 nodes/10 edges; prior delivered HTML checksums unchanged"
+    ],
+    "required_remote_assets": 0,
+    "runtime_network_requests_in_prototype": 0,
+    "credential_pattern_matches": 0,
+    "scan_limit": "Pattern scanning is not a guarantee against all possible sensitive content."
+  },
+  "browser_validation": {
+    "browser": "Chrome",
+    "transport": "Loopback-only temporary HTTP server; final files opened separately in default browser",
+    "desktop_css_viewport": [969, 822],
+    "narrow_css_viewport": [390, 844],
+    "viewport_override_reset": true,
+    "page_horizontal_overflow": false,
+    "ui_pane_counts_current_and_proposed": [7, 7],
+    "ui_rows": [4, 3],
+    "focused_pane": "Codex 2/7",
+    "unchanged_pane_headers": true,
+    "unchanged_other_pane_content": true,
+    "product_model_controls": 0,
+    "demo_examples_verified": ["simple via click", "complex via click", "followup via Enter"],
+    "details_enter_expands_space_collapses": true,
+    "topology_details_tested": ["service-design", "contract", "training", "alternatives", "evidence"],
+    "diagram_horizontal_keyboard_scroll": true,
+    "console_warnings_or_errors": [],
+    "default_browser_open_command_exit_codes": [0, 0],
+    "visual_verdict_score": 95,
+    "visual_verdict_scope": "Illustrative design, not pixel comparison against running Rust TUI"
+  },
+  "codex_evidence": {
+    "installed_version": "codex-cli 0.162.1",
+    "schema_checks": {
+      "turn_start_model_description": "Override the model for this turn and subsequent turns.",
+      "turn_steer_has_model": false,
+      "turn_start_has_provider": false,
+      "turn_start_required": ["input", "threadId"],
+      "turn_completed_fields": ["threadId", "turn"],
+      "model_rerouted_fields": ["fromModel", "reason", "threadId", "toModel", "turnId"]
+    },
+    "metadata_only_process_probe": {
+      "initialize": "ok",
+      "model_list": "ok",
+      "returned_count": 1,
+      "next_page_present": true,
+      "sent_methods": ["initialize", "initialized", "model/list"],
+      "prompt_submissions": 0,
+      "thread_mutations": 0,
+      "limits": "No inference or existing-pane attachment tested; incidental app-server cache/log writes were not audited."
+    },
+    "model_list_is_entitlement_proof": false,
+    "absence_of_reroute_is_execution_attestation": false
+  },
+  "architecture_acceptance_gates": [
+    "Structured semantic submit instead of raw-PTY Enter inference, including IME, paste, soft newline, attachments, approval, steer, and queued initial input",
+    "Exact existing thread resume and single execution owner; no concurrent PTY/app-server owners",
+    "Fixed provider/account/pane-generation/thread/turn/input/catalog fences and same-thread-only context provenance",
+    "Distinct candidate/requested/accepted/observed/unknown model states",
+    "Bounded judgment latency, queue backpressure, cancellation, and deterministic pre-dispatch fallback",
+    "Own judgment model training, Korean unseen-data evaluation and calibration; inference runtime choice remains open"
+  ],
+  "selected_approach": "Standalone Korean HTML/CSS with authored SVG; internal Rust logical service, Python offline model development, no new dependencies",
+  "alternatives_compared": {
+    "names": ["Sense", "Pilot", "Switch"],
+    "service_placement": ["Rust in-process", "local Python daemon", "remote judgment API"],
+    "judge": ["keyword-only", "general LLM baseline", "owned small semantic judge plus code policy"],
+    "rendering": ["standalone HTML/CSS/SVG", "Graphviz static diagram", "client graph library"]
+  },
+  "external_reference_review_rounds": 2,
+  "primary_references": [
+    "https://learn.chatgpt.com/docs/app-server#turns",
+    "https://learn.chatgpt.com/docs/app-server#steer-an-active-turn",
+    "https://developers.openai.com/siwc/token-sharing-open-source/codex-app-server",
+    "https://docs.typesafe.ai/concepts/system-one",
+    "https://docs.typesafe.ai/concepts/state",
+    "https://docs.typesafe.ai/confidence",
+    "https://github.com/morluto/rea/blob/bb540826d65316c164d2de8ba4ef10f81a8ad073/README.md",
+    "https://c4model.com/diagrams/notation",
+    "https://www.w3.org/WAI/ARIA/apg/patterns/disclosure/"
+  ],
+  "remaining_unverified": [
+    "Real inference and actual model switching",
+    "Existing PTY pane attachment and exact-thread ownership migration",
+    "Owned judgment model accuracy, calibration, speed, and deployment artifact",
+    "Claude adapter behavior",
+    "Name trademark uniqueness"
+  ],
+  "rust_lint_typecheck_tests": "Not run: this task changed design/docs/prototype only; no production implementation claimed.",
+  "previous_deliverables": "Earlier Jev HTML and checksum receipts retained unchanged as archived, rejected UI proposals."
+}

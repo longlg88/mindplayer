@@ -1,0 +1,275 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light">
+<meta name="description" content="MindPlayer 0.55.14 로컬 소스 기준 Jev 연동 코드 안내. Codex 프록시, Claude 세션 확장, 판단 정책, 취소와 검증 경계를 설명합니다.">
+<title>MindPlayer · Jev 연동 코드 안내</title>
+<style>
+:root{--paper:#fff;--bg:#f5f5f1;--ink:#192c35;--muted:#52636b;--line:#d8e0df;--blue:#235baf;--bluebg:#edf3fc;--green:#19614b;--greenbg:#edf6f0;--amber:#82520c;--amberbg:#fff5df;--radius:14px}
+*{box-sizing:border-box}html{scroll-behavior:smooth;scroll-padding-top:30px}body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.8 -apple-system,BlinkMacSystemFont,"Apple SD Gothic Neo","Noto Sans KR",sans-serif;word-break:keep-all;overflow-wrap:anywhere}a{color:var(--blue);text-underline-offset:3px}a:hover{text-decoration-thickness:2px}a:focus-visible,summary:focus-visible,input:focus-visible,button:focus-visible{outline:3px solid var(--blue);outline-offset:4px}.skip{position:absolute;top:-100px;left:12px;z-index:9;background:white;padding:12px}.skip:focus{top:12px}.layout{max-width:1450px;margin:auto;display:grid;grid-template-columns:220px minmax(0,1fr);gap:46px;padding:40px 40px 80px}.sidebar{align-self:start;position:sticky;top:32px}.brand{font-weight:800;font-size:17px;letter-spacing:-.03em}.brand span{color:var(--blue)}.edition{font:11px/1.8 ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--muted);margin:5px 0 26px}.sidebar nav{display:grid;gap:4px}.sidebar nav a{padding:7px 10px;border-radius:6px;color:var(--muted);font-size:13px;text-decoration:none}.sidebar nav a:hover{background:#e7eceb;color:var(--ink)}.sidebar nav a b{font:11px ui-monospace,monospace;margin-right:10px;color:var(--blue)}.sidebar .side-note{font-size:12px;color:var(--muted);border-top:1px solid var(--line);padding-top:18px;margin-top:23px}.eyebrow{color:var(--blue);font-size:11px;font-weight:800;letter-spacing:.13em}.hero{padding:10px 0 30px;border-bottom:1px solid var(--line)}h1{font-size:clamp(32px,3.5vw,49px);line-height:1.26;letter-spacing:-.055em;margin:12px 0 18px}h1 span{color:var(--blue)}.lead{max-width:760px;font-size:18px;line-height:1.85;color:var(--muted)}p{margin:8px 0 14px}.meta{display:flex;gap:8px;flex-wrap:wrap;margin-top:23px}.tag{font-size:11px;font-weight:650;padding:3px 9px;border:1px solid var(--line);border-radius:5px;background:white}.tag.green{color:var(--green);background:var(--greenbg);border-color:#b7d0c2}.tag.amber{color:var(--amber);background:var(--amberbg);border-color:#dfcba3}section{margin-top:48px}h2{font-size:25px;line-height:1.4;letter-spacing:-.035em;margin:8px 0 15px}h3{font-size:17px;line-height:1.5;margin:0 0 8px;letter-spacing:-.02em}h4{font-size:15px;margin:15px 0 5px}.section-no{font:11px ui-monospace,monospace;color:var(--blue);letter-spacing:.1em}.muted,.caption{color:var(--muted)}.caption{font-size:12px;margin-top:12px}.grid2{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}.grid3{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}.card{background:var(--paper);border:1px solid var(--line);border-radius:var(--radius);padding:21px;min-width:0}.card p:last-child{margin-bottom:0}.card .kicker{font-size:11px;color:var(--blue);font-weight:800;letter-spacing:.08em;margin-bottom:7px}.callout{padding:17px 20px;border-left:3px solid var(--amber);background:var(--amberbg);border-radius:0 10px 10px 0;margin:19px 0}.callout p{margin:3px 0;font-size:14px}.callout.blue{border-color:var(--blue);background:var(--bluebg)}code{font:12px/1.6 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;background:#e9eeef;padding:2px 4px;border-radius:4px;word-break:break-word}pre{white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word;background:#172c38;color:#e4eff4;border-radius:9px;padding:17px;margin:14px 0;font:12px/1.85 ui-monospace,SFMono-Regular,Menlo,monospace}pre code{font:inherit;color:inherit;padding:0;background:none;border-radius:0}.source{font-size:11px;color:var(--muted);margin:8px 0 4px}.source a{color:var(--muted)}.flow-start{text-align:center;border:1px solid #b9cade;background:var(--bluebg);padding:16px;border-radius:12px;margin:20px 0}.flow-start strong{display:block}.flow-start small{color:var(--muted)}.lane{background:white;border:1px solid var(--line);border-radius:14px;padding:20px;min-width:0}.lane.codex{border-top:3px solid var(--blue)}.lane.claude{border-top:3px solid var(--green)}.lane-label{font-size:11px;font-weight:800;letter-spacing:.07em}.codex .lane-label{color:var(--blue)}.claude .lane-label{color:var(--green)}.step{border:1px solid var(--line);border-radius:8px;padding:12px 14px;margin-top:13px;font-size:13px}.step strong{display:block;font-size:14px}.step+.step:before{content:"↓";display:block;color:var(--muted);margin:-14px auto 4px;text-align:right;background:white;width:22px}.step small{color:var(--muted)}.shared{margin:16px 0;background:var(--bluebg);border:1px dashed #a3bad9;border-radius:12px;padding:17px 20px;font-size:14px}.shared strong{color:var(--blue)}.family-model{display:block;background:transparent;padding:3px 0;font-size:14px}.family-role{color:var(--muted);font-size:12px}.family-card{border-top:2px solid var(--blue)}.family-card.claude-family{border-top-color:var(--green)}.rule-list{padding-left:20px}.rule-list li{margin:9px 0}.table-scroll{overflow:auto;border:1px solid var(--line);border-radius:12px;background:white;margin:18px 0}table{width:100%;border-collapse:collapse;font-size:13px;min-width:660px}th,td{vertical-align:top;text-align:left;padding:14px 16px;border-bottom:1px solid var(--line)}th{background:#edf1f1;font-size:12px;color:#3d535d}tr:last-child td{border-bottom:0}td:first-child{font-weight:650;width:21%}.file-tools{display:flex;align-items:center;gap:12px;margin:20px 0}.file-tools label{font-size:13px;font-weight:700;white-space:nowrap}input[type=search]{min-width:0;flex:1;border:1px solid #a9bbbf;border-radius:8px;background:white;padding:11px 12px;font:inherit;font-size:14px;color:var(--ink)}button{border:1px solid #a9bbbf;border-radius:7px;padding:9px 12px;background:white;color:var(--ink);font:inherit;font-size:12px;cursor:pointer}button:hover{background:var(--bluebg)}.file-group{margin:28px 0 8px;font-size:14px;color:var(--muted)}details.file{border:1px solid var(--line);border-radius:10px;background:white;margin:9px 0}summary{cursor:pointer}details.file>summary{padding:15px 18px;display:grid;grid-template-columns:18px minmax(0,1fr);gap:8px;list-style:none}details.file>summary::-webkit-details-marker{display:none}details.file>summary:before{content:"+";color:var(--blue);font:18px/1.4 ui-monospace,monospace}details.file[open]>summary:before{content:"−"}summary .filename{font:13px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;font-weight:700}summary .purpose{font-size:13px;color:var(--muted);margin-top:4px}.file-body{padding:0 20px 18px 44px;font-size:14px}.file-body dl{margin:8px 0}.file-body dt{font-size:11px;font-weight:800;color:var(--blue);margin-top:10px}.file-body dd{margin:2px 0 8px}.file-body p:last-child{margin-bottom:0}.contract{margin-top:19px}.contract summary{font-size:14px;font-weight:700;padding:12px 0}.timeline{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin:20px 0}.timeline>div{border-top:3px solid #a2b8d5;padding:14px;background:white;border-radius:0 0 9px 9px;font-size:13px}.timeline strong{display:block;font-size:14px}.timeline small{color:var(--muted)}.reading{padding-left:22px}.reading li{margin:11px 0}.evidence-count{font-size:31px;line-height:1.2;font-weight:750;letter-spacing:-.04em;color:var(--green)}.evidence-count span{font-size:13px;letter-spacing:0;color:var(--muted);font-weight:400}.foot{border-top:1px solid var(--line);margin-top:35px;padding-top:20px;font-size:12px;color:var(--muted)}.method{border-top:1px solid var(--line);margin-top:20px;padding:12px 0;font-size:13px}.method>summary{font-weight:650}.noscript{color:var(--amber)}[hidden]{display:none!important}
+@media(min-width:1500px){.layout{gap:65px}}@media(max-width:1000px){.layout{grid-template-columns:170px minmax(0,1fr);gap:25px;padding:25px}.grid3{grid-template-columns:1fr}.timeline{grid-template-columns:repeat(2,minmax(0,1fr))}.lead{font-size:17px}}@media(max-width:740px){html{scroll-padding-top:15px}.layout{display:block;padding:20px 18px 50px}.sidebar{position:static}.sidebar nav{display:flex;flex-wrap:wrap;gap:3px;border-bottom:1px solid var(--line);padding-bottom:16px;margin-bottom:20px}.sidebar nav a{padding:4px 7px;font-size:12px}.sidebar nav a b{display:none}.edition{margin:3px 0 11px}.side-note{display:none}.hero{padding-top:0}.lead{font-size:16px}.grid2,.timeline{grid-template-columns:1fr}section{margin-top:35px}h2{font-size:23px}.card,.lane{padding:17px}.file-tools{flex-wrap:wrap}.file-tools label{width:100%}.file-body{padding:0 17px 16px 22px}details.file>summary{padding:13px}.callout{padding:13px 15px}.flow-start{text-align:left}pre{font-size:11px;padding:13px}.family-model{font-size:13px}.table-scroll{margin-right:0}table{font-size:12px}.file-tools button{padding:10px}.shared{padding:14px}.hero h1 br{display:none}}
+@media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}@media print{.layout{display:block;padding:0}.sidebar,.file-tools{display:none}body{background:white}section{break-inside:auto}.card,.lane,details.file{break-inside:avoid}pre{background:#edf1f1;color:#192c35}.table-scroll{overflow:visible}table{min-width:0}a{color:inherit}}
+</style>
+</head>
+<body>
+<a class="skip" href="#main">본문으로 이동</a>
+<div class="layout">
+<aside class="sidebar" aria-label="문서 목차">
+  <div class="brand">MindPlayer <span>× Jev</span></div>
+  <div class="edition">CODE GUIDE / 2026.10.18<br>LOCAL SOURCE · v0.55.14</div>
+  <nav>
+    <a href="#overview"><b>01</b>무엇을 하는가</a>
+    <a href="#flow"><b>02</b>전체 연결 흐름</a>
+    <a href="#families"><b>03</b>최신 모델군과 난이도</a>
+    <a href="#files"><b>04</b>파일별 코드 안내</a>
+    <a href="#contracts"><b>05</b>핵심 코드와 계약</a>
+    <a href="#lifecycle"><b>06</b>오류·취소·종료</a>
+    <a href="#evidence"><b>07</b>검증과 남은 한계</a>
+  </nav>
+  <p class="side-note">설명 대상은 터미널용 MindPlayer입니다. 이 문서는 구현·로그인·전역 설정을 변경하지 않습니다.</p>
+</aside>
+<main id="main">
+<header class="hero">
+  <div class="eyebrow">IMPLEMENTATION FIELD GUIDE</div>
+  <h1>Jev는 판단하고,<br> <span>기존 세션이 실행한다.</span></h1>
+  <p class="lead">사용자가 선택한 <strong>Codex 또는 Claude 안에서</strong>, 새 사용자 턴의 요구 난이도에 맞는 <strong>모델 + reasoning effort</strong>를 Jev가 선택합니다. 이 문서는 그 연결을 담당하는 실제 코드와 각 경계를 설명합니다.</p>
+  <div class="meta"><span class="tag">로컬 수정 소스 기준</span><span class="tag green">설치 기록 0.55.14</span><span class="tag">내장 런타임 19개 파일</span><span class="tag amber">Claude는 최선형 확장</span></div>
+  <p class="caption">스냅샷: 2026-10-18 · Git 기준 <code>54529865aa69</code> + 미커밋 변경. 아래 모델명은 이 소스의 검토 목록이며, 영구적인 최신·이용 권한 보장이 아닙니다.</p>
+</header>
+
+<section id="overview">
+  <div class="section-no">01 / RESPONSIBILITY</div><h2>Jev의 일은 선택이지, 실행 계획이 아니다</h2>
+  <div class="grid3">
+    <article class="card"><div class="kicker">MINDPLAYER</div><h3>시작과 계정·PTY 소유</h3><p>시작할 때 Native / Jev를 한 번 선택합니다. 새 세션·재개·handoff는 이 실행의 선택을 상속합니다. 계정 홈과 원래 CLI 인수, 터미널 입력·권한 흐름을 유지합니다.</p></article>
+    <article class="card"><div class="kicker">JEV</div><h3>제공된 후보에서 한 쌍 선택</h3><p>현재 입력의 제한된 스냅샷과 후보 설명을 받아 <code>model + effort</code>를 고릅니다. Codex와 Claude 중 어느 것을 쓸지 정하거나, 명령 실행·배포 권한을 부여하지 않습니다.</p></article>
+    <article class="card"><div class="kicker">NATIVE PROVIDER CLI</div><h3>모델 요청과 실제 작업</h3><p>선택 결과를 네이티브 요청에 반영한 뒤 기존 CLI가 도구·승인·응답을 처리합니다. Jev 판단 API 호출과 Codex/Claude 본 작업의 추론 호출은 서로 다른 요청입니다.</p></article>
+  </div>
+  <div class="callout blue"><p><strong>Native 선택 시:</strong> 라우터를 우회하며 Jev 키·Node·라우터 상태 채널을 요구하지 않습니다. 실행 중인 기존 pane의 모드를 몰래 바꾸지 않고, 선택을 다음 실행에 저장하지 않습니다.</p></div>
+  <p class="source">근거: <a href="../../crates/mindplayer-tui/src/startup_routing.rs">startup_routing.rs:1–137</a> · <a href="../../crates/mindplayer-tui/src/local_router.rs">local_router.rs:449–497</a></p>
+</section>
+
+<section id="flow">
+  <div class="section-no">02 / TWO EXECUTION PATHS</div><h2>같은 판단 API, 서로 다른 적용 지점</h2>
+  <p class="muted">아래는 프로세스·요청 연결도입니다. 웹 화면이나 새 터미널 UI를 제안하는 그림이 아닙니다.</p>
+  <div class="flow-start"><strong>MindPlayer 시작 선택 → 원래 provider·계정·작업 폴더를 보존 → local_router.rs</strong><small>Jev 선택 동의 + 로컬 준비 확인 · 바이너리에 포함된 19개 자산을 비공개 runtime 디렉터리로 추출</small></div>
+  <div class="grid2" aria-label="Codex와 Claude 실행 경로">
+    <article class="lane codex"><div class="lane-label">CODEX / PROTOCOL PROXY</div><h3>새 턴 요청을 보내기 직전에 변경</h3>
+      <div class="step"><strong>① run.mjs → private-ui.mjs / launch.mjs</strong><small>호환되는 전용 Codex UI와 원래 실행 인수 준비</small></div>
+      <div class="step"><strong>② 네이티브 UI ↔ proxy.mjs ↔ app-server.mjs</strong><small>로컬 인증 WebSocket / 네이티브 JSONL 연결</small></div>
+      <div class="step"><strong>③ router.mjs → JevService.decide()</strong><small>소유한 새 turn/start만 판단 · 현재 catalog와 정책 검사</small></div>
+      <div class="step"><strong>④ router.mjs → 네이티브 turn/start</strong><small>model·effort·collaboration 설정을 함께 반영 · 취소·stale 결과 차단</small></div>
+      <p class="caption">실행 중 입력을 조정하는 turn/steer는 새 턴으로 오인하지 않습니다. 통합 경로의 판단 실패는 해당 새 턴 전송을 차단합니다.</p>
+    </article>
+    <article class="lane claude"><div class="lane-label">CLAUDE / SESSION-LOCAL MOD</div><h3>첫 네이티브 추론 step에서 변경</h3>
+      <div class="step"><strong>① claude-run.mjs</strong><small>버전 검사 → 비공개 임시 플러그인 → 세션 한정 --plugin-dir</small></div>
+      <div class="step"><strong>② claude-mod.mjs → claude-broker.mjs</strong><small>메인 turn.start의 실제 turnId 소유 · 첫 turn.step에서 로컬 /judge</small></div>
+      <div class="step"><strong>③ claude-broker.mjs → ClaudeJevPolicy.decide()</strong><small>requestId + sessionId + turnId 검사 · 현재 후보 메뉴 판단</small></div>
+      <div class="step"><strong>④ claude-mod.mjs → next({...e, model, effort})</strong><small>같은 턴의 후속 step은 같은 결정 사용 · 새 메인 턴은 새 판단</small></div>
+      <p class="caption">부모 launcher만 실제 Jev 키를 소유합니다. Claude 자식에는 로컬 broker 주소·임시 토큰만 전달합니다.</p>
+    </article>
+  </div>
+  <div class="shared"><strong>기본 공유 판단 계층</strong>　rubric.mjs → jev.mjs → Vercel Gateway 또는 TypeSafe 직접 API → 응답 스키마·확률·후보 검증. macOS Gateway 경로는 system-fetch.mjs의 OS 신뢰 저장소 경로를 사용합니다. Codex의 명시적 실측 정책 분기는 policy.mjs의 별도 bounded snapshot을 사용합니다.</div>
+  <div class="callout"><p><strong>두 경로의 보장은 같지 않습니다.</strong> Claude 확장이 관측한 Jev 오류는 <code>next()</code>를 호출하지 않아 요청을 막습니다. 하지만 확장 자체가 로드되지 않거나 충돌·시간 제한으로 우회되면 Claude의 기본 실행이 계속될 수 있습니다. Claude 전체를 엄격한 fail-closed 프록시라고 부르면 안 됩니다.</p></div>
+</section>
+
+<section id="families">
+  <div class="section-no">03 / CURRENT FAMILY + TASK DEMAND</div><h2>“최신 모델군 안에서 난이도별 선택”의 실제 의미</h2>
+  <div class="grid2">
+    <article class="card family-card"><h3>Codex 검토 목록</h3><p class="family-role">current-family.mjs:24–37 · 네이티브 0.162.1 catalog 근거</p><code class="family-model">light → gpt-6-luna</code><code class="family-model">standard → gpt-6.1-sol</code><code class="family-model">frontier → gpt-6-astra</code><p>이 목록과 실제 네이티브 후보의 교집합만 사용합니다. 숨김·접근 거부·모달리티·effort·만료·계정 바인딩 조건을 통과해야 합니다.</p></article>
+    <article class="card family-card claude-family"><h3>Claude 검토 목록</h3><p class="family-role">claude-policy.mjs:17–39, 52–74 · 명시적 descriptor 정책</p><code class="family-model">light → claude-haiku-5-5</code><code class="family-model">standard → claude-sonnet-5-5</code><code class="family-model">frontier → claude-opus-5-5</code><p>일반 Opus/Sonnet/Haiku 5.5 세션은 <code>low / medium / high / xhigh / max</code>와 조합한 15개 후보입니다. 입력 네이티브 baseline이 정확히 <code>claude-mythos-5-1</code>일 때만 specialized Mythos 5.1을 포함한 20개 후보를 제공하고, 원래 model/effort를 c0로 보존합니다. 일반 세션에는 Mythos를 추가하지 않으며 Fable로 대체하지 않습니다.</p><p>Mythos는 조직 검증이 필요한 모델입니다. 이 정책은 live catalog·entitlement 조회가 아니며, 네이티브의 다섯 effort 수용·실제 적용은 확인되지 않았습니다.</p></article>
+  </div>
+  <p class="caption">두 레지스트리 모두 2026-10-18 검토, 재검토 기한 <code>2026-11-18T00:00:00Z</code>. 날짜·모델명 숫자 정렬·catalog 앞 순서로 “최신”을 추측하지 않습니다.</p>
+  <ol class="reading">
+    <li><strong>먼저 안전한 메뉴를 만듭니다.</strong> 현재 baseline과 effort를 검증합니다. 명시적으로 아는 구형 baseline은 current frontier + 같은 유효 effort로 이행할 수 있지만, 알 수 없는 모델·default·지원 불명 effort를 임의 해석하지 않습니다.</li>
+    <li><strong>Jev가 입력과 후보 설명을 비교합니다.</strong> 해법의 불확실성, 연결된 작업의 조정 부담, 실패 영향, 작업 연속성, 빠진 문맥을 평가합니다. 짧은 후속 질문이나 문서 작업도 어려운 일일 수 있습니다.</li>
+    <li><strong>기본 descriptor 경로는 정확한 후보 쌍만 수용합니다.</strong> <code>c0…cN</code>은 순위가 아닌 요청 내 식별자입니다. <code>c0</code>는 검증된 안전 기준이며, 실제 들어온 baseline과 다를 수 있습니다. Codex의 명시적 실측 정책 분기는 Jev의 capability 판단을 받은 뒤 <code>chooseConfiguration()</code>이 평가 정책으로 쌍을 고릅니다. 두 분기 모두 정책·문맥·취소 상태를 다시 검사한 뒤 반영합니다.</li>
+  </ol>
+  <div class="callout blue"><p><strong>하드코딩의 구분:</strong> 모델군 ID는 의도적으로 검토된 allowlist입니다. 반면 “쉬우면 무조건 Haiku/Luna, 어려우면 무조건 Opus/Astra”라는 고정 매핑은 통합 선택 로직이 아닙니다. <code>router.mjs</code>의 키워드 기반 <code>ruleDecision()</code>은 별도 standalone A/B 실험용이며 MindPlayer 통합은 <code>JevService</code>를 사용합니다.</p></div>
+  <p>외부 정책 파일이 있으면 Codex는 평가·품질·비용·가용성 제약을 존중합니다. Claude의 제한된 adapter는 그 평가 정책을 구현하지 않았으므로 <code>claude-policy-unsupported</code>로 차단하며 조용히 무시하지 않습니다. 이 설계만으로 비용 절감이나 품질 동등성이 증명되지는 않습니다.</p>
+  <details class="method"><summary>0.55.14 API 가격 참고의 범위</summary><p><code>rubric.mjs:31–67</code>의 <code>buildConfigurationInstructions()</code>는 검증된 제공 후보의 exact model ID만 중복 제거해 <code>API_PRICE_REFERENCE</code>를 만듭니다. 검증일은 2026-10-18, 유효 구간은 <code>2026-10-18T00:00:00Z</code> 이상·<code>2026-11-18T00:00:00Z</code> 미만입니다. 매 요청에 기한을 확인하며, 미확인 ID는 unknown, 만료·유효 구간 밖이면 가격 참조 없이 기존 지침을 사용합니다.</p><p>단위는 100만 토큰당 USD, 기준은 first-party Standard/global text API입니다. input/output/cache 요율을 구분하고 Claude cache 쓰기 5분·1시간을 명시합니다. GPT는 prompt 272,000 이하 / 272,001 이상, Haiku는 100,000 이하 / 100,001 이상 조건을 보존합니다. 전체 네이티브 토큰 수·cache 구성·청구 체계가 없으므로 8KiB state로 요금 구간이나 예상 실행 달러액을 계산하지 않습니다. Batch·Fast·도구 요금·지역/공급자 할증은 포함하지 않으며 구독 쿼터 절감을 뜻하지 않습니다.</p><p>코드에 기록된 가격 출처: <code>https://developers.openai.com/api/docs/pricing</code> · <code>https://platform.claude.com/docs/en/about-claude/pricing</code> · <code>https://platform.claude.com/docs/en/models/mythos-5-1/overview</code>. 품질·네이티브 요구가 우선이며, 가격은 충분한 후보 사이의 보조 비교 자료입니다.</p></details>
+</section>
+
+<section id="files">
+  <div class="section-no">04 / SOURCE CATALOG</div><h2>파일별로 어디를 읽으면 되는가</h2>
+  <p class="muted">런타임 JavaScript는 모두 <code>tools/local-model-router/</code> 아래입니다. 각 항목을 펼치면 책임·입출력·다음 소비자를 볼 수 있습니다. 파일 링크는 현재 로컬 checkout을 가리킵니다.</p>
+  <div class="file-tools"><label for="file-search">파일·기능 찾기</label><input id="file-search" type="search" placeholder="예: claude, 취소, 정책, 상태" autocomplete="off"><button id="toggle-files" type="button" aria-expanded="false">모두 펼치기</button></div>
+  <p id="file-count" class="caption" role="status" aria-live="polite">파일 설명 불러오는 중</p><noscript><p class="noscript">검색 없이도 아래 모든 파일 설명을 펼쳐 읽을 수 있습니다.</p></noscript>
+  <h3 class="file-group">A. Rust 진입점 · 실행 모드와 자원 소유</h3>
+  <details class="file"><summary><div><span class="filename">startup_routing.rs · main.rs</span><div class="purpose">시작 선택, 외부 전송 고지, 비동기 준비 확인</div></div></summary><div class="file-body"><dl><dt>역할 / 입력</dt><dd><code>RoutingMode::{Native,Jev}</code>, <code>StartupStage</code> 상태기계가 시작 키 입력을 처리합니다. 선택 전에는 세션 동작을 gate합니다.</dd><dt>출력 / 소비자</dt><dd><code>mode()</code>가 이 실행의 선택을 spawn 경계에 제공합니다. Jev 준비 검사는 background thread에서 실행하며 실패하면 Blocked, 뒤로 가면 늦은 응답을 버립니다.</dd><dt>주의</dt><dd>준비 성공은 로컬 키·설치 조건 확인이지 인증·잔액·실제 추론 성공이 아닙니다. 현재 공통 startup-check는 전용 Codex UI도 확인합니다.</dd></dl><p class="source"><a href="../../crates/mindplayer-tui/src/startup_routing.rs">startup_routing.rs:1–137</a> · <a href="../../crates/mindplayer-tui/src/main.rs">main.rs:714 부근</a></p></div></details>
+  <details class="file"><summary><div><span class="filename">app/spawn.rs · pty.rs · local_router.rs</span><div class="purpose">new / resume / handoff에 동일한 모드 적용, 내장 자산 추출</div></div></summary><div class="file-body"><dl><dt>역할 / 입력</dt><dd>원래 <code>Command</code>의 argv·cwd·계정 LaunchEnv를 받아 Native면 그대로, Jev면 provider별 launcher로 감쌉니다. login/auth 같은 관리 명령은 세션으로 오인하지 않습니다.</dd><dt>출력 / 소비자</dt><dd>PTY가 실행할 <code>node .../run.mjs</code> 또는 <code>claude-run.mjs</code> 명령과 pane별 상태 채널을 만듭니다. <code>ASSETS</code> 19개를 빌드에 포함하고, 비공개 runtime에 일치하는 바이트로 추출합니다.</dd><dt>안전 경계</dt><dd>Native는 라우팅 환경을 제거하고 채널을 만들지 않습니다. fresh-login shell에서는 로그인 명령이 아니라 그 뒤 실제 launcher exec에만 상태 경로를 주입합니다. <code>forward_availability()</code>는 Codex 세션만 대상으로, 실제 계정·홈·60초 신선도를 검증한 정보를 전달합니다.</dd></dl><p class="source"><a href="../../crates/mindplayer-tui/src/local_router.rs">local_router.rs:16–91, 359–497, 660–775</a> · <a href="../../crates/mindplayer-tui/src/app/spawn.rs">app/spawn.rs:106–141, 565–657</a> · <a href="../../crates/mindplayer-tui/src/pty.rs">pty.rs</a></p></div></details>
+  <details class="file"><summary><div><span class="filename">app/account_auth.rs · app/pane.rs · app.rs · ui.rs</span><div class="purpose">인증 복구와 pane 수명, 기존 모델줄에 상태 표시</div></div></summary><div class="file-body"><dl><dt>인증은 별도 책임</dt><dd>provider별 실제 identity 확인·로그인 복구는 계정 계층이 담당합니다. 표시용 계정 이름은 Jev 모델 선택이나 실제 identity의 근거가 아닙니다.</dd><dt>수명 / 표시</dt><dd>상태 채널의 판단·요청·실행·완료를 기존 pane 경계에 표시합니다. Ctrl-Q는 pane 표시를 제거할 뿐 PTY를 종료하지 않고, 실제 앱 종료가 PTY를 drain/kill합니다.</dd><dt>범위</dt><dd>Jev는 로그인 복구 도구가 아닙니다. 이 보고서는 계정 파일이나 자격 증명 내용을 읽거나 복제하지 않습니다.</dd></dl><p class="source"><a href="../../crates/mindplayer-tui/src/app/account_auth.rs">app/account_auth.rs</a> · <a href="../../crates/mindplayer-tui/src/app/pane.rs">app/pane.rs:249–269, 332–337</a> · <a href="../../crates/mindplayer-tui/src/app.rs">app.rs:930</a> · <a href="../../crates/mindplayer-tui/src/ui.rs">ui.rs</a></p></div></details>
+
+  <h3 class="file-group">B. 공유 판단 계층 · 7개 내장 자산</h3>
+  <details class="file" data-asset="service.mjs"><summary><div><span class="filename">service.mjs</span><div class="purpose">Codex JevService, 자격 증명·정책 로더, 자식 환경 정리</div></div></summary><div class="file-body"><dl><dt>역할 / 입력</dt><dd><code>JevService</code>가 네이티브 catalog·baseline·계정 바인딩·가용성·정책·소유 turn/start를 받습니다. <code>loadJevCredentials()</code>는 Gateway 환경 키 → TypeSafe 환경 키 → 비공개 로컬 설정 순서로 적합한 값을 읽습니다.</dd><dt>출력 / 소비자</dt><dd>후보 메뉴와 judgment state는 서비스 내부에서 구성해 판단에 사용합니다. <code>router.mjs</code>에는 선택 결과(model·effort·reason 등)와 <code>owner / isCurrent</code>를 반환합니다. 공통 환경 정리 함수는 CLI 자식에서 실제 판단 API 키와 라우터 전용 환경을 제거합니다.</dd><dt>경계</dt><dd>코어 정책을 만족하지 못하면 전송을 차단합니다. Claude는 공통 로더와 환경 정리만 재사용하고, 선택은 <code>ClaudeJevPolicy</code>가 담당합니다. 계정 label로 identity를 추정하지 않습니다.</dd></dl><p class="source"><a href="../../tools/local-model-router/service.mjs">service.mjs:11–74, 85–153, 163 이후</a></p></div></details>
+  <details class="file" data-asset="jev.mjs"><summary><div><span class="filename">jev.mjs</span><div class="purpose">판단 API 요청·응답 계약, 확률과 configuration 검증</div></div></summary><div class="file-body"><dl><dt>입력</dt><dd><code>createJevClient({apiKey,provider,configurations})</code> → <code>judge(state,{signal})</code>. capability·context sufficiency·high consequence 질문에, configurations가 있으면 후보 선택 질문을 추가합니다. 두 adapter 모두 검증된 후보로 매 요청 <code>buildConfigurationInstructions()</code>를 호출해 <code>questions.configuration.instructions</code>에 가격 참고를 넣고 <code>{model,state,questions}</code>로 직렬화합니다. capability 질문과 state에 가격을 넣지 않습니다.</dd><dt>출력</dt><dd>검증된 capability 확률·confidence·선택적 model/effort configuration·판단 API 사용량 메타데이터입니다. Gateway는 <code>typesafe-ai/jev</code>, 직접 API는 <code>jev-latest</code>를 요청합니다. 이 usage와 gatewayCostUsd는 Jev 판단 호출의 값이지 Codex/Claude 실행 비용이 아닙니다.</dd><dt>차단</dt><dd>기본 15초, 전체 요청 32KiB·응답 64KiB, redirect 거부, 중단 후 늦은 fetch 결과 폐기. Gateway의 반올림된 후보 확률은 반올림 구간 내 우승자가 바뀌지 않는 유효 분포만 허용합니다.</dd></dl><p class="source"><a href="../../tools/local-model-router/jev.mjs">jev.mjs:17–45, 82–187, 198–265 이후</a></p></div></details>
+  <details class="file" data-asset="rubric.mjs"><summary><div><span class="filename">rubric.mjs</span><div class="purpose">난이도 판단 지침 v2, 기한 있는 가격 참고, 8KiB 스냅샷</div></div></summary><div class="file-body"><dl><dt>입력 → 출력</dt><dd>기본 descriptor 경로에서 현재 input·baseline·선택적인 허용된 prior judgment·family version/digest를 <code>mindplayer-capacity-v2</code> state로 만듭니다. 전체 직렬화 state를 8KiB 안으로 제한하며 Unicode·JSON escaping을 계산합니다. 별도 <code>buildConfigurationInstructions()</code>는 검증일·만료일·토큰 요금 구간이 있는 제공 후보만의 API 가격 참고를 선택 질문에 보조 제공합니다.</dd><dt>의미</dt><dd>이 함수는 history를 빈 배열로 고정해 이전 답변을 전송하지 않습니다. Codex의 <code>previousDecision</code>은 이전 판단 요약일 뿐 작업이 완료됐다는 사실이 아닙니다. Claude는 이를 제공하지 않습니다. 첨부 본문은 생략하고 flag로 표시합니다. Codex의 명시적 실측 정책 분기는 이 함수 대신 <code>policy.buildSnapshot()</code>을 사용합니다.</dd></dl><p class="source"><a href="../../tools/local-model-router/rubric.mjs">rubric.mjs:3–29, 31–68, 82–120</a></p></div></details>
+  <details class="file" data-asset="policy.mjs"><summary><div><span class="filename">policy.mjs</span><div class="purpose">안전한 스냅샷과 평가 기반 선택 제약</div></div></summary><div class="file-body"><dl><dt>역할</dt><dd><code>buildSnapshot()</code>가 텍스트·문맥 누락을 정리하고, <code>filterConfigurations()</code>와 <code>chooseConfiguration()</code>이 명시적 empirical 정책의 유효성·계정·도구·품질·비용·지연·기한을 평가합니다.</dd><dt>별도 전송 범위</dt><dd>Codex에 명시적 실측 정책이 있으면 <code>service.mjs:431–434</code>가 history를 전달합니다. 이때 전체 state는 기본 16KiB, 최근 최대 4쌍의 user/final assistant 텍스트를 포함할 수 있습니다. 기본 descriptor와 Claude의 8KiB·history 없음 경로와 다릅니다.</dd><dt>경계</dt><dd>비교 자료가 없으면 비용·품질을 지어내지 않습니다. Jev capability 판단을 하는 것과 평가 정책이 안전한 실행 쌍을 고르는 것은 다른 단계입니다.</dd></dl><p class="source"><a href="../../tools/local-model-router/policy.mjs">policy.mjs:55–107, 109–146, 204 이후</a></p></div></details>
+  <details class="file" data-asset="current-family.mjs"><summary><div><span class="filename">current-family.mjs</span><div class="purpose">Codex 최신군 allowlist와 검토 기한·digest</div></div></summary><div class="file-body"><dl><dt>입력 → 출력</dt><dd>고정된 검토 registry를 복제·검증·freeze합니다. <code>reviewFamilyRegistry()</code>는 현재 시각과 네이티브 catalog의 default/upgrade 정보를 대조해 current·legacy 목록과 digest를 반환합니다.</dd><dt>경계</dt><dd>기한 만료·모르는 default·검토 밖 upgrade는 재검토 요구입니다. catalog에 먼저 나온 legacy 모델이나 더 큰 숫자의 모델명을 최신으로 취급하지 않습니다. Claude registry는 별도 <code>claude-policy.mjs</code>에 있습니다.</dd></dl><p class="source"><a href="../../tools/local-model-router/current-family.mjs">current-family.mjs:24–63</a></p></div></details>
+  <details class="file" data-asset="system-fetch.mjs"><summary><div><span class="filename">system-fetch.mjs</span><div class="purpose">macOS Gateway의 OS 인증서 신뢰 경로</div></div></summary><div class="file-body"><dl><dt>역할</dt><dd>정해진 HTTPS endpoint만 OS curl로 전송합니다. 개인 curlrc·redirect·자동 retry를 끄고, 키가 든 헤더는 argv가 아니라 stdin config로 넘깁니다.</dd><dt>경계</dt><dd>TLS 검증을 끄지 않습니다. 헤더·응답 크기·시간·backpressure·중단·child reap을 제한합니다. <code>jev.mjs</code>는 macOS Gateway일 때 이 구현을 선택하고, 다른 경우 기본 fetch를 사용합니다.</dd></dl><p class="source"><a href="../../tools/local-model-router/system-fetch.mjs">system-fetch.mjs:3–15, 43 이후, 91–211</a></p></div></details>
+  <details class="file" data-asset="status.mjs"><summary><div><span class="filename">status.mjs</span><div class="purpose">pane별 판단·요청·실행·완료 상태를 메타데이터로 게시</div></div></summary><div class="file-body"><dl><dt>입력 → 출력</dt><dd>허용된 lifecycle event를 generation·thread/request/turn 소유권과 대조하고, private 상태 파일을 임시 파일 + atomic rename으로 갱신합니다.</dd><dt>표시 의미</dt><dd>ACK는 accepted이지 running이 아닙니다. 실제 turn-start event를 running으로 표시합니다. <code>model/rerouted</code>는 보조 서버 변경 정보이며 정상 실행의 필수 조건도, effort의 serving receipt도 아닙니다.</dd><dt>프라이버시</dt><dd>프롬프트·답변·계정 identity·키·원격 오류 본문을 상태 파일에 기록하지 않습니다. Claude의 started/applied는 확장 경계의 요청 메타데이터임을 별도로 해석해야 합니다.</dd></dl><p class="source"><a href="../../tools/local-model-router/status.mjs">status.mjs:7–105</a></p></div></details>
+
+  <h3 class="file-group">C. Codex 연결 · 8개 내장 자산</h3>
+  <details class="file" data-asset="run.mjs"><summary><div><span class="filename">run.mjs</span><div class="purpose">Codex 부모 프로세스: catalog·JevService·프록시·UI 조립</div></div></summary><div class="file-body"><dl><dt>경로</dt><dd><code>--mindplayer --cwd ... -- [원래 인수]</code>를 분리하고, 전용 UI 검증 → catalog/account probe → <code>createLocalProxy()</code> → <code>JevService(latestFamily)</code> → 원래 네이티브 UI 실행 순서로 연결합니다.</dd><dt>통합과 실험의 차이</dt><dd><code>integrated</code>이면 <code>pair=null</code>이고 serviceFactory를 씁니다. standalone simple/complex A/B 선택은 제품 통합 경로의 난이도 정책이 아닙니다.</dd><dt>종료</dt><dd>신호를 중복 처리하지 않고 UI·probe를 정리합니다. finally에서 실제 <code>proxy.close()</code>를 await합니다. 로그는 routing 메타데이터이며 raw prompt가 아닙니다.</dd></dl><p class="source"><a href="../../tools/local-model-router/run.mjs">run.mjs:44–174</a></p></div></details>
+  <details class="file" data-asset="startup-check.mjs"><summary><div><span class="filename">startup-check.mjs</span><div class="purpose">네트워크 없이 준비 상태만 점검</div></div></summary><div class="file-body"><p><code>loadPolicy()</code>의 외부 전송 veto → <code>loadJevCredentials()</code> → <code>resolveUiBinary({integrated:true})</code>를 확인하고 고정된 reason 코드만 반환합니다. provider 요청·app-server·추론은 실행하지 않습니다. 공통 시작 단계에 연결되어 있어 Claude 전용 session launcher 검사와는 별개입니다.</p><p class="source"><a href="../../tools/local-model-router/startup-check.mjs">startup-check.mjs:8–31</a></p></div></details>
+  <details class="file" data-asset="private-ui.mjs"><summary><div><span class="filename">private-ui.mjs</span><div class="purpose">호환되는 전용 Codex 바이너리·manifest·해시 검증</div></div></summary><div class="file-body"><p><code>resolveUiBinary()</code>는 통합 경로에 필요한 private native 계약을 확인합니다. 호환 기능과 파일 무결성이 없는 임의 codex로 조용히 대체하지 않습니다. 단, 이 확인은 계정 entitlement나 실제 모델 serving 증명이 아닙니다.</p><p class="source"><a href="../../tools/local-model-router/private-ui.mjs">private-ui.mjs:24–58 이후</a></p></div></details>
+  <details class="file" data-asset="launch.mjs"><summary><div><span class="filename">launch.mjs</span><div class="purpose">원래 CLI 인수와 권한을 보존해 UI / backend 인수 분리</div></div></summary><div class="file-body"><p><code>buildLaunchPlan()</code>이 resume·handoff·cwd·원래 sandbox/approval 인수를 해석하고 <code>uiArgs / backendArgs</code>를 구성합니다. 통합은 <code>preserveNativeModel:true</code>로 시작하여 첫 턴 baseline을 서비스가 검증하게 합니다. remote 주소와 토큰 전달만 라우터 경계에서 추가합니다.</p><p class="source"><a href="../../tools/local-model-router/launch.mjs">launch.mjs:27 이후</a></p></div></details>
+  <details class="file" data-asset="proxy.mjs"><summary><div><span class="filename">proxy.mjs</span><div class="purpose">인증된 localhost 중계와 연결별 네이티브 backend 소유</div></div></summary><div class="file-body"><p><code>createLocalProxy()</code>가 loopback listener·임시 bearer·WebSocket·app-server·ModelRouter를 연결합니다. UI 입력을 router에, backend 응답을 router의 server consumer에 전달합니다. close는 연결·transport를 정리하며 불확실한 제출을 다른 연결로 재전송하지 않습니다.</p><p class="source"><a href="../../tools/local-model-router/proxy.mjs">proxy.mjs:7 이후</a></p></div></details>
+  <details class="file" data-asset="router.mjs"><summary><div><span class="filename">router.mjs</span><div class="purpose">새 턴 가로채기, 결정 적용, 취소·stale·ACK·busy-input 제어</div></div></summary><div class="file-body"><dl><dt>역할</dt><dd><code>ModelRouter.client()</code>가 요청을 분류하고 <code>route()</code>가 Jev 결정을 기다립니다. 응답 후 pending 소유권·activity·catalog·effort·isCurrent를 재검사합니다.</dd><dt>실제 적용</dt><dd>복제한 <code>turn/start.params</code>의 model·effort와 <code>collaborationMode.settings</code>를 같이 바꿔 전송합니다. private backend의 <code>mindplayerRequireNewTurn</code> 계약으로 새 입력이 실행 중 turn의 steer로 흡수되지 않게 합니다.</dd><dt>보존할 동작</dt><dd><code>turn/steer</code> 응답을 옛 턴 종료까지 붙잡지 않습니다. Escape·승인 처리가 막힐 수 있기 때문입니다. 제출 결과가 불확실해도 자동 재시도하지 않습니다.</dd></dl><p class="source"><a href="../../tools/local-model-router/router.mjs">router.mjs:43–169, 171–260, 262 이후</a></p></div></details>
+  <details class="file" data-asset="app-server.mjs"><summary><div><span class="filename">app-server.mjs</span><div class="purpose">네이티브 app-server 프로세스와 JSONL 입출력</div></div></summary><div class="file-body"><p><code>openAppServer()</code>는 네이티브 child stdio를 bounded JSONL로 연결하고 중단·종료를 소유합니다. <code>probeModels()</code>는 초기화·모델 목록·선택적 account 정보를 수집합니다. catalog 응답은 후보 설명일 뿐 유료 실행 권한의 증명이 아닙니다.</p><p class="source"><a href="../../tools/local-model-router/app-server.mjs">app-server.mjs:9–82, 84 이후</a></p></div></details>
+  <details class="file" data-asset="websocket.mjs"><summary><div><span class="filename">websocket.mjs</span><div class="purpose">로컬 UI 연결의 WebSocket framing·크기 제한</div></div></summary><div class="file-body"><p><code>acceptWebSocket()</code>가 handshake·masked client frame·fragment·control frame·제한된 payload·backpressure를 처리합니다. 판단 정책이나 모델 등급은 알지 못합니다. 인증·loopback 소유권을 맡는 proxy와 transport 책임을 분리합니다.</p><p class="source"><a href="../../tools/local-model-router/websocket.mjs">websocket.mjs:35 이후</a></p></div></details>
+
+  <h3 class="file-group">D. Claude 연결 · 4개 내장 자산</h3>
+  <details class="file" data-asset="claude-run.mjs"><summary><div><span class="filename">claude-run.mjs</span><div class="purpose">임시 플러그인·브로커·네이티브 Claude의 전체 수명 소유</div></div></summary><div class="file-body"><dl><dt>사전 검사</dt><dd><code>parseClaudeRunArgs()</code>가 wrapper 인수와 원래 argv를 분리합니다. 충돌하는 <code>--safe-mode / --bare / --fallback-model</code>를 거부하고, 현재 코드의 최소 stable 버전 <code>2.1.302</code>를 5초·4KiB 안에서 확인합니다.</dd><dt>시작</dt><dd><code>stageClaudePlugin()</code>이 0700 임시 root와 0600 manifest/hooks/register를 만듭니다. <code>launchClaude()</code>는 실제 키를 부모에 두고 <code>--plugin-dir=...</code>만 해당 세션에 주입합니다. 전역 plugin/settings를 수정하지 않습니다.</dd><dt>종료</dt><dd>TERM/HUP/INT는 idempotent stop으로 합칩니다. broker abort를 바로 시작하고, native child close → 실제 broker close → 정확히 소유한 plugin root cleanup을 await합니다. 불응 child는 100ms 뒤 kill합니다.</dd></dl><p class="source"><a href="../../tools/local-model-router/claude-run.mjs">claude-run.mjs:22–70, 83–199</a></p></div></details>
+  <details class="file" data-asset="claude-mod.mjs"><summary><div><span class="filename">claude-mod.mjs</span><div class="purpose">메인 턴 식별, 첫 step의 Jev 요청, next에 model/effort 적용</div></div></summary><div class="file-body"><dl><dt>소유권</dt><dd><code>prompt.submit</code>은 입력을 지연하지 않고 첨부 누락 여부만 관찰합니다. 실제 nonempty 메인 <code>turn.start</code>에서만 소유권을 만듭니다. subagent는 저장·판단하지 않습니다.</dd><dt>판단 / 적용</dt><dd>첫 <code>turn.step</code>이 공유 pending Promise를 만들어 broker에 요청합니다. 같은 턴의 tool loop는 재판단하지 않습니다. 검증·취소 검사 후 <code>yield* next({...e,model,effort})</code>로 원래 index/messageCount 등 나머지 값을 유지합니다.</dd><dt>실패 / 완료</dt><dd>Jev 준비·판단 실패는 로컬 결과로 종료합니다. 준비 경계에서 만든 오류의 허용 reason만 고정 한국어 설명과 함께 표시하며, 알 수 없는 reason·위조 예외 속성·원격 본문은 노출하지 않습니다. native next 오류는 잡아서 재요청하지 않고 그대로 전파합니다. turn.complete는 시작 전 취소도 broker에서 release하며 session.end는 map과 generation을 초기화합니다.</dd></dl><p class="source"><a href="../../tools/local-model-router/claude-mod.mjs">claude-mod.mjs:3–36, 39–146</a></p></div></details>
+  <details class="file" data-asset="claude-broker.mjs"><summary><div><span class="filename">claude-broker.mjs</span><div class="purpose">로컬 인증 HTTP, 실제 turn 소유권, 취소·수용량 관리</div></div></summary><div class="file-body"><dl><dt>API</dt><dd><code>POST /judge</code>는 정확한 requestId/sessionId/turnId/input/baseline 형태만 받습니다. <code>POST /event</code>는 started/applied/completed/cancelled를 처리합니다.</dd><dt>제한</dt><dd>127.0.0.1 전용, 정확한 Host·Origin 거부·32-byte random bearer, constant-time 인증, 본문 64KiB, 동시 controller 32, admitted job 512, retired replay ID 512. 입력·원격 에러 본문을 audit에 넘기지 않습니다.</dd><dt>취소</dt><dd>세 ID와 stage가 일치해야 cancel합니다. 시작 전 selected 상태도 retire + 실제 controller.abort하며, 늦은 결과는 현재 작업을 바꾸지 않습니다. close는 실제 async handler까지 await합니다.</dd></dl><p class="source"><a href="../../tools/local-model-router/claude-broker.mjs">claude-broker.mjs:19–158</a></p></div></details>
+  <details class="file" data-asset="claude-policy.mjs"><summary><div><span class="filename">claude-policy.mjs</span><div class="purpose">Claude 최신군·effort 메뉴, Jev 호출, fallback·기한 검증</div></div></summary><div class="file-body"><dl><dt>입력 → 출력</dt><dd><code>ClaudeJevPolicy.decide({input,baseline,signal})</code>가 일반 baseline에는 frozen 15개, 정확한 <code>claude-mythos-5-1</code> baseline에만 20개 메뉴와 8KiB state를 만들고 실제 판단 API를 호출합니다. 응답의 <code>choice + model + effort</code>를 후보와 검증한 뒤 broker에는 <code>{model, effort, reason}</code>만 반환합니다.</dd><dt>방어</dt><dd>동의·registry 기한·AbortSignal·외부 정책을 await 전후 다시 확인합니다. unknown capability, 잘린 텍스트·첨부 누락이면 Jev 호출 후 검증된 c0로 유지합니다. 이는 오류를 무시하는 fallback과 다릅니다.</dd><dt>한계</dt><dd>descriptor 기반 정책이며 live 계정 가용성·품질·費用 비교 evaluator가 아닙니다. API 가격 참고가 있어도 <code>executionCostUsd:null</code>을 유지합니다. native 실행과 turn 소유권은 broker/mod가 맡습니다.</dd></dl><p class="source"><a href="../../tools/local-model-router/claude-policy.mjs">claude-policy.mjs:17–74, 103–175</a></p></div></details>
+  <h3 style="margin-top:28px">추가 의존 코드 · 내장 JavaScript 자산과는 별개</h3>
+  <div class="grid2"><article class="card"><h4>tools/native-codex/queue.patch</h4><p>전용 Codex UI·protocol·backend의 패치입니다. 실행 중 일반 Enter는 네이티브 큐에 보관하고, 정상 완료 뒤 각 입력을 새 turn/start로 보냅니다. 실제 backend는 <code>mindplayerRequireNewTurn</code>을 <code>start_turn_if_idle()</code>로 소비해 입력과 model/effort를 원자적으로 수락하거나 함께 거부합니다. 판단 중 Escape와 실제 turn ID의 상관관계도 보존합니다.</p><p class="source"><a href="../../tools/native-codex/queue.patch">queue.patch:381 이후</a> · <a href="../../tools/native-codex/README.ko.md">전용 native 계약 설명</a></p></article><article class="card"><h4>tools/native-codex/build.mjs</h4><p>고정 upstream revision과 reviewed patch·toolchain을 검증하고 native 회귀 테스트 후 전용 CLI와 code-mode-host 후보를 만듭니다. SHA256·manifest를 기록하지만 자동 활성화하거나 일반 PATH Codex를 교체하지 않습니다. <code>private-ui.mjs</code>가 이 설치 계약을 소비합니다.</p><p class="source"><a href="../../tools/native-codex/build.mjs">build.mjs</a> · 이번 문서 작성에서는 실행하지 않음</p></article></div>
+</section>
+
+<section id="contracts">
+  <div class="section-no">05 / CRITICAL CODE</div><h2>연동을 이해하는 여덟 개의 코드 지점</h2>
+  <p class="muted">아래는 현재 파일의 실제 발췌입니다. 전체 코드를 복제하지 않고, 결정이 어디서 만들어지고 어디서 실행 요청으로 바뀌는지에 집중합니다.</p>
+  <article class="contract"><h3>1. Jev를 켜지 않았다면 원래 실행 경로</h3><p>spawn 직전에 모드를 분기합니다. Native에 라우터 채널을 억지로 할당하지 않습니다.</p><p class="source"><a href="../../crates/mindplayer-tui/src/local_router.rs">local_router.rs:477–485</a></p><pre><code data-source="crates/mindplayer-tui/src/local_router.rs" data-lines="477:485">pub(crate) fn prepare_spawn_for_mode(
+    command: &amp;Command,
+    mode: RoutingMode,
+) -&gt; Result&lt;(Command, Option&lt;RoutingStatusChannel&gt;)&gt; {
+    match mode {
+        RoutingMode::Jev =&gt; prepare_spawn(command),
+        RoutingMode::Native =&gt; Ok((prepare_for_mode(command, mode)?, None)),
+    }
+}</code></pre></article>
+  <article class="contract"><h3>2. 기본 descriptor state는 대화 기록이 아니라 제한된 입력</h3><p>이 함수의 8KiB 한도는 텍스트만이 아니라 버전·baseline·flag를 포함한 전체 직렬화 state에 적용됩니다. Codex의 명시적 실측 정책 분기는 별도 16KiB snapshot을 사용합니다.</p><p class="source"><a href="../../tools/local-model-router/rubric.mjs">rubric.mjs:91–96</a></p><pre><code data-source="tools/local-model-router/rubric.mjs" data-lines="91:96">  const snapshot = {
+    ...buildSnapshot({ input, baseline, history: [], contextKnown: false, maxBytes }),
+    rubricVersion: RUBRIC_VERSION,
+    previousDecision: sanitizePreviousDecision(previousDecision),
+    ...(currentFamily === null ? {} : { currentFamily: { version: currentFamily.version, digest: currentFamily.digest } }),
+  };</code></pre></article>
+  <article class="contract"><h3>3. Claude: 후보 검증 후에도 문맥 누락은 보수적으로</h3><p>Jev를 호출하지 않는 것이 아닙니다. 판단은 수행한 뒤, 누락 정보가 있으면 검증된 기준 c0를 선택합니다. registry 밖 결과는 그보다 앞에서 거절합니다.</p><p class="source"><a href="../../tools/local-model-router/claude-policy.mjs">claude-policy.mjs:156–166</a></p><pre><code data-source="tools/local-model-router/claude-policy.mjs" data-lines="156:166">    this.#check(signal); this.#checkPolicy();
+    const metadata = judgmentMetadata(judgment);
+    let selected;
+    try {
+      selected = configurations.find((value, index) =&gt; same(value, judgment.configuration) &amp;&amp; judgment.configuration?.choice === `c${index}`);
+    } catch { throw fail('invalid-response'); }
+    if (!selected) throw fail('invalid-response');
+    let reason = 'reviewed-descriptor-jev';
+    if (state.truncated || state.attachments) { selected = fallback; reason = 'context-incomplete'; }
+    else if (metadata.capability === 'unknown') { selected = fallback; reason = 'capability-unknown'; }
+    const result = { model: selected.model, effort: selected.effort, reason };</code></pre></article>
+  <article class="contract"><h3>4. Claude: 이 줄이 실제 네이티브 요청으로의 전달</h3><p>앞의 “selected / applied” 이벤트는 요청 메타데이터입니다. 아래 next 호출이 모델·effort를 넘기는 실제 코드 경계이며, 서버에서 어떤 모델이 처리했는지까지 증명하지는 않습니다.</p><p class="source"><a href="../../tools/local-model-router/claude-mod.mjs">claude-mod.mjs:112</a></p><pre><code data-source="tools/local-model-router/claude-mod.mjs" data-lines="112:112">    return yield* next({ ...e, model: selection.model, effort: selection.effort });</code></pre></article>
+  <article class="contract"><h3>5. 취소는 화면만 바꾸는 것이 아니라 실제 작업을 retire</h3><p>broker가 앞에서 세 ID와 stage를 대조한 후 도달하는 분기입니다. selected 상태의 취소도 자리와 AbortSignal을 해제해 긴 세션의 수용량 누적을 막습니다.</p><p class="source"><a href="../../tools/local-model-router/claude-broker.mjs">claude-broker.mjs:115–119</a></p><pre><code data-source="tools/local-model-router/claude-broker.mjs" data-lines="115:119">        const identity = { threadId: value.sessionId, requestId: value.requestId, turnId: value.turnId };
+        if (value.kind === 'cancelled') {
+          retire(value.requestId); job.controller.abort();
+          emit(job.stage === 'running' ? { event: 'turn-completed', ...identity, status: 'interrupted' }
+            : { event: 'route-cancelled', ...identity, reason: 'user-cancelled' });</code></pre></article>
+  <article class="contract"><h3>6. 실제 판단 API 키는 네이티브 자식에게 물려주지 않음</h3><p>공유 환경 정리 함수입니다. Claude launcher는 이 뒤 LOCAL_ROUTER_TOKEN도 제거하고, 자신이 만든 일회성 broker URL/token만 새로 넣습니다. account/provider의 원래 환경 전체를 임의 재작성하는 함수는 아닙니다.</p><p class="source"><a href="../../tools/local-model-router/service.mjs">service.mjs:11–16</a></p><pre><code data-source="tools/local-model-router/service.mjs" data-lines="11:16">export function childEnvironment(env) {
+  const clean = { ...env };
+  for (const name of ['AI_GATEWAY_API_KEY', 'TYPESAFE_API_KEY', 'VERCEL_OIDC_TOKEN', 'MINDPLAYER_ROUTER_AVAILABILITY', 'MINDPLAYER_ROUTER_STATUS',
+    'MINDPLAYER_CLAUDE_JEV_URL', 'MINDPLAYER_CLAUDE_JEV_TOKEN']) delete clean[name];
+  return clean;
+}</code></pre></article>
+  <article class="contract"><h3>7. Codex: collaboration 설정까지 같은 쌍으로 반영</h3><p>params.model만 바꾸면 effort나 협업 모드가 이전 값을 유지할 수 있습니다. 이 코드는 현재 catalog의 지원 effort를 검사하고 두 설정 지점을 함께 맞춥니다.</p><p class="source"><a href="../../tools/local-model-router/router.mjs">router.mjs:225–236</a></p><pre><code data-source="tools/local-model-router/router.mjs" data-lines="225:236">      if (this.requireFreshTurn) params.mindplayerRequireNewTurn = true;
+      params.model = candidate.model;
+      const supported = candidate.supportedReasoningEfforts?.map(e =&gt; e.reasoningEffort) ?? [];
+      const wanted = this.service ? decision.effort : params.collaborationMode?.settings?.reasoning_effort ?? params.effort;
+      if (this.service &amp;&amp; !(supported.includes(wanted) || (wanted === null &amp;&amp; supported.length === 0 &amp;&amp; candidate.defaultReasoningEffort === null))) throw new Error('Selected effort is not supported');
+      const effort = supported.includes(wanted) ? wanted : candidate.defaultReasoningEffort;
+      if (effort || (this.service &amp;&amp; effort === null)) params.effort = effort;
+      else delete params.effort;
+      if (params.collaborationMode?.settings) {
+        params.collaborationMode.settings.model = candidate.model;
+        params.collaborationMode.settings.reasoning_effort = effort ?? null;
+      }</code></pre></article>
+  <article class="contract"><h3>8. 외부 Jev 판단은 실행 모델 요청과 별도 HTTPS 호출</h3><p>현재 코드의 Gateway endpoint는 <code>https://ai-gateway.vercel.sh/typesafe/v1/systemone</code>, 직접 endpoint는 <code>https://api.typesafe.ai/v1/systemone</code>입니다. 두 adapter 모두 후보 선택 질문에 기한을 확인한 가격 지침을 넣은 뒤 <code>{model,state,questions}</code>를 전송합니다. 실제 키 값은 문서에 포함하지 않았습니다.</p><p class="source"><a href="../../tools/local-model-router/jev.mjs">jev.mjs:259–265</a></p><pre><code data-source="tools/local-model-router/jev.mjs" data-lines="259:265">        response = await fetchImpl(endpoint, {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+          body: requestBody,
+          redirect: 'error',
+          signal: controller.signal,
+        });</code></pre></article>
+  <details class="method"><summary>외부로 보내는 것 / 보내지 않는 것</summary><div class="grid2" style="margin-top:15px"><div class="card"><h4>기본 descriptor / Claude 경로</h4><p>현재 입력의 제한된 텍스트, baseline model/effort, 문맥·잘림·첨부 flag, rubric/family 식별 정보, 후보 설명과 판단 질문. Codex 기본 경로는 신선도·소유권 검사를 통과한 이전 판단 요약을 포함할 수 있습니다. 전체 state 한도는 8KiB이며 history는 비어 있습니다.</p></div><div class="card"><h4>Codex 명시적 실측 정책 경로</h4><p><code>buildSnapshot({history:thread.history,...})</code>로 분기하며, 기본 16KiB 안에서 최근 최대 4쌍의 user/final assistant 텍스트를 포함할 수 있습니다. 이전 assistant 답변을 어떤 경로에서도 보내지 않는다는 설명은 부정확합니다.</p></div></div><p>전체 transcript나 첨부 본문을 전송하는 기능은 아닙니다. 실제 계정 identity·네이티브 provider 자격 증명을 구조화된 판단 자료로 넣지 않습니다. 로컬 broker의 session/turn/request ID는 소유권 확인용이며 <code>policy.decide</code>에는 input/baseline/signal만 전달됩니다.</p><p class="caption">현재 입력이나 제한된 과거 텍스트 자체에 비밀이 있으면 전송 자료에도 포함될 수 있습니다. 크기 제한은 비밀 자동 제거 기능이 아닙니다. 시작 선택에서 외부 전송을 고지하는 이유입니다.</p></details>
+</section>
+
+<section id="lifecycle">
+  <div class="section-no">06 / FAILURES & LIFECYCLE</div><h2>실패·취소·종료에서 지켜야 할 것</h2>
+  <div class="timeline"><div><strong>판단 중</strong><small>현재 입력마다 Jev 요청. 기다리는 동안 cancel 가능.</small></div><div><strong>선택·요청</strong><small>후보 쌍과 소유권 검증. ACK·요청 이벤트는 serving 증명 아님.</small></div><div><strong>실행 중</strong><small>네이티브 lifecycle 관측. 기존 도구·승인 동작 유지.</small></div><div><strong>완료·중단</strong><small>소유 상태 retire. 다음 새 사용자 턴은 새 판단.</small></div></div>
+  <div class="table-scroll" role="region" aria-label="실패와 취소 처리 비교" tabindex="0"><table><thead><tr><th>상황</th><th>현재 처리</th><th>잘못 해석하면 안 되는 것</th></tr></thead><tbody>
+    <tr><td>키 없음 · 401/402/429 · TLS · timeout</td><td>고정 reason으로 실패를 표시합니다. Codex는 새 턴 전송 차단, Claude 확장이 관측한 오류는 native next를 호출하지 않습니다.</td><td>몰래 이전 모델로 실행하거나 같은 턴을 자동 retry하지 않습니다. Claude 확장 자체의 우회 가능성은 별개입니다.</td></tr>
+    <tr><td>registry 기한 만료 · 알 수 없는 baseline</td><td>검토 요구 / effort 미지원으로 차단합니다. 현재군 밖 새 모델을 숫자로 추측하지 않습니다.</td><td>“항상 자동 최신”은 아닙니다. 수동 registry 유지가 필요합니다.</td></tr>
+    <tr><td>긴 입력 · 첨부 · capability unknown</td><td>지원되는 입력·정책 범위에서 판단을 수행하고 보수적 기준을 사용합니다. Claude 로컬 전송은 먼저 8192 UTF-16 code unit prefix로 제한한 뒤 8KiB state를 만듭니다.</td><td>8192 code unit과 8192 byte는 다릅니다. 첨부·잘린 원문을 Jev가 모두 읽었다고 말할 수 없습니다.</td></tr>
+    <tr><td>판단 중 또는 selected 직후 Escape</td><td>현재 소유 작업을 cancel/retire하고 실제 AbortSignal을 중단합니다. 늦은 판단은 적용하지 않고 새 시도는 새 request ID로 판단합니다.</td><td>같은 문장이면 취소한 판단 결과를 재사용해도 되는 것이 아닙니다.</td></tr>
+    <tr><td>다른 session / turn / request의 cancel</td><td>Claude broker는 409로 거부합니다. 유효 취소 후 늦은 기존 결과도 현재 작업을 덮어쓰지 못합니다.</td><td>텍스트 일치나 display label은 소유권 증거가 아닙니다.</td></tr>
+    <tr><td>Claude subagent / tool continuation</td><td>subagent turn은 소유 map에 넣지 않고 bypass합니다. 같은 메인 턴의 tool step은 첫 결정을 공유합니다.</td><td>내부 tool loop마다 사용자 프롬프트처럼 Jev를 다시 부르는 설계가 아닙니다.</td></tr>
+    <tr><td>Ctrl-Q로 pane 숨김</td><td>표시 pane만 닫고 실행 중 PTY·launcher·broker·임시 plugin은 유지합니다.</td><td>즉시 PID·port·plugin이 사라지는 것이 정상이라는 테스트를 만들면 네이티브 의미를 바꾸게 됩니다.</td></tr>
+    <tr><td>실제 앱 종료 · native 종료 · TERM/HUP</td><td>PTY 종료와 launcher의 idempotent 정리. Claude는 broker abort를 시작하고 native close·broker async consumer·소유 plugin 삭제를 await합니다.</td><td>프로세스에 kill을 호출한 사실만으로 비동기 cleanup 완료를 주장할 수 없습니다.</td></tr>
+    <tr><td>제출 결과 불확실 / native next 오류</td><td>재전송하지 않습니다. 원래 오류·종료를 전달하고 사용자 확인 경계를 유지합니다.</td><td>오류를 잡아 다른 모델로 replay하면 중복 실행 위험이 생깁니다.</td></tr>
+  </tbody></table></div>
+  <div class="callout"><p><strong>로그 해석 주의:</strong> Claude broker의 <code>started / applied</code>는 확장이 <code>next()</code>를 호출하기 직전 보내는 이벤트입니다. Codex의 실제 <code>turn/started</code>, JSON-RPC ACK, 서버 변경 보고, 서버 serving receipt를 하나의 증거로 합치지 않습니다.</p></div>
+</section>
+
+<section id="evidence">
+  <div class="section-no">07 / EVIDENCE, NOT ASSUMPTION</div><h2>무엇을 검증했고, 무엇은 아직 모르는가</h2>
+  <p class="muted">아래 수치는 저장된 검증 기록의 결과입니다. 이번 HTML 작성에서 provider 추론이나 Cargo 빌드를 다시 실행했다는 뜻은 아닙니다.</p>
+  <div class="grid3"><article class="card"><div class="evidence-count">13 / 13 <span>source + installed 각각</span></div><h3>현재 0.55.14 PTY smoke</h3><p>소스 44.68초·정확한 설치본 43.45초, 19개 추출 자산의 checkout 바이트 일치. 추가 2개 검사는 설치된 Mod → 실제 broker → policy → Jev client 직렬화를 소비하며 upstream HTTP와 native next는 합성입니다. 429의 제한된 한국어 오류·비밀 미노출·next 미호출도 확인했습니다.</p></article><article class="card"><div class="evidence-count">648 / 679 <span>31 생략 · 실패 0</span></div><h3>최종 오프라인 Node 검사</h3><p>25.595초. 정책·broker·mod·가격 전달·통합·launcher 회귀를 포함합니다. local_router 21/21, fmt check와 전체 target clippy의 경고 거부 검사도 통과했습니다. 이 결과는 아래 0.55.14 기록의 검증이며 문서 작업에서 재실행한 결과가 아닙니다.</p></article><article class="card"><div class="evidence-count">11 / 11 <span>Claude 2.1.302 테스트 엔진</span></div><h3>Claude staged module 검사</h3><p>실제 설치된 native test dispatcher에서 모듈을 실행하되 env/http/session/next는 mock입니다. production manifest validate는 통과했지만 optional metadata 경고 3개가 있었습니다. 실제 upstream의 모델·effort 수용이나 추론은 검증하지 않았습니다.</p></article></div>
+  <div class="table-scroll" role="region" aria-label="증거 수준과 한계" tabindex="0"><table><thead><tr><th>증거 층</th><th>확인할 수 있는 것</th><th>이것만으로는 확인 못 하는 것</th></tr></thead><tbody>
+    <tr><td>로컬 코드 + 단위/통합 테스트</td><td>후보 allowlist, exact effort·choice, snapshot, 취소와 stale 방어, 자식 환경과 cleanup consumer.</td><td>유료 모델의 권한·실제 serving·답변 품질·실제 비용 절감.</td></tr>
+    <tr><td>네이티브 module test</td><td>현재 staged nested module이 테스트 엔진에서 로드되고 이벤트 adapter 계약에 맞게 next를 호출함.</td><td>실제 대화의 모든 event ordering 또는 provider 추론. 주입한 비정상 순서가 실사용에서 발생한다는 증거도 아님.</td></tr>
+    <tr><td>정확한 설치 실행 파일 + PTY</td><td>설치 바이너리의 new/resume/handoff, 실제 launcher·broker·private plugin staging과 자원 정리.</td><td>이 suite의 native CLI/Jev는 synthetic fixture입니다. 실제 Codex/Claude 모델이 이 값을 serving했다는 증명은 아님.</td></tr>
+    <tr><td>기존 실제 TypeSafe Jev 정책 probe</td><td>공개·무해 입력 3개에서 Haiku/low → Opus/high → Haiku/low 판단 응답을 받은 기록.</td><td>Gateway 경로 증명, native Claude 추론·effective effort·비용 또는 품질 비교 증명은 아님.</td></tr>
+  </tbody></table></div>
+  <div class="callout"><p><strong>남은 한계:</strong> 사용자 지시에 따라 실제 provider 추론은 실행하지 않았습니다. Claude의 best-effort 경계, live entitlement·실제 모델/effort 미확인, 실측 품질·실행 비용 근거 부재, registry·가격 재검토 필요는 그대로 남습니다. 이미 실행 중인 pane은 이전 runtime을 유지하며 새 실행부터 0.55.14 설치본을 사용합니다.</p></div>
+  <h3>테스트 코드는 어느 계약을 지키는가</h3>
+  <ul class="rule-list">
+    <li><a href="../../tools/local-model-router/claude-policy.test.mjs">claude-policy.test.mjs</a> · 현재군·explicit effort·동의·기한·fallback·외부 정책 veto.</li>
+    <li><a href="../../tools/local-model-router/claude-broker.test.mjs">claude-broker.test.mjs</a> / <a href="../../tools/local-model-router/claude-integration.test.mjs">claude-integration.test.mjs</a> · 잘못된 ID 취소 거부, 실제 pending signal 중단, selected 전후 cancel 용량 반환, 다음 새 판단.</li>
+    <li><a href="../../tools/local-model-router/claude-mod.test.mjs">claude-mod.test.mjs</a> / <a href="../../tools/local-model-router/claude-mod.native.test.ts">claude-mod.native.test.ts</a> · 첫 step만 판단, tool continuation 유지, agent 제외, bounded transport, 로컬 실패·native 오류 구분.</li>
+    <li><a href="../../tools/local-model-router/claude-run.test.mjs">claude-run.test.mjs</a> · 세션 전용 staging·원래 argv·키 격리·버전 검사·TERM/HUP·비동기 close/cleanup 순서.</li>
+    <li><a href="../../tools/local-model-router/current-family.test.mjs">current-family.test.mjs</a> / <a href="../../tools/local-model-router/latest-family.test.mjs">latest-family.test.mjs</a> · legacy-first catalog에서도 현재군만 메뉴에 노출, registry 만료와 baseline 제약.</li>
+    <li><a href="../../tools/local-model-router/mindplayer-fixture.mjs">mindplayer-fixture.mjs</a> / <a href="../../tools/local-model-router/mindplayer-jev-fixture.mjs">mindplayer-jev-fixture.mjs</a> · provider 호출 없는 synthetic catalog·A/B/C 판단. 제품 모델 선택기가 아니라 검증용 fixture입니다.</li>
+    <li><a href="../../crates/mindplayer-tui/tests/smoke.rs">smoke.rs</a> · 실제 PTY와 정확한 installed override, 자산 바이트·기존 CLI lifecycle·Ctrl-Q 자원 유지와 실제 종료 후 cleanup.</li>
+  </ul>
+  <h3>기록과 읽는 순서</h3>
+  <ol class="reading"><li><a href="../0.55.14-local-install.validation.json">현재 0.55.14 설치 검증</a> — 동결 소스·설치본 SHA256·source/installed 각각 13개 검사·rollback·정리 및 실제 추론 미검증 경계.</li><li><a href="../0.55.13-local-install.validation.json">과거 0.55.13 설치 검증</a> — 당시 source/installed 각각 11개 검사이며 현재 버전의 검증으로 합산하지 않습니다.</li><li><a href="../claude-jev-installed-2026-10-18.validation.json">과거 0.55.12 Claude 기능 검증</a> — 당시 Node/native module/실제 신호/코드 리뷰와 TypeSafe 정책 probe 기록입니다. 현재 설치 검증은 0.55.14 기록을 따릅니다.</li><li><a href="../../README.md">README</a> → <a href="../../crates/mindplayer-tui/src/local_router.rs">local_router.rs</a> → 각 provider launcher → service/policy → router/mod 순서로 보면 진입부터 실제 적용까지 연결됩니다.</li></ol>
+  <details class="method"><summary>문서 제작 범위와 표현 선택</summary><p>단순 파일 목록, 대화형 그래프 앱, 독립 HTML 코드 가이드의 세 방식을 비교했습니다. 전체 경로는 짧은 두-lane 연결도로, 반복되는 파일 계약은 펼침 설명으로, 증거 수준은 표로 정리하는 세 번째 방식을 선택했습니다. 외부 라이브러리·폰트·CDN·분석 수집 없이 file URL로 열립니다.</p><p>1차로 실제 호출 경로와 await/next 소비자를 읽고, 2차로 테스트·검증 JSON과 교차 확인했습니다. 이 문서는 기존 소스의 설명이며 구현 변경·계정 복구·재설치·실제 provider 추론을 수행하지 않습니다. 소스가 바뀌면 경로·줄 번호·내장 코드 발췌·검증 기록도 다시 확인해야 합니다.</p></details>
+  <footer class="foot">MindPlayer / Jev code guide · 2026-10-18<br>소스 경로는 repo 상대 링크입니다. 이 HTML만 다른 곳으로 복사하면 본문은 읽을 수 있지만 원본 파일·검증 기록 링크는 함께 옮기지 않는 한 열리지 않습니다.</footer>
+</section>
+</main>
+</div>
+<script>
+(() => {
+  const search = document.getElementById('file-search');
+  const files = [...document.querySelectorAll('details.file')];
+  const count = document.getElementById('file-count');
+  const button = document.getElementById('toggle-files');
+  const update = () => {
+    const query = search.value.trim().toLocaleLowerCase();
+    for (const file of files) file.hidden = !file.textContent.toLocaleLowerCase().includes(query);
+    const visible = files.filter(file => !file.hidden);
+    count.textContent = `${visible.length} / ${files.length}개 설명 · JavaScript 내장 자산 19개 + Rust 경계 3개 그룹`;
+    for (const title of document.querySelectorAll('.file-group')) {
+      let next = title.nextElementSibling, any = false;
+      while (next && !next.classList.contains('file-group')) {
+        if (next.matches('details.file') && !next.hidden) any = true;
+        next = next.nextElementSibling;
+      }
+      title.hidden = !any;
+    }
+    const allOpen = visible.length > 0 && visible.every(file => file.open);
+    button.textContent = allOpen ? '모두 접기' : '모두 펼치기';
+    button.setAttribute('aria-expanded', String(allOpen));
+  };
+  search.addEventListener('input', update);
+  button.addEventListener('click', () => {
+    const visible = files.filter(file => !file.hidden);
+    const open = !visible.every(file => file.open);
+    for (const file of visible) file.open = open;
+    update();
+  });
+  for (const file of files) file.addEventListener('toggle', update);
+  update();
+})();
+</script>
+</body>
+</html>

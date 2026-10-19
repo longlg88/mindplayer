@@ -1,0 +1,142 @@
+{
+  "anonymization": {
+    "date": "2026-10-17",
+    "accounts": "Display labels use work-account/personal-account; identifier keys use work_account/personal_account.",
+    "paths": "Evidence paths are relative to the repository root; .. retains locations outside it. Historical commands anchor external paths at ${PWD}. Evidence was not copied or moved.",
+    "history": "Original timestamps, hashes, results and caveats are retained. Labels and paths are anonymized representations; historical verification does not attest to edited bytes or current live state."
+  },
+  "date": "2026-10-15",
+  "scope": "로컬 MindPlayer TUI에서 Codex 세션을 열 때 중계를 자동 실행하는 PoC. Jev/PIM/Vercel 미연결.",
+  "source": {
+    "repository": ".",
+    "revision": "54529865aa69ef134c25b88a78c8139ce99b181f",
+    "dirty": true,
+    "version": "0.55.3",
+    "version_override_used": false,
+    "preexisting_changes_preserved": ["DESIGN.md", "AGENTS.md", "docs/"],
+    "commit_push_deploy": false
+  },
+  "changed_files": [
+    "Cargo.toml",
+    "Cargo.lock",
+    "README.md",
+    "crates/mindplayer-core/src/resume.rs",
+    "crates/mindplayer-tui/src/main.rs",
+    "crates/mindplayer-tui/src/pty.rs",
+    "crates/mindplayer-tui/src/local_router.rs",
+    "crates/mindplayer-tui/src/app/spawn.rs",
+    "crates/mindplayer-tui/src/app/tests.rs",
+    "crates/mindplayer-tui/tests/smoke.rs",
+    "tools/local-model-router/launch.mjs",
+    "tools/local-model-router/launch.test.mjs",
+    "tools/local-model-router/run.mjs",
+    "tools/local-model-router/run.test.mjs",
+    "tools/local-model-router/proxy.mjs",
+    "tools/local-model-router/app-server.mjs",
+    "tools/local-model-router/app-server.test.mjs",
+    "tools/local-model-router/mindplayer-fixture.mjs",
+    "tools/local-model-router/README.ko.md",
+    "tools/local-model-router/mindplayer-integration.validation.json"
+  ],
+  "simplifications": [
+    "공통 PTY 경계에서 새 세션·재개·handoff를 연결해 별도 실행과 새 UI를 제거했습니다.",
+    "기존 계정 환경/작업 폴더/입력 경로를 재사용합니다. 다른 provider와 로그인은 중계하지 않습니다.",
+    "실행 모듈을 바이너리에 포함해 개발 저장소 경로와 전역 Codex 래퍼를 사용하지 않습니다.",
+    "추가 패키지 의존성, 상주 daemon, 설정 토글, 모델 선택기를 추가하지 않았습니다."
+  ],
+  "installation": {
+    "built": "target/release/mindplayer",
+    "installed": "../../../../../../.local/bin/mindplayer",
+    "version_output": "mindplayer 0.55.3",
+    "sha256_built_and_installed": "1582548e75d831f931a205a6a8b7e527204c95dfcfe73a27eddf8f922d842bd6",
+    "rollback": "../../../../../../.mindplayer/mindplayer-rollback-20261015.Al5cQg/mindplayer",
+    "rollback_version": "mindplayer 0.55.2",
+    "rollback_sha256": "7d247b89c33538e9dbd4f051ac83c9071f6d6bfdeca035ecfa71ec9e78e8966a",
+    "embedded_runtime": "../../../../../../.mindplayer/runtime/codex-router-c53db6bc4806f489",
+    "all_six_runtime_modules_cmp_equal_to_source": true
+  },
+  "verification": {
+    "node": {
+      "command": "node --test --test-concurrency=1 tools/local-model-router/*.test.mjs",
+      "passed": 53,
+      "failed": 0
+    },
+    "rust": {
+      "command": "cargo test --workspace -q -- --test-threads=2",
+      "exit_code": 0,
+      "core_unit_passed": 193,
+      "core_other_passed": [3, 4, 18],
+      "tui_unit_passed": 510,
+      "smoke_passed": 21,
+      "ignored_total": 6,
+      "failed": 0,
+      "initial_failures": "초기 병렬 실행에서 기존 quota subprocess의 짧은 타임아웃이 발생했습니다. 병렬 수 2로 전체를 재검증했고, 새 smoke fixture의 초기 오류를 수정한 뒤 모든 테스트가 통과했습니다."
+    },
+    "exact_installed_binary": {
+      "command": "MINDPLAYER_TEST_BINARY=${PWD}/../../../../../../.local/bin/mindplayer cargo test -p mindplayer-tui --test smoke -q -- --test-threads=2",
+      "passed": 21,
+      "failed": 0,
+      "ignored": 1,
+      "duration_seconds": 29.19
+    },
+    "static_checks": [
+      "cargo clippy --workspace --all-targets -- -D warnings: exit 0",
+      "cargo fmt --all --check: exit 0",
+      "git diff --check: exit 0"
+    ],
+    "code_review": "계정·폴더·권한·입력·로컬 제한에 blocker 없음. 신호 종료 코드와 비밀정보를 노출하지 않는 단계별 오류 진단 보완 후 재확인."
+  },
+  "live_native_codex": {
+    "node_version": "23.9.0",
+    "codex_version": "0.162.1",
+    "cwd": "../../../../../../../../private/var/folders/t8/nkh_jkgj0db5bs30rywyn4gr0000gq/T/mindplayer-integrated-live.WvUXg3obfD",
+    "account": "personal-account",
+    "thread": "01a13e24-c15c-7133-b6ab-85c164d8880b",
+    "source_build_new_session": "MindPlayer n → 계정 선택 → 새 세션에서 중계와 원본 Codex UI 자동 시작. A 요청 완료 및 nonce 출력 확인.",
+    "installed_resume": "정확한 설치본을 실행해 기존 세션을 Enter로 재개. 원래 thread·계정·cwd 유지. UI permissions: YOLO mode 확인.",
+    "metadata_log": "../../../../../../../../var/folders/t8/nkh_jkgj0db5bs30rywyn4gr0000gq/T/mindplayer-local-router-eD9aQo/routing.jsonl",
+    "turns": [
+      {
+        "model_requested": "gpt-6-astra",
+        "turn": "01a13e29-b8ac-72c3-a919-304313270c52",
+        "start_acknowledged": true,
+        "completed_utc": "2026-10-15T06:04:50.490Z",
+        "status": "completed",
+        "native_ui_response_observed": "MP_INTEGRATED_8C24"
+      },
+      {
+        "model_requested": "gpt-6.1-sol",
+        "turn": "01a13e2a-488d-7af1-a6c6-cb765a293505",
+        "start_acknowledged": true,
+        "completed_utc": "2026-10-15T06:05:23.520Z",
+        "status": "completed",
+        "native_ui_response_observed": "MP_INTEGRATED_8C24"
+      }
+    ],
+    "provider_executed_model_attestation": "없음. 요청 모델, 서버 시작 응답, 완료 알림, 실제 UI 답변을 확인했지만 제공자 내부 실행 모델을 독립적으로 증명하지는 않습니다.",
+    "cleanup": {
+      "ctrl_q": "기존 동작대로 pane 표시만 닫고 실행은 유지",
+      "mindplayer_quit_exit_code": 0,
+      "proxy_port_50433_closed": true,
+      "owned_pids_82256_82315_82316_gone": true,
+      "transport_closed_utc": "2026-10-15T06:06:27.538Z"
+    }
+  },
+  "remaining_risks": [
+    "아직 Jev가 아니라 길이·키워드 기반 A/B 테스트 규칙입니다. 후보 목록 순서는 가격/품질 순위가 아닙니다.",
+    "기존에 실행 중인 MindPlayer/pane은 변경되지 않습니다. 새 설치본으로 다시 실행하고 세션을 열어야 합니다.",
+    "Codex remote/app-server의 실험적 인터페이스 및 Node 22+에 의존합니다.",
+    "중계는 loopback 전용이나 모델 호출은 기존 Codex 외부 서비스/사용량을 이용합니다. 자동 제목 생성 등 보조 턴도 통과합니다.",
+    "Codex 원본 UI의 모델 표시는 일부 위치에서 중계 결과보다 늦을 수 있습니다.",
+    "대화 중계/모델 변경을 검증했으며 개인 작업 파일을 실제 도구로 수정하지 않았습니다.",
+    "이번 로컬 설치 대상은 터미널 TUI입니다. 별도 Tauri 앱은 수정/재설치하지 않았습니다."
+  ],
+  "skill": {
+    "name": "openai-docs",
+    "influence": "PTY 키 입력 가로채기 대신 공식 native Codex --remote 연결과 app-server turn/start 모델 필드를 사용했습니다. 공식 문서와 설치 CLI 동작을 교차 확인했습니다.",
+    "sources": [
+      "https://learn.chatgpt.com/docs/cli/reference",
+      "https://learn.chatgpt.com/docs/app-server"
+    ]
+  }
+}

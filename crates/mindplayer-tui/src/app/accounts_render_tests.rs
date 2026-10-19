@@ -29,6 +29,9 @@ fn painted(app: &mut App, width: u16, height: u16) -> String {
 fn app_on_main() -> App {
     let mut app = App::new_in(std::env::temp_dir());
     app.screen = Screen::Main;
+    app.startup_routing = crate::startup_routing::StartupRouting::confirmed(
+        crate::startup_routing::RoutingMode::Native,
+    );
     app.accounts = MULTI_ACCOUNT_AGENTS.map(Account::inherited).to_vec();
     app
 }
@@ -54,6 +57,21 @@ fn the_screen_shows_every_provider_and_its_logins() {
     assert!(
         screen.contains("a add"),
         "the screen does not say how to add one:\n{screen}"
+    );
+}
+
+#[test]
+fn long_identity_details_keep_the_recovery_choice_visible() {
+    let mut app = app_on_main();
+    app.open_accounts();
+    app.accounts_panel.as_mut().unwrap().error = Some(format!(
+        "work-account: 저장된 로그인과 다름 · person@example.test / {}\nconfirm-v-or-login-l",
+        "workspace-".repeat(7)
+    ));
+    let screen = painted(&mut app, 80, 35);
+    assert!(
+        screen.contains("confirm-v-or-login-l"),
+        "recovery action was clipped:\n{screen}"
     );
 }
 

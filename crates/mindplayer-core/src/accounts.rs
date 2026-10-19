@@ -51,6 +51,13 @@ pub struct Account {
     pub role: Role,
     #[serde(default)]
     pub disabled: bool,
+    /// Codex's live, opaque account fingerprint explicitly bound to this
+    /// display account. Missing means the login has not been verified yet.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub codex_identity: Option<String>,
+    /// Claude's native account fingerprint explicitly bound to this account.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claude_identity: Option<String>,
 }
 
 /// The environment change that selects an account: what to set, and what to
@@ -62,7 +69,7 @@ pub struct LaunchEnv {
 }
 
 impl LaunchEnv {
-    /// True when launching needs no change at all, which is the inherited login.
+    /// True when launching needs no environment changes.
     pub fn is_empty(&self) -> bool {
         self.set.is_empty() && self.unset.is_empty()
     }
@@ -142,6 +149,47 @@ pub fn accounts_dir(home: &Path, provider: Agent) -> PathBuf {
         .join(provider.as_str())
 }
 
+/// Reserve a new, empty login home without reusing any registered name or path.
+/// A rename keeps its original path reserved even while that home is absent.
+/// The final directory is created exclusively, so concurrent callers and
+/// unregistered files, directories or symlinks cannot share a credential home.
+///
+/// # Errors
+/// Returns creation errors other than an occupied candidate, which is skipped.
+pub fn reserve_fresh_account(
+    home: &Path,
+    provider: Agent,
+    registered: &[Account],
+) -> std::io::Result<Account> {
+    crate::private::create_dir_private(&accounts_dir(home, provider))?;
+    let mut builder = std::fs::DirBuilder::new();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        builder.mode(crate::private::DIR_MODE);
+    }
+    for n in 2..=u64::MAX {
+        let name = format!("{}-{n}", provider.as_str());
+        let account = Account::isolated(home, provider, &name)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?;
+        let path = account.slot_path();
+        if registered.iter().any(|existing| {
+            (existing.provider == provider && existing.name == name) || existing.slot_path() == path
+        }) {
+            continue;
+        }
+        match builder.create(&path) {
+            Ok(()) => return Ok(account),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e),
+        }
+    }
+    Err(std::io::Error::new(
+        std::io::ErrorKind::AlreadyExists,
+        "no fresh account home is available",
+    ))
+}
+
 /// The file listing every account. Usage readings are not stored here; they
 /// change far more often and already have their own cache.
 pub fn accounts_path(home: &Path) -> PathBuf {
@@ -157,6 +205,8 @@ impl Account {
             slot: Slot::Inherited,
             role: Role::Primary,
             disabled: false,
+            codex_identity: None,
+            claude_identity: None,
         }
     }
 
@@ -177,7 +227,27 @@ impl Account {
             },
             role: Role::Primary,
             disabled: false,
+            codex_identity: None,
+            claude_identity: None,
         })
+    }
+
+    /// The explicitly saved binding for this provider, never the display name.
+    pub fn identity_fingerprint(&self) -> Option<&str> {
+        match self.provider {
+            Agent::Codex => self.codex_identity.as_deref(),
+            Agent::Claude => self.claude_identity.as_deref(),
+            _ => None,
+        }
+    }
+
+    /// Change only this provider's binding; other providers have no binding yet.
+    pub fn set_identity_fingerprint(&mut self, fingerprint: Option<String>) {
+        match self.provider {
+            Agent::Codex => self.codex_identity = fingerprint,
+            Agent::Claude => self.claude_identity = fingerprint,
+            _ => {}
+        }
     }
 
     /// True for the login this machine already had before any slot existed.
@@ -196,12 +266,13 @@ impl Account {
 
     /// The environment that makes this provider's CLI read this account.
     ///
-    /// Codex is special: its inherited account means the machine's default
-    /// `~/.codex`, not an arbitrary `CODEX_HOME` inherited by MindPlayer. An
-    /// explicit path prevents logging into one named slot from silently
-    /// changing another slot when MindPlayer itself was launched with a
-    /// per-account environment.
+    /// Inherited accounts use the native default, not an ambient named slot.
+    /// Claude must UNSET its config override: explicitly setting `~/.claude`
+    /// selects a different, path-hashed macOS Keychain service.
     pub fn launch_env(&self) -> LaunchEnv {
+        if self.provider == Agent::Claude && self.is_inherited() {
+            return claude_launch_env(None);
+        }
         let path = match &self.slot {
             Slot::Inherited if self.provider == Agent::Codex => {
                 std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".codex"))
@@ -222,14 +293,7 @@ impl Account {
                     "OPENAI_API_KEY".into(),
                 ],
             },
-            Agent::Claude => LaunchEnv {
-                set: vec![("CLAUDE_CONFIG_DIR".into(), dir)],
-                unset: vec![
-                    "ANTHROPIC_API_KEY".into(),
-                    "ANTHROPIC_AUTH_TOKEN".into(),
-                    "CLAUDE_CODE_OAUTH_TOKEN".into(),
-                ],
-            },
+            Agent::Claude => claude_launch_env(Some(&path)),
             // Kiro derives its paths from HOME, so the whole home moves; the XDG
             // variables carry the same move on Linux. Measured: with an ambient
             // KIRO_API_KEY still set, an empty home reports itself authenticated.
@@ -288,6 +352,40 @@ impl Account {
             Agent::Cursor => base.join(".cursor").join("chats"),
         }
     }
+}
+
+/// The same account selection for native status probes and interactive launches.
+pub(crate) fn claude_launch_env(config_dir: Option<&Path>) -> LaunchEnv {
+    let mut env = LaunchEnv {
+        set: config_dir
+            .map(|path| {
+                vec![(
+                    "CLAUDE_CONFIG_DIR".into(),
+                    path.to_string_lossy().into_owned(),
+                )]
+            })
+            .unwrap_or_default(),
+        unset: vec![
+            "CLAUDE_SECURESTORAGE_CONFIG_DIR".into(),
+            "ANTHROPIC_API_KEY".into(),
+            "ANTHROPIC_AUTH_TOKEN".into(),
+            "CLAUDE_CODE_OAUTH_TOKEN".into(),
+            "CLAUDE_CODE_OAUTH_REFRESH_TOKEN".into(),
+            "CLAUDE_CODE_OAUTH_SCOPES".into(),
+            "ANTHROPIC_CUSTOM_HEADERS".into(),
+            "ANTHROPIC_BASE_URL".into(),
+            "CLAUDE_CODE_USE_BEDROCK".into(),
+            "CLAUDE_CODE_USE_VERTEX".into(),
+            "CLAUDE_CODE_USE_FOUNDRY".into(),
+            "CLAUDE_CODE_USE_ANTHROPIC_AWS".into(),
+            "CLAUDE_CODE_USE_ANTHROPIC_GOOGLE_CLOUD".into(),
+            "CLAUDE_CODE_USE_MANTLE".into(),
+        ],
+    };
+    if config_dir.is_none() {
+        env.unset.push("CLAUDE_CONFIG_DIR".into());
+    }
+    env
 }
 
 fn join(base: &Path, tail: &str) -> String {
@@ -472,7 +570,13 @@ pub fn owner_of(accounts: &[Account], agent: Agent, file: &Path, fallback_home: 
         })
         .max_by_key(|(depth, _)| *depth)
         .map(|(_, account)| account.clone())
-        .unwrap_or_else(|| Account::inherited(agent))
+        .unwrap_or_else(|| {
+            accounts
+                .iter()
+                .find(|account| account.provider == agent && account.is_inherited())
+                .cloned()
+                .unwrap_or_else(|| Account::inherited(agent))
+        })
 }
 
 /// Replace the stored list. The inherited accounts are stored too, so a role
@@ -485,6 +589,151 @@ pub fn save_accounts(home: &Path, accounts: &[Account]) -> std::io::Result<()> {
     let body = serde_json::to_string_pretty(accounts)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
     std::fs::write(path, body)
+}
+
+#[cfg(test)]
+mod claude_account_tests {
+    use super::*;
+
+    #[test]
+    fn claude_identity_survives_an_account_file_round_trip() {
+        let home = tempfile::tempdir().unwrap();
+        let account: Account = serde_json::from_value(serde_json::json!({
+            "provider": "claude",
+            "name": "default",
+            "slot": {"kind": "inherited"},
+            "claude_identity": "claude-user-opaque",
+            "codex_identity": "preserve-other-binding"
+        }))
+        .unwrap();
+        save_accounts(home.path(), &[account]).unwrap();
+        let restored = load_accounts(home.path())
+            .into_iter()
+            .find(|account| account.provider == Agent::Claude)
+            .unwrap();
+        let stored = serde_json::to_value(restored).unwrap();
+        assert_eq!(stored["claude_identity"], "claude-user-opaque");
+        assert_eq!(stored["codex_identity"], "preserve-other-binding");
+    }
+
+    #[test]
+    fn old_accounts_remain_unbound_without_changing_codex_bindings() {
+        for provider in ["codex", "claude"] {
+            let account: Account = serde_json::from_value(serde_json::json!({
+                "provider": provider,
+                "name": "default",
+                "slot": {"kind": "inherited"},
+                "codex_identity": "old-codex-binding"
+            }))
+            .unwrap();
+            let stored = serde_json::to_value(account).unwrap();
+            assert_eq!(stored["codex_identity"], "old-codex-binding");
+            assert!(stored.get("claude_identity").is_none());
+        }
+    }
+
+    #[test]
+    fn generic_binding_accessors_select_only_the_accounts_provider() {
+        for provider in MULTI_ACCOUNT_AGENTS {
+            let mut account = Account::inherited(provider);
+            account.codex_identity = Some("old-codex".into());
+            account.claude_identity = Some("old-claude".into());
+            let expected = match provider {
+                Agent::Codex => Some("old-codex"),
+                Agent::Claude => Some("old-claude"),
+                _ => None,
+            };
+            assert_eq!(account.identity_fingerprint(), expected);
+
+            account.set_identity_fingerprint(Some("new-binding".into()));
+            if matches!(provider, Agent::Codex | Agent::Claude) {
+                assert_eq!(account.identity_fingerprint(), Some("new-binding"));
+            } else {
+                assert_eq!(account.identity_fingerprint(), None);
+            }
+            if provider != Agent::Codex {
+                assert_eq!(account.codex_identity.as_deref(), Some("old-codex"));
+            }
+            if provider != Agent::Claude {
+                assert_eq!(account.claude_identity.as_deref(), Some("old-claude"));
+            }
+            account.set_identity_fingerprint(None);
+            assert_eq!(account.identity_fingerprint(), None);
+        }
+    }
+
+    #[test]
+    fn constructors_and_legacy_files_start_without_an_inferred_binding() {
+        let home = tempfile::tempdir().unwrap();
+        for provider in [Agent::Codex, Agent::Claude] {
+            let legacy: Account = serde_json::from_value(serde_json::json!({
+                "provider": provider.as_str(),
+                "name": "arbitrary-label",
+                "slot": {"kind": "inherited"}
+            }))
+            .unwrap();
+            for account in [
+                Account::inherited(provider),
+                Account::isolated(home.path(), provider, "arbitrary-label").unwrap(),
+                legacy,
+            ] {
+                assert_eq!(account.identity_fingerprint(), None);
+                assert_eq!(account.codex_identity, None);
+                assert_eq!(account.claude_identity, None);
+            }
+        }
+    }
+
+    #[test]
+    fn an_unmatched_claude_session_retains_its_registered_binding() {
+        let home = tempfile::tempdir().unwrap();
+        let mut inherited = Account::inherited(Agent::Claude);
+        inherited.set_identity_fingerprint(Some("claude-user-bound".into()));
+        let owner = owner_of(
+            &[inherited],
+            Agent::Claude,
+            Path::new("/another/store/session.jsonl"),
+            home.path(),
+        );
+        assert_eq!(owner.identity_fingerprint(), Some("claude-user-bound"));
+    }
+
+    #[test]
+    fn inherited_claude_preserves_the_unhashed_native_default_vault() {
+        let env = Account::inherited(Agent::Claude).launch_env();
+        assert!(env.set.is_empty());
+        for key in ["CLAUDE_CONFIG_DIR", "CLAUDE_SECURESTORAGE_CONFIG_DIR"] {
+            assert!(env.unset.iter().any(|name| name == key), "{key} survived");
+        }
+    }
+
+    #[test]
+    fn both_claude_slots_clear_ambient_auth_and_gateway_routing() {
+        let home = tempfile::tempdir().unwrap();
+        let inherited = Account::inherited(Agent::Claude);
+        let isolated = Account::isolated(home.path(), Agent::Claude, "other").unwrap();
+        for account in [inherited, isolated] {
+            let env = account.launch_env();
+            for key in [
+                "ANTHROPIC_API_KEY",
+                "ANTHROPIC_AUTH_TOKEN",
+                "CLAUDE_CODE_OAUTH_TOKEN",
+                "CLAUDE_CODE_OAUTH_REFRESH_TOKEN",
+                "CLAUDE_CODE_OAUTH_SCOPES",
+                "ANTHROPIC_CUSTOM_HEADERS",
+                "ANTHROPIC_BASE_URL",
+                "CLAUDE_CODE_USE_BEDROCK",
+                "CLAUDE_CODE_USE_VERTEX",
+                "CLAUDE_CODE_USE_FOUNDRY",
+                "CLAUDE_CODE_USE_ANTHROPIC_AWS",
+                "CLAUDE_CODE_USE_ANTHROPIC_GOOGLE_CLOUD",
+                "CLAUDE_CODE_USE_MANTLE",
+            ] {
+                assert!(env.unset.iter().any(|name| name == key), "{key} survived");
+            }
+            assert!(!env.set.iter().any(|(name, _)| name == "HOME"));
+        }
+    }
 }
 
 #[cfg(test)]
@@ -522,8 +771,8 @@ mod tests {
     }
 
     #[test]
-    fn inherited_non_codex_accounts_keep_their_ambient_login() {
-        for agent in [Agent::Claude, Agent::Kiro, Agent::Cursor] {
+    fn inherited_kiro_and_cursor_accounts_keep_their_ambient_login() {
+        for agent in [Agent::Kiro, Agent::Cursor] {
             assert!(
                 Account::inherited(agent).launch_env().is_empty(),
                 "{} inherited slot must not touch the environment",
@@ -750,6 +999,33 @@ mod tests {
     }
 
     #[test]
+    fn identity_binding_round_trips_and_old_account_files_load_unverified() {
+        let home = tmp();
+        let mut account = Account::inherited(Agent::Codex);
+        account.codex_identity = Some("codex-user-opaque".into());
+        save_accounts(&home, &[account.clone()]).unwrap();
+        let restored = load_accounts(&home)
+            .into_iter()
+            .find(|entry| entry.provider == Agent::Codex)
+            .unwrap();
+        assert_eq!(
+            restored.codex_identity.as_deref(),
+            Some("codex-user-opaque")
+        );
+
+        std::fs::write(
+            accounts_path(&home),
+            r#"[{"provider":"codex","name":"default","slot":{"kind":"inherited"},"role":"primary","disabled":false}]"#,
+        )
+        .unwrap();
+        let legacy = load_accounts(&home)
+            .into_iter()
+            .find(|entry| entry.provider == Agent::Codex)
+            .unwrap();
+        assert_eq!(legacy.codex_identity, None);
+    }
+
+    #[test]
     fn a_session_is_owned_by_the_account_whose_store_it_sits_in() {
         let home = tmp();
         let work = Account::isolated(&home, Agent::Codex, "work").unwrap();
@@ -774,7 +1050,23 @@ mod tests {
         let stray = PathBuf::from("/somewhere/else/rollout-c.jsonl");
         let owner = owner_of(&[], Agent::Claude, &stray, &home);
         assert!(owner.is_inherited());
-        assert!(owner.launch_env().is_empty());
+        assert_eq!(
+            owner.launch_env(),
+            Account::inherited(Agent::Claude).launch_env()
+        );
+    }
+
+    #[test]
+    fn an_unmatched_codex_session_keeps_the_registered_inherited_identity() {
+        let home = tmp();
+        let mut inherited = Account::inherited(Agent::Codex);
+        inherited.codex_identity = Some("codex-user-bound".into());
+        let accounts = vec![inherited];
+        let session = PathBuf::from("/an/overridden/codex/store/rollout.jsonl");
+
+        let owner = owner_of(&accounts, Agent::Codex, &session, &home);
+
+        assert_eq!(owner.codex_identity.as_deref(), Some("codex-user-bound"));
     }
 
     #[test]
@@ -788,6 +1080,8 @@ mod tests {
             },
             role: Role::Primary,
             disabled: false,
+            codex_identity: None,
+            claude_identity: None,
         };
         let inner = Account {
             provider: Agent::Codex,
@@ -797,6 +1091,8 @@ mod tests {
             },
             role: Role::Primary,
             disabled: false,
+            codex_identity: None,
+            claude_identity: None,
         };
         let accounts = vec![outer, inner.clone()];
         let file = inner.session_root(&home).join("rollout-d.jsonl");
@@ -829,6 +1125,199 @@ mod tests {
             accounts.iter().all(|a| a.name != "../../escape"),
             "{accounts:?}"
         );
+    }
+}
+
+#[cfg(test)]
+mod fresh_home_reservation_tests {
+    use super::*;
+    use std::fs;
+
+    #[test]
+    fn registered_names_and_renamed_absent_paths_are_reserved() {
+        let home = tempfile::tempdir().unwrap();
+        for provider in MULTI_ACCOUNT_AGENTS {
+            let mut named = Account::isolated(home.path(), provider, "original").unwrap();
+            named.name = format!("{}-2", provider.as_str());
+            let mut renamed =
+                Account::isolated(home.path(), provider, &format!("{}-3", provider.as_str()))
+                    .unwrap();
+            renamed.name = "renamed".into();
+            renamed.disabled = true;
+            let registered = [named, renamed];
+
+            let fresh = reserve_fresh_account(home.path(), provider, &registered).unwrap();
+
+            assert_eq!(fresh.name, format!("{}-4", provider.as_str()));
+            assert!(fresh.slot_path().is_dir());
+            assert!(!slot_dir(home.path(), provider, &registered[0].name).exists());
+            for account in &registered {
+                assert!(!account.slot_path().exists(), "reserved homes stay absent");
+            }
+        }
+    }
+
+    #[test]
+    fn a_renamed_present_home_keeps_its_sentinel() {
+        let home = tempfile::tempdir().unwrap();
+        let mut renamed = Account::isolated(home.path(), Agent::Codex, "codex-2").unwrap();
+        renamed.name = "renamed".into();
+        crate::private::create_dir_private(&renamed.slot_path()).unwrap();
+        let sentinel = renamed.slot_path().join("sentinel");
+        fs::write(&sentinel, b"synthetic existing login").unwrap();
+
+        let fresh =
+            reserve_fresh_account(home.path(), Agent::Codex, std::slice::from_ref(&renamed))
+                .unwrap();
+
+        assert_eq!(fresh.name, "codex-3");
+        assert_ne!(fresh.slot_path(), renamed.slot_path());
+        assert_eq!(fs::read(sentinel).unwrap(), b"synthetic existing login");
+        assert_eq!(fs::read_dir(fresh.slot_path()).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn a_path_registered_to_another_provider_is_also_reserved() {
+        let home = tempfile::tempdir().unwrap();
+        let mut registered = Account::isolated(home.path(), Agent::Codex, "codex-2").unwrap();
+        registered.provider = Agent::Claude;
+        registered.name = "elsewhere".into();
+
+        let fresh =
+            reserve_fresh_account(home.path(), Agent::Codex, std::slice::from_ref(&registered))
+                .unwrap();
+
+        assert_eq!(fresh.name, "codex-3");
+        assert!(!registered.slot_path().exists());
+    }
+
+    #[test]
+    fn orphan_directories_and_files_are_skipped_without_changing_them() {
+        let home = tempfile::tempdir().unwrap();
+        let orphan = slot_dir(home.path(), Agent::Codex, "codex-2");
+        crate::private::create_dir_private(&orphan).unwrap();
+        fs::write(orphan.join("sentinel"), b"synthetic orphan login").unwrap();
+        let occupied_file = slot_dir(home.path(), Agent::Codex, "codex-3");
+        fs::write(&occupied_file, b"occupied file").unwrap();
+
+        let fresh = reserve_fresh_account(home.path(), Agent::Codex, &[]).unwrap();
+
+        assert_eq!(fresh.name, "codex-4");
+        assert_eq!(
+            fs::read(orphan.join("sentinel")).unwrap(),
+            b"synthetic orphan login"
+        );
+        assert_eq!(fs::read(occupied_file).unwrap(), b"occupied file");
+        assert_eq!(fs::read_dir(fresh.slot_path()).unwrap().count(), 0);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn live_and_dangling_symlinks_are_skipped_without_following_them() {
+        use std::os::unix::fs::{symlink, PermissionsExt};
+
+        let home = tempfile::tempdir().unwrap();
+        let parent = accounts_dir(home.path(), Agent::Codex);
+        crate::private::create_dir_private(&parent).unwrap();
+        let target = home.path().join("sentinel-home");
+        fs::create_dir(&target).unwrap();
+        fs::set_permissions(&target, fs::Permissions::from_mode(0o755)).unwrap();
+        fs::write(target.join("sentinel"), b"synthetic symlink target").unwrap();
+        let live = parent.join("codex-2");
+        let dangling = parent.join("codex-3");
+        let absent_target = home.path().join("absent-target");
+        symlink(&target, &live).unwrap();
+        symlink(&absent_target, &dangling).unwrap();
+
+        let fresh = reserve_fresh_account(home.path(), Agent::Codex, &[]).unwrap();
+
+        assert_eq!(fresh.name, "codex-4");
+        assert_eq!(fs::read_link(live).unwrap(), target);
+        assert_eq!(fs::read_link(dangling).unwrap(), absent_target);
+        assert!(!absent_target.exists());
+        assert_eq!(
+            fs::read(target.join("sentinel")).unwrap(),
+            b"synthetic symlink target"
+        );
+        assert_eq!(
+            fs::metadata(target).unwrap().permissions().mode() & 0o777,
+            0o755
+        );
+        assert_eq!(fs::read_dir(fresh.slot_path()).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn concurrent_allocations_claim_distinct_empty_homes() {
+        use std::collections::HashSet;
+        use std::sync::Barrier;
+
+        let home = tempfile::tempdir().unwrap();
+        let ready = Barrier::new(8);
+        let accounts = std::thread::scope(|scope| {
+            let workers: Vec<_> = (0..8)
+                .map(|_| {
+                    scope.spawn(|| {
+                        ready.wait();
+                        reserve_fresh_account(home.path(), Agent::Codex, &[]).unwrap()
+                    })
+                })
+                .collect();
+            workers
+                .into_iter()
+                .map(|worker| worker.join().unwrap())
+                .collect::<Vec<_>>()
+        });
+
+        let paths: HashSet<_> = accounts.iter().map(Account::slot_path).collect();
+        let names: HashSet<_> = accounts.iter().map(|account| &account.name).collect();
+        assert_eq!(paths.len(), 8);
+        assert_eq!(names.len(), 8);
+        for path in paths {
+            assert!(path.is_dir());
+            assert_eq!(fs::read_dir(path).unwrap().count(), 0);
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn new_homes_and_parents_are_private_and_existing_parents_keep_their_mode() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let home = tempfile::tempdir().unwrap();
+        fs::set_permissions(home.path(), fs::Permissions::from_mode(0o755)).unwrap();
+
+        let fresh = reserve_fresh_account(home.path(), Agent::Codex, &[]).unwrap();
+
+        for path in [
+            home.path().join(".mindplayer"),
+            home.path().join(".mindplayer/accounts"),
+            accounts_dir(home.path(), Agent::Codex),
+            fresh.slot_path(),
+        ] {
+            assert_eq!(
+                fs::metadata(path).unwrap().permissions().mode() & 0o777,
+                0o700
+            );
+        }
+        assert_eq!(
+            fs::metadata(home.path()).unwrap().permissions().mode() & 0o777,
+            0o755
+        );
+    }
+
+    #[test]
+    fn other_io_errors_are_returned_without_changing_the_blocker() {
+        let home = tempfile::tempdir().unwrap();
+        let blocker = home.path().join(".mindplayer");
+        fs::write(&blocker, b"not a directory").unwrap();
+        let expected = crate::private::create_dir_private(&accounts_dir(home.path(), Agent::Codex))
+            .unwrap_err();
+
+        let error = reserve_fresh_account(home.path(), Agent::Codex, &[]).unwrap_err();
+
+        assert_eq!(error.kind(), expected.kind());
+        assert_eq!(error.raw_os_error(), expected.raw_os_error());
+        assert_eq!(fs::read(blocker).unwrap(), b"not a directory");
     }
 }
 
@@ -905,6 +1394,8 @@ mod forget_login_tests {
             },
             role: Role::Primary,
             disabled: false,
+            codex_identity: None,
+            claude_identity: None,
         };
 
         let err = forget_login(&account, &home).unwrap_err();

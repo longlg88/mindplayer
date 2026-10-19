@@ -1,0 +1,77 @@
+{
+  "anonymization": {
+    "date": "2026-10-17",
+    "accounts": "Display labels use work-account/personal-account; identifier keys use work_account/personal_account.",
+    "paths": "Evidence paths are relative to the repository root; .. retains locations outside it. Historical commands anchor external paths at ${PWD}. Evidence was not copied or moved.",
+    "history": "Original timestamps, hashes, results and caveats are retained. Labels and paths are anonymized representations; historical verification does not attest to edited bytes or current live state."
+  },
+  "validated_at": "2026-10-13T14:45:00+09:00",
+  "repo": ".",
+  "source_revision": "109c3e480d02edfadd02bb9e62460ac64558d3ff",
+  "source_dirty": true,
+  "source_scope": "Same local worktree including existing user changes; no commit or push.",
+  "version": "0.55.1",
+  "version_override_used": false,
+  "installed_path": "../../../../../../.local/bin/mindplayer",
+  "installed_sha256": "ab8d6b6da7057d535c336db57c5cd201592f80834ac597c9d8c82d864eee564a",
+  "release_binary": "target/release/mindplayer",
+  "release_matches_installed": true,
+  "rollback_path": "../../../../../../.local/bin/mindplayer.rollback-0.55.0.Oy4sC0",
+  "rollback_version": "0.55.0",
+  "rollback_sha256": "5aea4a20ac4a473b1feefd6b53e29b6aa89a01faaf581fddb856fe952579924e",
+  "changed_files_for_this_fix": [
+    "Cargo.toml",
+    "Cargo.lock",
+    "RELEASE.md",
+    "crates/mindplayer-core/src/limits.rs",
+    "crates/mindplayer-core/tests/live_account_quotas.rs",
+    "crates/mindplayer-tui/src/app/accounts_panel.rs",
+    "crates/mindplayer-tui/src/app/accounts_panel_tests.rs",
+    "crates/mindplayer-tui/src/main.rs",
+    "crates/mindplayer-tui/src/ui.rs",
+    "crates/mindplayer-tui/tests/smoke.rs",
+    "docs/account-usage-rename-validation-2026-10-13.json"
+  ],
+  "simplifications": [
+    "Workspace ID alone is no longer individual login identity; unknown user identity never suppresses another profile.",
+    "Zero-credit caps no longer produce an exhausted allowance row; included windows and soft credit caps remain separate.",
+    "Accounts shortcuts reuse existing normalization; pending rename references use the fully migrated Account."
+  ],
+  "checks": {
+    "cargo_fmt_all_check": "passed",
+    "git_diff_check": "passed",
+    "cargo_clippy_workspace_all_targets_deny_warnings": "passed",
+    "cargo_test_workspace": {"passed": 741, "failed": 0, "ignored": 6},
+    "live_configured_codex_accounts": {
+      "passed": true,
+      "work_account_weekly_percent": 1.0,
+      "personal_account_weekly_percent": 2.0,
+      "both_have_user_identity": true,
+      "false_same_login_marker": false,
+      "zero_credit_cap_rows": 0
+    },
+    "installed_binary_smoke": {
+      "command": "MINDPLAYER_TEST_BINARY=${PWD}/../../../../../../.local/bin/mindplayer cargo test -q -p mindplayer-tui --test smoke -- --nocapture",
+      "passed": 20,
+      "failed": 0,
+      "ignored": 1,
+      "account_usage_case": "codex_usage_separates_workspace_members_and_refreshes_after_u_enter",
+      "rename_case": "account_rename_from_korean_ime_preserves_login_and_refreshes_usage",
+      "coverage": ["u -> Enter pins each profile's home", "Ctrl-R replaces the changed usage percentage", "different users in one workspace retain independent gauges", "true duplicates retain explanations on weekly and credit rows", "Korean physical r opens rename", "rename persists and preserves the auth sentinel", "renamed profile launches on its migrated home"]
+    },
+    "old_installed_0_55_0_baseline": [
+      "Reproduced hidden second-user 65% gauge with shared workspace ID.",
+      "Reproduced ignored Korean physical r key in the Accounts modal."
+    ]
+  },
+  "limits": [
+    "Existing 0.55.0 processes are not replaced or terminated; the new executable applies to new launches.",
+    "Renaming an account with an open pane remains blocked to protect its credential-directory migration.",
+    "Real user profiles were not renamed or deliberately relogged for testing; rename tests use isolated temporary homes.",
+    "Missing or delayed optional account/read identity preserves quota but skips shared-login deduplication."
+  ],
+  "protocol_references": [
+    "https://learn.chatgpt.com/docs/app-server#1-check-auth-state",
+    "https://github.com/openai/codex/blob/092d3acd6bec3e3a14bdc7e7a2810ab628ab759d/codex-rs/app-server/src/request_processors/account_processor.rs#L1267-L1296"
+  ]
+}

@@ -212,6 +212,9 @@ fn cursor_report_tail(bytes: &[u8]) -> TerminalReplyPrefix {
 
 /// A live child process attached to a PTY, rendered in the right pane.
 pub struct PtySession {
+    /// Pane-owned metadata channel; it moves with this PTY when a provisional
+    /// session is adopted, independently of application session identifiers.
+    routing_status: Option<crate::local_router::RoutingStatusChannel>,
     /// vt100 screen state, updated by the reader thread.
     parser: Arc<Mutex<vt100::Parser>>,
     /// Set by the reader thread when new output arrives, so the UI only redraws
@@ -233,6 +236,7 @@ pub struct PtySession {
     /// later `terminate()` would `killpg()` a PID/PGID we no longer own — i.e.
     /// signal an unrelated process group. Once exited, terminate() is a no-op.
     exited: bool,
+    exit_success: bool,
     /// Process-group id (== leader pid; the child ran `setsid`) captured at
     /// spawn, so the helper children (MCP / language servers) can still be
     /// signalled even after the leader has been reaped.
@@ -299,7 +303,24 @@ impl PtyWriter {
 }
 
 impl PtySession {
+    #[cfg(test)]
     pub fn spawn(cmd: &MpCommand, session_id: &str, rows: u16, cols: u16) -> Result<Self> {
+        Self::spawn_with_routing(
+            cmd,
+            session_id,
+            rows,
+            cols,
+            crate::startup_routing::RoutingMode::Jev,
+        )
+    }
+
+    pub(crate) fn spawn_with_routing(
+        cmd: &MpCommand,
+        session_id: &str,
+        rows: u16,
+        cols: u16,
+        routing_mode: crate::startup_routing::RoutingMode,
+    ) -> Result<Self> {
         // All Codex entry points (new, resume, handoff, login) select their
         // credentials through CODEX_HOME. Share only preferences, and stop
         // visibly on a preparation error instead of silently using stale ones.
@@ -312,6 +333,9 @@ impl PtySession {
             )
             .map_err(|e| anyhow::anyhow!("could not share Codex config: {e}"))?;
         }
+        // Use the same PTY/input surface, but put the local per-turn router
+        // between Codex's native UI and its app-server. Login is not routed.
+        let (cmd, routing_status) = crate::local_router::prepare_spawn_for_mode(cmd, routing_mode)?;
         let rows = rows.max(1);
         let cols = cols.max(1);
         let pty_system = native_pty_system();
@@ -362,6 +386,10 @@ impl PtySession {
             builder.env(name, value);
         }
 
+        // Acquire the fallible handles before starting the child, so an I/O
+        // setup failure cannot drop its channel while leaving it running.
+        let mut reader = pair.master.try_clone_reader()?;
+        let writer = pair.master.take_writer()?;
         let child = pair.slave.spawn_command(builder)?;
         // Slave handle no longer needed in the parent; closing it lets the
         // child own the terminal cleanly.
@@ -369,8 +397,7 @@ impl PtySession {
         // Capture the process-group id now, while the leader is definitely alive.
         let pgid = child.process_id().map(|p| p as i32);
 
-        let mut reader = pair.master.try_clone_reader()?;
-        let writer = PtyWriter::spawn(pair.master.take_writer()?);
+        let writer = PtyWriter::spawn(writer);
         let parser = Arc::new(Mutex::new(vt100::Parser::new(
             rows,
             cols,
@@ -427,6 +454,7 @@ impl PtySession {
         }
 
         Ok(Self {
+            routing_status,
             parser,
             dirty,
             seq,
@@ -435,6 +463,7 @@ impl PtySession {
             terminal_reply_guard: TerminalReplyGuard::default(),
             child,
             exited: false,
+            exit_success: false,
             pgid,
             group_signalled: false,
             blocked,
@@ -448,6 +477,10 @@ impl PtySession {
 
     /// Returns true (and resets) if the screen changed since the last check.
     pub fn take_dirty(&self) -> bool {
+        let routing_changed = self
+            .routing_status
+            .as_ref()
+            .is_some_and(|channel| channel.poll());
         let mut expired = false;
         // Startup and idle repaint output intentionally do not stamp working
         // activity. Schedule timeout recovery independently of that badge so
@@ -459,7 +492,21 @@ impl PtySession {
                     .store(parser.synchronized_update_pending(), Ordering::Relaxed);
             }
         }
-        self.dirty.swap(false, Ordering::Relaxed) || expired
+        self.dirty.swap(false, Ordering::Relaxed) || expired || routing_changed
+    }
+
+    pub(crate) fn routing_status(&self) -> Option<crate::local_router::RoutingStatus> {
+        self.routing_status
+            .as_ref()
+            .and_then(|channel| channel.snapshot())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_routing_status_for_test(
+        &mut self,
+        channel: crate::local_router::RoutingStatusChannel,
+    ) {
+        self.routing_status = Some(channel);
     }
 
     /// Monotonic output-read count (never reset). The app diffs this against a
@@ -654,13 +701,18 @@ impl PtySession {
         }
         match self.child.try_wait() {
             Ok(None) => true,
-            _ => {
+            result => {
                 // Ok(Some(status)) reaps the child; Err means we can't tell, but
                 // either way we must not killpg() its PID afterwards.
                 self.exited = true;
+                self.exit_success = result.ok().flatten().is_some_and(|status| status.success());
                 false
             }
         }
+    }
+
+    pub(crate) fn exited_successfully(&self) -> bool {
+        self.exited && self.exit_success
     }
 
     /// Terminate the child (used on close / app exit).
@@ -706,7 +758,20 @@ impl Drop for PtySession {
     fn drop(&mut self) {
         // Never leave orphaned children or zombies behind.
         self.terminate();
+        // Termination/reaping precedes unlinking the channel Node may write.
+        self.routing_status.take();
     }
+}
+
+/// Use the same published frame that will be painted, not heuristics cached
+/// from a partially received synchronized repaint. Slash menus deliberately
+/// do not count as lifecycle Blocked, but still own their terminal rows.
+pub(crate) fn routing_overlay_blocked(screen: &vt100::Screen) -> bool {
+    let contents = screen.contents();
+    let tail = bottom_lines(&contents, 8);
+    text_looks_blocked(&contents)
+        || tail_looks_like_slash_command_menu(&tail)
+        || tail_looks_like_interactive_prompt(&tail)
 }
 
 fn scrollback_lines_from_env() -> usize {
@@ -2141,6 +2206,29 @@ mod account_env {
             text.contains("leak=[]"),
             "an ambient variable survived into the pane, so the slot does not decide the account: {text:?}"
         );
+    }
+
+    #[test]
+    fn routing_status_environment_never_reaches_an_unrouted_child() {
+        let cmd = MpCommand {
+            program: "sh".into(),
+            args: vec![
+                "-c".into(),
+                "printf 'status=[%s] done' \"${MINDPLAYER_ROUTER_STATUS-unset}\"".into(),
+            ],
+            cwd: PathBuf::from("/tmp"),
+            env: LaunchEnv {
+                set: vec![(
+                    "MINDPLAYER_ROUTER_STATUS".into(),
+                    "/untrusted/status.json".into(),
+                )],
+                unset: vec![],
+            },
+        };
+        let session = PtySession::spawn(&cmd, "mp-unrouted-status-env-test", 4, 80).unwrap();
+        let text = read_pane(&session, Duration::from_secs(10));
+        assert!(text.contains("status=[unset]"), "{text}");
+        assert!(session.routing_status().is_none());
     }
 }
 

@@ -2704,6 +2704,9 @@ fn render_pane(
                 .as_ref()
                 .and_then(|status| routing_overlay(screen, status, selection.is_some()))
             {
+                let color = routing_status
+                    .as_ref()
+                    .map_or(DIM, |status| routing_status_color(status.stage));
                 match overlay {
                     RoutingOverlay::ModelRow {
                         row,
@@ -2711,7 +2714,7 @@ fn render_pane(
                         label,
                         suffix,
                     } => {
-                        paint_routing_model_row(f, inner, row, column, &label, suffix);
+                        paint_routing_model_row(f, inner, row, column, &label, suffix, color);
                     }
                     RoutingOverlay::Border(label) => {
                         // Reuse the existing border; this adds no terminal row
@@ -2719,7 +2722,7 @@ fn render_pane(
                         f.render_widget(
                             block.clone().title_bottom(Line::from(Span::styled(
                                 label,
-                                Style::default().fg(DIM),
+                                Style::default().fg(color),
                             ))),
                             pane_area,
                         );
@@ -2756,6 +2759,18 @@ enum RoutingOverlay {
         suffix: Option<(u16, u16, u16)>,
     },
     Border(String),
+}
+
+fn routing_status_color(stage: RoutingStage) -> Color {
+    match stage {
+        RoutingStage::Completed => COMPLETED_BORDER,
+        RoutingStage::Judging
+        | RoutingStage::Requested
+        | RoutingStage::Accepted
+        | RoutingStage::Running => WORKING_BORDER,
+        RoutingStage::Failed => ERROR,
+        RoutingStage::Ready | RoutingStage::Interrupted | RoutingStage::Closed => DIM,
+    }
 }
 
 fn routing_labels(status: &RoutingStatus) -> Vec<String> {
@@ -2964,6 +2979,7 @@ fn paint_routing_model_row(
     column: u16,
     label: &str,
     suffix: Option<(u16, u16, u16)>,
+    color: Color,
 ) {
     let y = inner.y + row;
     let native_suffix = suffix.map(|(source, target, width)| {
@@ -2976,7 +2992,7 @@ fn paint_routing_model_row(
         f.buffer_mut()[(inner.x + x, y)].set_symbol(" ");
     }
     f.render_widget(
-        Paragraph::new(Span::styled(label, Style::default().fg(DIM))),
+        Paragraph::new(Span::styled(label, Style::default().fg(color))),
         Rect::new(inner.x + column, y, inner.width.saturating_sub(column), 1),
     );
     if let Some((target, cells)) = native_suffix {
@@ -5338,6 +5354,265 @@ mod tests {
             column += Span::raw(symbol).width().max(1) as u16;
         }
         text
+    }
+
+    #[test]
+    fn routing_completed_is_green_in_the_model_row_and_border_fallback() {
+        use ratatui::{backend::TestBackend, Terminal};
+        let mut fixture = RoutingPtyFixture::new(RoutingStage::Completed, 10, 118);
+        let id = fixture.id();
+        let parser = fixture.quiet.app.ptys[&id].parser().clone();
+        let mut status = fixture.quiet.app.ptys[&id].routing_status().unwrap();
+        status.turn_id = Some("completed-turn".into());
+        status.revision += 1;
+        std::fs::write(&fixture.path, serde_json::to_vec(&status).unwrap()).unwrap();
+        assert!(fixture.quiet.app.ptys[&id].take_dirty());
+        for model_row in [true, false] {
+            for (width, focused, zoomed) in
+                [(120, true, false), (48, false, false), (32, true, true)]
+            {
+                let mut terminal = Terminal::new(TestBackend::new(width, 12)).unwrap();
+                fixture.quiet.app.zoomed = zoomed;
+                fixture
+                    .quiet
+                    .app
+                    .ptys
+                    .get_mut(&id)
+                    .unwrap()
+                    .resize(10, width - 2);
+                if model_row {
+                    paint_native_footer(&mut parser.lock().unwrap(), "gpt-5.1 medium · 98% left");
+                } else {
+                    parser
+                        .lock()
+                        .unwrap()
+                        .process(b"\x1b[2J\x1b[Hnative response\x1b[8;1H> draft");
+                }
+                assert_eq!(
+                    matches!(
+                        routing_overlay(parser.lock().unwrap().render_screen(), &status, false),
+                        Some(RoutingOverlay::ModelRow { .. })
+                    ),
+                    model_row,
+                    "exercise the actual model-row and border branches",
+                );
+                terminal
+                    .draw(|frame| {
+                        render_pane(
+                            frame,
+                            &mut fixture.quiet.app,
+                            &id,
+                            0,
+                            1,
+                            Rect::new(0, 0, width, 12),
+                            focused,
+                            false,
+                            None,
+                        )
+                    })
+                    .unwrap();
+                let buffer = terminal.backend().buffer();
+                let complete = buffer
+                    .content()
+                    .iter()
+                    .find(|cell| cell.symbol() == "완")
+                    .expect("the completion label must be visible");
+                assert_eq!(
+                    complete.fg, COMPLETED_BORDER,
+                    "model_row={model_row}, width={width}"
+                );
+                assert_eq!(
+                    buffer[(0, 4)].fg,
+                    COMPLETED_BORDER,
+                    "completed pane border must match"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn routing_completion_retires_on_successful_input_and_ignores_late_old_revisions() {
+        let mut fixture = RoutingPtyFixture::new(RoutingStage::Completed, 10, 118);
+        let id = fixture.id();
+        let mut status = fixture.quiet.app.ptys[&id].routing_status().unwrap();
+        status.turn_id = Some("first-turn".into());
+        for (request, stage, action) in [
+            (1, RoutingStage::Completed, Some(b"\r".as_slice())),
+            (1, RoutingStage::Completed, None), // late ACK/model report revision
+            (2, RoutingStage::Judging, None),
+            (2, RoutingStage::Accepted, None),
+            (2, RoutingStage::Running, None),
+            (2, RoutingStage::Completed, Some(b"\x1b".as_slice())),
+            (2, RoutingStage::Completed, None), // delayed completion after Escape
+            (3, RoutingStage::Failed, None),
+            (4, RoutingStage::Interrupted, None),
+        ] {
+            status.revision += 1;
+            status.request_id = serde_json::json!(request);
+            status.stage = stage;
+            std::fs::write(&fixture.path, serde_json::to_vec(&status).unwrap()).unwrap();
+            assert!(fixture.quiet.app.ptys[&id].take_dirty());
+            if let Some(bytes) = action {
+                assert_eq!(
+                    fixture.quiet.app.session_status(&id),
+                    SessionStatus::Completed
+                );
+                fixture.quiet.app.send_to_pty(bytes);
+                if bytes == b"\x1b" {
+                    assert_eq!(
+                        fixture.quiet.app.session_status(&id),
+                        SessionStatus::Completed
+                    );
+                    fixture
+                        .quiet
+                        .app
+                        .ptys
+                        .get_mut(&id)
+                        .unwrap()
+                        .expire_terminal_reply_for_test(false);
+                    fixture.quiet.app.flush_terminal_reply_guards();
+                }
+            }
+            assert_ne!(
+                fixture.quiet.app.session_status(&id),
+                SessionStatus::Completed,
+                "request={request}, stage={stage:?}"
+            );
+            if request <= 2 && stage == RoutingStage::Completed {
+                assert!(
+                    fixture.quiet.app.ptys[&id].routing_status().is_none(),
+                    "old request must stay retired"
+                );
+            } else if matches!(
+                stage,
+                RoutingStage::Judging | RoutingStage::Accepted | RoutingStage::Running
+            ) {
+                assert_eq!(
+                    fixture.quiet.app.session_status(&id),
+                    SessionStatus::Working
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn routing_status_polls_later_panes_even_when_the_first_is_dirty() {
+        let mut fixture = RoutingPtyFixture::new(RoutingStage::Completed, 10, 118);
+        let first = fixture.id();
+        let second = fixture.quiet.app.panes[1].clone();
+        let channel =
+            crate::local_router::RoutingStatusChannel::create_at(&fixture.root.join("second"))
+                .unwrap();
+        let path = channel.path().to_path_buf();
+        let mut later = channel.snapshot().unwrap();
+        fixture
+            .quiet
+            .app
+            .ptys
+            .get_mut(&second)
+            .unwrap()
+            .set_routing_status_for_test(channel);
+        let mut earlier = fixture.quiet.app.ptys[&first].routing_status().unwrap();
+        earlier.revision += 1;
+        std::fs::write(&fixture.path, serde_json::to_vec(&earlier).unwrap()).unwrap();
+        later.revision += 1;
+        later.stage = RoutingStage::Completed;
+        later.thread_id = Some("later-thread".into());
+        later.request_id = serde_json::json!(1);
+        later.turn_id = Some("later-turn".into());
+        std::fs::write(&path, serde_json::to_vec(&later).unwrap()).unwrap();
+        assert!(fixture.quiet.app.pty_dirty());
+        assert_eq!(
+            fixture.quiet.app.ptys[&second].routing_status().unwrap(),
+            later
+        );
+    }
+
+    #[test]
+    fn routing_status_retires_for_control_c_after_a_pending_reply_prefix() {
+        let mut fixture = RoutingPtyFixture::new(RoutingStage::Completed, 10, 118);
+        let id = fixture.id();
+        fixture.quiet.app.send_to_pty(b"[");
+        assert!(fixture.quiet.app.ptys[&id].routing_status().is_some());
+        fixture.quiet.app.send_to_pty(b"\x03");
+        assert!(fixture.quiet.app.ptys[&id].routing_status().is_none());
+    }
+
+    #[test]
+    fn routing_status_retires_when_expired_escape_precedes_another_key() {
+        let mut fixture = RoutingPtyFixture::new(RoutingStage::Completed, 10, 118);
+        let id = fixture.id();
+        fixture.quiet.app.send_to_pty(b"\x1b");
+        fixture
+            .quiet
+            .app
+            .ptys
+            .get_mut(&id)
+            .unwrap()
+            .expire_terminal_reply_for_test(false);
+        fixture.quiet.app.send_to_pty(b"x");
+        assert!(fixture.quiet.app.ptys[&id].routing_status().is_none());
+    }
+
+    #[test]
+    fn routing_status_retires_escape_after_prefix_only_after_successful_enqueue() {
+        for (prefix, closed) in [
+            b"\x1b".as_slice(),
+            b"[",
+            b";",
+            b"\x1b[",
+            b"[1;",
+            b"\x1b[?1;",
+        ]
+        .into_iter()
+        .flat_map(|prefix| [false, true].map(|closed| (prefix, closed)))
+        {
+            let mut fixture = RoutingPtyFixture::new(RoutingStage::Completed, 10, 118);
+            let id = fixture.id();
+            let mut previous = fixture.quiet.app.ptys[&id].routing_status().unwrap();
+            if closed {
+                fixture
+                    .quiet
+                    .app
+                    .ptys
+                    .get_mut(&id)
+                    .unwrap()
+                    .expire_terminal_reply_for_test(true);
+            }
+            fixture.quiet.app.send_to_pty(prefix);
+            assert!(fixture.quiet.app.ptys[&id].routing_status().is_some());
+            fixture.quiet.app.send_to_pty(b"\x1b");
+            fixture
+                .quiet
+                .app
+                .ptys
+                .get_mut(&id)
+                .unwrap()
+                .expire_terminal_reply_for_test(false);
+            fixture.quiet.app.flush_terminal_reply_guards();
+            assert_eq!(
+                fixture.quiet.app.ptys[&id].routing_status().is_some(),
+                closed
+            );
+            previous.revision += 1;
+            std::fs::write(&fixture.path, serde_json::to_vec(&previous).unwrap()).unwrap();
+            assert!(fixture.quiet.app.ptys[&id].take_dirty());
+            assert_eq!(
+                fixture.quiet.app.ptys[&id].routing_status().is_some(),
+                closed,
+                "late old revisions must not undo the enqueue outcome"
+            );
+        }
+    }
+
+    #[test]
+    fn routing_status_preserves_completion_for_alt_and_arrow_keys() {
+        let mut fixture = RoutingPtyFixture::new(RoutingStage::Completed, 10, 118);
+        let id = fixture.id();
+        for bytes in [b"\x1b".as_slice(), b"x", b"\x1b[A", b"\x1b[1;3D"] {
+            fixture.quiet.app.send_to_pty(bytes);
+            assert!(fixture.quiet.app.ptys[&id].routing_status().is_some());
+        }
     }
 
     #[test]

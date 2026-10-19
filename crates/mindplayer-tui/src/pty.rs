@@ -37,15 +37,18 @@ impl TerminalReplyGuard {
     /// digits...) and is forwarded into the child prompt. Non-CPR input is
     /// released byte-for-byte; a complete CPR is consumed.
     fn push(&mut self, bytes: &[u8], now: Instant) -> Vec<Vec<u8>> {
-        let mut out = Vec::new();
-        if self
+        let released_prefix = if self
             .since
             .is_some_and(|since| now.saturating_duration_since(since) >= self.pending_grace())
+            || (bytes.first() == Some(&0x1b)
+                && !self.pending.starts_with(b"\x1b]")
+                && !self.pending.starts_with(b"\x1bP"))
         {
-            if let Some(pending) = self.take_pending() {
-                out.push(pending);
-            }
-        }
+            self.take_pending()
+        } else {
+            None
+        };
+        let mut out: Vec<Vec<u8>> = Vec::new();
 
         for &byte in bytes {
             if self.pending.is_empty() {
@@ -80,6 +83,11 @@ impl TerminalReplyGuard {
                     }
                 }
             }
+        }
+        // A new ESC cannot extend a non-string reply candidate. Keep that
+        // prefix separate without splitting an OSC/DCS ESC-ST terminator.
+        if let Some(prefix) = released_prefix {
+            out.insert(0, prefix);
         }
         out
     }
@@ -215,6 +223,9 @@ pub struct PtySession {
     /// Pane-owned metadata channel; it moves with this PTY when a provisional
     /// session is adopted, independently of application session identifiers.
     routing_status: Option<crate::local_router::RoutingStatusChannel>,
+    /// A successfully delivered submission/interrupt retires the prior request,
+    /// including late ACK/model-report revisions, until a new request owns it.
+    routing_status_floor: Option<crate::local_router::RoutingStatus>,
     /// vt100 screen state, updated by the reader thread.
     parser: Arc<Mutex<vt100::Parser>>,
     /// Set by the reader thread when new output arrives, so the UI only redraws
@@ -455,6 +466,7 @@ impl PtySession {
 
         Ok(Self {
             routing_status,
+            routing_status_floor: None,
             parser,
             dirty,
             seq,
@@ -499,6 +511,28 @@ impl PtySession {
         self.routing_status
             .as_ref()
             .and_then(|channel| channel.snapshot())
+            .filter(|status| {
+                self.routing_status_floor.as_ref().is_none_or(|floor| {
+                    status.generation != floor.generation
+                        || status.thread_id != floor.thread_id
+                        || status.request_id != floor.request_id
+                })
+            })
+    }
+
+    /// Thread ownership outlives the displayed request. Retiring an old
+    /// completion must not rebind the rollout reader to the launch-time ID.
+    pub(crate) fn routing_thread_id(&self) -> Option<String> {
+        self.routing_status
+            .as_ref()
+            .and_then(|channel| channel.snapshot())
+            .and_then(|status| status.thread_id)
+    }
+
+    pub(crate) fn retire_routing_status(&mut self, status: crate::local_router::RoutingStatus) {
+        if !status.request_id.is_null() {
+            self.routing_status_floor = Some(status);
+        }
     }
 
     #[cfg(test)]
@@ -507,6 +541,15 @@ impl PtySession {
         channel: crate::local_router::RoutingStatusChannel,
     ) {
         self.routing_status = Some(channel);
+        self.routing_status_floor = None;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn expire_terminal_reply_for_test(&mut self, close_writer: bool) {
+        self.terminal_reply_guard.since = Some(Instant::now() - TERMINAL_REPLY_GRACE);
+        if close_writer {
+            self.writer.closed.store(true, Ordering::Relaxed);
+        }
     }
 
     /// Monotonic output-read count (never reset). The app diffs this against a
@@ -566,26 +609,18 @@ impl PtySession {
         self.writer.enqueue(bytes.to_vec())
     }
 
-    /// Forward one encoded user key to the child, consuming only a fragmented
+    /// Filter one encoded user key before the caller sends it, consuming a fragmented
     /// cursor-position report from the outer terminal. A complete CPR is hidden
     /// by crossterm itself; this guard covers the split-ESC edge shown by real
     /// terminals without treating arbitrary pasted text as protocol traffic.
-    pub fn send_key(&mut self, bytes: &[u8]) -> bool {
-        self.scroll_reset();
-        let chunks = self.terminal_reply_guard.push(bytes, Instant::now());
-        if chunks.is_empty() {
-            return true;
-        }
-        chunks.into_iter().all(|chunk| self.writer.enqueue(chunk))
+    pub fn filtered_key_chunks(&mut self, bytes: &[u8]) -> Vec<Vec<u8>> {
+        self.terminal_reply_guard.push(bytes, Instant::now())
     }
 
-    /// Release a genuine standalone Escape once the short CPR ambiguity window
-    /// has elapsed. Called from the normal event-loop tick, never a timer thread,
-    /// so all writes preserve their order through the same PTY queue.
-    pub fn flush_terminal_reply_guard(&mut self) -> bool {
-        self.terminal_reply_guard
-            .flush_due(Instant::now())
-            .is_some_and(|bytes| self.writer.enqueue(bytes))
+    /// Return pending bytes once the CPR ambiguity window has elapsed. The
+    /// caller applies turn-boundary tracking only when actually enqueueing them.
+    pub fn pending_key_due(&mut self) -> Option<Vec<u8>> {
+        self.terminal_reply_guard.flush_due(Instant::now())
     }
 
     /// Forward pasted text to the child. If the child has enabled bracketed

@@ -441,7 +441,14 @@ impl App {
         let Some(pty) = self.ptys.get(id) else {
             return SessionStatus::Inactive;
         };
-        let native = self.codex_turns.get(id).and_then(|r| r.status());
+        let native = self
+            .codex_turns
+            .get(id)
+            .filter(|reader| {
+                pty.routing_thread_id().is_none()
+                    || self.codex_rollout_file(id) == Some(reader.file())
+            })
+            .and_then(|r| r.status());
         if pty.looks_blocked()
             || self
                 .hook_status
@@ -452,6 +459,23 @@ impl App {
         }
         if let Some(status) = native {
             return status;
+        }
+        // The pane-owned router already correlates actual turn events, even
+        // when rollout discovery/tailing has not caught up. ACK is activity,
+        // not execution or completion; only a terminal turn event earns green.
+        if let Some(status) = pty.routing_status() {
+            use crate::local_router::RoutingStage;
+            match status.stage {
+                RoutingStage::Completed if status.turn_id.is_some() => {
+                    return SessionStatus::Completed
+                }
+                RoutingStage::Judging
+                | RoutingStage::Requested
+                | RoutingStage::Accepted
+                | RoutingStage::Running => return SessionStatus::Working,
+                RoutingStage::Failed | RoutingStage::Interrupted => return SessionStatus::Idle,
+                _ => {}
+            }
         }
         // Local delivery invalidates the last completion immediately, before
         // the agent has repainted its old input prompt or written a start event.
@@ -484,6 +508,21 @@ impl App {
         )
     }
 
+    /// Native /resume and /fork can change the thread without replacing its
+    /// PTY/pane ID. Only the pane-owned protocol can select its current source.
+    fn codex_rollout_file(&self, id: &str) -> Option<&Path> {
+        let owned = self.ptys.get(id).and_then(|pty| pty.routing_thread_id());
+        let thread = owned.as_deref().unwrap_or(id);
+        self.all_sessions
+            .iter()
+            .find(|session| {
+                session.id == thread
+                    && session.agent == Agent::Codex
+                    && !session.file.as_os_str().is_empty()
+            })
+            .map(|session| session.file.as_path())
+    }
+
     /// Refresh `hook_status` for every live Claude/Codex pane from its
     /// hook-state file. Interval-gated like [`Self::poll_html_candidates`];
     /// returns true if any pane's cached reading changed (needs redraw since
@@ -501,21 +540,18 @@ impl App {
             if self.ended.contains(id) {
                 continue;
             }
-            if let Some(session) = self
-                .all_sessions
-                .iter()
-                .find(|s| &s.id == id && s.agent == Agent::Codex && !s.file.as_os_str().is_empty())
-            {
-                if self
-                    .codex_turns
-                    .get(id)
-                    .is_none_or(|r| r.file() != session.file)
-                {
-                    self.codex_turns.insert(
-                        id.clone(),
-                        crate::turn_status::TurnStatusReader::new(session.file.clone()),
-                    );
+            if let Some(file) = self.codex_rollout_file(id).map(Path::to_path_buf) {
+                if self.codex_turns.get(id).is_none_or(|r| r.file() != file) {
+                    self.codex_turns
+                        .insert(id.clone(), crate::turn_status::TurnStatusReader::new(file));
                 }
+            } else if self
+                .ptys
+                .get(id)
+                .and_then(|pty| pty.routing_thread_id())
+                .is_some()
+            {
+                self.codex_turns.remove(id);
             }
             if let Some(reader) = self.codex_turns.get_mut(id) {
                 changed |= reader.poll();
@@ -556,7 +592,11 @@ impl App {
 
     /// Capture provenance before dispatch, so a fast agent cannot write a new
     /// completion before the old event has been invalidated. No file is deleted.
-    fn reset_turn_status(&mut self, id: &str, force_reset: bool) {
+    fn reset_turn_status(
+        &mut self,
+        id: &str,
+        force_reset: bool,
+    ) -> Option<crate::local_router::RoutingStatus> {
         // Enter can approve a tool in the current turn, not start a new turn.
         // Keep its correlation ID until a native start event supersedes it.
         let preserve_active = !force_reset
@@ -582,6 +622,9 @@ impl App {
         }
         self.submitted_at.remove(id);
         self.hook_status_due = None;
+        (!preserve_active)
+            .then(|| self.ptys.get(id).and_then(|pty| pty.routing_status()))
+            .flatten()
     }
 
     /// Reset against the pre-delivery file boundary, but roll back if the
@@ -604,8 +647,11 @@ impl App {
             self.synthetic_turn_cutoffs.get(id).copied(),
             self.hook_status_due,
         );
-        self.reset_turn_status(id, force_reset);
+        let routing_to_retire = self.reset_turn_status(id, force_reset);
         if self.ptys.get_mut(id).is_some_and(send) {
+            if let Some(status) = routing_to_retire {
+                self.ptys.get_mut(id).unwrap().retire_routing_status(status);
+            }
             return true;
         }
         restore_tracking(&mut self.hook_status, id, previous.0);
@@ -1151,7 +1197,9 @@ impl App {
         self.panes
             .iter()
             .filter_map(|id| self.ptys.get(id))
-            .any(|p| p.take_dirty())
+            // take_dirty also polls ownership; never starve a later pane just
+            // because an earlier pane continuously produces output.
+            .fold(false, |dirty, pty| pty.take_dirty() || dirty)
     }
 
     /// Forward encoded keystrokes to the focused pane's PTY.
@@ -1162,25 +1210,47 @@ impl App {
             return;
         }
         if let Some(id) = self.focused_pane().map(str::to_string) {
-            let interrupt = bytes == b"\x1b" || bytes == b"\x03";
-            let delivered = if input_submits_turn(bytes) || interrupt {
-                self.dispatch_turn_input(&id, interrupt, |p| p.send_key(bytes))
-            } else {
-                self.ptys.get_mut(&id).is_some_and(|p| p.send_key(bytes))
-            };
-            if delivered && input_submits_turn(bytes) {
-                self.submitted_at.insert(id.clone(), Instant::now());
-                self.turn_submitted.insert(id);
+            let chunks = self
+                .ptys
+                .get_mut(&id)
+                .map(|pty| pty.filtered_key_chunks(bytes))
+                .unwrap_or_default();
+            for chunk in chunks {
+                if !self.deliver_key_chunk(&id, &chunk) {
+                    break;
+                }
             }
         }
+    }
+
+    /// Only bytes released by the terminal-reply guard can submit or interrupt
+    /// a turn. Buffered Escape and consumed CPR must leave every status source
+    /// intact; a failed enqueue uses the same tracking rollback as other input.
+    fn deliver_key_chunk(&mut self, id: &str, bytes: &[u8]) -> bool {
+        let interrupt = bytes == b"\x1b" || bytes.contains(&0x03);
+        let delivered = if input_submits_turn(bytes) || interrupt {
+            self.dispatch_turn_input(id, interrupt, |p| p.send(bytes))
+        } else {
+            self.ptys.get_mut(id).is_some_and(|p| p.send(bytes))
+        };
+        if delivered && input_submits_turn(bytes) {
+            self.submitted_at.insert(id.into(), Instant::now());
+            self.turn_submitted.insert(id.into());
+        }
+        delivered
     }
 
     /// Release a standalone Escape held briefly to distinguish it from a
     /// fragmented outer-terminal CPR. Each pane owns its own guard, so changing
     /// focus while Escape is pending can never deliver it to another agent.
     pub fn flush_terminal_reply_guards(&mut self) {
-        for pty in self.ptys.values_mut() {
-            pty.flush_terminal_reply_guard();
+        let due: Vec<_> = self
+            .ptys
+            .iter_mut()
+            .filter_map(|(id, pty)| pty.pending_key_due().map(|bytes| (id.clone(), bytes)))
+            .collect();
+        for (id, bytes) in due {
+            self.deliver_key_chunk(&id, &bytes);
         }
     }
 

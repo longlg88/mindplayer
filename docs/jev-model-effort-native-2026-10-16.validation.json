@@ -1,0 +1,172 @@
+{
+  "schemaVersion": 1,
+  "date": "2026-10-16",
+  "status": "partial-verified-native-effort-busy-input-blocked",
+  "source": {
+    "revision": "54529865aa69ef134c25b88a78c8139ce99b181f",
+    "dirty": true,
+    "existingChangesPreserved": true,
+    "version": "0.55.9",
+    "versionBumpedThisTask": false,
+    "installedThisTask": false,
+    "committed": false,
+    "pushed": false,
+    "runtimeRouterSha256": "c9fb8313374efca4c346cd0abe52fbeb1a492b91818f0f2109c2ccbe547629a0",
+    "runtimeRouterIdenticalToPrior0559Receipt": true,
+    "changedFilesThisTask": [
+      "AGENTS.md",
+      "tools/local-model-router/router.test.mjs",
+      "tools/local-model-router/native-effort.test.mjs",
+      "tools/local-model-router/native-routing.test.mjs",
+      "tools/local-model-router/native-queue.test.mjs",
+      "tools/local-model-router/native-queue-fixture.mjs",
+      "tools/local-model-router/native-queue-pty.py",
+      "docs/jev-model-effort-native-2026-10-16.validation.json"
+    ]
+  },
+  "installedUnchanged": {
+    "path": "/Users/eden.jang/.local/bin/mindplayer",
+    "version": "mindplayer 0.55.9",
+    "sha256": "9a2b14c704dcbab0545d01bbd16ba0e27d1df05c7863daa3b82bf3c3e774e853",
+    "liveUserPanesInterrupted": false
+  },
+  "checks": [
+    {
+      "command": "node --test --test-reporter=spec tools/local-model-router/*.test.mjs",
+      "exitCode": 0,
+      "passed": 379,
+      "failed": 0,
+      "skipped": 7
+    },
+    {
+      "command": "env -u MINDPLAYER_VERSION -u MINDPLAYER_TEST_REAL_JEV -u MINDPLAYER_TEST_BINARY cargo test --offline --locked --workspace -q -- --test-threads=2",
+      "exitCode": 0,
+      "passed": 787,
+      "failed": 0,
+      "ignored": 7
+    },
+    {
+      "command": "cargo fmt --all -- --check",
+      "exitCode": 0
+    },
+    {
+      "command": "env -u MINDPLAYER_VERSION cargo clippy --offline --locked --workspace --all-targets -- -D warnings",
+      "exitCode": 0
+    },
+    {
+      "command": "git diff --check",
+      "exitCode": 0
+    }
+  ],
+  "nativeEffortOnlyProof": {
+    "command": "MINDPLAYER_TEST_NATIVE_EFFORT=1 MINDPLAYER_TEST_CODEX_HOME=<explicit-existing-account-home> node --test tools/local-model-router/native-effort.test.mjs",
+    "exitCode": 0,
+    "nativeVersion": "codex-cli 0.162.1",
+    "sameThread": true,
+    "actualInference": true,
+    "servingAttestation": false,
+    "turns": [
+      {
+        "turnId": "01a1435e-59e5-7df2-956d-9e351041b18b",
+        "model": "gpt-5.6-luna",
+        "effort": "high",
+        "collaborationEffort": "high",
+        "outcome": "completed"
+      },
+      {
+        "turnId": "01a1435e-6bf7-7ab2-9e66-7f11ceca774a",
+        "model": "gpt-5.6-luna",
+        "effort": "medium",
+        "collaborationEffort": "medium",
+        "outcome": "completed"
+      }
+    ]
+  },
+  "realJevNativeProof": {
+    "command": "MINDPLAYER_TEST_NATIVE_ROUTING=1 MINDPLAYER_TEST_CODEX_HOME=<explicit-existing-account-home> node --test tools/local-model-router/native-routing.test.mjs",
+    "exitCode": 0,
+    "nativeVersion": "codex-cli 0.162.1",
+    "provider": "typesafe",
+    "catalogSource": "actual model/list",
+    "realJev": true,
+    "actualInference": true,
+    "ordinarySequentialTurns": true,
+    "busyInputProven": false,
+    "servingAttestation": false,
+    "threadId": "01a1436e-627b-7540-8f61-2b7f3a02bffc",
+    "turns": [
+      {
+        "requestId": 5,
+        "turnId": "01a1436e-63b5-7a11-9ee6-b161f1aa4e74",
+        "model": "gpt-6.1-sol",
+        "effort": "high",
+        "collaborationModel": "gpt-6.1-sol",
+        "collaborationEffort": "high",
+        "status": "completed"
+      },
+      {
+        "requestId": 7,
+        "turnId": "01a1436e-73b7-7fc2-94ce-ed3bcba3b1d3",
+        "model": "gpt-6.1-sol",
+        "effort": "medium",
+        "collaborationModel": "gpt-6.1-sol",
+        "collaborationEffort": "medium",
+        "status": "completed"
+      }
+    ],
+    "assertions": [
+      "one actual Jev judgment and native start per ordinary turn",
+      "selected model and effort equal both forwarded configuration fields",
+      "actual native rollout turn_context model and effort match each selection",
+      "actual native collaboration settings match each selection",
+      "actual terminal completion and bounded assistant output",
+      "same isolated thread, no tools, no automatic replay",
+      "temporary account state removed after owned child process-group exit"
+    ],
+    "earlierAttempts": [
+      "First integration attempt reached actual inference but an overly literal output assertion rejected OK followed by a period. The test now accepts only OK with optional terminal punctuation.",
+      "Second fresh isolated attempt failed before submission with a routed RPC rejection; the original test suppressed its reason. The test now includes only fixed safe failure codes. The cause of that attempt is unknown; no reliability claim is made.",
+      "The final fresh isolated attempt completed both ordinary turns. This does not establish Gateway behavior or eliminate the earlier failure."
+    ]
+  },
+  "rejectedImplementations": [
+    {
+      "approach": "Hold owned turn/steer until old turn completes, then translate it to turn/start",
+      "status": "removed-not-installed",
+      "reason": "Native 0.162.1 awaits the steer RPC in its UI event loop. Holding it can block Escape and approvals and deadlock completion. Independent review also found cancellation, mixed-input ordering and inherited-settings defects."
+    },
+    {
+      "approach": "Bind native Enter exclusively to queue",
+      "status": "experimental-tests-only-not-installed",
+      "reason": "Five synthetic-backend actual-native-PTY tests establish ordinary queue behavior, but the native guard prevents idle !shell submission when submit is unbound. This is not a production-compatible fix."
+    },
+    {
+      "approach": "Pretend a regular turn is non-steerable review or compact",
+      "status": "not-implemented",
+      "reason": "The protocol only names review/compact kinds. Inventing such a backend state is false; rejected native steers can also merge separate prompts."
+    }
+  ],
+  "review": {
+    "discardedPrototypeCodeReviewer": "REQUEST CHANGES",
+    "discardedPrototypeArchitect": "BLOCK",
+    "discardedPrototypeCombinedVerdict": "REQUEST CHANGES",
+    "retainedTestsCodeReviewer": "COMMENT; setup-cleanup and test-cancellation findings fixed and rechecked; no remaining findings in narrow recheck",
+    "productionFixApproval": false
+  },
+  "simplifications": [
+    "Removed the entire unsafe held-steer runtime prototype instead of layering compatibility workarounds over it.",
+    "Kept the existing input surface and runtime unchanged; no new controls, dependencies or automatic interrupts."
+  ],
+  "remaining": [
+    "Busy Enter remains native same-turn steering and does not receive a fresh Jev model/effort selection.",
+    "Changing every busy prompt safely requires native UI semantic queue changes or an explicit input-behavior tradeoff; the current proxy alone is insufficient under the tested native client contract.",
+    "Actual native configuration records do not attest the provider's internal serving implementation or reasoning budget.",
+    "No new local installation or version bump has been claimed."
+  ],
+  "references": [
+    "https://github.com/openai/codex/blob/rust-v0.162.1/codex-rs/tui/src/app/thread_routing.rs#L755",
+    "https://github.com/openai/codex/blob/rust-v0.162.1/codex-rs/tui/src/app/event_dispatch.rs#L1114",
+    "https://github.com/openai/codex/blob/rust-v0.162.1/codex-rs/tui/src/chatwidget/input_restore.rs#L288",
+    "https://github.com/openai/codex/blob/rust-v0.162.1/codex-rs/tui/src/bottom_pane/chat_composer.rs#L3492"
+  ]
+}

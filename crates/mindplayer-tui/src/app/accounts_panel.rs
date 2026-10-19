@@ -47,6 +47,9 @@ pub struct AccountsPanel {
     /// The account `x` is waiting on a second press for. Erasing a login
     /// cannot be undone, so it is asked for rather than done on one key.
     pub confirm_remove: Option<String>,
+    /// Live provider identity read for the selected account; a second `v`
+    /// explicitly binds it to that account.
+    pub confirm_identity: Option<(Account, String, PathBuf)>,
 }
 
 /// Which account each session belongs to, worked out once for a redraw.
@@ -164,6 +167,7 @@ impl App {
     }
 
     pub fn close_accounts(&mut self) {
+        self.account_auth.cancel_inspection();
         self.accounts_panel = None;
     }
 
@@ -177,6 +181,9 @@ impl App {
         }
         let next = panel.selected as isize + delta;
         panel.selected = next.clamp(0, len as isize - 1) as usize;
+        if delta != 0 {
+            panel.confirm_identity = None;
+        }
     }
 
     /// The provider the cursor is under, whether it sits on a header or an
@@ -189,7 +196,7 @@ impl App {
         }
     }
 
-    fn selected_account(&self) -> Option<usize> {
+    pub(super) fn selected_account(&self) -> Option<usize> {
         let panel = self.accounts_panel.as_ref()?;
         match self.account_rows().get(panel.selected)? {
             AccountRow::Entry(i) => Some(*i),
@@ -223,6 +230,33 @@ impl App {
         };
         self.accounts[i].disabled = !self.accounts[i].disabled;
         self.persist_accounts();
+    }
+
+    /// Verify the selected home against the provider's reported identity.
+    /// Press `v` once to inspect the fingerprint, then `v` again to bind it.
+    pub fn accounts_verify_identity(&mut self) {
+        self.clear_error();
+        let Some(i) = self.selected_account() else {
+            return;
+        };
+        let Some(account) = self.accounts.get(i).cloned() else {
+            return;
+        };
+        if !matches!(account.provider, Agent::Codex | Agent::Claude) {
+            self.set_error("identity binding is supported for Codex and Claude accounts");
+            return;
+        }
+        let pending = self
+            .accounts_panel
+            .as_ref()
+            .and_then(|p| p.confirm_identity.clone());
+        if let Some((pending_account, fingerprint, cwd)) = pending {
+            if pending_account == account {
+                self.inspect_account_identity(&account, Some((fingerprint, cwd)));
+                return;
+            }
+        }
+        self.inspect_account_identity(&account, None);
     }
 
     /// Make this the account new sessions of its provider start on.
@@ -322,7 +356,7 @@ impl App {
         let Some(account) = self.unusable_prompt.take() else {
             return;
         };
-        if account.is_inherited() {
+        if account.is_inherited() && !matches!(account.provider, Agent::Codex | Agent::Claude) {
             self.status = format!(
                 "{} {}: sign in to this one the way you normally do, outside MindPlayer",
                 account.provider.as_str(),
@@ -363,7 +397,7 @@ impl App {
     }
 
     /// Whether any popup or text entry holds the keyboard, so a prompt raised now would take a key meant for it.
-    fn keyboard_taken(&self) -> bool {
+    pub(super) fn keyboard_taken(&self) -> bool {
         self.help_visible
             || self.accounts_panel.is_some()
             || self.category_menu.is_some()
@@ -668,6 +702,12 @@ impl App {
             return;
         };
         let account = self.accounts[i].clone();
+        if matches!(account.provider, Agent::Codex | Agent::Claude) {
+            // Native login can replace credentials; never precede it with
+            // logout, especially for the shared default home.
+            self.request_login(&account);
+            return;
+        }
         if account.is_inherited() {
             self.set_error("sign in to this one the way you normally do, outside MindPlayer");
             return;

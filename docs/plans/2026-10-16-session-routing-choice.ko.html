@@ -1,0 +1,446 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>MindPlayer · 세션별 Jev 선택 — 방향 평가와 UI 설계</title>
+  <style>
+    :root { --paper:#f4f3ee; --ink:#202b30; --muted:#58676b; --line:#d6dad5; --accent:#186454; --term:#282c34; --dim:#a6abb7; --blue:#a3bdff; --green:#9bd7b4; --yellow:#f2d87e; --red:#ffb0a9; --purple:#cbb1ed; }
+    * { box-sizing:border-box; }
+    body { margin:0; color:var(--ink); background:var(--paper); font:14px/1.6 -apple-system,BlinkMacSystemFont,"Apple SD Gothic Neo",sans-serif; }
+    main { max-width:1480px; margin:auto; padding:22px 28px 48px; }
+    h1,h2,h3,p { margin:0; }
+    h1 { font-size:25px; letter-spacing:-.8px; }
+    h2 { font-size:19px; letter-spacing:-.4px; }
+    h3 { font-size:15px; }
+    a { color:#185e80; text-underline-offset:3px; }
+    button,input,select { font:inherit; }
+    button,select { border:1px solid #bdc8c2; border-radius:5px; padding:5px 10px; background:#fff; color:var(--ink); cursor:pointer; }
+    button:disabled { opacity:.5; cursor:not-allowed; }
+    button.primary { background:var(--accent); border-color:var(--accent); color:white; }
+    :focus-visible { outline:3px solid #3b92c4; outline-offset:3px; }
+    [hidden] { display:none !important; }
+    .eyebrow { color:var(--accent); font-size:11px; font-weight:750; letter-spacing:.9px; }
+    .muted,.note { color:var(--muted); }
+    .note { font-size:12px; }
+    .assessment { border-left:4px solid var(--accent); padding:8px 14px; margin:8px 0 14px; background:#e6eee8; }
+    .assessment h2 { font-size:17px; }
+    .assessment p { font-size:13px; margin-top:3px; }
+    .assessment .limits { color:#485e58; font-size:12px; }
+    .section-head { display:flex; justify-content:space-between; align-items:baseline; gap:12px; margin:18px 0 8px; }
+    .section-head.first { margin-top:0; }
+    .tag { display:inline-block; padding:1px 7px; border-radius:3px; font-size:11px; background:#e4e8e2; white-space:nowrap; }
+    .tag.change { background:#fff0b9; color:#624c05; }
+    .comparison { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:14px; }
+    .screen { min-width:0; border:1px solid #adb8b2; border-radius:7px; overflow:hidden; background:white; }
+    .screen-title { padding:7px 12px; display:flex; align-items:center; justify-content:space-between; gap:6px; border-bottom:1px solid var(--line); }
+    .screen-title h3 { font-size:13px; }
+    .terminal-scroll { overflow-x:auto; overscroll-behavior-x:contain; }
+    .terminal { min-width:535px; color:#e6e7eb; background:var(--term); font:12px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace; }
+    .terminal .dim { color:var(--dim); }
+    .terminal .blue { color:var(--blue); }
+    .terminal .green { color:var(--green); }
+    .terminal .yellow { color:var(--yellow); }
+    .terminal .red { color:var(--red); }
+    .terminal .purple { color:var(--purple); }
+    .term-top { padding:7px 10px 4px; color:var(--blue); border-bottom:1px solid #687b9b; }
+    .term-body { padding:10px; height:354px; position:relative; }
+    .session-row { padding:1px 5px; white-space:pre; }
+    .session-row.selected { background:#344361; }
+    .term-footer { padding:5px 10px; border-top:1px solid #627293; font-size:11px; min-height:57px; }
+    .caption { padding:6px 11px; font-size:12px; color:var(--muted); }
+    .current-path { margin-top:28px; padding:12px 9px; border:1px solid #69717f; }
+    .current-path p + p { margin-top:8px; }
+    .current-path .gap { margin-top:19px; }
+    .choice { position:absolute; inset:8px 14px auto; padding:10px 13px; border:1px solid var(--yellow); background:#2b3039; box-shadow:0 5px 18px #14182055; }
+    .choice-title { color:var(--yellow); font-weight:700; margin-bottom:3px; }
+    .choice fieldset { margin:7px 0 3px; padding:0; border:0; }
+    .choice legend { position:absolute; width:1px; height:1px; overflow:hidden; clip-path:inset(50%); }
+    .choice label.option { display:block; padding:5px 6px; border:1px solid transparent; }
+    .choice label.option:has(input:checked) { background:#354a46; border-color:#7bbba8; }
+    .choice label.option small { display:block; margin-left:23px; color:#c0c7ce; font-size:11px; }
+    input[type=radio],input[type=checkbox] { accent-color:#80c6ae; margin:0 6px 0 0; vertical-align:middle; }
+    .choice .consent { display:block; font-size:11px; padding:4px 0; }
+    .readiness { color:var(--yellow); font-size:11px; min-height:33px; }
+    .choice .actions { display:flex; align-items:center; gap:8px; margin-top:5px; }
+    .choice button { font-size:11px; padding:4px 9px; }
+    .choice .keyhint { margin-left:auto; font-size:10px; color:#b2b9c6; }
+    .live-note { border:1px solid #7792b8; padding:14px; margin:25px 4px; }
+    .live-note p + p { margin-top:8px; }
+    .focus-pane { position:absolute; inset:8px 10px; border:1px solid #a6c7ff; background:var(--term); display:flex; flex-direction:column; }
+    .pane-title { padding:3px 8px; border-bottom:1px solid #5c6e8e; color:#adc7ff; }
+    .pane-content { padding:10px; flex:1; white-space:pre-wrap; }
+    .pane-status { padding:4px 8px; border-top:1px solid #5d6675; color:#bfc6d3; font-size:11px; }
+    .pane-status span { color:var(--yellow); }
+    .controls { display:flex; gap:8px 14px; flex-wrap:wrap; align-items:center; margin:10px 0 0; font-size:12px; }
+    .controls label { display:flex; align-items:center; gap:5px; }
+    .controls select { max-width:100%; font-size:12px; }
+    .notice { margin:7px 0 0; min-height:19px; color:var(--accent); font-size:12px; }
+    .journeys { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:14px; }
+    .journey { background:white; padding:12px; border:1px solid var(--line); border-radius:6px; }
+    .journey h3 { margin-bottom:7px; }
+    .journey ol { margin:0; padding-left:23px; }
+    .journey li { padding:3px 0; }
+    .journey li strong { display:inline-block; min-width:90px; }
+    .journey .mini { display:block; margin:3px 0 5px; background:var(--term); color:#d3d9e2; padding:5px 8px; font:11px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace; overflow-wrap:anywhere; }
+    .flow-tools { padding:10px 12px; margin-top:10px; border:1px solid var(--line); border-radius:5px; background:#eaf0eb; }
+    .flow-tools .controls { margin-top:5px; }
+    .table-scroll { overflow-x:auto; border:1px solid var(--line); border-radius:5px; }
+    table { border-collapse:collapse; width:100%; background:white; font-size:13px; min-width:680px; }
+    th,td { padding:9px 12px; text-align:left; vertical-align:top; border-bottom:1px solid var(--line); }
+    th { background:#e8ece6; font-size:12px; }
+    tr:last-child td { border-bottom:0; }
+    td:first-child { font-weight:650; width:14%; }
+    details { margin-top:10px; border:1px solid var(--line); border-radius:5px; background:#fafbf7; padding:10px 13px; }
+    summary { cursor:pointer; font-weight:650; }
+    details p,details ul,details ol { margin:9px 0 0; }
+    details li { margin:4px 0; }
+    code { font:12px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace; overflow-wrap:anywhere; }
+    .alternatives { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:10px; margin-top:10px; }
+    .alternative { padding:10px; border:1px solid var(--line); border-radius:5px; }
+    .alternative.recommended { border-color:#51957f; background:#e5efe8; }
+    .alternative p { font-size:12px; }
+    .layout-scroll { overflow-x:auto; margin-top:9px; }
+    .layout-preview { min-width:720px; background:var(--term); color:#e2e6ed; padding:9px; font:11px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace; }
+    .pane-row { display:grid; gap:7px; margin-bottom:7px; }
+    .pane-row.top { grid-template-columns:repeat(4,minmax(0,1fr)); }
+    .pane-row.bottom { grid-template-columns:repeat(3,minmax(0,1fr)); }
+    .tiny-pane { min-width:0; height:96px; padding:6px; border:1px solid #8c9cbb; }
+    .tiny-pane span { display:block; color:var(--yellow); }
+    .layout-footer { border-top:1px solid #8c9cbb; color:#b7c5e0; padding-top:5px; }
+    .closing { margin-top:17px; font-size:12px; color:var(--muted); }
+    @media(max-width:850px) { main { padding:16px; } .comparison,.journeys { grid-template-columns:1fr; } .section-head { align-items:flex-start; } .alternatives { grid-template-columns:1fr; } h1 { font-size:22px; } }
+    @media(max-width:520px) { .section-head { flex-direction:column; gap:2px; } }
+    @media(prefers-reduced-motion:reduce) { *,*::before,*::after { scroll-behavior:auto !important; animation:none !important; transition:none !important; } }
+    @media print { main { padding:0; } details { break-inside:avoid; } .controls,.flow-tools { display:none; } }
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <p class="eyebrow">MINDPLAYER / 2026-10-16 / UI 설계안 · 앱 미구현</p>
+    <h1>세션을 열기 전에, Jev를 쓸지 고른다</h1>
+  </header>
+
+  <section class="assessment" id="assessment" aria-labelledby="assessment-title">
+    <h2 id="assessment-title">방향은 맞다. Jev는 필수 기능이 아니라 선택 가능한 판단 계층이다.</h2>
+    <p><strong>미사용 = 기존 CLI 그대로.</strong> CLI의 모델·effort·subagent 설정은 유지한다. 다른 분류기를 대신 켜거나 모델을 강제로 고정하지 않는다.<br>
+      <strong>사용 = 매 새 프롬프트를 Jev가 판단.</strong> MindPlayer가 선택된 모델·effort를 적용한다. 세션을 열 때 한 번 선택하고, 매번 다시 묻지 않는다.</p>
+    <p class="limits">직전 조사에 근거한 판단: 사용성·외부 전송·추가 비용을 분리하는 방향은 타당하다. 단, 자동 선택이 더 싸다는 보장은 없다. 기본값 미사용·선택 기억은 권장안이며 미승인이다. <a href="#assessment-evidence">평가 근거·주의점</a></p>
+  </section>
+
+  <div class="section-head first">
+    <h2>무엇이 달라지는가</h2>
+    <span class="note">실제 TUI를 재구성한 시안 · 좌우 비교는 앱 분할 화면이 아님</span>
+  </div>
+  <section class="comparison" id="comparison" aria-label="현재와 제안 화면 비교">
+    <article class="screen" id="current-screen">
+      <div class="screen-title"><h3>현재 0.55.10 · 열기 전 선택 없음</h3><span class="tag">소스 확인</span></div>
+      <div class="terminal-scroll"><div class="terminal">
+        <div class="term-top">◆ MindPlayer <span class="dim">세션 목록</span></div>
+        <div class="term-body">
+          <div class="dim">최근 세션 · 업무 계정</div>
+          <div class="session-row selected">▸ codex  리뷰 세션      방금</div>
+          <div class="session-row">  codex  설계 검토      1시간</div>
+          <div class="current-path">
+            <p><span class="blue">기존 세션</span>  Enter → 바로 재개</p>
+            <p><span class="blue">새 세션</span>    계정 / 라벨 → 바로 시작</p>
+            <p class="gap yellow">Codex 대화 명령은 중계기에 자동 연결</p>
+            <p class="dim">전송 금지 정책이면 Jev 판단 없이 전달<br>키가 없으면 새 턴이 차단될 수 있음</p>
+          </div>
+          <p class="dim" style="margin-top:13px">실행 중인 창은 기존 프로세스에 다시 연결</p>
+        </div>
+        <div class="term-footer"><span class="blue">codex</span>  업무 계정 주간  ▰▰▱▱▱▱<br><span class="dim">Enter 열기 · n 새 세션 · Ctrl-G Trace</span></div>
+      </div></div>
+      <p class="caption">정책상 미전송 경로는 있으나 사용자가 진입 시 고르는 단계는 없다.</p>
+    </article>
+
+    <article class="screen" id="proposed-screen">
+      <div class="screen-title"><h3>제안 · 기존 / 새 세션에 같은 선택</h3><span class="tag change">변경: 실행 직전 1단계</span></div>
+      <div class="terminal-scroll"><div class="terminal">
+        <div class="term-top">◆ MindPlayer <span class="dim" id="target-label">기존 세션 재개</span></div>
+        <div class="term-body" id="proposed-body">
+          <div class="dim">최근 세션 · 업무 계정</div>
+          <div class="session-row selected" id="background-row">▸ codex  리뷰 세션      방금</div>
+          <form class="choice" id="open-choice" aria-labelledby="choice-title">
+            <div class="choice-title" id="choice-title">열기 전 · 모델 판단 방식</div>
+            <div class="dim" id="target-info">리뷰 세션 · Codex / 업무 계정 · 같은 세션 재개</div>
+            <fieldset>
+              <legend>Jev 사용 여부</legend>
+              <label class="option"><input type="radio" name="mode" value="native" checked>Jev 사용 안 함<small>기존 CLI 그대로 · Jev 호출 / 전송 없음</small></label>
+              <label class="option"><input type="radio" name="mode" value="jev">Jev 사용<small>매 새 프롬프트의 모델·effort 판단 · 외부 전송 / 판정 사용량</small></label>
+            </fieldset>
+            <label class="consent" id="consent-row" hidden><input id="consent" type="checkbox">현재 입력·제한된 직전 판단·후보/기준을 TypeSafe Jev로 전송 동의<br><span class="dim">설정에 따라 AI Gateway 경유 · 키 보유와 전송 동의는 별개</span></label>
+            <div class="readiness" id="readiness" aria-live="polite">Jev 키 없이 열 수 있습니다. CLI 로그인 / 실행 조건은 별도입니다.</div>
+            <div class="actions">
+              <button class="primary" type="submit" id="open-button">이 방식으로 열기</button>
+              <button type="button" id="cancel-button">취소</button>
+              <button type="button" id="use-native" hidden>미사용으로 변경</button>
+              <span class="keyhint">↑↓ 선택 · Enter 열기 · Esc 취소</span>
+            </div>
+          </form>
+          <div class="live-note" id="live-note" hidden>
+            <p class="blue">이미 실행 중인 창에 다시 연결</p>
+            <p>적용 중: Jev 사용 · 기존 프로세스 유지</p>
+            <p class="dim">모드는 즉시 바꾸지 않습니다.<br>안전하게 종료한 뒤 다시 열 때 선택합니다.<br>진행 중 작업 / 대기 입력을 중단하거나 재전송하지 않습니다.</p>
+          </div>
+          <div class="live-note" id="cancel-note" hidden>
+            <p>열기를 취소했습니다.</p><p class="dim">세션 / 선택 기록 / 실행 상태는 바뀌지 않습니다.</p>
+          </div>
+          <section class="focus-pane" id="focus-pane" aria-label="열린 세션 시안" hidden>
+            <div class="pane-title" id="pane-title">리뷰 세션</div>
+            <div class="pane-content" id="pane-content"></div>
+            <div class="pane-status" id="pane-status"></div>
+          </section>
+        </div>
+        <div class="term-footer"><span class="blue">codex</span>  업무 계정 주간  ▰▰▱▱▱▱<br><span class="dim">계정 / 권한 / 세션 맥락 유지 · Ctrl-G Trace 유지</span></div>
+      </div></div>
+      <p class="caption" id="proposed-caption">기존 세션도, 새 세션도 PTY 실행 전에 선택한다. 기본값 미사용은 제안.</p>
+    </article>
+  </section>
+
+  <div class="controls" aria-label="설계서 시연 조건">
+    <span class="tag">설계서 시연 전용 · 실제 호출 없음</span>
+    <label>진입 <select id="entry-kind"><option value="existing">기존 세션 재개</option><option value="new">새 세션 만들기</option><option value="live">실행 중인 창 복귀</option></select></label>
+    <label>Jev 준비 <select id="ready-kind"><option value="ready">설정 있음 · 실제 인증 미확인</option><option value="missing">키 없음</option><option value="denied">정책이 외부 전송 금지</option><option value="unsupported">Claude · Jev 미지원</option></select></label>
+    <button id="reset" type="button">열기 전으로 되돌리기</button>
+  </div>
+  <p class="notice" id="notice" role="status">위 화면에서 선택해 보세요. 여기서 고른 값은 저장되지 않습니다.</p>
+
+  <div class="section-head"><h2>세션 진입 → 입력 → 다음 프롬프트</h2><span class="note">두 모드 모두 원래 CLI 입력창 사용</span></div>
+  <section class="journeys" aria-label="두 경로의 전체 흐름">
+    <article class="journey" id="native-journey">
+      <h3>Jev 사용 안 함 <span class="tag">네이티브 경로</span></h3>
+      <ol>
+        <li><strong>열기 전</strong> 미사용 선택 → 원래 CLI 시작 / 같은 세션 재개</li>
+        <li><strong>프롬프트 입력</strong> 기존 입력창에 입력 <span class="mini">› 이 줄의 조건을 수정해줘</span></li>
+        <li><strong>실행</strong> CLI가 기존 설정으로 처리. Jev 단계 없음 <span class="mini">작업 중 · 네이티브 CLI의 현재 모델 / effort</span></li>
+        <li><strong>완료</strong> 원래 결과 / 도구 / 승인 / 사용량 표시</li>
+        <li><strong>후속 입력</strong> 그대로 입력 → 그대로 실행. 수동 모델 변경도 유지</li>
+      </ol>
+      <p class="note">Jev 미사용은 CLI의 기능을 끄거나 모델을 고정하는 뜻이 아니다. 네이티브의 실행 중 입력 의미도 그대로 따른다.</p>
+    </article>
+    <article class="journey" id="jev-journey">
+      <h3>Jev 사용 <span class="tag">기존 Codex 통합 재사용</span></h3>
+      <ol>
+        <li><strong>열기 전</strong> 사용 선택 → 준비 / 동의 확인 → 전용 통합 실행</li>
+        <li><strong>입력·판단</strong> 원래 입력창 → 매 일반 새 턴을 Jev가 판단 <span class="mini">Jev 판단 중 · 아직 실행에 보내지 않음</span></li>
+        <li><strong>요청·시작</strong> 선택 모델 + effort를 같이 적용 <span class="mini">요청: 선택 모델 · medium → 턴 시작 확인</span></li>
+        <li><strong>완료</strong> 판단 / 요청 / 시작 / 완료를 분리. Trace 유지</li>
+        <li><strong>후속 입력</strong> 다시 판단. 유지도 정상 결과. 실행 중 일반 입력은 개별 큐 → 새 턴</li>
+      </ol>
+      <p class="note">명시적 steering·도구 출력·승인은 재판단하지 않는다. 오류 시 멋대로 미사용으로 실행하거나 입력을 재전송하지 않는다.</p>
+    </article>
+  </section>
+
+  <div class="flow-tools" id="flow-tools">
+    <strong>진행 상태 시연</strong> <span class="note">열기 전 선택 후 위 오른쪽 화면에 반영 · 모델명 / effort는 가상 예시</span>
+    <div class="controls">
+      <label>단계 <select id="flow-stage"><option value="entry">진입 / 입력</option><option value="judging">Jev 판단</option><option value="requested">모델·effort 요청</option><option value="running">턴 시작 / 실행</option><option value="completed">완료</option><option value="followup">다음 프롬프트</option><option value="queued">실행 중 입력</option><option value="failure">판단 오류</option></select></label>
+      <button id="show-stage" type="button">위 세션 화면에 표시</button>
+    </div>
+  </div>
+
+  <div class="section-head"><h2>현재 개발한 기능과 새 설계의 차이</h2><span class="note">비교 범위: Rust TUI · 별도 데스크톱 앱 아님</span></div>
+  <div class="table-scroll"><table>
+    <thead><tr><th>영역</th><th>현재 구현 · 0.55.10 소스</th><th>새 설계 · 추가 / 변경 제안</th></tr></thead>
+    <tbody>
+      <tr><td>세션 진입</td><td>기존 세션은 바로 재개. 새 세션은 계정·라벨 후 시작.</td><td>두 경우 모두 실행 직전 같은 사용 / 미사용 선택창.</td></tr>
+      <tr><td>Jev 연결</td><td>Codex 대화 명령을 자동 wrap. 전송 금지 정책이면 판단 없이 통과.</td><td>미사용은 원래 CLI로 직접. 사용만 기존 중계·전용 UI를 시작.</td></tr>
+      <tr><td>키 / 정책</td><td>중계 경로에서 검사. 키 없음은 새 턴 차단 원인.</td><td>미사용에는 Jev 키 불필요. 사용은 열기 전에 설정·정책·동의 확인. 실제 인증은 첫 호출에서도 실패 가능.</td></tr>
+      <tr><td>선택 범위</td><td>사용자용 세션별 선택 필드 없음.</td><td>실행마다 확정. 안정적인 계정 + 실제 thread에 다음 재개용 선택 기억 제안. 표시 이름과 분리.</td></tr>
+      <tr><td>모델 + effort</td><td>Jev Choice 결과를 매 새 턴에 함께 적용. 전용 큐·실행 상태 구분 구현.</td><td>사용 시 그대로 재사용. 미사용 시 CLI가 관리하며 마지막 모델·effort를 강제로 원복하지 않음.</td></tr>
+      <tr><td>실행 중 복귀</td><td>기존 PTY에 다시 연결. 재실행 아님.</td><td>그대로 복귀하고 적용 모드만 표시. 안전하게 종료 후 다시 열 때 모드 변경.</td></tr>
+      <tr><td>지원 범위</td><td>여러 CLI 세션 관리, Jev 통합은 Codex. 계정 identity 제약 존재.</td><td>각 CLI의 미사용 경로 유지. 검증되지 않은 CLI / 계정의 Jev 선택은 미지원 표시.</td></tr>
+      <tr><td>유지 / 비목표</td><td>4+3 pane·전체 폭 footer·Ctrl-G Trace·계정 / 권한 유지.</td><td>동일. 새 채팅 UI·PIM·대체 분류기·다중 provider 자동 전환은 만들지 않음.</td></tr>
+    </tbody>
+  </table></div>
+
+  <details id="assessment-evidence">
+    <summary>맨 위 판단의 근거 — 직전 조사에서 유지할 것과 수정할 것</summary>
+    <p><strong>옳은 방향:</strong> 모델 판단은 선택적 부가기능이고 세션 관리 / CLI 실행은 기본 제품이다. Jev를 강제하면 인증·외부 전송·추가 지연을 원치 않는 사용자까지 같은 의존성을 갖는다. 이는 제품 설계 판단이며 공식 문서가 특정 UI를 요구한다는 뜻은 아니다.</p>
+    <ul>
+      <li>Jev는 전달받은 상태에 대해 구조화된 판단을 반환한다. 실행기나 계정 전환기가 아니다. 판단 계층을 선택적으로 두고 실행은 MindPlayer가 관리하는 구분은 적절하다. <a href="https://docs.typesafe.ai/primitives/choice">TypeSafe Choice</a>, <a href="https://docs.typesafe.ai/cookbooks/function_calling">호출 대상을 코드가 실행하는 예제</a></li>
+      <li>Codex는 같은 thread의 새 <code>turn/start</code>에서 model·effort를 지정할 수 있다. 이전 override가 다음 턴 기본값이 될 수 있으므로 Jev를 껐다고 모델을 임의 초기화하면 안 된다. <a href="https://learn.chatgpt.com/docs/app-server">Codex app-server 계약</a></li>
+      <li>Subagent와 메인 턴 라우팅은 별개다. Claude의 Advisor / opusplan도 독립적인 네이티브 기능이므로 Jev 미사용에 자동으로 붙이거나 끌 이유가 없다. <a href="https://learn.chatgpt.com/docs/agent-configuration/subagents">Codex subagents</a>, <a href="https://code.claude.com/docs/en/advisor">Claude Advisor</a></li>
+      <li><strong>수정할 가정:</strong> “미사용 = 고정 모델”, “effort만 바꾸면 cache 유지”, “자동 선택이면 비용 절감”은 일반화할 수 없다. 모델·버전·연결 방식·작업 성공률에 따라 다르다. <a href="https://code.claude.com/docs/en/prompt-caching">Claude cache 조건</a>, <a href="https://developers.openai.com/api/docs/guides/prompt-caching">OpenAI cache 조건</a></li>
+      <li>직전 조사 자료의 effortless 절감률은 제한된 실험 결과이지 이 제품의 비용 증거가 아니다. 여러 도구의 proxy / subagent / effort 조절을 같은 “메인 모델 자동 전환”으로 묶지 않는다. <a href="https://github.com/HeyCubit/effortless/blob/af68d2a9fa8e2c49e87eced002e10fd920c76c19/bench/RESULTS.md">고정 revision의 실험 범위</a></li>
+      <li>판단을 매 새 프롬프트에 요청하는 것과 매번 모델을 바꾸는 것은 다르다. 유지도 가능하다. confidence는 판단의 집중도이지 정답률·권한·비용 절감 증명이 아니다. <a href="https://docs.typesafe.ai/confidence">TypeSafe confidence</a></li>
+    </ul>
+    <p><strong>결론:</strong> 먼저 네이티브 / Jev 두 실행 경로와 명시적 선택을 구현하는 것이 맞다. effort-only·Advisor·역할별 위임·실패 기반 승급은 이번 미사용 경로에 몰래 넣지 말고 별도 기능으로 평가한다. 최저 비용 / 품질 주장은 동일 작업 집합의 성공률·재시도·cache·지연·총사용량 측정 후에만 한다.</p>
+  </details>
+
+  <details id="alternatives">
+    <summary>UI 대안 3가지 — 왜 공통 열기 전 선택창인가</summary>
+    <div class="alternatives">
+      <article class="alternative recommended"><h3>1. 공통 선택창 · 권장</h3><p>기존 Enter와 새 세션 생성 모두 같은 단계. 사용 / 미사용과 전송 의미를 바로 알 수 있다. 세션을 여는 순간 한 단계 늘지만 프롬프트마다 묻지 않는다.</p></article>
+      <article class="alternative"><h3>2. 열기 명령 / 단축키 분리</h3><p>“일반 열기 / Jev 열기”는 익숙해지면 빠르다. 하지만 발견성이 낮고 새 세션·기존 세션의 절차가 달라지기 쉽다. 후속 단축 동작 후보.</p></article>
+      <article class="alternative"><h3>3. 전역 자동 켜짐 + 예외</h3><p>조작은 적지만 다른 사용자·키 없는 환경·혼합 모드에서 오해하기 쉽다. 설정 파일이나 키만으로 전송 동의를 추론할 위험. 주 경로로 채택하지 않는다.</p></article>
+    </div>
+    <p class="note">표현 방식도 비교했다: 정적 이미지 / SVG는 상태 조작이 어렵고, 별도 프런트엔드 앱은 의존성이 늘어난다. 이 시안은 외부 라이브러리 없는 HTML·CSS·소량의 JS로 화면과 전환을 함께 검증한다.</p>
+  </details>
+
+  <details id="mode-contract">
+    <summary>선택의 수명 — 기존 세션·새 세션·이름 변경·실행 중 복귀</summary>
+    <ul>
+      <li><strong>새 / 기록 없는 기존 세션:</strong> 미사용 기본값 제안. Jev 설정이 있어도 자동 선택하지 않는다. 선택창은 PTY 생성 전이며 취소하면 생성·실행·기록을 하지 않는다.</li>
+      <li><strong>다음 재개:</strong> 마지막 유효 선택을 미리 보여주는 안을 권장한다. <code>provider + accountFingerprint + 실제 threadId</code>로 기록하고 계정 이름·세션 제목으로 묶지 않는다. 새 세션은 실제 ID가 확인된 뒤 기록한다.</li>
+      <li><strong>같은 세션:</strong> 선택 변경만으로 새 thread를 만들지 않는다. 계정·대화·권한은 유지한다. Jev 미사용 시 마지막으로 유지된 모델·effort도 억지로 초기화하지 않는다.</li>
+      <li><strong>이미 실행 중:</strong> 재연결과 재개를 구분한다. 적용 모드는 읽기 전용이다. 진행 중인 작업·대기 큐를 중단 / 폐기 / 재전송하지 않으며 안전하게 종료한 뒤 다시 열 때 변경한다.</li>
+      <li><strong>동의:</strong> 키와 선택 기록은 외부 전송 동의가 아니다. 별도 유효 동의 버전 / 서비스 / 범위를 확인한다. 이미 유효하면 체크를 재사용할 수 있다. 시연은 동의 없는 경우를 보여준다.</li>
+      <li><strong>Handoff:</strong> 대상 새 실행에서도 선택한다. 원본 계정의 모드나 외부 전송 동의를 자동 상속하지 않는다. 일괄 열기의 개별 확인 UX와 실행 중 즉시 전환은 후속 범위다.</li>
+    </ul>
+  </details>
+
+  <details id="failure-contract">
+    <summary>키 없음·전송 금지·미지원·판단 실패는 어떻게 보이는가</summary>
+    <ul>
+      <li>Jev 미사용에는 Jev 인증을 요구하지 않는다. 네이티브 CLI 로그인·사용 제한·실행 환경은 별도로 충족해야 한다.</li>
+      <li>사용을 골랐는데 키 없음 / 정책 금지 / 미지원이면 원인과 “미사용으로 변경”을 보여준다. 자동으로 바꾸거나 키를 화면에 출력하지 않는다. 키가 있어도 인증·잔액·네트워크 성공은 미확인이다.</li>
+      <li>Jev 선택은 CLI의 계정 사용 제한이나 외부 전송 금지 정책을 무효화하지 않는다. 계정·모델·effort의 실제 후보 자격도 별도 검사한다.</li>
+      <li>실행 전 판단이 실패하면 “판단 실패 · 실행 미전송”. 네이티브 실행에 보낸 뒤 결과 불명은 별도 상태다. 두 상태 모두 입력을 자동 재전송하지 않는다.</li>
+      <li>Jev 판단 서비스 / 경유 서비스의 이름과 전송 범위를 동의에 표시한다. 현 계약은 현재 입력 + 제한된 직전 판단 + 후보 / 기준이다. 전체 대화 paging·요약 에이전트는 추가하지 않는다.</li>
+      <li>미사용 모드의 CLI 내부 Advisor 등 네이티브 기능은 자체 오류 / fallback 계약을 따른다. MindPlayer의 Jev 오류 정책과 혼동하지 않는다.</li>
+    </ul>
+  </details>
+
+  <details id="layout-detail">
+    <summary>여러 세션에서도 4개 위 / 3개 아래 + 전체 폭 사용량 유지</summary>
+    <div class="layout-scroll"><div class="layout-preview" id="layout-preview">
+      <div class="pane-row top"><div class="tiny-pane">리뷰 세션<span>Jev 사용</span>요청 모델 · medium</div><div class="tiny-pane">수정 작업<span>Jev 미사용</span>CLI 현재 모델</div><div class="tiny-pane">설계 검토<span>Jev 사용</span>판단 중</div><div class="tiny-pane">문서 작업<span>Jev 미사용</span>CLI 현재 모델</div></div>
+      <div class="pane-row bottom"><div class="tiny-pane">테스트 작업<span>Jev 사용</span>턴 시작 확인</div><div class="tiny-pane">검색 작업<span>Jev 미사용</span>CLI 현재 모델</div><div class="tiny-pane">분석 작업<span>Jev 사용</span>완료</div></div>
+      <div class="layout-footer">계정별 사용량 · 화면 전체 폭 유지<br>Ctrl-X 목록 · Ctrl-G Trace · 기존 포커스 / 확대 / 닫기 유지</div>
+    </div></div>
+    <p class="note">새 사이드바나 별도 채팅 UI를 넣지 않는다. 각 pane의 적용 모드만 짧게 표시하고 모델 / effort 줄과 구분한다.</p>
+  </details>
+
+  <details id="implementation">
+    <summary>개발 시 바뀔 경계와 승인 후 검증할 것</summary>
+    <p><code>진입 modal → PendingSpawn.routingMode → PTY 실행 분기 → 실제 ID별 선택 기록 → pane 모드 표시</code></p>
+    <ul>
+      <li><strong>변경:</strong> 기존 재개 / 새 생성 공통 선택 단계, 미사용의 중계 생략, 새 선택 필드, 실제 thread ID로 이동, 실행 중 재연결의 모드 표시.</li>
+      <li><strong>재사용:</strong> 기존 Jev rubric / Choice / policy, 모델·effort 결합 적용, 네이티브 큐, 판단 → 요청 → 시작 → 완료 상태, Trace와 footer.</li>
+      <li><strong>회귀:</strong> 미사용에서 키를 읽거나 Jev를 호출하지 않음, 사용에서 양쪽 설정 적용, 새 / 기존 계정·thread 유지, rename, 취소, 동의, 정책 금지, 키 없음, stale 판단, 실행 중 재연결, synthetic ID 교체, 실패 시 재전송 없음.</li>
+      <li><strong>실제 설치본:</strong> 소스와 회귀 테스트 → 동일 소스 빌드 → rollback 보관 → 설치본 실행. 브라우저 시안 통과만으로 이 동작을 증명하지 않는다.</li>
+    </ul>
+  </details>
+
+  <details id="evidence">
+    <summary>현재 구현의 소스 근거와 증거의 한계</summary>
+    <p>확인 기준: 2026-10-16 · 작업 트리 0.55.10 · HEAD <code>54529865aa69</code> + 기존 로컬 수정. 화면은 재구성 / 가상 데이터이며 실제 사용자 프롬프트나 비밀값을 포함하지 않는다.</p>
+    <ul>
+      <li>기존 재개 / 재연결: <a href="../../crates/mindplayer-tui/src/app/pane.rs">app/pane.rs</a> :693 / :994 / :1071. 새 생성: <a href="../../crates/mindplayer-tui/src/app/modals.rs">app/modals.rs</a> :35.</li>
+      <li>공통 PTY: <a href="../../crates/mindplayer-tui/src/pty.rs">pty.rs</a> :318. Codex 자동 wrap: <a href="../../crates/mindplayer-tui/src/local_router.rs">local_router.rs</a> :469.</li>
+      <li>동의 / 키 / 전송 금지: <a href="../../tools/local-model-router/service.mjs">service.mjs</a> :43 / :354. 모델·effort 적용: <a href="../../tools/local-model-router/router.mjs">router.mjs</a> :172 / :191.</li>
+      <li>선택 저장에 새 필드 필요: <a href="../../crates/mindplayer-core/src/state.rs">state.rs</a> :47, <a href="../../crates/mindplayer-tui/src/app.rs">app.rs</a> :660. 실제 ID 전환: <a href="../../crates/mindplayer-tui/src/app/spawn.rs">app/spawn.rs</a> :408.</li>
+      <li>기존 <a href="../jev-native-queue-0.55.10.validation.json">0.55.10 검증 기록</a>은 2회 실제 판단·새 턴의 요청 모델 / effort와 durable 문맥을 확인했다. 이번 시안의 두 경로·다른 CLI·실제 A→B 전환·서버 내부 serving·절감 효과를 검증한 것은 아니다.</li>
+      <li>이번 문서는 설계만 변경한다. 실제 Jev / 모델 호출, API 키 열람, 앱 수정 / 설치 / 릴리스 / push는 하지 않는다. 브라우저 검증은 합성 상태와 전환만 확인한다.</li>
+    </ul>
+  </details>
+
+  <p class="closing">판단은 선택적으로, 실행은 기존 도구에서. 새 선택 하나를 위해 전체 대화 UI를 다시 만들지 않는다. · <a href="../../DESIGN.md">정식 설계 결정 기록</a></p>
+</main>
+<script>
+(() => {
+  'use strict';
+  const $ = id => document.getElementById(id);
+  const state = { kind:'existing', ready:'ready', mode:'native', consent:false, opened:false, cancelled:false, stage:'entry' };
+  const radios = [...document.querySelectorAll('input[name="mode"]')];
+  const targetName = () => state.kind === 'new' ? '새 세션' : '리뷰 세션';
+  function renderChoice() {
+    const live = state.kind === 'live';
+    const jev = state.mode === 'jev';
+    const supported = state.ready !== 'unsupported';
+    const allowed = state.ready === 'ready';
+    $('target-label').textContent = live ? '실행 중인 창 복귀' : state.opened ? targetName() : state.kind === 'new' ? '새 세션 시작 전' : '기존 세션 재개';
+    $('target-info').textContent = `${targetName()} · ${supported ? 'Codex' : 'Claude'} / 업무 계정 · ${state.kind === 'new' ? '아직 생성되지 않음' : '같은 세션 재개'}`;
+    $('open-choice').hidden = live || state.opened || state.cancelled;
+    $('live-note').hidden = !live;
+    $('cancel-note').hidden = !state.cancelled;
+    $('focus-pane').hidden = !state.opened;
+    $('consent-row').hidden = !jev;
+    $('consent').checked = state.consent;
+    radios.forEach(r => { r.checked = r.value === state.mode; });
+    $('open-button').disabled = jev && (!allowed || !state.consent);
+    $('use-native').hidden = !jev || (allowed && state.consent);
+    const messages = {
+      ready: state.consent ? '설정 / 동의 확인 · 실제 인증 / 잔액은 첫 호출에서도 실패할 수 있습니다.' : 'Jev 설정 있음 · 외부 전송 동의가 필요합니다. 실제 인증 / 잔액은 미확인.',
+      missing:'Jev 키 없음 · 이 모드로 열 수 없습니다. 명시적으로 미사용을 선택할 수 있습니다.',
+      denied:'정책이 외부 전송 금지 · Jev 사용을 선택해도 우회할 수 없습니다.',
+      unsupported:'이 CLI의 Jev 통합은 아직 미지원 · 네이티브 열기는 가능합니다.'
+    };
+    // 설정 유무는 인증 성공을 보증하지 않는다. 이 프로토타입은 아무 요청도 하지 않는다.
+    $('readiness').textContent = jev ? messages[state.ready] : 'Jev 키 없이 열 수 있습니다. CLI 로그인 / 실행 조건은 별도입니다.';
+    $('proposed-caption').textContent = live ? '새 실행이 아니라 기존 프로세스 복귀. 모드 변경을 적용한 것처럼 표시하지 않는다.' : state.opened ? `적용 중: Jev ${jev ? '사용' : '미사용'} · ${state.kind === 'new' ? '실제 생성 후 선택 기록 제안' : '같은 세션 / 계정 유지'}` : '기존 세션도, 새 세션도 PTY 실행 전에 선택한다. 기본값 미사용은 제안.';
+  }
+  const nativeStages = {
+    entry:['› 프롬프트를 입력하세요\n\n기존 CLI 입력창 / 단축키 / 승인 유지','Jev 미사용 · CLI 현재 모델 / effort'],
+    judging:['Jev 판단 단계 없음\n\n입력은 원래 CLI로 전달됩니다.','Jev 미사용 · 외부 판단 호출 없음'],
+    requested:['기존 CLI가 자체 설정으로 요청합니다.\nMindPlayer가 모델 / effort를 덮어쓰지 않습니다.','Jev 미사용 · CLI 현재 모델 / effort'],
+    running:['작업 중\n\n기존 CLI의 도구 / 승인 / 출력','Jev 미사용 · CLI 실행 상태'],
+    completed:['작업 완료\n\n› 다음 프롬프트를 입력하세요','Jev 미사용 · 네이티브 완료 표시'],
+    followup:['› 테스트도 추가해줘\n\n추가 Jev 판단 없이 원래 CLI로 전달됩니다.','Jev 미사용 · 수동 모델 변경도 그대로'],
+    queued:['실행 중 새 입력\n\n해당 CLI의 기본 큐 / steering 동작을 유지합니다.\nJev용 전용 큐 동작을 강제하지 않습니다.','Jev 미사용 · 네이티브 입력 의미 유지'],
+    failure:['Jev를 사용하지 않으므로 Jev 판단 오류는 없습니다.\nCLI 자체 오류 / 로그인 / 사용 제한은 별도입니다.','Jev 미사용 · 외부 판단 호출 없음']
+  };
+  const jevStages = {
+    entry:['› 프롬프트를 입력하세요\n\n같은 CLI 입력창 · Jev는 새 사용자 턴에서만 판단','Jev 사용 · 입력 대기'],
+    judging:['› 이 줄의 조건을 수정해줘\n\nJev 판단 중…\n아직 Codex 실행에 보내지 않았습니다.','Jev 사용 · 판단 중'],
+    requested:['Jev 선택: gpt-5.6-luna · medium\n\nmodel + effort를 같은 새 턴 요청에 적용\n요청 수락은 턴 시작과 구별합니다.','Jev 사용 · 요청 gpt-5.6-luna medium'],
+    running:['조건을 수정하고 관련 테스트를 확인하겠습니다.\n\n도구 실행 중 · 테스트 확인','Jev 사용 · 턴 시작 확인 · 요청 gpt-5.6-luna medium'],
+    completed:['작업 완료\n\n› 다음 프롬프트를 입력하세요\n판단과 실행 기록은 Ctrl-G Trace로 확인','Jev 사용 · 완료 · 요청 gpt-5.6-luna medium'],
+    followup:['› 테스트도 추가해줘\n\n이 입력도 다시 Jev 판단 → 모델 + effort 요청\n현재 설정 유지도 정상적인 선택입니다.','Jev 사용 · 새 프롬프트 재판단'],
+    queued:['작업 중 입력한 일반 프롬프트\n\n개별 네이티브 큐 → 정상 완료 후 새 턴 / 새 판단\n명시적 steering·도구 출력·승인은 재판단하지 않음\n중단 / 실패 뒤 자동 실행하지 않음','Jev 사용 · 입력 대기 큐'],
+    failure:['판단 실패 · 실행 미전송\n\nCodex에 입력을 보내지 않았습니다.\n자동 미사용 전환 / 자동 재전송 없음\n모드 변경은 안전하게 종료 후 다시 열 때 선택','Jev 사용 · 판단 오류 · 실행 미전송']
+  };
+  function showStage() {
+    if (!state.opened) {
+      $('notice').textContent = state.kind === 'live' ? '이미 적용 중인 모드는 복귀로 바뀌지 않습니다. 새 실행 전에 선택합니다.' : '먼저 오른쪽 선택창에서 이 방식으로 열기를 누르세요.';
+      return;
+    }
+    state.stage = $('flow-stage').value;
+    const [content,status] = (state.mode === 'jev' ? jevStages : nativeStages)[state.stage];
+    $('pane-title').textContent = `${targetName()} · ${state.mode === 'jev' ? 'Jev 사용' : 'Jev 미사용'}`;
+    $('pane-content').textContent = content;
+    $('pane-status').textContent = status;
+    $('notice').textContent = '가상 화면 시연입니다. 실제 판단 / 실행 요청은 없습니다.';
+  }
+  function reset() {
+    state.kind = $('entry-kind').value;
+    state.ready = $('ready-kind').value;
+    state.mode = 'native'; state.consent = false; state.opened = false; state.cancelled = false; state.stage = 'entry';
+    $('flow-stage').value = 'entry';
+    $('notice').textContent = state.kind === 'new' ? '새 세션의 계정 / 라벨 설정을 마친 직후입니다. 아직 생성되지 않았습니다.' : '위 화면에서 선택해 보세요. 여기서 고른 값은 저장되지 않습니다.';
+    renderChoice();
+  }
+  function cancel() {
+    if (state.opened || state.kind === 'live') return;
+    state.cancelled = true;
+    $('notice').textContent = '취소: 세션 생성 / 실행 / 선택 기록 없음. 설계서의 되돌리기로 다시 볼 수 있습니다.';
+    renderChoice();
+  }
+  radios.forEach(r => r.addEventListener('change',() => { state.mode = r.value; renderChoice(); }));
+  $('consent').addEventListener('change',e => { state.consent = e.target.checked; renderChoice(); });
+  $('use-native').addEventListener('click',() => { state.mode = 'native'; state.consent = false; renderChoice(); radios[0].focus(); });
+  $('open-choice').addEventListener('submit',e => {
+    e.preventDefault();
+    if (state.kind === 'live' || state.cancelled || $('open-button').disabled) return;
+    state.opened = true; renderChoice(); showStage();
+  });
+  $('open-choice').addEventListener('keydown',e => {
+    if (e.key === 'Escape') { e.preventDefault(); cancel(); }
+    if (['ArrowDown','ArrowUp'].includes(e.key) && e.target.matches('input[type=radio]')) {
+      e.preventDefault(); state.mode = state.mode === 'native' ? 'jev' : 'native'; renderChoice(); radios.find(r => r.value === state.mode).focus();
+    }
+  });
+  $('cancel-button').addEventListener('click',cancel);
+  $('reset').addEventListener('click',reset);
+  $('entry-kind').addEventListener('change',reset);
+  $('ready-kind').addEventListener('change',reset);
+  $('show-stage').addEventListener('click',showStage);
+  renderChoice();
+})();
+</script>
+</body>
+</html>

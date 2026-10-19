@@ -1,0 +1,72 @@
+{
+  "schemaVersion": 1,
+  "scope": "Documentation only: current local MindPlayer Jev integration code guide",
+  "verifiedAt": "2026-10-18T13:31:15.171Z",
+  "artifact": "docs/report/2026-10-18-jev-code-guide.ko.html",
+  "artifactSha256": "b6fefd6cb0360ba3e39ad7aa937f92a90db0a4c521f67624807895d20a963fd8",
+  "test": "docs/tests/jev-code-guide.test.cjs",
+  "testSha256": "072ac33a464dba1e39f83eddf26fa5c5683a6b6a029d3e4cb2521beef926df8c",
+  "source": {
+    "revision": "54529865aa69ef134c25b88a78c8139ce99b181f",
+    "dirty": true,
+    "version": "0.55.13",
+    "manifestFiles": 123,
+    "manifestScope": "Cargo.toml/Cargo.lock and sorted .rs/.toml/.mjs/.json/.cjs/.ts under crates and tools/local-model-router; SHA256(path NUL fileSHA256 newline)",
+    "manifestSha256": "7f07d60160ce42e6484b2de129d90d62df525d5eefcdd51a7ff165047068d840",
+    "matchesExistingInstallRecord": true,
+    "applicationCodeChanged": false,
+    "desktopFiles": 24,
+    "desktopManifestSha256": "b9076097dadd60a17ce3da7623af4c88a007025924b0e20bc7f33652e7bbe3e3",
+    "desktopChanged": false
+  },
+  "research": {
+    "round1": "Primary source consumers: Rust spawn, Codex proxy/service/router, Claude launcher/broker/policy/mod",
+    "round2": "Cross-check tests and version-specific saved installation/native validation records",
+    "alternatives": ["Flat file list", "Interactive graph application", "Selected: standalone HTML with two execution lanes, searchable file disclosures and code excerpts"],
+    "sourceExcerptsExactlyMatch": 8,
+    "documentedEmbeddedAssets": 19,
+    "rustBoundaryGroups": 3,
+    "additionalDependencies": ["tools/native-codex/queue.patch", "tools/native-codex/build.mjs"]
+  },
+  "checks": {
+    "documentBrowserTestExitCode": 0,
+    "browser": "Google Chrome 155.0.8059.85 (existing local installation)",
+    "module": "Existing installed Playwright; no dependency installation",
+    "localLinks": "All files and fragment targets exist; unique IDs",
+    "privacy": "No personal home paths, emails, real fixture identifiers or credential patterns in HTML",
+    "layoutWidths": [1440, 1024, 740, 390, 320],
+    "statesAtEveryWidth": ["collapsed", "expanded"],
+    "documentOverflow": false,
+    "clippedText": [],
+    "interactions": ["search match/empty/reset", "expand/collapse all22 descriptions", "Enter/Space disclosure keyboard controls"],
+    "consoleErrors": [],
+    "externalRequests": [],
+    "nodeSyntaxExitCode": 0,
+    "gitDiffCheckExitCode": 0,
+    "screenshotsDirectoryName": "mindplayer-jev-code-guide-9Grilk",
+    "screenshotsLocation": "OS temporary directory; retained for review",
+    "visualVerdict": {
+      "score": 95,
+      "threshold": 90,
+      "verdict": "pass",
+      "referenceScope": "Existing 2026-10-16 report used only as a technical-report style/readability reference, not a user pixel-fidelity requirement",
+      "note": "Two subsequent closed-disclosure factual sentence corrections do not change the reviewed top/flow/code screenshot surfaces; final expanded layout test also passed"
+    },
+    "defaultBrowserOpen": { "command": "open <absolute artifact path>", "exitCode": 0 }
+  },
+  "simplifications": "Single offline HTML using native details and a small local search; no framework, CDN, external fonts, server or build step",
+  "boundaries": {
+    "cargoOrApplicationTestsRerun": false,
+    "providerCalls": 0,
+    "applicationLaunched": false,
+    "installedBinaryChanged": false,
+    "credentialsOrLoginsChanged": false,
+    "commitOrPush": false
+  },
+  "remainingRisks": [
+    "Source links require the relative repository layout; standalone copied HTML retains explanations but not source files",
+    "Code excerpts and line references are a dated snapshot, not automatically maintained",
+    "Saved functional test counts are historical evidence, not fresh application execution in this documentation task",
+    "Claude best-effort extension, provider entitlement/serving/effort and quality/cost evidence limits remain explicit"
+  ]
+}

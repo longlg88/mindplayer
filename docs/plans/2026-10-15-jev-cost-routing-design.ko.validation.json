@@ -1,0 +1,30 @@
+{
+  "verified_at": "2026-10-15T07:32:43.119Z",
+  "artifact": "docs/plans/2026-10-15-jev-cost-routing-design.ko.html",
+  "artifact_sha256": "2d47939aca7055616fc4e1e28edc71a08d8737bebe44300dd606594831761a45",
+  "source_revision": "54529865aa69ef134c25b88a78c8139ce99b181f",
+  "source_dirty": true,
+  "test": "docs/tests/jev-cost-routing-design.test.cjs",
+  "playwright_module": "/Users/eden.jang/.npm/_npx/e41f203b7505f1fb/node_modules/playwright",
+  "browser": "Chrome 155.0.8059.80",
+  "viewports": [[1440, 1000], [969, 822], [390, 844]],
+  "screenshots": "/var/folders/t8/nkh_jkgj0db5bs30rywyn4gr0000gq/T/mindplayer-jev-design-1gJROy",
+  "checks": [
+    "위 4개/아래 3개 창과 전체 폭 quota footer",
+    "첫 데스크톱 화면의 현재/제안 비교와 읽기 전용 모델 표시 변경",
+    "나머지 6개 창 동일, 새 제품 컨트롤 없음",
+    "합성 시나리오 5개와 키보드 펼침/가로 스크롤",
+    "외부 요청·브라우저 오류·credential pattern 없음",
+    "새 MD 두 개 제거, 기존 DESIGN.md와 HTML 링크 보존"
+  ],
+  "external_requests": [],
+  "browser_errors": [],
+  "default_browser_open_exit_code": 0,
+  "node_router_regression": {"passed": 53, "failed": 0},
+  "actual_jev_calls": 0,
+  "runtime_changed_in_this_task": false,
+  "limitations": [
+    "설계 시안 검증이며 Jev 품질·비용 절감·인증 추론 검증이 아닙니다.",
+    "이번 작업에서 Rust 구현·바이너리 교체·설치·commit·push는 하지 않았습니다."
+  ]
+}

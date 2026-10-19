@@ -1,0 +1,97 @@
+{
+  "anonymization": {
+    "date": "2026-10-17",
+    "accounts": "Display labels use work-account/personal-account; identifier keys use work_account/personal_account.",
+    "paths": "Evidence paths are relative to the repository root; .. retains locations outside it. Historical commands anchor external paths at ${PWD}. Evidence was not copied or moved.",
+    "history": "Original timestamps, hashes, results and caveats are retained. Labels and paths are anonymized representations; historical verification does not attest to edited bytes or current live state."
+  },
+  "artifact": "docs/model-routing-options.ko.html",
+  "verified_at": "2026-10-15T01:11:32.880Z",
+  "sha256": "1eb5c6804b4a7166993dab971f805d9082bede76889bd5319bc3e46e46a6bbd5",
+  "scope": "Design alternatives and fixed browser examples only; not production routing implementation",
+  "repository": {
+    "source_revision": "54529865aa69ef134c25b88a78c8139ce99b181f",
+    "preexisting_dirty_worktree": true,
+    "production_source_modified_by_this_task": false,
+    "version_bump_install_commit_push": false,
+    "pim_repository_modified": false
+  },
+  "design": {
+    "options": ["Local deterministic rules", "General LLM judgment for every prompt", "Rules with LLM judgment for unresolved inputs"],
+    "recommendation": "Hybrid after an LLM-only evaluation baseline; not user-approved implementation",
+    "vercel_integration": "Deferred",
+    "pim_implementation_or_connection": "Excluded",
+    "preserved_ui": "4 top / 3 bottom panes, full-width quota footer, same focused pane and input position",
+    "product_model_controls_added": 0,
+    "demonstration": "Five predefined examples, no actual classifier"
+  },
+  "static_checks": {
+    "javascript_syntax": "pass",
+    "unique_ids_and_korean_document_language": "pass",
+    "local_links": "pass; validation receipt checked separately after creation",
+    "external_asset_dependencies": 0,
+    "runtime_network_or_storage_apis": 0,
+    "credential_pattern_matches": 0,
+    "credential_scan_limit": "Pattern scan, not proof against all sensitive content",
+    "git_diff_check": "pass"
+  },
+  "browser_checks": {
+    "browser": "Installed Google Chrome 155.0.8059.80 via existing cached Playwright 1.64.1",
+    "test_script": "docs/tests/model-routing-options.test.cjs",
+    "command": "MINDPLAYER_PLAYWRIGHT_MODULE=/absolute/path/to/existing/playwright node docs/tests/model-routing-options.test.cjs",
+    "transport": "Temporary loopback-only HTTP server, closed after verification",
+    "viewports": [[1440, 1000], [969, 822], [390, 844]],
+    "panes_per_view": 7,
+    "rows_per_view": [4, 3],
+    "full_width_quota_footer": "pass",
+    "unchanged_pane_headers_and_other_six_panes": "pass",
+    "current_and_proposed_change_visible_without_scroll_on_desktop": "pass",
+    "page_horizontal_overflow": false,
+    "narrow_terminal_keyboard_horizontal_scroll": "pass",
+    "keyboard_enter_space_disclosures": "pass",
+    "keyboard_activated_examples": ["simple", "complex", "followup", "timeout", "unknown"],
+    "reduced_motion_emulated": true,
+    "page_initiated_external_requests": [],
+    "console_errors_and_page_errors": [],
+    "screenshots_inspected": ["desktop.png", "narrow.png"],
+    "temporary_screenshot_directory": "../../../../../../../../var/folders/t8/nkh_jkgj0db5bs30rywyn4gr0000gq/T/mindplayer-model-options-WqukyY",
+    "visual_check_limit": "Illustrative HTML layout inspected; no pixel match or live Rust TUI verification",
+    "default_browser_open": {
+      "command": "open docs/model-routing-options.ko.html",
+      "exit_code": 0
+    }
+  },
+  "archive": {
+    "path": "docs/archive/2026-10-15-model-routing/",
+    "recoverable": true,
+    "original_bytes_preserved": true,
+    "active_original_paths_absent": true,
+    "files": {
+      "sense-model-topology.ko.html": "9f078af245813950d06c3e0e57cc2863c87b84e2df37a84386da274b07696ae5",
+      "sense-model-ui.ko.html": "f931bdcf155cd899602f0ef4ee5b0224908b9bf094a687dc0482ca6a59b710bd",
+      "jev-execution-topology.html": "32ad7e3394867ea6890320ef627432975e0126f4df79c6b0c8f9bb80ef660cad",
+      "jev-model-auto-simple.ko.html": "6a923bfac42dcb91b4f3fb02e83f14d960741a2463313965e4f932f1d4187f63"
+    },
+    "unrelated_trace_observer_completion_html": "Preserved",
+    "historical_validation_receipts": "Preserved as historical records"
+  },
+  "official_references": [
+    "https://learn.chatgpt.com/docs/app-server",
+    "https://learn.chatgpt.com/docs/non-interactive-mode",
+    "https://learn.chatgpt.com/docs/auth",
+    "https://developers.openai.com/api/reference/resources/responses/methods/create",
+    "https://developers.openai.com/api/docs/guides/structured-outputs?api-mode=responses"
+  ],
+  "remaining_unverified": [
+    "Actual routing quality, calibration, latency, total cost and quota consumption",
+    "Complete tool-free isolation of a Codex CLI judge",
+    "Structured prompt submission in current native panes",
+    "Same-thread resume and single execution ownership migration",
+    "Actual model eligibility, selection, switching and observed execution",
+    "Production cancellation, approvals, backpressure, stale judgment and unknown-send recovery",
+    "Other providers including Claude"
+  ],
+  "actual_inference_calls": 0,
+  "production_model_changes": 0,
+  "rust_tests": "Not run: no Rust source, dependencies or binary changed"
+}

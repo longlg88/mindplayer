@@ -41,7 +41,7 @@ use serde_json::Value;
 /// multi-hundred-megabyte file to be thorough.
 #[cfg(test)]
 const ROLLOUT_TAIL_BYTES: u64 = 1 << 20;
-const QUOTA_CACHE_SOURCE: &str = "app-server-rate-limits-v3-user";
+const QUOTA_CACHE_SOURCE: &str = "app-server-rate-limits-v4-visible-slots";
 
 /// Claude's OAuth usage endpoint and the beta header it requires.
 const CLAUDE_USAGE_URL: &str = "https://api.anthropic.com/api/oauth/usage";
@@ -68,7 +68,7 @@ const KIRO_USAGE_TIMEOUT: Duration = Duration::from_secs(60);
 /// The Codex app-server read is a footer decoration and must not block the UI
 /// when the local daemon/auth path is unavailable.
 const CODEX_APP_SERVER_TIMEOUT: Duration = Duration::from_secs(8);
-/// Identity is optional: older servers may never answer `account/read`.
+/// Identity enrichment is optional for quota display only.
 const CODEX_IDENTITY_GRACE: Duration = Duration::from_millis(250);
 /// Same reason as the keychain constants above: only macOS shells out to
 /// `security(1)`, so elsewhere this bound has nothing to bound.
@@ -1135,8 +1135,9 @@ pub fn account_quota_rows(
 /// being broken rather than as the accounts being the same. The provider's own
 /// individual identity (not a shared workspace ID) tells those apart.
 ///
-/// The first account to carry an id keeps its figures; later ones lose their
-/// gauge and say whose reading they would have repeated.
+/// Keep every configured slot's measured figures visible. A shared-identity
+/// warning explains that these are not two independent quota pools; hiding a
+/// gauge makes an authentication problem look like a missing usage reading.
 pub fn mark_shared_logins(rows: &mut [QuotaRow]) {
     let mut owner: Vec<(Agent, String, String)> = Vec::new();
     for row in rows.iter_mut() {
@@ -1148,9 +1149,7 @@ pub fn mark_shared_logins(rows: &mut [QuotaRow]) {
             .find(|(agent, id, _)| *agent == row.agent && *id == identity)
         {
             Some((_, _, first)) if *first != row.account => {
-                row.used_percent = None;
                 row.detail = format!("same login as {first}");
-                row.resets = None;
             }
             Some(_) => {}
             None => owner.push((row.agent, identity, row.account.clone())),
@@ -1783,12 +1782,48 @@ pub fn codex_limits_in(codex_home: &Path) -> Result<CodexLimits, ProbeError> {
     ))
 }
 
+/// Provider-reported account identity for one explicit credential home.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AccountIdentity {
+    pub fingerprint: String,
+    pub email: String,
+    pub workspace: String,
+}
+
+/// Backward-compatible name for the Codex identity reader.
+pub type CodexIdentity = AccountIdentity;
+
+/// Refresh and read this home's account within the bounded app-server deadline.
+/// Quota availability does not determine whether the account is authenticated.
+pub fn codex_account_in(codex_home: &Path) -> Result<CodexIdentity, ProbeError> {
+    let mut command = Command::new(codex_binary());
+    let (account, quota) =
+        run_codex_app_server(&mut command, codex_home, CODEX_APP_SERVER_TIMEOUT, 3)?;
+    codex_account_from_exchange(&account, quota.as_ref())
+}
+
+/// Read the opaque identity reported by Codex for this exact `CODEX_HOME`.
+pub fn codex_identity_in(codex_home: &Path) -> Result<String, ProbeError> {
+    codex_account_in(codex_home).map(|identity| identity.fingerprint)
+}
+
+#[cfg(test)]
+fn codex_identity_in_with_binary(
+    codex_bin: &Path,
+    codex_home: &Path,
+    timeout: Duration,
+) -> Result<String, ProbeError> {
+    let mut command = Command::new(codex_bin);
+    let (account, quota) = run_codex_app_server(&mut command, codex_home, timeout, 3)?;
+    codex_account_from_exchange(&account, quota.as_ref()).map(|identity| identity.fingerprint)
+}
+
 fn codex_app_server_limits(
     codex_home: &Path,
     timeout: Duration,
 ) -> Result<CodexLimits, ProbeError> {
     let mut command = Command::new(codex_binary());
-    let (response, account) = run_codex_app_server_rate_limits(&mut command, codex_home, timeout)?;
+    let (response, account) = run_codex_app_server(&mut command, codex_home, timeout, 2)?;
     codex_limits_from_exchange(&response, account.as_ref())
 }
 
@@ -1799,7 +1834,7 @@ fn codex_app_server_limits_with_binary(
     timeout: Duration,
 ) -> Result<CodexLimits, ProbeError> {
     let mut command = Command::new(codex_bin);
-    let (response, account) = run_codex_app_server_rate_limits(&mut command, codex_home, timeout)?;
+    let (response, account) = run_codex_app_server(&mut command, codex_home, timeout, 2)?;
     codex_limits_from_exchange(&response, account.as_ref())
 }
 
@@ -1814,6 +1849,9 @@ fn configure_codex_app_server_command(command: &mut Command, codex_home: &Path) 
         .env_remove("CODEX_ACCESS_TOKEN")
         .env_remove("CODEX_API_KEY")
         .env_remove("OPENAI_API_KEY");
+    for key in crate::accounts::ROUTER_SERVICE_ENV {
+        command.env_remove(key);
+    }
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
@@ -1821,10 +1859,11 @@ fn configure_codex_app_server_command(command: &mut Command, codex_home: &Path) 
     }
 }
 
-fn run_codex_app_server_rate_limits(
+fn run_codex_app_server(
     command: &mut Command,
     codex_home: &Path,
     timeout: Duration,
+    required_id: i64,
 ) -> Result<(Value, Option<Value>), ProbeError> {
     configure_codex_app_server_command(command, codex_home);
     command
@@ -1833,7 +1872,7 @@ fn run_codex_app_server_rate_limits(
         .stderr(Stdio::piped());
     let mut child = command
         .spawn()
-        .map_err(|e| spawn_error("codex app-server", &e))?;
+        .map_err(|_| ProbeError::new(FailureKind::Temporary, "cannot start codex app-server"))?;
     let cleanup = |child: &mut std::process::Child| {
         kill_codex_app_server(child);
         let _ = child.wait();
@@ -1843,21 +1882,30 @@ fn run_codex_app_server_rate_limits(
         Some(stdin) => stdin,
         None => {
             cleanup(&mut child);
-            return Err("cannot open codex app-server stdin".into());
+            return Err(ProbeError::new(
+                FailureKind::Temporary,
+                "cannot open codex app-server stdin",
+            ));
         }
     };
     let stdout = match child.stdout.take() {
         Some(stdout) => stdout,
         None => {
             cleanup(&mut child);
-            return Err("cannot capture codex app-server stdout".into());
+            return Err(ProbeError::new(
+                FailureKind::Temporary,
+                "cannot capture codex app-server stdout",
+            ));
         }
     };
     let stderr = match child.stderr.take() {
         Some(stderr) => stderr,
         None => {
             cleanup(&mut child);
-            return Err("cannot capture codex app-server stderr".into());
+            return Err(ProbeError::new(
+                FailureKind::Temporary,
+                "cannot capture codex app-server stderr",
+            ));
         }
     };
 
@@ -1903,18 +1951,21 @@ fn run_codex_app_server_rate_limits(
         "jsonrpc": "2.0",
         "id": 3,
         "method": "account/read",
-        "params": { "refreshToken": false }
+        "params": { "refreshToken": required_id == 3 }
     });
 
-    if let Err(e) = writeln!(stdin, "{initialize}") {
+    if writeln!(stdin, "{initialize}").is_err() {
         drop(stdin);
         cleanup(&mut child);
         let _ = stdout_reader.join();
         let _ = stderr_reader.join();
-        return Err(format!("cannot write to codex app-server: {e}").into());
+        return Err(ProbeError::new(
+            FailureKind::Temporary,
+            "cannot write to codex app-server",
+        ));
     }
     let start = Instant::now();
-    match wait_for_json_rpc_id(&mut child, &rx, start, timeout, 1, None) {
+    match wait_for_json_rpc_id(&mut child, &rx, start, timeout, 1, None, None) {
         Ok((value, _)) if rpc_error(&value).is_none() => {}
         Ok(_) => {
             drop(stdin);
@@ -1936,16 +1987,32 @@ fn run_codex_app_server_rate_limits(
     }
 
     for message in [initialized, account_read, read] {
-        if let Err(e) = writeln!(stdin, "{message}") {
+        if writeln!(stdin, "{message}").is_err() {
             drop(stdin);
             cleanup(&mut child);
             let _ = stdout_reader.join();
             let _ = stderr_reader.join();
-            return Err(format!("cannot write to codex app-server: {e}").into());
+            return Err(ProbeError::new(
+                FailureKind::Temporary,
+                "cannot write to codex app-server",
+            ));
         }
     }
 
-    let response = wait_for_json_rpc_id(&mut child, &rx, start, timeout, 2, Some(3));
+    let (optional_id, optional_grace) = if required_id == 3 {
+        (2, None)
+    } else {
+        (3, Some(CODEX_IDENTITY_GRACE))
+    };
+    let response = wait_for_json_rpc_id(
+        &mut child,
+        &rx,
+        start,
+        timeout,
+        required_id,
+        Some(optional_id),
+        optional_grace,
+    );
     drop(stdin);
     cleanup(&mut child);
     let _ = stdout_reader.join();
@@ -1977,19 +2044,35 @@ fn wait_for_json_rpc_id(
     timeout: Duration,
     id: i64,
     optional_id: Option<i64>,
+    optional_grace: Option<Duration>,
 ) -> Result<(Value, Option<Value>), ProbeError> {
     let temporary = |detail: String| ProbeError::new(FailureKind::Temporary, detail);
     let mut required = None;
     let mut optional = None;
-    let mut identity_deadline = None;
+    let mut optional_deadline = None;
     loop {
         let expired = start.elapsed() >= timeout;
         if optional_id.is_none()
             || optional.is_some()
-            || expired
-            || identity_deadline.is_some_and(|deadline| Instant::now() >= deadline)
+            || (expired && id != 3)
+            || optional_deadline.is_some_and(|deadline| Instant::now() >= deadline)
+            || (id == 3
+                && required
+                    .as_ref()
+                    .is_some_and(|value| !codex_account_needs_legacy_workspace(value)))
         {
             if let Some(value) = required.take() {
+                // Check already queued quota routing without waiting for quota
+                // availability when account/read supplied its own workspace.
+                while id == 3 && optional.is_none() && start.elapsed() < timeout {
+                    let Ok(line) = rx.try_recv() else { break };
+                    let Ok(response) = serde_json::from_str::<Value>(&line) else {
+                        continue;
+                    };
+                    if response.get("id").and_then(Value::as_i64) == optional_id {
+                        optional = Some(response);
+                    }
+                }
                 return Ok((value, optional));
             }
         }
@@ -2005,12 +2088,12 @@ fn wait_for_json_rpc_id(
                 };
                 match value.get("id").and_then(Value::as_i64) {
                     Some(response_id) if response_id == id => {
-                        // Failed usage does not need optional identity enrichment.
+                        // A required RPC failure needs no optional enrichment.
                         if rpc_error(&value).is_some() {
                             return Ok((value, optional));
                         }
                         required = Some(value);
-                        identity_deadline = Some(Instant::now() + CODEX_IDENTITY_GRACE);
+                        optional_deadline = optional_grace.map(|grace| Instant::now() + grace);
                     }
                     Some(response_id) if Some(response_id) == optional_id => {
                         optional = Some(value);
@@ -2023,16 +2106,87 @@ fn wait_for_json_rpc_id(
                 // wrapper may have already written the complete exchange.
                 let status = child
                     .try_wait()
-                    .map_err(|e| format!("cannot wait for codex app-server: {e}"))?;
+                    .map_err(|_| temporary("cannot wait for codex app-server".into()))?;
                 if status.is_some() || matches!(error, mpsc::RecvTimeoutError::Disconnected) {
                     if let Some(value) = required {
-                        return Ok((value, optional));
+                        if id != 3
+                            || optional.is_some()
+                            || !codex_account_needs_legacy_workspace(&value)
+                        {
+                            return Ok((value, optional));
+                        }
                     }
                     return Err(temporary("codex app-server closed before response".into()));
                 }
             }
         }
     }
+}
+
+fn codex_account_needs_legacy_workspace(response: &Value) -> bool {
+    response.get("result").is_some_and(|result| {
+        result.get("workspaceRouting").is_none()
+            && result.pointer("/account/type").and_then(Value::as_str) == Some("chatgpt")
+            && result
+                .pointer("/account/email")
+                .and_then(Value::as_str)
+                .is_some_and(|email| !email.trim().is_empty())
+    })
+}
+
+fn codex_account_from_exchange(
+    response: &Value,
+    quota_response: Option<&Value>,
+) -> Result<CodexIdentity, ProbeError> {
+    if let Some(error) = rpc_error(response) {
+        return Err(codex_rpc_failure(error, "identity"));
+    }
+    let unreadable = || ProbeError::new(FailureKind::Unreadable, "Codex identity unavailable");
+    let result = response.get("result").ok_or_else(unreadable)?;
+    let account = result.get("account").ok_or_else(unreadable)?;
+    if account.is_null() {
+        return Err(ProbeError::new(
+            FailureKind::SignIn,
+            "Codex account sign-in required",
+        ));
+    }
+    if account.get("type").and_then(Value::as_str) != Some("chatgpt") {
+        return Err(unreadable());
+    }
+    let email = account
+        .get("email")
+        .and_then(Value::as_str)
+        .filter(|email| !email.chars().any(char::is_control))
+        .map(|email| email.trim().to_lowercase())
+        .filter(|email| !email.is_empty())
+        .ok_or_else(unreadable)?;
+    // Only older servers without workspaceRouting may use quota's accountId.
+    // A present but incomplete routing object must not select another workspace.
+    let quota_workspace = quota_response
+        .filter(|response| rpc_error(response).is_none())
+        .and_then(|response| response.pointer("/result/accountId"))
+        .and_then(Value::as_str);
+    let workspace = match result.get("workspaceRouting") {
+        Some(routing) => routing.get("chatgptAccountId").and_then(Value::as_str),
+        None => quota_workspace,
+    }
+    .filter(|workspace| !workspace.trim().is_empty() && !workspace.chars().any(char::is_control))
+    .ok_or_else(unreadable)?;
+    if quota_workspace.is_some_and(|quota_workspace| quota_workspace != workspace) {
+        return Err(unreadable());
+    }
+    Ok(CodexIdentity {
+        fingerprint: codex_identity_fingerprint(workspace, &email),
+        email,
+        workspace: workspace.to_string(),
+    })
+}
+
+fn codex_identity_fingerprint(workspace: &str, email: &str) -> String {
+    // Keep the existing workspace + normalized email hash for stored bindings.
+    let mut hash = DefaultHasher::new();
+    (workspace, email).hash(&mut hash);
+    format!("codex-user-{:016x}", hash.finish())
 }
 
 fn codex_limits_from_exchange(
@@ -2050,9 +2204,7 @@ fn codex_limits_from_exchange(
                 if !email.is_empty() {
                     // Do not put an email into the serialized footer cache.
                     // This is an equality fingerprint, not a security token.
-                    let mut hash = DefaultHasher::new();
-                    (workspace, email).hash(&mut hash);
-                    limits.user = Some(format!("codex-user-{:016x}", hash.finish()));
+                    limits.user = Some(codex_identity_fingerprint(workspace, &email));
                 }
             }
         }
@@ -2062,7 +2214,7 @@ fn codex_limits_from_exchange(
 
 fn parse_codex_app_server_response(response: &Value) -> Result<CodexLimits, ProbeError> {
     if let Some(error) = rpc_error(response) {
-        return Err(codex_rpc_failure(error));
+        return Err(codex_rpc_failure(error, "rate limits"));
     }
     let unreadable = |detail: &str| ProbeError::new(FailureKind::Unreadable, detail);
     let result = response
@@ -2084,7 +2236,7 @@ fn parse_codex_app_server_response(response: &Value) -> Result<CodexLimits, Prob
 }
 
 /// Only a known marker in the RPC error picks the kind; the payload itself is never shown.
-fn codex_rpc_failure(error: &Value) -> ProbeError {
+fn codex_rpc_failure(error: &Value, reading: &str) -> ProbeError {
     let signed_out = error
         .get("message")
         .and_then(Value::as_str)
@@ -2092,12 +2244,12 @@ fn codex_rpc_failure(error: &Value) -> ProbeError {
     if signed_out {
         ProbeError::new(
             FailureKind::SignIn,
-            "codex account authentication required to read rate limits",
+            format!("codex account authentication required to read {reading}"),
         )
     } else {
         ProbeError::new(
             FailureKind::Temporary,
-            "codex app-server rate limits unavailable",
+            format!("codex app-server {reading} unavailable"),
         )
     }
 }
@@ -4375,6 +4527,494 @@ mod a_capped_account_says_so {
     }
 }
 
+#[cfg(all(test, unix))]
+mod codex_auth_probe_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn native_auth_codex_account_and_quota_probes_remove_service_environment() {
+        let fake = super::tests::fake_codex_script(&format!(
+            r#"#!/bin/sh
+/usr/bin/env > "$CODEX_HOME/probe.env"
+while IFS= read -r line; do
+  case "$line" in
+    *'"method":"initialize"'*) printf '%s\n' '{{"id":1,"result":{{}}}}' ;;
+    *'"method":"account/read"'*) printf '%s\n' '{}' ;;
+    *'"method":"account/rateLimits/read"'*) printf '%s\n' '{}' ;;
+  esac
+done
+"#,
+            account_response(),
+            quota_response()
+        ));
+        let mut leaked = Vec::new();
+        for required_id in [2, 3] {
+            let home = tempfile::tempdir().unwrap();
+            let mut command = Command::new(fake.path().join("codex"));
+            command.env_clear().env("PATH", "/usr/bin:/bin");
+            for key in [
+                "AI_GATEWAY_API_KEY",
+                "TYPESAFE_API_KEY",
+                "VERCEL_OIDC_TOKEN",
+                "MINDPLAYER_LOCAL_ROUTER_TOKEN",
+                "MINDPLAYER_ROUTER_AVAILABILITY",
+                "MINDPLAYER_ROUTER_STATUS",
+                "MINDPLAYER_CLAUDE_JEV_URL",
+                "MINDPLAYER_CLAUDE_JEV_TOKEN",
+                "MINDPLAYER_PER_PROMPT_CHOICE",
+            ] {
+                command.env(key, "synthetic-service-canary");
+            }
+            let (required, _) = run_codex_app_server(
+                &mut command,
+                home.path(),
+                CODEX_APP_SERVER_TIMEOUT,
+                required_id,
+            )
+            .unwrap();
+            assert_eq!(required["id"], required_id);
+            if std::fs::read_to_string(home.path().join("probe.env"))
+                .unwrap()
+                .contains("synthetic-service-canary")
+            {
+                leaked.push(required_id);
+            }
+        }
+        assert!(
+            leaked.is_empty(),
+            "service environment leaked to probe IDs {leaked:?}"
+        );
+    }
+
+    fn identity_probe(account: Value, quota: Value) -> Result<String, ProbeError> {
+        let fake = super::tests::fake_codex_script(&format!(
+            r#"#!/bin/sh
+while IFS= read -r line; do
+  case "$line" in
+    *'"method":"initialize"'*) printf '%s\n' '{{"id":1,"result":{{}}}}' ;;
+    *'"method":"account/rateLimits/read"'*)
+      printf '%s\n' '{quota}'
+      printf '%s\n' '{account}'
+      ;;
+  esac
+done
+"#
+        ));
+        let home = tempfile::tempdir().unwrap();
+        codex_identity_in_with_binary(
+            &fake.path().join("codex"),
+            home.path(),
+            CODEX_APP_SERVER_TIMEOUT,
+        )
+    }
+
+    fn account_response() -> Value {
+        json!({"id": 3, "result": {
+            "account": {"type": "chatgpt", "email": " ONE@example.com ", "planType": "business"},
+            "requiresOpenaiAuth": true,
+            "workspaceRouting": {"chatgptAccountId": "workspace-shared", "backendOrigin": "https://example.com", "accountRoutingOverride": null}
+        }})
+    }
+
+    fn quota_response() -> Value {
+        json!({"id": 2, "result": {
+            "accountId": "workspace-shared", "rateLimits": {"primary": {"usedPercent": 5}}
+        }})
+    }
+
+    #[test]
+    fn identity_waits_for_account_read_beyond_the_quota_grace() {
+        let fake = super::tests::fake_codex_script(&format!(
+            r#"#!/bin/sh
+while IFS= read -r line; do
+  case "$line" in
+    *'"method":"initialize"'*) printf '%s\n' '{{"id":1,"result":{{}}}}' ;;
+    *'"method":"account/rateLimits/read"'*)
+      printf '%s\n' '{}'
+      sleep 0.8
+      printf '%s\n' '{}'
+      ;;
+  esac
+done
+"#,
+            quota_response(),
+            account_response()
+        ));
+        let home = tempfile::tempdir().unwrap();
+        let identity = codex_identity_in_with_binary(
+            &fake.path().join("codex"),
+            home.path(),
+            CODEX_APP_SERVER_TIMEOUT,
+        )
+        .expect("account/read is required even after the optional quota grace expires");
+        let old = codex_limits_from_exchange(&quota_response(), Some(&account_response())).unwrap();
+        assert_eq!(Some(identity), old.user);
+    }
+
+    #[test]
+    fn identity_with_workspace_routing_survives_quota_errors() {
+        for message in [
+            "quota service unavailable",
+            "authentication required for quota",
+        ] {
+            let identity = identity_probe(
+                account_response(),
+                json!({"id": 2, "error": {"message": message}}),
+            )
+            .expect("workspace identity does not require a successful quota response");
+            let old =
+                codex_limits_from_exchange(&quota_response(), Some(&account_response())).unwrap();
+            assert_eq!(Some(identity), old.user);
+        }
+    }
+
+    #[test]
+    fn a_null_account_requires_sign_in_even_when_quota_succeeds() {
+        let error = identity_probe(
+            json!({"id": 3, "result": {"account": null, "requiresOpenaiAuth": true}}),
+            quota_response(),
+        )
+        .unwrap_err();
+        assert_eq!(error.kind, FailureKind::SignIn);
+    }
+
+    #[test]
+    fn api_keys_and_incomplete_identity_are_unreadable() {
+        for account in [
+            json!({"id": 3, "result": {"account": {"type": "apiKey", "email": "one@example.com"}}}),
+            json!({"id": 3, "result": {"account": {"type": "chatgpt"}}}),
+            json!({"id": 3, "result": {"account": {"type": "chatgpt", "email": " "}}}),
+            json!({"id": 3, "result": {}}),
+        ] {
+            assert_eq!(
+                identity_probe(account, quota_response()).unwrap_err().kind,
+                FailureKind::Unreadable
+            );
+        }
+        let mut quota = quota_response();
+        quota["result"].as_object_mut().unwrap().remove("accountId");
+        let mut account = account_response();
+        account["result"]
+            .as_object_mut()
+            .unwrap()
+            .remove("workspaceRouting");
+        assert_eq!(
+            identity_probe(account, quota).unwrap_err().kind,
+            FailureKind::Unreadable,
+            "email alone must never identify a workspace"
+        );
+    }
+
+    #[test]
+    fn identity_rejects_control_characters_before_normalization_or_hashing() {
+        for control in ['\n', '\t', '\r', '\u{1b}', '\u{7f}', '\u{85}'] {
+            let mut account = account_response();
+            account["result"]["account"]["email"] = format!("{control}one@example.com").into();
+            assert_eq!(
+                identity_probe(account, quota_response()).unwrap_err().kind,
+                FailureKind::Unreadable
+            );
+            let mut account = account_response();
+            let workspace = format!("workspace-shared{control}");
+            account["result"]["workspaceRouting"]["chatgptAccountId"] = workspace.clone().into();
+            let mut quota = quota_response();
+            quota["result"]["accountId"] = workspace.into();
+            assert_eq!(
+                identity_probe(account, quota).unwrap_err().kind,
+                FailureKind::Unreadable
+            );
+        }
+    }
+
+    #[test]
+    fn identity_rejects_conflicting_routing_and_quota_workspaces() {
+        let mut quota = quota_response();
+        quota["result"]["accountId"] = "workspace-other".into();
+        assert_eq!(
+            identity_probe(account_response(), quota).unwrap_err().kind,
+            FailureKind::Unreadable
+        );
+    }
+
+    #[test]
+    fn queued_quota_is_checked_when_account_arrives_first() {
+        let (tx, rx) = mpsc::channel();
+        tx.send(account_response().to_string()).unwrap();
+        let mut quota = quota_response();
+        quota["result"]["accountId"] = "workspace-other".into();
+        tx.send(quota.to_string()).unwrap();
+        let mut child = Command::new("sh").args(["-c", "exit 0"]).spawn().unwrap();
+        let exchange = wait_for_json_rpc_id(
+            &mut child,
+            &rx,
+            Instant::now(),
+            CODEX_APP_SERVER_TIMEOUT,
+            3,
+            Some(2),
+            None,
+        );
+        child.wait().unwrap();
+        let (account, quota) = exchange.unwrap();
+        assert_eq!(
+            codex_account_from_exchange(&account, quota.as_ref())
+                .unwrap_err()
+                .kind,
+            FailureKind::Unreadable
+        );
+    }
+
+    #[test]
+    fn account_details_preserve_existing_fingerprint_bindings() {
+        let modern = codex_account_from_exchange(&account_response(), None).unwrap();
+        assert_eq!(
+            modern,
+            CodexIdentity {
+                fingerprint: "codex-user-48ba19b0360d2c16".into(),
+                email: "one@example.com".into(),
+                workspace: "workspace-shared".into(),
+            }
+        );
+        assert_eq!(modern.clone(), modern);
+        let mut legacy = account_response();
+        legacy["result"]
+            .as_object_mut()
+            .unwrap()
+            .remove("workspaceRouting");
+        assert_eq!(
+            codex_account_from_exchange(&legacy, Some(&quota_response())).unwrap(),
+            modern
+        );
+        let old = codex_limits_from_exchange(&quota_response(), Some(&legacy)).unwrap();
+        assert_eq!(old.user.as_deref(), Some(modern.fingerprint.as_str()));
+
+        let mut another_user = account_response();
+        another_user["result"]["account"]["email"] = "two@example.com".into();
+        let other = codex_account_from_exchange(&another_user, None).unwrap();
+        assert_ne!(other.fingerprint, modern.fingerprint);
+        let mut another_workspace = account_response();
+        another_workspace["result"]["workspaceRouting"]["chatgptAccountId"] =
+            "workspace-other".into();
+        let other = codex_account_from_exchange(&another_workspace, None).unwrap();
+        assert_ne!(other.fingerprint, modern.fingerprint);
+    }
+
+    #[test]
+    fn incomplete_modern_workspace_routing_never_uses_the_legacy_fallback() {
+        for routing in [
+            Value::Null,
+            json!({}),
+            json!({"chatgptAccountId": null}),
+            json!({"chatgptAccountId": " "}),
+            json!({"chatgptAccountId": 123}),
+        ] {
+            let mut account = account_response();
+            account["result"]["workspaceRouting"] = routing;
+            assert_eq!(
+                identity_probe(account, quota_response()).unwrap_err().kind,
+                FailureKind::Unreadable
+            );
+        }
+    }
+
+    #[test]
+    fn legacy_workspace_fallback_waits_beyond_the_quota_grace() {
+        let mut legacy = account_response();
+        legacy["result"]
+            .as_object_mut()
+            .unwrap()
+            .remove("workspaceRouting");
+        let fake = super::tests::fake_codex_script(&format!(
+            r#"#!/bin/sh
+while IFS= read -r line; do
+  case "$line" in
+    *'"method":"initialize"'*) printf '%s\n' '{{"id":1,"result":{{}}}}' ;;
+    *'"method":"account/read"'*) printf '%s\n' '{legacy}' ;;
+    *'"method":"account/rateLimits/read"'*)
+      sleep 0.8
+      printf '%s\n' '{{"id":2,"result":{{"accountId":"workspace-shared"}}}}'
+      ;;
+  esac
+done
+"#
+        ));
+        let home = tempfile::tempdir().unwrap();
+        assert_eq!(
+            codex_identity_in_with_binary(
+                &fake.path().join("codex"),
+                home.path(),
+                CODEX_APP_SERVER_TIMEOUT,
+            )
+            .unwrap(),
+            "codex-user-48ba19b0360d2c16"
+        );
+    }
+
+    #[test]
+    fn account_errors_are_typed_without_exposing_provider_payloads() {
+        for (message, kind) in [
+            ("secret-provider-token", FailureKind::Temporary),
+            (
+                "authentication required secret-provider-token",
+                FailureKind::SignIn,
+            ),
+        ] {
+            let error = identity_probe(
+                json!({"id": 3, "error": {"message": message, "data": "secret-provider-token"}}),
+                quota_response(),
+            )
+            .unwrap_err();
+            assert_eq!(error.kind, kind);
+            assert!(!error.detail.contains("secret"));
+        }
+        let home = tempfile::tempdir().unwrap();
+        let error = codex_identity_in_with_binary(
+            &home.path().join("secret-missing-binary"),
+            home.path(),
+            Duration::from_millis(100),
+        )
+        .unwrap_err();
+        assert_eq!(error.kind, FailureKind::Temporary);
+        assert_eq!(error.detail, "cannot start codex app-server");
+    }
+
+    #[test]
+    fn auth_probes_strip_ambient_tokens_and_clean_up_the_process_group() {
+        assert_eq!(CODEX_APP_SERVER_TIMEOUT, Duration::from_secs(8));
+        for outcome in [
+            "success",
+            "account-error",
+            "timeout",
+            "closed",
+            "legacy-timeout",
+        ] {
+            let account = match outcome {
+                "success" => account_response(),
+                "account-error" => json!({"id": 3, "error": {"message": "secret-provider-token"}}),
+                "legacy-timeout" => {
+                    let mut account = account_response();
+                    account["result"]
+                        .as_object_mut()
+                        .unwrap()
+                        .remove("workspaceRouting");
+                    account
+                }
+                _ => Value::Null,
+            };
+            let fake = super::tests::fake_codex_script(&format!(
+                r#"#!/bin/sh
+[ "$#" -eq 2 ] && [ "$1" = app-server ] && [ "$2" = --stdio ] || exit 91
+[ -z "${{CODEX_ACCESS_TOKEN+x}}${{CODEX_API_KEY+x}}${{OPENAI_API_KEY+x}}" ] || exit 92
+sleep 30 &
+helper=$!
+printf '%s\n' "$$" "$helper" > "$CODEX_HOME/probe-pids"
+while IFS= read -r line; do
+  printf '%s\n' "$line" >> "$CODEX_HOME/probe-requests"
+  case "$line" in
+    *'"method":"initialize"'*) printf '%s\n' '{{"id":1,"result":{{}}}}' ;;
+    *'"method":"account/read"'*)
+      [ '{outcome}' != closed ] || exit 0
+      [ '{account}' = null ] || printf '%s\n' '{account}'
+      ;;
+    *'"method":"account/rateLimits/read"'*)
+      [ '{outcome}' != timeout ] || printf '%s\n' '{}'
+      ;;
+  esac
+done
+"#,
+                quota_response()
+            ));
+            let home = tempfile::tempdir().unwrap();
+            let mut command = Command::new(fake.path().join("codex"));
+            command
+                .env("CODEX_HOME", "wrong-home")
+                .env("CODEX_ACCESS_TOKEN", "secret-access-token")
+                .env("CODEX_API_KEY", "secret-codex-key")
+                .env("OPENAI_API_KEY", "secret-openai-key");
+            let timeout = if outcome == "timeout" || outcome == "legacy-timeout" {
+                Duration::from_secs(1)
+            } else {
+                CODEX_APP_SERVER_TIMEOUT
+            };
+            let start = Instant::now();
+            let result = run_codex_app_server(&mut command, home.path(), timeout, 3)
+                .and_then(|(account, quota)| codex_account_from_exchange(&account, quota.as_ref()));
+            let requests = std::fs::read_to_string(home.path().join("probe-requests")).unwrap();
+            assert!(
+                start.elapsed() < timeout + Duration::from_secs(2),
+                "{outcome}: elapsed={:?}, result={result:?}, requests={requests}",
+                start.elapsed()
+            );
+            assert!(
+                requests.lines().any(|line| {
+                    let request: Value = serde_json::from_str(line).unwrap();
+                    request["method"] == "account/read" && request["params"]["refreshToken"] == true
+                }),
+                "{outcome}: {requests}"
+            );
+            if outcome == "success" {
+                assert_eq!(result.expect(&requests).workspace, "workspace-shared");
+            } else {
+                let error = result.unwrap_err();
+                assert_eq!(error.kind, FailureKind::Temporary, "{outcome}");
+                assert!(!error.detail.contains("secret"));
+                if outcome == "timeout" || outcome == "legacy-timeout" {
+                    assert!(start.elapsed() >= timeout);
+                }
+            }
+            let pids = std::fs::read_to_string(home.path().join("probe-pids")).unwrap();
+            for pid in pids.lines() {
+                let stopped = (0..100).any(|_| {
+                    let output = Command::new("ps")
+                        .args(["-o", "stat=", "-p", pid])
+                        .output()
+                        .unwrap();
+                    let state = String::from_utf8_lossy(&output.stdout);
+                    if state.trim().is_empty() || state.trim_start().starts_with('Z') {
+                        true
+                    } else {
+                        std::thread::sleep(Duration::from_millis(10));
+                        false
+                    }
+                });
+                assert!(stopped, "{outcome} left probe process {pid} running");
+            }
+        }
+    }
+
+    #[test]
+    fn identity_requests_a_token_refresh() {
+        let fake = super::tests::fake_codex_script(&format!(
+            r#"#!/bin/sh
+while IFS= read -r line; do
+  case "$line" in
+    *'"method":"initialize"'*) printf '%s\n' '{{"id":1,"result":{{}}}}' ;;
+    *'"method":"account/read"'*)
+      printf '%s\n' "$line" > "$CODEX_HOME/account-request"
+      printf '%s\n' '{}'
+      ;;
+    *'"method":"account/rateLimits/read"'*) printf '%s\n' '{}' ;;
+  esac
+done
+"#,
+            account_response(),
+            quota_response()
+        ));
+        let home = tempfile::tempdir().unwrap();
+        codex_identity_in_with_binary(
+            &fake.path().join("codex"),
+            home.path(),
+            CODEX_APP_SERVER_TIMEOUT,
+        )
+        .unwrap();
+        let request: Value = serde_json::from_str(
+            &std::fs::read_to_string(home.path().join("account-request")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(request["params"]["refreshToken"], true);
+    }
+}
+
 /// Two logins can be one provider account, and only the provider's id says so.
 #[cfg(test)]
 mod shared_login_tests {
@@ -4507,6 +5147,11 @@ done
         let root = tempfile::tempdir().unwrap();
         let mut fingerprints = Vec::new();
         for order in ["identity-first", "limits-first", "identity-unavailable"] {
+            let identity_result = codex_identity_in_with_binary(
+                &fake.path().join("codex"),
+                &root.path().join(order),
+                Duration::from_secs(2),
+            );
             let limits = codex_app_server_limits_with_binary(
                 &fake.path().join("codex"),
                 &root.path().join(order),
@@ -4517,8 +5162,10 @@ done
             assert_eq!(limits.ordinary_usage_allowed, Some(true));
             if order == "identity-unavailable" {
                 assert!(limits.user.is_none());
+                assert!(identity_result.is_err());
             } else {
                 assert!(limits.user.is_some());
+                assert_eq!(identity_result.unwrap(), limits.user.clone().unwrap());
                 fingerprints.push(limits.user);
             }
         }
@@ -4526,7 +5173,7 @@ done
     }
 
     #[test]
-    fn a_second_account_on_the_same_login_stops_repeating_the_first() {
+    fn a_shared_login_keeps_each_accounts_reported_usage_visible() {
         let mut rows = vec![
             codex_row("work", Some("acct-1"), 93.0),
             codex_row("personal", Some("acct-1"), 93.0),
@@ -4539,11 +5186,12 @@ done
             "the first keeps its figures"
         );
         assert_eq!(
-            rows[1].used_percent, None,
-            "a repeated reading must not be drawn as a second account's"
+            rows[1].used_percent,
+            Some(93.0),
+            "a shared identity must be warned about, not erase this slot's reading"
         );
         assert_eq!(rows[1].detail, "same login as work");
-        assert!(rows[1].resets.is_none());
+        assert_eq!(rows[1].resets.as_deref(), Some("09-26"));
     }
 
     #[test]

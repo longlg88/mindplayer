@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>MindPlayer × Jev — 판단과 실행의 경계</title>
+  <style>
+    :root{--bg:#f5f6f2;--paper:#fff;--ink:#172b32;--muted:#53666b;--line:#d4dfdc;--green:#17604d;--green-bg:#eaf5ef;--purple:#653aac;--purple-bg:#f1ebfc;--blue:#235888;--blue-bg:#edf4fc;--amber:#80510c;--amber-bg:#fff6df;--radius:17px}
+    *{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.65 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;word-break:keep-all;overflow-wrap:anywhere}
+    a{color:#244f8c;text-underline-offset:3px}a:hover{text-decoration-thickness:2px}a:focus-visible,summary:focus-visible{outline:3px solid var(--purple);outline-offset:4px}main{max-width:1320px;margin:auto;padding:30px 34px 60px}.eyebrow{font-size:12px;letter-spacing:.1em;font-weight:800;color:var(--green)}h1{font-size:clamp(26px,3.1vw,43px);line-height:1.23;letter-spacing:-.045em;margin:10px 0 14px}h1 span{color:var(--purple)}h2{font-size:22px;line-height:1.4;margin:0 0 8px;letter-spacing:-.025em}h3{font-size:16px;margin:0 0 8px}p{margin:7px 0 12px}.intro{max-width:930px;font-size:16px;color:var(--muted)}.meta,.legend{display:flex;gap:8px;flex-wrap:wrap;margin:18px 0}.pill{display:inline-flex;align-items:center;gap:6px;padding:4px 10px;border:1px solid var(--line);border-radius:99px;font-size:12px;background:white}.pill.live{color:var(--green);border-color:#a7c9b9}.pill.proposed{color:var(--purple);border-style:dashed;border-color:#b7a4d7}.pill.gap{color:var(--amber);background:var(--amber-bg);border-color:#ddc68d}.skip{position:absolute;left:12px;top:-90px;background:white;padding:12px;z-index:10}.skip:focus{top:8px}.section{margin-top:25px}.map{background:#fff;border:1px solid #c8d6d1;border-radius:22px;padding:23px;box-shadow:0 6px 24px #173c2a08}.section-title{display:flex;gap:16px;align-items:flex-start;justify-content:space-between}.section-title p{color:var(--muted);font-size:13px;margin:0}.map-title{margin-bottom:18px}.small{font-size:12px;color:var(--muted)}.lane-title{font-size:12px;font-weight:800;letter-spacing:.04em;margin-bottom:10px}.flow-top{display:grid;grid-template-columns:1fr 1.65fr 1.08fr;gap:32px;align-items:stretch}.boundary{position:relative;padding:15px;border:1px solid var(--line);border-radius:var(--radius);min-width:0}.boundary.native{background:var(--blue-bg);border-color:#b5c8dc}.boundary.local{background:var(--green-bg);border-color:#94bbaa}.boundary.external{background:var(--purple-bg);border-color:#baa4db}.local .lane-title{color:var(--green)}.external .lane-title{color:var(--purple)}.native .lane-title{color:var(--blue)}.node{position:relative;background:white;border:1px solid #cad7d2;border-radius:12px;padding:13px 14px;min-width:0}.node+.node{margin-top:25px}.num{display:inline-flex;justify-content:center;align-items:center;width:22px;height:22px;font-size:11px;font-weight:800;border-radius:50%;background:#e5ede9;color:var(--ink);margin-right:6px;vertical-align:2px}.node h3{font-size:15px;line-height:1.5;margin:0 0 5px}.node p{font-size:13px;line-height:1.65;margin:0;color:#4b5e64}.node strong{color:var(--ink)}.external .num{color:white;background:var(--purple)}.node .note{margin-top:9px;font-size:12px;color:var(--muted)}.arrow-right:after{content:"→";position:absolute;right:-27px;top:49%;color:#647b72;font-size:25px;line-height:1}.stack-arrow:after{content:"↓";position:absolute;left:50%;bottom:-25px;color:var(--green);font-size:20px;line-height:24px}.external .node{border:1px solid #bba6d9}.tag{display:inline-block;font-size:11px;font-weight:700;color:var(--purple);margin-top:9px;padding:2px 7px;background:var(--purple-bg);border:1px dashed #baaad5;border-radius:5px}.request-label{margin:13px 0 0;font-size:12px;color:var(--purple)}.return-path{margin:13px 0;display:flex;gap:12px;align-items:center;color:var(--purple);font-size:13px}.return-path:before,.return-path:after{content:"";height:1px;background:#b7a1d7;flex:1}.return-path b{white-space:nowrap}.flow-return{display:grid;grid-template-columns:1fr 1fr;gap:32px}.flow-return .node{height:100%}.below-arrow{text-align:center;margin:8px 0;font-weight:700;color:var(--green);font-size:13px}.flow-execution{display:grid;grid-template-columns:1.65fr 1.08fr;gap:32px;margin-top:0}.execution-label{color:var(--blue);font-size:12px;font-weight:700;margin-bottom:10px}.execution .node{border-color:#b8cbdc}.map-foot{border-top:1px solid var(--line);margin-top:18px;padding-top:14px;display:grid;grid-template-columns:1fr 1fr;gap:20px}.map-foot p{margin:0;font-size:13px}.map-foot b{display:block;margin-bottom:3px}.callout{border-left:4px solid var(--purple);background:#f0ebfa;border-radius:0 12px 12px 0;padding:14px 18px;margin-top:20px}.callout p{margin:0}.two{display:grid;grid-template-columns:1fr 1fr;gap:20px}.panel{background:white;border:1px solid var(--line);border-radius:var(--radius);padding:20px}.panel ul,.panel ol{padding-left:22px;margin:10px 0}.panel li{margin:7px 0}.description{color:var(--muted)}.split-label{font-size:11px;letter-spacing:.05em;color:var(--green);font-weight:800}.code{font:12px/1.65 ui-monospace,SFMono-Regular,Menlo,monospace;background:#162c35;color:#e1f0f4;padding:16px;border-radius:12px;white-space:pre-wrap;word-break:break-word;overflow-wrap:anywhere;margin:14px 0 0}code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.88em;background:#edf0ed;border-radius:4px;padding:1px 4px}.code code{background:none;padding:0;font-size:inherit}.timeline{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-top:17px}.timeline .item{border-top:3px solid #9cbaa9;padding:12px;background:white;border-radius:0 0 10px 10px}.timeline .item b{font-size:13px;display:block}.timeline .item p{font-size:12px;color:var(--muted);margin-bottom:0}.timeline .item.external{border-top-color:var(--purple)}details{border:1px solid var(--line);border-radius:14px;background:white;margin:14px 0;overflow:hidden}summary{cursor:pointer;padding:17px 20px;font-weight:750}details[open]>summary{border-bottom:1px solid var(--line)}.detail-body{padding:18px 20px}.detail-body>p:first-child{margin-top:0}.table-wrap{overflow:auto;max-width:100%}table{border-collapse:collapse;width:100%;font-size:13px}th,td{text-align:left;vertical-align:top;padding:12px;border-bottom:1px solid var(--line)}th{font-size:12px;background:#f0f4f0}tr:last-child td{border-bottom:0}th:first-child{width:18%}.recommend{background:#eef7f1}.recommend td:first-child{color:var(--green);font-weight:800}.example{display:grid;grid-template-columns:210px 1fr;gap:14px;padding:13px 0;border-bottom:1px solid var(--line)}.example:last-child{border:0}.example b{font-size:14px}.example p{font-size:13px;margin:0;color:var(--muted)}.subtle{background:#f6f7f4;border:1px dashed #b6c6bc;border-radius:10px;padding:12px;margin-top:12px;font-size:13px}.checks{list-style:none;padding:0!important}.checks li:before{content:"✓";color:var(--green);font-weight:800;margin-right:9px}.checks li{font-size:13px}.foot{margin-top:28px;font-size:12px;color:var(--muted)}.sources{display:grid;grid-template-columns:1fr 1fr;gap:20px}.sources li{font-size:13px;margin:7px 0}.source-list{padding-left:18px}.receipt{border-top:1px solid var(--line);margin-top:15px;padding-top:13px}.receipt p{font-size:12px;color:var(--muted)}
+    .flow-return .node + .node{margin-top:0}
+    @media(max-width:900px){main{padding:24px 20px 40px}.flow-top{gap:24px;grid-template-columns:1fr 1.4fr 1fr}.boundary{padding:11px}.node{padding:11px}.arrow-right:after{right:-23px}.two{grid-template-columns:1fr}.map{padding:17px}.section-title{display:block}.sources{grid-template-columns:1fr}.timeline{grid-template-columns:1fr 1fr}.map-foot{gap:12px}}
+    @media(max-width:700px){main{padding:20px 14px 35px}.flow-top,.flow-return,.flow-execution{grid-template-columns:1fr;gap:29px}.arrow-right:after{content:"↓";right:auto;top:auto;bottom:-27px;left:50%;font-size:22px}.flow-top>.boundary{padding:14px}.flow-return>.node:first-child:after{content:"↓";position:absolute;bottom:-28px;left:50%;font-size:22px;color:var(--green)}.map-foot{grid-template-columns:1fr}.map-title{margin-bottom:14px}.map{padding:14px}.return-path{margin:15px 0;font-size:12px}.return-path b{white-space:normal}.flow-execution{margin-top:5px}.example{grid-template-columns:1fr;gap:5px}.panel,.detail-body{padding:16px}summary{padding:16px}.timeline{grid-template-columns:1fr 1fr}.section{margin-top:20px}h2{font-size:20px}.meta{gap:6px}.pill{font-size:11px}.table-wrap table{min-width:600px}.section-title .pill{margin-top:6px}}
+    @media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}
+    @media print{body{background:white}main{max-width:none;padding:0}.map,.panel,details{box-shadow:none;break-inside:avoid}details .detail-body{display:block}.skip{display:none}a{color:inherit}h1{font-size:28px}}
+  </style>
+</head>
+<body>
+<a class="skip" href="#topology">구성도로 바로 이동</a>
+<main>
+  <header>
+    <div class="eyebrow">MINDPLAYER / DECISION BOUNDARY / 2026.10.16</div>
+    <h1>기준은 MindPlayer.<br><span>판단은 Jev.</span> 실행은 기존 세션.</h1>
+    <p class="intro">맞아. MindPlayer가 판단 기준과 사용 가능한 후보를 제시하고, Jev가 이번 프롬프트에 맞는 후보를 선택하면, MindPlayer가 검증해 다음 턴의 모델을 바꾸면 돼. <strong>우리가 프롬프트마다 모델 등급을 미리 정할 필요는 없어.</strong></p>
+    <div class="meta"><span class="pill">백엔드 구성도 · UI 교체 없음</span><span class="pill live">실선: 현재 코드에서 확인</span><span class="pill proposed">점선 태그: 제안 변경</span><span class="pill gap">실제 Jev 판단 정확도 미검증</span></div>
+  </header>
+
+  <section class="map" id="topology" aria-labelledby="map-heading">
+    <div class="section-title map-title"><div><h2 id="map-heading">Jev는 어디에 있나?</h2><p>로컬 MindPlayer 밖의 판단 API. Codex 안에서 코딩하는 모델도, 세션을 보관하는 서버도 아니야.</p></div><span class="pill">핵심 경로 8개 노드</span></div>
+    <div class="flow-top">
+      <div class="boundary native arrow-right">
+        <div class="lane-title">사용자 / 기존 네이티브 UI</div>
+        <article class="node" id="node-input"><h3><span class="num">1</span>프롬프트 입력</h3><p>평소처럼 Codex 세션에서 입력.<br>세션·계정·작업 디렉터리는 유지.</p><p class="note">입력창을 새로 만들지 않음.<br>새로운 사용자 턴만 판단 대상으로.</p></article>
+      </div>
+      <div class="boundary local arrow-right">
+        <div class="lane-title">로컬 / MINDPLAYER 기존 브리지</div>
+        <article class="node stack-arrow" id="node-gate"><h3><span class="num">2</span>전송 직전 대기</h3><p><code>turn/start</code>를 잠깐 보류.<br>로그인·소유 세션·전송 동의·카탈로그 확인.</p></article>
+        <article class="node" id="node-rubric"><h3><span class="num">3</span>판단 재료 준비</h3><p><strong>현재 프롬프트 + 기준 + 적격 후보</strong><br>후보 ID ↔ 실제 <code>model + effort</code> 매핑은 로컬 소유.</p><span class="tag">제안: 명시적 기준 버전 + 제한된 이전 판단</span></article>
+      </div>
+      <div class="boundary external">
+        <div class="lane-title">외부 / TYPESAFE의 JEV</div>
+        <article class="node" id="node-jev"><h3><span class="num">4</span>의미를 해석해 선택</h3><p>“이 기준과 후보 설명에 따르면,<br>이번 요청에 충분한 후보는?”</p><p class="note"><code>Choice</code> → 후보 ID·확률·confidence.<br>코드 수정·도구 실행·모델 설정 변경은 하지 않음.</p></article>
+        <p class="request-label">HTTPS · TypeSafe 직접 연결<br>또는 설정된 Vercel AI Gateway 경유<br><strong>Gateway는 전달 경로, Jev가 판단 주체.</strong></p>
+      </div>
+    </div>
+    <div class="return-path"><b>④ Jev → ⑤ MindPlayer</b><span>응답은 선택 결과뿐 · 프롬프트 재작성 아님</span></div>
+    <div class="boundary local">
+      <div class="lane-title">다시 로컬 / MINDPLAYER — 실행 권한은 여기에 남음</div>
+      <div class="flow-return">
+        <article class="node arrow-right" id="node-validate"><h3><span class="num">5</span>결과 검증 · 적용 여부 결정</h3><p>후보 ID·확률 형식·지원 effort·현재 카탈로그와 대조.<br>취소·계정/세션 변경·오래된 응답은 적용하지 않음.</p></article>
+        <article class="node" id="node-apply"><h3><span class="num">6</span>다음 턴 설정만 변경</h3><p>선택 ID를 정확한 <code>model + effort</code>로 해석.<br><strong>원문 입력·thread·계정·권한은 그대로</strong> 두고 한 번 전송.</p></article>
+      </div>
+    </div>
+    <div class="below-arrow">↓ 판단용 호출과 분리된 기존 실행 경로 ↓</div>
+    <div class="flow-execution">
+      <div class="boundary native execution arrow-right">
+        <div class="lane-title">로컬 / 기존 CODEX CLI · APP-SERVER</div>
+        <article class="node" id="node-session"><h3><span class="num">7</span>같은 세션에서 턴 실행</h3><p>원래 대화·도구 상태·compact는 Codex의 기존 경로가 관리.<br>판단용 작은 입력과 실행용 전체 세션 컨텍스트는 서로 다름.</p></article>
+      </div>
+      <div class="boundary native execution">
+        <div class="lane-title">외부 / 기존 실행 제공자</div>
+        <article class="node" id="node-execution"><h3><span class="num">8</span>선택된 코딩 모델</h3><p>실제 답변·코드 작업·도구 사용.<br>결과는 원래 Codex UI에 표시.</p></article>
+      </div>
+    </div>
+    <div class="map-foot"><p><b>Jev가 받는 것</b>판단에 필요한 제한된 데이터. 요청의 <code>state</code>는 입력이지 세션 저장 명령이 아님. 외부 보관 정책은 별도 확인 대상.</p><p><b>Jev가 받지 않는 권한</b>로그인 변경, 파일 수정, 배포, 도구 실행, 임의 모델 호출 권한. 다른 계정·제공자로 넘기는 선택도 이번 범위 밖.</p></div>
+  </section>
+
+  <div class="callout"><p><strong>핵심: “선택”은 Jev, “그 선택을 실제 설정으로 바꾸는 일”은 MindPlayer.</strong><br>Jev가 <code>c2</code>를 고르면 MindPlayer가 로컬 매핑의 정확한 모델과 effort를 적용한다. Jev 응답의 최상위 <code>model</code>은 Jev 자신의 이름이므로 실행 모델로 쓰면 안 된다. <a href="https://docs.typesafe.ai/primitives/choice">Choice 계약</a> · <a href="https://docs.typesafe.ai/api">API 응답</a></p></div>
+
+  <section class="section two" aria-label="입력과 응답 계약">
+    <article class="panel"><div class="split-label">MINDPLAYER → JEV / 제안 계약</div><h2>무엇을 전달하나</h2><p class="description">모델 이름만 주고 알아서 맞히라고 하지 않는다. 후보의 제공된 설명과 판단 기준을 함께 준다.</p><pre class="code"><code>{
+  model: "설정된 Jev 모델",
+  state: {
+    currentInput: "사용자가 입력한 원문",
+    baseline: { model, effort },
+    previousDecision: "같은 세션의 제한된 상태 또는 unknown",
+    contextKnown, truncated, attachments
+  },
+  questions: {
+    configuration: {
+      type: "choice",
+      instructions: "버전이 고정된 우리 판단 기준",
+      criteria: {
+        c0: "현재 모델+effort 및 제공된 설명",
+        c1: "다른 적격 모델+effort 및 제공된 설명"
+      }
+    }
+  }
+}</code></pre><p class="small">구조 설명용 의사 코드. <code>previousDecision</code>은 제안이며 아직 구현되지 않음. 현재 코드는 제한된 최근 user/final-assistant 대화를 보냄. 전체 직렬화 크기는 제한하고, 누락·절단은 명시한다.</p></article>
+    <article class="panel"><div class="split-label">JEV → MINDPLAYER / 공식 CHOICE 계약</div><h2>무엇을 돌려받나</h2><p class="description">Jev는 전달한 선택지 중 하나를 반환한다. 자유 형식의 모델 설정이나 설명문을 생성하는 계약이 아니다.</p><pre class="code"><code>answers.configuration = {
+  type: "choice",
+  choice: "공급한 후보 ID 중 하나",
+  probabilities: { /* 모든 후보 ID의 확률 */ },
+  confidence: /* 분포에서 계산한 값 */
+}
+
+// 아래는 MindPlayer 내부에서만 수행
+const target = boundCandidates[answer.choice];
+validate(answer, target, currentVersions);
+submitOriginalTurn({
+  ...originalParams,
+  model: target.model,
+  effort: target.effort
+});</code></pre><p class="small">실측 응답이 아닌 계약 예시. <code>confidence</code>는 정답률이 아니다. 후보 수에도 영향을 받으므로 임의의 “0.8이면 안전” 같은 기준을 넣지 않는다. 추가 진단 질문들은 같은 state를 보지만 서로의 답을 읽지 못한다. <a href="https://docs.typesafe.ai/confidence">Confidence</a> · <a href="https://docs.typesafe.ai/concepts/state">State</a></p></article>
+  </section>
+
+  <section class="section panel" aria-labelledby="turn-heading"><div class="split-label">LIFECYCLE / 새 사용자 턴마다 반복</div><h2 id="turn-heading">세션 진입부터 다음 프롬프트까지</h2><div class="timeline"><div class="item"><b>① 세션 진입</b><p>기존 네이티브 화면. 적격 후보와 정확한 현재 설정을 확보. 진입만으로 코딩 모델을 임의 변경하지 않음.</p></div><div class="item external"><b>② 프롬프트 제출</b><p>전제조건을 만족한 새 턴마다 Jev 호출. 같은 모델을 선택해도 정상적인 판단 결과.</p></div><div class="item"><b>③ 실행 중</b><p>선택한 설정으로 한 턴 진행. 도구 결과·steering·중간 출력마다 재판단하지 않음.</p></div><div class="item external"><b>④ 다음 사용자 입력</b><p>현재 후보와 새 입력으로 다시 판단. 이전 결정은 작은 로컬 상태로만 이어 받도록 제안.</p></div></div><p class="small">현재 통합 경로는 Codex 대상. Claude·Kiro·Cursor가 같은 자동 선택을 이미 지원한다는 의미는 아님.</p></section>
+
+  <details id="rubric" open><summary>판단 기준 — 모델 등급표가 아니라, Jev가 비교할 규칙</summary><div class="detail-body"><p>아래는 <strong>제안하는 제품 기준</strong>이야. MindPlayer가 기준을 정의하고 버전 관리하지만, 각 프롬프트가 어느 기준에 해당하는지와 어떤 후보가 적절한지는 Jev가 판단한다.</p><div class="two"><div><h3>Jev가 의미로 판단</h3><ul><li><strong>해결 공간:</strong> 해야 할 변경이 구체적인가, 원인·방법부터 찾아야 하는가?</li><li><strong>조정 부담:</strong> 독립적인 단순 작업인가, 여러 단계·컴포넌트를 연결해야 하는가?</li><li><strong>실패 영향:</strong> 배포·장애·권한·데이터 손실처럼 틀렸을 때 영향이 큰가?</li><li><strong>이어지는 작업:</strong> 짧은 후속 지시가 진행 중인 복잡한 작업을 이어가는가? 짧다고 낮추지 않는다.</li><li><strong>정보 부족:</strong> 현재 입력과 제한된 상태만으로 비교할 수 있는가? 모르면 추측하지 않고 현재 적격 설정 유지.</li></ul></div><div><h3>MindPlayer가 코드로 보장</h3><ul><li>같은 제공자·계정의 허용된 모델 및 지원 effort만 후보에 포함.</li><li>알려진 입력·도구·컨텍스트 요구사항과 충돌하는 후보 제외. 모르는 요구사항을 알고 있다고 취급하지 않음.</li><li>후보 순서·모델 이름으로 성능이나 비용을 추정하지 않음.</li><li>비용·품질 실측이 없다면 “충분한 후보 선택”으로 표현. 최저 비용·품질 보장은 주장하지 않음.</li><li>실측 기반 정책이 설정돼 있다면 그 정책의 검증 조건을 그대로 적용. 설명 기반 선택으로 몰래 우회하지 않음.</li></ul></div></div><div class="subtle">한 번의 API 호출에 작업 분류와 후보 선택을 같이 물을 수는 있다. 하지만 두 질문은 독립적이다. <strong>“첫 답을 보고 둘째 답을 고른다”가 아니라, 후보 선택 질문 자체에 필요한 기준을 모두 넣는다.</strong> <a href="https://docs.typesafe.ai/concepts/state">공식 State 계약</a></div></div></details>
+
+  <details id="examples"><summary>네가 제시한 6개 예시 — Jev가 볼 신호만 정하고, 모델은 미리 찍지 않기</summary><div class="detail-body"><p class="description">아래는 실제 Jev 결과가 아니다. 단어 하나로 모델을 고정하지 않고, 이 차이를 판단하도록 기준에 넣자는 예시야.</p><div class="example"><b>1. 설계안을 만들어줘</b><p>기존 템플릿 정리인지, 해결되지 않은 요구사항·트레이드오프를 새로 설계하는지 구분. “설계”라는 단어만으로 최상위 모델 고정 금지.</p></div><div class="example"><b>2. 이 line이 잘못됐으니까 수정해</b><p>정답과 범위가 명확한 작은 수정인지, 그 한 줄이 동시성·보안·데이터 무결성과 연결되는지 판단.</p></div><div class="example"><b>3. 개발 다 하고 PR 만들어</b><p>남은 개발·검증·여러 변경 조정이 있는지, 이미 완료된 작업의 PR 생성만 남았는지 판단. 이전 판단 상태가 없으면 완료를 단정하지 않음.</p></div><div class="example"><b>4. 머지 확인 후 릴리즈·배포</b><p>절차가 알려져 있어도 외부 영향·실패 복구 부담이 큼. 모델 선택과 배포 권한은 별개이고, 선택이 새 실행 권한을 주지 않음.</p></div><div class="example"><b>5. daily report 작성해</b><p>모인 자료의 정리인지, 여러 소스 수집·충돌 확인·원인 해석까지 필요한지 판단. 문서 작업이라는 이유만으로 단순화 금지.</p></div><div class="example"><b>6. 장애 분석해</b><p>미지의 원인·가설 비교·영향 범위·불확실성을 고려. 이미 확정된 분석의 요약인지도 구별하되, 정보가 없는데 원인을 안다고 가정하지 않음.</p></div></div></details>
+
+  <details id="alternatives"><summary>세 가지 설계 비교 — 왜 후보 직접 선택을 권장하나</summary><div class="detail-body"><div class="table-wrap" role="region" aria-label="설계 대안 비교" tabindex="0"><table><thead><tr><th>방식</th><th>Jev의 답</th><th>장점</th><th>부담 / 결론</th></tr></thead><tbody><tr><td>A. 작업 분류 → 로컬 매핑</td><td>요구 역량·영향·불확실성</td><td>모델과 무관한 분류를 재사용. 검증된 품질·비용 프로필이 있으면 코드 정책을 명확히 적용.</td><td>어떤 분류를 어떤 모델로 연결할지 로컬 매핑 필요. 기존 실측 정책 경로에 적합하며 없애지 않음.</td></tr><tr class="recommend"><td>B. 적격 후보 직접 선택<br>권장 / 현재 경로 재사용</td><td>실제 model+effort 후보 ID</td><td>우리가 프롬프트별 모델 등급을 미리 정하지 않아도 됨. Jev가 기준과 제공된 후보 설명을 함께 비교.</td><td>후보 설명·기준의 품질과 평가 필요. 실측 없이는 최저 비용 보장 불가. 기본 카탈로그 경로에 가장 잘 맞음.</td></tr><tr><td>C. 후보별 충분성 평가 → 코드 선택</td><td>각 후보가 충분할 가능성</td><td>후보별 비교·보수적 검증이 쉬움. 신뢰할 만한 비용 데이터와 결합 가능.</td><td>질문·토큰·평가 부담 증가. 후보별 확률의 보정과 정책 임계값이 필요. 실제 평가 체계가 생긴 뒤 고려.</td></tr></tbody></table></div><p class="small">B는 기존 기능을 부정하고 새 라우터를 만드는 안이 아니다. 현재 직접 Choice에 제품 기준을 명확히 묶고 평가를 추가하는 안이다.</p></div></details>
+
+  <details id="context"><summary>긴 세션·“계속해”·compact·동시 세션은 어떻게 다루나</summary><div class="detail-body two"><div><h3>전체 대화를 매번 보낼 필요는 없음</h3><p>이번 목적은 대화 내용의 정답을 생성하는 것이 아니라, 필요한 작업 부담과 적절한 후보를 판단하는 것. <strong>현재 프롬프트 우선 + 작은 이전 판단 상태</strong>를 제안한다.</p><p>이전 상태에는 마지막 유효 설정, 미해결/진행 중 여부처럼 범위가 제한된 정보만 둔다. 이를 모르면 <code>unknown</code>. 새 요약 에이전트나 전체 히스토리 paging을 기본 경로에 추가하지 않는다.</p><p>“계속해”도 Jev를 호출하되, 현재 정보만으로 하향 선택을 정당화할 수 없으면 기존 적격 설정 유지. 현재 코드는 최근 최대 4쌍을 사용하므로 이 부분은 제안 변경이다.</p></div><div><h3>세션 구분은 MindPlayer가 담당</h3><p>로컬에서 계정·세션·요청·세대·카탈로그·기준 버전에 판단을 바인딩한다. 다른 세션의 상태를 섞지 않고, 늦게 도착한 응답을 다음 요청에 재사용하지 않는다.</p><p>compact 뒤에도 기준과 로컬 판단 상태는 대화 원문과 독립적으로 관리하도록 제안한다. 단, 상태가 오래됐거나 불명확하면 모른다고 표시하고 보수적으로 유지.</p><p>이 설계는 완전한 맥락 이해를 보장하지 않는다. 숨겨진 복잡성을 놓치는지는 별도 평가해야 한다. 현재 Codex 실행 경로의 실제 컨텍스트 한도를 프롬프트 길이로 추정하지 않는다.</p></div></div></details>
+
+  <details id="guards"><summary>유지와 실패를 구분 — 안전장치와 테스트할 조건</summary><div class="detail-body"><div class="two"><div><h3>정상 유지 ≠ 판단 실패</h3><ul><li><strong>유효한 Jev 결과가 현재 후보 선택:</strong> 판단 성공, 모델 유지, 턴 실행.</li><li><strong>판단 결과는 유효하지만 안전 조건 불충족:</strong> 기존 정책대로 적격 baseline 유지 또는 명시적 거절. 임의 대체 모델 없음.</li><li><strong>네트워크·인증·응답 형식 오류:</strong> 전송 전 실패를 원인과 함께 표시. 판단했다고 꾸미거나 자동 재시도·몰래 전송하지 않음.</li><li><strong>이미 전송한 뒤 응답이 불확실:</strong> 같은 프롬프트를 자동 재전송하지 않음.</li></ul></div><div><h3>후속 구현의 합격 기준</h3><ol><li>적격 새 입력마다 실제 Jev 호출 정확히 한 번. 유지 결과도 포함.</li><li>다른 세션·계정·옛 기준 응답 적용 0건.</li><li>원문·thread·권한 보존, model+effort만 일관되게 적용.</li><li>짧은 후속 지시·긴 세션·compact·중단·연속 입력 회귀 테스트.</li><li>한국어/영어·6개 예시 변형으로 과소 역량 선택·영향 큰 요청·유지율을 측정. 승인된 평가 목표 없이 품질/비용 보장하지 않음.</li><li>“요청 설정”, “턴 수락”, “실제 실행 증거”를 분리. 현재 실행 effort 증명은 없음.</li></ol></div></div></div></details>
+
+  <details id="evidence"><summary>근거 · 현재 구현과 제안의 차이 · 검증 범위</summary><div class="detail-body"><div class="two"><div><h3>현재 코드에서 확인한 것</h3><ul class="checks"><li>기본 경로는 이미 후보 model+effort를 직접 Choice로 질문.</li><li>실측 정책이 있으면 별도의 역량 판정 → 코드 정책 경로 사용.</li><li>현재는 제한된 최근 대화 스냅샷. 기본 카탈로그 snapshot 8 KiB, 실측 정책 16 KiB.</li><li>기본 전체 요청 32 KiB, 응답 64 KiB, Jev 대기 제한 5초. 설정에 따라 달라질 수 있음.</li><li>전송 직전 검증 후 모델과 effort를 함께 바꿔 기존 app-server로 전달.</li><li>이번 읽기 전용 확인에서 관련 합성 테스트 193개 통과.</li></ul><h3>이번에 새로 제안한 것</h3><p>제품 판단 기준의 명문화·버전 바인딩, 현재 프롬프트 중심의 제한된 이전 판단 상태, 새 기준 전용 평가. <strong>아직 앱에 구현하거나 로컬 설치하지 않았다.</strong></p></div><div><h3>소스 위치</h3><ul class="source-list"><li><a href="../../tools/local-model-router/jev.mjs">jev.mjs</a> : 78 / 125 / 193 / 206 — 후보 ID·응답 검증·Choice</li><li><a href="../../tools/local-model-router/service.mjs">service.mjs</a> : 281 / 304 / 315 / 327 — 턴별 준비·정책·검증·호출</li><li><a href="../../tools/local-model-router/router.mjs">router.mjs</a> : 116 / 143 — 대기·검증·다음 턴 설정</li><li><a href="../../tools/local-model-router/policy.mjs">policy.mjs</a> : 55 / 109 / 239 — 스냅샷·적격성·실측 정책</li><li><a href="../../tools/local-model-router/status.mjs">status.mjs</a> : 57 — 수락과 실제 실행 구분</li><li><a href="../../crates/mindplayer-tui/src/local_router.rs">local_router.rs</a> : 379 / 468 — 기존 브리지 통합</li></ul><p class="small">수집: 2026-10-16 12:00:35 +09:00 · repository evidence.<br>리비전: <code>54529865aa69ef134c25b88a78c8139ce99b181f</code> + 기존 dirty worktree. 저장소의 현재 소스 분석이지 설치 바이너리·실제 서버 관측 결과가 아님.</p></div></div><div class="subtle"><strong>검증 공백:</strong> 실제 Jev/API 유료 호출 없음. 비밀키·계정 설정 열람 없음. 새 기준의 정확도·비용 절감·배포된 바이너리 동작 미검증. 현재 직접 선택은 설명 기반이며 수치적 confidence 안전 임계값을 강제하지 않음. 카탈로그에 보인다는 사실만으로 실제 실행 권한을 보장하지 않음.</div><div class="receipt"><p>실행한 확인: <code>node --test --test-reporter=spec tools/local-model-router/jev.test.mjs tools/local-model-router/service.test.mjs tools/local-model-router/router.test.mjs</code><br>결과: 193 passed / 0 failed. 모의 API·로컬 루프백 검증이며, 실제 Jev 의미 판단 성능의 증거로 사용하지 않는다.</p><p>HTML의 브라우저·정적 검증과 SHA-256은 <a href="2026-10-16-jev-decision-boundary-topology.ko.validation.json">별도 검증 기록</a>에 저장. 구성도와 테스트 문서 외 앱 코드는 변경하지 않음.</p></div></div></details>
+
+  <details id="references"><summary>공식 문서 · 구성도 표현 방식 선택</summary><div class="detail-body"><div class="sources"><div><h3>Jev 계약 근거</h3><ul class="source-list"><li><a href="https://docs.typesafe.ai/primitives/choice">TypeSafe Choice</a> — caller가 후보와 설명을 제공. ID 선택 결과를 코드가 해석.</li><li><a href="https://docs.typesafe.ai/api">TypeSafe API</a> — answers / choice / probabilities / confidence.</li><li><a href="https://docs.typesafe.ai/concepts/state">State</a> — 입력 데이터와 독립 질문. 영속 세션 저장 API로 해석하지 않음.</li><li><a href="https://docs.typesafe.ai/confidence">Confidence</a> — 분포 기반 값과 실제 정확도 구분.</li><li><a href="https://docs.typesafe.ai/cookbooks/function_calling">Function calling cookbook</a> — 선택 결과를 실제 동작으로 연결하는 책임은 코드에 있음.</li></ul></div><div><h3>표현 참고와 채택 이유</h3><ul class="source-list"><li><a href="https://c4model.com/diagrams/container">C4 Container diagram</a> — 로컬/외부 경계, 책임, 통신을 명시. 실제 배포도라고 주장하지 않는 논리 구성도로 적용.</li><li><a href="https://www.w3.org/WAI/WCAG22/Understanding/reflow.html">W3C Reflow</a> — 작은 화면에서 본문·흐름을 세로 재배치. 넓은 비교 표만 그 영역 안에서 스크롤.</li></ul><p class="small">선택: 시맨틱 HTML + CSS. 외부 자산·라이브러리 없이 오프라인 열기 가능.<br>비교 ① Graphviz SVG: 자동 배치는 좋지만 작은 화면의 설명 재배치 부담.<br>비교 ② 내장 Mermaid: 도식 수정은 편하지만 번들·버전·추가 의존성 부담. 이번 작은 흐름에는 직접 HTML이 더 가벼움.</p></div></div><p class="small">다이어그램 종류: architecture + dataflow + lifecycle. 공용 프레젠테이션 참고 자료에 프로젝트 코드나 비밀 정보를 전송하지 않음. 별도 클라우드/VPC 구성은 조사하거나 가정하지 않음.</p></div></details>
+  <footer class="foot">결론: 새 PIM이나 실행 에이전트를 만들기보다, 기존 입출력 브리지에서 <strong>우리 기준 → Jev 후보 선택 → MindPlayer 검증·적용</strong>을 명확히 한다. 전체 세션은 실행 쪽에 남기고, 판단 입력은 제한한다.</footer>
+</main>
+</body>
+</html>

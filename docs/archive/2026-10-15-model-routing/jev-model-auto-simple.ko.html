@@ -1,0 +1,210 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>MindPlayer · 입력마다 모델 자동 선택</title>
+  <style>
+    :root{color-scheme:dark;--page:#191c23;--terminal:#282c34;--ink:#eef0f5;--muted:#abb2bf;--line:#515b69;--accent:#7ea2f7;--done:#91d9ae;--busy:#f0d478;--mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+    *{box-sizing:border-box}
+    body{margin:0;background:var(--page);color:var(--ink);font:14px/1.65 -apple-system,BlinkMacSystemFont,"Apple SD Gothic Neo","Segoe UI",sans-serif}
+    main{max-width:1520px;margin:auto;padding:26px 28px 32px}
+    h1,h2,h3,p{margin:0}h1{font-size:25px;letter-spacing:-.8px}h2{font-size:14px}h3{font-size:14px}
+    button,input,select{font:inherit}button{cursor:pointer}a{color:#adc4ff;text-underline-offset:3px}
+    button:focus-visible,select:focus-visible,a:focus-visible,summary:focus-visible,input:focus-visible{outline:2px solid var(--accent);outline-offset:3px}
+    header{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin-bottom:20px}
+    header p{color:var(--muted);font-size:13px;margin-top:3px}.scope{color:var(--muted);font-size:11px;border:1px solid var(--line);padding:3px 8px;white-space:nowrap;margin-top:5px;border-radius:3px}
+    .comparison{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:20px}.view{min-width:0}
+    .view-heading{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px}.view-heading p{font-size:11px;color:var(--muted)}.view-heading .change{color:var(--accent)}
+    .terminal-wrap{border:1px solid var(--line);overflow-x:auto;scrollbar-color:#7a8495 var(--terminal)}
+    .terminal{position:relative;min-width:420px;background:var(--terminal);font:11px/1.5 var(--mono)}
+    .appbar{height:25px;padding:3px 7px;color:var(--muted);display:flex;align-items:center;justify-content:space-between}.appbar b{color:var(--accent);font-weight:600}.appbar span{font-size:10px}
+    .grid{display:grid;grid-template-columns:repeat(12,minmax(0,1fr));grid-template-rows:repeat(2,165px);gap:3px;padding:0 4px}
+    .pane{grid-column:span 3;min-width:0;display:flex;flex-direction:column;border:1px solid #6f9a95;padding:0 4px;overflow:hidden}.pane:nth-child(n+5){grid-column:span 4}.pane.focused{border:2px solid var(--done);padding:0 3px}.pane.busy{border-color:var(--busy)}.pane.waiting{border-color:#9ba5b4}
+    .pane-head{height:24px;flex-shrink:0;display:flex;gap:3px;align-items:center;white-space:nowrap;font-size:10px}.focus{color:var(--accent);font-weight:700}.dot{color:var(--done)}.busy .dot{color:var(--busy)}.waiting .dot{color:#9ba5b4}.name{color:#c9a6dd;min-width:0;overflow:hidden;text-overflow:ellipsis;flex:1}.index{color:var(--muted);font-size:9px;flex-shrink:0}
+    .pane-body{flex:1;min-height:0;overflow:hidden;color:#d7dce5;font-size:10px;overflow-wrap:anywhere}.pane-body p+p{margin-top:9px}.request{color:#b9c1cf}.complete{color:var(--done)}.quiet{color:var(--muted)}
+    .pane-input{margin-top:auto;min-height:31px;flex-shrink:0;padding:4px 0 3px;border-top:1px solid #3f4652;overflow:hidden;font-size:10px;white-space:nowrap}.model-line{color:#ead7a8;font-size:9px;overflow:hidden;text-overflow:ellipsis}
+    .model-badge{font-size:10px;line-height:1.5;white-space:nowrap;padding:1px 3px;color:#c4d5ff;background:#35466b;border:1px solid var(--accent);border-radius:2px;flex-shrink:0}.model-badge:hover{background:#405786}
+    .footer{min-height:81px;padding:5px 8px 6px;color:var(--muted);font-size:10px}.quota{border-top:1px solid #727c8b;padding-top:4px;display:grid;grid-template-columns:48px 1fr 86px 45px;gap:1px 8px}.quota .provider{color:var(--accent)}.quota .meter{color:var(--done)}.quota .number{text-align:right}.shortcut{font-size:9px;white-space:nowrap;margin-top:5px;overflow:hidden;text-overflow:ellipsis}
+    .screen-shade{position:absolute;inset:25px 0 0;background:#10131a66;pointer-events:none}.screen-shade[hidden]{display:none}
+    .caption{margin:7px 0 0;color:var(--muted);font-size:11px}.caption strong{color:var(--accent);font-weight:500}
+    .tryout{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:19px;padding:13px 0;border-top:1px solid #3d4552}.tryout .label{font-size:12px;color:var(--muted);margin-right:3px}.sample{background:transparent;color:var(--ink);border:1px solid #6c7787;border-radius:3px;padding:5px 10px;font-size:12px}.sample[aria-pressed=true]{background:#29384f;border-color:var(--accent);color:#c4d5ff}.tryout output{color:var(--muted);font-size:12px}.demo-note{font-size:11px;color:var(--muted);margin-top:2px}
+    details{margin-top:20px;border-top:1px solid #3d4552;padding-top:12px}summary{cursor:pointer;color:var(--muted);font-size:12px;width:fit-content}details[open]>summary{color:var(--ink)}
+    .notes{margin-top:16px;font-size:13px;color:var(--muted)}.notes h3{color:var(--ink);margin-bottom:5px}.notes p+p{margin-top:8px}.notes code{font:11px var(--mono);color:#d2daeb}
+    .diagram-wrap{overflow-x:auto;margin:13px 0;border:1px solid var(--line);background:#232730}.diagram{width:100%;min-width:730px;display:block}.diagram text{font-family:-apple-system,BlinkMacSystemFont,"Apple SD Gothic Neo",sans-serif}.diagram .title{font-size:15px;fill:#eef0f5}.diagram .sub{font-size:12px;fill:#bbc3d0}.diagram .edge{font-size:11px;fill:#abb2bf}.legend{font-size:11px;margin-top:5px}.legend .proposed{color:var(--accent)}
+    .notes-grid{display:grid;grid-template-columns:1fr 1fr;gap:24px;margin-top:18px}.notes ul{padding-left:18px;margin:6px 0}.notes li+li{margin-top:5px}table{border-collapse:collapse;width:100%;font-size:12px;margin-top:9px}th,td{text-align:left;border-bottom:1px solid #424b58;padding:8px 10px 8px 0}th{color:#dbe2ed;font-weight:500}.references{font-size:11px;margin-top:16px}.references a+a{margin-left:14px}.page-footer{margin-top:24px;color:var(--muted);font-size:11px}
+    dialog{position:fixed;inset:auto;margin:0;width:284px;max-width:calc(100vw - 24px);padding:15px 17px;background:#282e39;border:1px solid var(--accent);border-radius:3px;color:var(--ink);box-shadow:0 12px 36px #0008;font-size:13px;line-height:1.55}dialog::backdrop{background:transparent}
+    .dialog-heading{display:flex;align-items:center;justify-content:space-between;gap:12px}.dialog-heading h2{font-size:15px}.close{border:0;background:transparent;color:var(--muted);padding:2px 5px;font-size:12px}.dialog-subtitle{font-size:11px;color:var(--muted);margin:3px 0 13px}.choice{display:flex;align-items:center;gap:7px;padding:7px 0;cursor:pointer}.choice input{accent-color:var(--accent);margin:0;width:14px;height:14px}.choice small{color:var(--muted);font-size:11px;margin-left:auto}.fixed-select{margin:4px 0 10px;padding:5px 7px;border:1px solid #71819a;background:#222733;color:var(--ink);width:100%;font-size:12px}.fixed-select:disabled{opacity:.6}.selection{font-size:12px;border-top:1px solid var(--line);padding-top:11px;color:#c4d5ff}.reason{margin-top:10px;padding-top:8px}.reason summary{font-size:11px}.reason p{margin-top:7px;font-size:11px;color:var(--muted)}.dialog-hint{color:var(--muted);font:10px var(--mono);margin-top:11px}
+    .sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
+    @media(max-width:760px){.comparison{grid-template-columns:1fr;gap:20px}.terminal{min-width:580px}.grid{grid-template-rows:repeat(2,126px)}.pane-body p+p{margin-top:5px}.pane-body{font-size:11px}.pane-head{font-size:11px}.model-badge{font-size:11px}}
+    @media(max-width:650px){main{padding:18px 12px 24px}header{display:block;margin-bottom:16px}h1{font-size:21px}.scope{display:inline-block;margin-top:9px}.view-heading{align-items:baseline}.view-heading p{font-size:10px}.notes-grid{grid-template-columns:1fr;gap:18px}.tryout{gap:7px}.tryout output{flex-basis:100%}.references a{display:block;margin:4px 0!important}dialog{width:272px}}
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <div><h1>MindPlayer, 모델 선택만 자동으로.</h1><p>기존 창에서 그대로 입력합니다. 입력마다 Jev가 모델을 고릅니다.</p></div>
+    <span class="scope">한국어 시안 · 앱 미구현</span>
+  </header>
+
+  <section class="comparison" aria-label="현재 화면과 제안 화면 비교">
+    <article class="view">
+      <div class="view-heading"><h2>현재</h2><p>선택한 창에서 입력</p></div>
+      <div class="terminal-wrap" tabindex="0" role="region" aria-label="현재 화면 재구성, 위 4개 아래 3개 창">
+        <div class="terminal" id="current-screen">
+          <div class="appbar"><b>◆ MindPlayer</b><span>7개 창 · 현재 구조 재구성</span></div>
+          <div class="grid">
+            <section class="pane"><div class="pane-head"><span class="dot">●</span><span class="name">문서</span><span class="index">1/7</span></div><div class="pane-body"><p class="request">› 변경 내용을 정리해줘</p><p>변경 범위를 정리했습니다.</p><p class="complete">✓ 응답 완료</p></div><div class="pane-input">› 다음 입력<div class="model-line">Codex · 선택한 모델</div></div></section>
+            <section class="pane focused"><div class="pane-head"><span class="focus">▸</span><span class="dot">●</span><span class="name">앱</span><span class="index">2/7</span></div><div class="pane-body"><p class="request">› 복잡한 오류 원인을 분석해줘</p><p>관련 코드를 확인했습니다.</p><p class="complete">✓ 응답 완료</p></div><div class="pane-input">› 다음 입력<div class="model-line">Codex · 선택한 모델</div></div></section>
+            <section class="pane"><div class="pane-head"><span class="dot">●</span><span class="name">테스트</span><span class="index">3/7</span></div><div class="pane-body"><p class="request">› 테스트 결과 확인</p><p>확인할 결과가 있습니다.</p><p class="complete">✓ 응답 완료</p></div><div class="pane-input">› 다음 입력<div class="model-line">Codex · 선택한 모델</div></div></section>
+            <section class="pane"><div class="pane-head"><span class="dot">●</span><span class="name">메모</span><span class="index">4/7</span></div><div class="pane-body"><p class="request">› 작업 기록 정리</p><p>기록을 정리했습니다.</p><p class="complete">✓ 응답 완료</p></div><div class="pane-input">› 다음 입력<div class="model-line">Claude · 선택한 모델</div></div></section>
+            <section class="pane busy"><div class="pane-head"><span class="dot">●</span><span class="name">구현</span><span class="index">5/7</span></div><div class="pane-body"><p class="request">› 기능을 구현해줘</p><p>관련 파일을 확인하고 있습니다.</p><p style="color:var(--busy)">▶ 작업 중</p></div><div class="pane-input">› 입력 위치 유지<div class="model-line">Codex · 선택한 모델</div></div></section>
+            <section class="pane"><div class="pane-head"><span class="dot">●</span><span class="name">검토</span><span class="index">6/7</span></div><div class="pane-body"><p class="request">› 변경 사항 검토</p><p>검토 내용을 정리했습니다.</p><p class="complete">✓ 응답 완료</p></div><div class="pane-input">› 다음 입력<div class="model-line">Codex · 선택한 모델</div></div></section>
+            <section class="pane waiting"><div class="pane-head"><span class="dot">●</span><span class="name">설계</span><span class="index">7/7</span></div><div class="pane-body"><p>다음 입력을 기다리고 있습니다.</p><p class="quiet">· 입력 대기</p></div><div class="pane-input">› 다음 입력<div class="model-line">Claude · 선택한 모델</div></div></section>
+          </div>
+          <div class="footer"><div class="quota"><span class="provider">Codex</span><span>계정 가 · 예시 사용량</span><span class="meter">━━━━━━──</span><span class="number">75%</span><span class="provider">Claude</span><span>계정 나 · 예시 사용량</span><span class="meter">━━──────</span><span class="number">25%</span></div><div class="shortcut">ctrl-g 기록 · ctrl-x 목록 · tab 창 이동 · ctrl-z 확대 · ctrl-q 닫기</div><div class="quiet">선택한 창 2/7 · 전체 폭 사용량 하단</div></div>
+        </div>
+      </div>
+      <p class="caption">위 4개 + 아래 3개. 입력·상태·사용량은 그대로.</p>
+    </article>
+
+    <article class="view">
+      <div class="view-heading"><h2>제안</h2><p class="change">제목에 작은 표시 하나만 추가</p></div>
+      <div class="terminal-wrap" tabindex="0" role="region" aria-label="제안 화면, 현재와 같은 4개와 3개 창">
+        <div class="terminal" id="proposed-screen">
+          <div class="appbar"><b>◆ MindPlayer</b><span>7개 창 · 같은 세션 유지</span></div>
+          <div class="grid" id="proposed-grid"></div>
+          <div class="footer" id="proposed-footer"></div>
+          <div class="screen-shade" id="screen-shade" hidden></div>
+        </div>
+      </div>
+      <p class="caption"><strong>자동 · 정밀</strong>을 누르면 자동/고정 설정. 새 입력창은 없습니다.</p>
+    </article>
+  </section>
+
+  <div class="tryout" aria-label="시안 체험, 실제 입력 전송 없음">
+    <span class="label">다음 입력 예시</span>
+    <button class="sample" type="button" data-sample="simple" aria-pressed="false">간단한 수정</button>
+    <button class="sample" type="button" data-sample="complex" aria-pressed="true">복잡한 분석</button>
+    <output id="demo-result" aria-live="polite">복잡한 분석 → 정밀 모델 · Codex 창 2/7 유지</output>
+  </div>
+  <p class="demo-note">위 버튼과 모델 이름은 시연용입니다. 실제 Jev 호출·모델 변경은 하지 않습니다.</p>
+
+  <details id="architecture">
+    <summary>구성도와 구현 경계 보기</summary>
+    <div class="notes">
+      <h3>프롬프트만 바뀌고, 창과 제공자는 바뀌지 않습니다.</h3>
+      <p>매 입력마다 해당 제공자의 모델을 고릅니다. Codex ↔ Claude 전환을 판단하는 기능이 아닙니다.</p>
+      <div class="diagram-wrap">
+        <svg class="diagram" viewBox="0 0 1100 185" role="img" aria-labelledby="diagram-title diagram-desc">
+          <title id="diagram-title">입력마다 모델을 선택하는 제안 구성도</title>
+          <desc id="diagram-desc">기존 Codex 창의 입력을 MindPlayer가 수집해 자체 Jev로 판정하고, 턴 어댑터가 모델을 적용하여 같은 Codex 세션에서 실행한다. 회색은 기존 창, 파란 점선은 구현이 필요한 부분이다.</desc>
+          <defs><marker id="arrow" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><path d="M0 0L7 3.5L0 7Z" fill="#abb2bf"/></marker></defs>
+          <rect x="20" y="50" width="230" height="90" rx="4" fill="#282c34" stroke="#788496"/>
+          <rect x="295" y="50" width="230" height="90" rx="4" fill="#29384f" stroke="#7ea2f7" stroke-dasharray="5 4"/>
+          <rect x="570" y="50" width="230" height="90" rx="4" fill="#29384f" stroke="#7ea2f7" stroke-dasharray="5 4"/>
+          <rect x="845" y="50" width="230" height="90" rx="4" fill="#282c34" stroke="#788496"/>
+          <path d="M250 95H288M525 95H563M800 95H838" stroke="#abb2bf" marker-end="url(#arrow)" fill="none"/>
+          <text x="135" y="80" text-anchor="middle" class="title">기존 창에서 입력</text><text x="135" y="104" text-anchor="middle" class="sub">Codex 창 2/7</text><text x="135" y="124" text-anchor="middle" class="sub">입력 위치 유지</text>
+          <text x="410" y="80" text-anchor="middle" class="title">자체 Jev 판정</text><text x="410" y="104" text-anchor="middle" class="sub">입력 유형 → 모델 ID</text><text x="410" y="124" text-anchor="middle" class="sub">Codex 내부 모델만 선택</text>
+          <text x="685" y="80" text-anchor="middle" class="title">MindPlayer 턴 어댑터</text><text x="685" y="104" text-anchor="middle" class="sub">선택한 모델로 다음 턴 시작</text><text x="685" y="124" text-anchor="middle" class="sub">세션과 대화 맥락 유지</text>
+          <text x="960" y="80" text-anchor="middle" class="title">같은 Codex에서 실행</text><text x="960" y="104" text-anchor="middle" class="sub">응답은 같은 창에 표시</text><text x="960" y="124" text-anchor="middle" class="sub">기존 상태·사용량 재사용</text>
+          <text x="272" y="36" text-anchor="middle" class="edge">입력 수집 후 판정 요청</text><text x="548" y="160" text-anchor="middle" class="edge">모델 선택 결과</text><text x="822" y="36" text-anchor="middle" class="edge">모델을 지정해 실행</text>
+        </svg>
+      </div>
+      <p class="legend">회색 실선: 기존 화면·세션　<span class="proposed">파란 점선: 새로 구현할 기능</span>　화살표: 입력과 선택 결과의 전달</p>
+      <div class="notes-grid">
+        <section><h3>먼저 Codex, 나중에 Claude</h3><p>현재 MindPlayer는 입력 바이트를 PTY로 전달합니다. 완성된 프롬프트 수집과 턴별 모델 적용은 아직 없습니다. Enter 감지만 붙여서는 충분하지 않습니다.</p><p>Codex 턴 어댑터에서 모델 지정과 세션 유지를 검증해야 합니다. Claude는 나중에 같은 원칙의 별도 어댑터로 지원합니다. 자동 판정이 실패하면 기존 모델을 유지하는 정책을 제안합니다.</p></section>
+        <section><h3>REA는 조사 도구</h3><p>REA로 Jev 구조를 조사하고, 그 결과를 자체 판정기 설계에 활용합니다. REA 자체가 판정기가 되거나 매 입력 경로에 들어가는 것은 아닙니다.</p><p>TypeSafe의 비공개 구현을 확인했다는 뜻은 아닙니다. 실제 모델 목록·판정 정책·실패 처리는 구현 단계에서 검증해야 합니다.</p></section>
+      </div>
+    </div>
+  </details>
+
+  <details id="design-notes">
+    <summary>왜 이렇게 줄였는지 · 근거 보기</summary>
+    <div class="notes">
+      <p>기존 터미널의 분할·입력·하단을 그대로 두고, 선택한 창에만 짧은 표시를 붙였습니다. 별도 세션 목록, 상시 상세 패널, 통합 입력창은 추가하지 않습니다. 기존 Ctrl-G 기록 화면도 바꾸지 않습니다.</p>
+      <table><caption class="sr-only">세 가지 UI 대안 비교</caption><thead><tr><th>대안</th><th>선택</th><th>이유</th></tr></thead><tbody><tr><td>작은 표시 + 중앙 설정창</td><td>채택</td><td>기존 입력 흐름 유지</td></tr><tr><td>상시 상세 패널</td><td>제외</td><td>본문 폭 감소·정보 과다</td></tr><tr><td>통합 입력창 + 대시보드</td><td>제외</td><td>기존 사용 방식 변경</td></tr></tbody></table>
+      <div class="notes-grid"><section><h3>실제 코드에서 확인한 것</h3><ul><li><code>ui.rs</code>: 4+3 분할, 창 제목, 전체 폭 사용량 하단, 중앙 팝업.</li><li><code>main.rs / app/pane.rs</code>: 선택한 PTY에 입력 전달.</li><li>제목의 자동/고정 표시는 새 제안입니다. 기존 앱의 모델 선택 기능이 아닙니다.</li></ul></section><section><h3>시안의 범위</h3><ul><li>본문·계정·사용량·모델 이름은 모두 예시입니다.</li><li>HTML 클릭은 체험용입니다. 실제 TUI의 설정 진입 키는 아직 정하지 않았습니다.</li><li>좁은 브라우저는 화면별 가로 스크롤로 4+3 구조를 보존합니다.</li><li>외부 의존성 없는 HTML/CSS·자체 SVG를 선택했습니다. 정적 그래프 그림과 외부 그래프 라이브러리는 이 작은 시안에 필요하지 않습니다.</li></ul></section></div>
+      <p class="references"><a href="https://c4model.com/diagrams/notation">C4 · 구성도 표기 기준</a><a href="https://www.w3.org/WAI/ARIA/apg/patterns/dialog-modal/">W3C · 설정창의 키보드 동작</a><a href="https://www.w3.org/WAI/ARIA/apg/patterns/disclosure/">W3C · 접힌 설명 영역</a><a href="../DESIGN.md">상세 설계 기록</a></p>
+    </div>
+  </details>
+  <footer class="page-footer">2026-10-13 · 기존 화면 재구성 + 모델 자동 선택 제안 · 실제 앱·계정·세션 변경 없음</footer>
+</main>
+
+<dialog id="model-dialog" aria-labelledby="dialog-title" aria-describedby="dialog-subtitle">
+  <div class="dialog-heading"><h2 id="dialog-title">이 창의 모델</h2><button class="close" id="close-dialog" type="button" aria-label="모델 설정 닫기">닫기 ×</button></div>
+  <p class="dialog-subtitle" id="dialog-subtitle">Codex · 창 2/7 · 세션 유지</p>
+  <label class="choice"><input type="radio" name="model-mode" value="auto" checked autofocus>자동<small>입력마다 선택</small></label>
+  <label class="choice"><input type="radio" name="model-mode" value="fixed">고정<small>계속 같은 모델</small></label>
+  <select class="fixed-select" id="fixed-model" aria-label="고정할 예시 모델" disabled hidden><option value="precise">정밀 모델</option><option value="fast">빠른 모델</option></select>
+  <p class="selection" id="selection">현재 선택: 정밀 모델</p>
+  <details class="reason" id="decision-reason"><summary>선택 이유</summary><p id="reason-text">예시 입력이 복잡한 원인 분석이므로 정밀 모델을 선택했습니다.</p></details>
+  <p class="dialog-hint">Esc 닫기 · 이 창에만 적용</p>
+</dialog>
+<span class="sr-only" id="announcement" role="status" aria-live="polite"></span>
+
+<script>
+  'use strict';
+  const $=selector=>document.querySelector(selector);
+  const source=$('#current-screen');
+  $('#proposed-grid').append(...Array.from(source.querySelector('.grid').children,child=>child.cloneNode(true)));
+  $('#proposed-footer').append(...Array.from(source.querySelector('.footer').children,child=>child.cloneNode(true)));
+  const active=$('#proposed-grid .focused');
+  const badge=document.createElement('button');
+  badge.type='button';badge.className='model-badge';badge.id='model-badge';
+  badge.setAttribute('aria-haspopup','dialog');badge.setAttribute('aria-controls','model-dialog');
+  active.querySelector('.pane-head').append(badge);
+  const dialog=$('#model-dialog');
+  const examples={simple:{prompt:'버튼 문구의 오타를 고쳐줘',label:'간단한 수정',model:'fast',reason:'예시 입력이 단순한 문구 수정이므로 빠른 모델을 선택했습니다.'},complex:{prompt:'복잡한 오류 원인을 분석해줘',label:'복잡한 분석',model:'precise',reason:'예시 입력이 복잡한 원인 분석이므로 정밀 모델을 선택했습니다.'}};
+  const modelNames={fast:'빠른 모델',precise:'정밀 모델'};
+  let mode='auto',sample='complex',fixedModel='precise';
+  function update(){
+    const example=examples[sample],chosen=mode==='auto'?example.model:fixedModel;
+    badge.textContent=(mode==='auto'?'자동':'고정')+' · '+(chosen==='fast'?'빠름':'정밀');
+    badge.setAttribute('aria-label','Codex 창 2/7 모델 설정: '+badge.textContent);
+    badge.setAttribute('aria-expanded',String(dialog.open));
+    $('#fixed-model').disabled=mode==='auto';$('#fixed-model').hidden=mode==='auto';$('#fixed-model').value=fixedModel;
+    document.querySelectorAll('[name="model-mode"]').forEach(input=>input.checked=input.value===mode);
+    active.querySelector('.request').textContent='› '+example.prompt;
+    active.querySelector('.model-line').textContent='Codex · '+modelNames[chosen];
+    $('#selection').textContent='현재 선택: '+modelNames[chosen];
+    $('#reason-text').textContent=mode==='auto'?example.reason:'사용자가 고정한 '+modelNames[chosen]+'을 유지합니다. 입력이 바뀌어도 자동 선택하지 않습니다.';
+    $('#demo-result').textContent=example.label+' → '+modelNames[chosen]+(mode==='fixed'?' (고정)':'')+' · Codex 창 2/7 유지';
+    document.querySelectorAll('[data-sample]').forEach(button=>button.setAttribute('aria-pressed',String(button.dataset.sample===sample)));
+    $('#announcement').textContent=badge.textContent+'. 같은 Codex 창과 세션을 유지합니다.';
+  }
+  function positionDialog(){
+    if(!dialog.open)return;
+    const screen=$('#proposed-screen').getBoundingClientRect();
+    const width=dialog.offsetWidth,height=dialog.offsetHeight;
+    const left=Math.max(12,Math.min(window.innerWidth-width-12,screen.left+Math.min(screen.width,window.innerWidth-24)/2-width/2));
+    const top=Math.max(12,Math.min(window.innerHeight-height-12,screen.top+screen.height/2-height/2));
+    dialog.style.left=left+'px';dialog.style.top=top+'px';
+  }
+  function openDialog(){
+    if(dialog.open)return;
+    $('#screen-shade').hidden=false;dialog.showModal();update();positionDialog();
+  }
+  badge.addEventListener('click',openDialog);
+  $('#close-dialog').addEventListener('click',()=>dialog.close());
+  dialog.addEventListener('close',()=>{$('#screen-shade').hidden=true;badge.setAttribute('aria-expanded','false');badge.focus({preventScroll:true});});
+  dialog.addEventListener('keydown',event=>{
+    if(event.key!=='Tab')return;
+    const controls=Array.from(dialog.querySelectorAll('button,input,select,summary')).filter(element=>!element.disabled&&element.getClientRects().length);
+    const first=controls[0],last=controls[controls.length-1];
+    if(event.shiftKey&&document.activeElement===first){event.preventDefault();last.focus();}
+    else if(!event.shiftKey&&document.activeElement===last){event.preventDefault();first.focus();}
+  });
+  document.querySelectorAll('[name="model-mode"]').forEach(input=>input.addEventListener('change',()=>{mode=input.value;update();positionDialog();}));
+  $('#fixed-model').addEventListener('change',event=>{fixedModel=event.target.value;update();});
+  $('#decision-reason').addEventListener('toggle',positionDialog);
+  document.querySelectorAll('[data-sample]').forEach(button=>button.addEventListener('click',()=>{sample=button.dataset.sample;update();}));
+  window.addEventListener('resize',positionDialog);
+  update();
+  // 첫 비교에서만 설정창을 연다. 실제 제품에서 매번 열자는 제안은 아니다.
+  openDialog();
+</script>
+</body>
+</html>

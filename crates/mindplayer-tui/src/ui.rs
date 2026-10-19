@@ -2,7 +2,9 @@
 //! into `App` so the PTY can be spawned/resized at the correct dimensions.
 
 use crate::app::{App, CategoryMenu, Focus, PaneLayout, Row, Screen, SessionStatus, MAX_PANES};
+use crate::local_router::{RoutingStage, RoutingStatus};
 use crate::mascot;
+use crate::startup_routing::{RoutingMode, StartupStage};
 use crate::terminal_view::TerminalView;
 use crate::text_input;
 use crate::walker;
@@ -234,6 +236,212 @@ fn title_bar(area: Rect, f: &mut Frame) {
         ),
     ]);
     f.render_widget(Paragraph::new(line), area);
+}
+
+fn main_title_bar(area: Rect, f: &mut Frame, app: &App) {
+    let Some(mode) = app.startup_routing.mode() else {
+        title_bar(area, f);
+        return;
+    };
+    if app.focus == Focus::Terminal
+        && app
+            .focused_pane()
+            .and_then(|sid| pane_provider(app, sid))
+            .is_some_and(|agent| agent != Agent::Codex)
+    {
+        title_bar(area, f);
+        return;
+    }
+    let label = match mode {
+        RoutingMode::Native => "CLI 그대로",
+        RoutingMode::Jev => "Jev 사용 (Codex)",
+        RoutingMode::PerPrompt if codex_input_choice_visible(app) => "Codex · F6 세션 유지",
+        RoutingMode::PerPrompt => {
+            title_bar(area, f);
+            return;
+        }
+    };
+    let mode = Line::from(Span::styled(label, Style::default().fg(ZOOM)));
+    let columns = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Min(0),
+            Constraint::Length(mode.width() as u16 + 2),
+        ])
+        .split(area);
+    title_bar(columns[0], f);
+    f.render_widget(Paragraph::new(mode).alignment(Alignment::Right), columns[1]);
+}
+
+fn pane_provider(app: &App, sid: &str) -> Option<Agent> {
+    app.pane_accounts
+        .get(sid)
+        .map(|(agent, _)| *agent)
+        .or_else(|| {
+            app.all_sessions
+                .iter()
+                .find(|session| session.id == sid)
+                .map(|session| session.agent)
+        })
+}
+
+fn codex_input_choice_visible(app: &App) -> bool {
+    app.startup_routing.mode() == Some(RoutingMode::PerPrompt)
+        && (app.focus == Focus::List
+            || app.focused_pane().and_then(|sid| pane_provider(app, sid)) == Some(Agent::Codex))
+}
+
+/// Gallery 07: a character-cell configuration sheet over the read-only list.
+/// The existing full-width quota footer stays outside the sheet.
+fn startup_configuration_sheet(f: &mut Frame, app: &App, body: Rect) {
+    if body.is_empty() || app.startup_routing.stage == StartupStage::Complete {
+        return;
+    }
+    let margin = u16::from(body.width > 2);
+    let width = body.width.saturating_sub(margin * 2).min(72);
+    let wide = width >= 60;
+    let spacious = wide && body.height >= 23;
+    let padding = if wide { 3 } else { u16::from(width > 4) };
+    let content_width = width.saturating_sub(2 + padding * 2).max(1);
+    let dim = Style::default().fg(DIM);
+    let strong = Style::default().fg(ACCENT).add_modifier(Modifier::BOLD);
+    let mut lines = Vec::new();
+    if spacious {
+        lines.extend([Line::default(), Line::default()]);
+    }
+    lines.push(Line::styled("적용 범위     이번 MindPlayer 실행", dim));
+    if spacious {
+        lines.push(Line::default());
+    }
+    lines.push(Line::styled("세션          기존 재개 + 새 세션", dim));
+    if spacious {
+        lines.push(Line::default());
+    }
+    lines.push(Line::styled("─".repeat(usize::from(content_width)), dim));
+    if spacious {
+        lines.push(Line::default());
+    }
+    let selected = match app.startup_routing.selection {
+        RoutingMode::Native => "◀ Jev 사용 안 함 ▶",
+        RoutingMode::Jev => "◀ Jev 사용 ▶",
+        RoutingMode::PerPrompt => return,
+    };
+    if !wide {
+        lines.push(Line::styled("모델 판단", strong));
+    }
+    let model_row = if wide {
+        format!("모델 판단     {selected}")
+    } else {
+        selected.to_string()
+    };
+    let fill = usize::from(content_width).saturating_sub(Span::raw(&model_row).width());
+    lines.push(Line::styled(
+        format!("{model_row}{}", " ".repeat(fill)),
+        strong.bg(Color::Rgb(48, 60, 96)),
+    ));
+    if spacious {
+        lines.extend([Line::default(), Line::default(), Line::default()]);
+    }
+    let keys = match app.startup_routing.stage {
+        StartupStage::Choice => {
+            match app.startup_routing.selection {
+                RoutingMode::Native => {
+                    lines.push(Line::styled(
+                        if wide {
+                            "실행          원래 CLI 설정 그대로"
+                        } else {
+                            "실행  원래 CLI 설정 그대로"
+                        },
+                        dim,
+                    ));
+                    lines.push(Line::styled("Jev 호출 없음 · 외부 전송 없음", dim));
+                }
+                RoutingMode::Jev => {
+                    lines.push(Line::styled(
+                        if wide {
+                            "대상          Codex · 모델 + effort"
+                        } else {
+                            "대상  Codex · 모델 + effort"
+                        },
+                        dim,
+                    ));
+                    lines.push(Line::styled(
+                        "입력 프롬프트가 외부 Jev로 전송됩니다.",
+                        Style::default().fg(ZOOM),
+                    ));
+                    lines.push(Line::styled("Enter로 전송 동의", Style::default().fg(ZOOM)));
+                    lines.push(Line::styled(
+                        "Claude / Kiro / Cursor는 기존 CLI 그대로",
+                        dim,
+                    ));
+                }
+                RoutingMode::PerPrompt => return,
+            }
+            "←→ 변경 · Enter 시작 · Esc 종료"
+        }
+        StartupStage::Checking => {
+            lines.push(Line::styled("Jev 시작 준비 확인 중", strong));
+            lines.push(Line::styled("로컬 실행 조건을 확인하고 있습니다.", dim));
+            lines.push(Line::styled("아직 프롬프트를 전송하지 않았습니다.", dim));
+            "Esc 선택 화면으로 돌아가기"
+        }
+        StartupStage::Blocked => {
+            lines.push(Line::styled(
+                "Jev로 시작할 수 없음",
+                Style::default().fg(ERROR).add_modifier(Modifier::BOLD),
+            ));
+            "Esc 선택 화면으로 돌아가기"
+        }
+        StartupStage::Complete => return,
+    };
+    if let Some(error) = app.startup_routing.error.or_else(|| {
+        (app.startup_routing.stage == StartupStage::Blocked)
+            .then_some("Jev 준비 확인을 완료하지 못했습니다.")
+    }) {
+        // Causes come from fixed startup messages. Bound even a future longer
+        // message to two rows and keep control characters out of the terminal.
+        let cause: String = error
+            .chars()
+            .filter(|ch| !ch.is_control())
+            .take(240)
+            .collect();
+        lines.extend(
+            wrapped_text_rows(&cause, usize::from(content_width))
+                .into_iter()
+                .take(2)
+                .map(|line| Line::styled(line, Style::default().fg(ERROR))),
+        );
+    }
+    if app.startup_routing.stage == StartupStage::Blocked {
+        lines.push(Line::styled("자동으로 미사용 전환하지 않습니다.", dim));
+    }
+    lines.push(Line::styled("선택 저장     하지 않음", dim));
+    let key_line = Paragraph::new(keys).style(dim).wrap(Wrap { trim: false });
+    let key_h = key_line.line_count(content_width) as u16;
+    let content_h = Paragraph::new(lines.clone())
+        .wrap(Wrap { trim: false })
+        .line_count(content_width) as u16;
+    let height = (content_h + key_h + 3).max(21).min(body.height);
+    let area = Rect::new(
+        body.x + body.width.saturating_sub(width) / 2,
+        body.y + body.height.saturating_sub(height) / 2,
+        width,
+        height,
+    );
+    f.render_widget(Clear, area);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(ACCENT))
+        .title(" MindPlayer / 실행 설정표 ")
+        .padding(Padding::horizontal(padding));
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(0), Constraint::Length(key_h + 1)])
+        .split(inner);
+    f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), rows[0]);
+    f.render_widget(key_line, rows[1]);
 }
 
 fn footer(area: Rect, f: &mut Frame, keys: &str) {
@@ -809,6 +1017,7 @@ fn scan_summary(f: &mut Frame, app: &App) {
 }
 
 fn main_view(f: &mut Frame, app: &mut App) {
+    let startup_active = app.startup_routing.active();
     // The plain list view hides ~8 shortcuts (session-management and
     // view-toggle basics) behind the `?` help modal. Multi-select, search,
     // and the live-pane hints are already complete for their own mode, so
@@ -865,6 +1074,10 @@ fn main_view(f: &mut Frame, app: &mut App) {
         // Keep the footer compact; the Accounts screen retains the reported
         // usage/limit figures. The exhausted state must still be explicit.
         if row.agent == Agent::Codex && row.label == "codex credits" && row.used_percent.is_some() {
+            let shared_login = row
+                .detail
+                .starts_with("same login as ")
+                .then(|| row.detail.clone());
             row.detail = if row.blocked {
                 "blocked".into()
             } else if row.used_percent.is_some_and(|used| used >= 100.0) {
@@ -876,6 +1089,12 @@ fn main_view(f: &mut Frame, app: &mut App) {
             } else {
                 String::new()
             };
+            if let Some(shared_login) = shared_login {
+                if !row.detail.is_empty() {
+                    row.detail.push_str(" · ");
+                }
+                row.detail.push_str(&shared_login);
+            }
         }
         let mut rest = mindplayer_core::limits::label_without_provider(row).to_string();
         if !row.account.is_empty() && app.provider_has_several_logins(row.agent) {
@@ -907,7 +1126,7 @@ fn main_view(f: &mut Frame, app: &mut App) {
             Constraint::Length(footer_h),
         ])
         .split(f.area());
-    title_bar(outer[0], f);
+    main_title_bar(outer[0], f, app);
 
     // Read the clock once per frame and thread it down, so the sort key and the
     // displayed relative times can't disagree (and we don't call Utc::now()
@@ -916,12 +1135,20 @@ fn main_view(f: &mut Frame, app: &mut App) {
 
     // Full-screen switch: the list OR the live session fills the body — no split.
     // Background sessions keep running regardless of which view is shown.
-    match app.focus {
-        Focus::List => session_list(f, app, outer[1], now),
-        Focus::Terminal => live_pane(f, app, outer[1]),
+    if startup_active {
+        if !outer[1].is_empty() {
+            session_list(f, app, outer[1], now);
+        }
+    } else {
+        match app.focus {
+            Focus::List => session_list(f, app, outer[1], now),
+            Focus::Terminal => live_pane(f, app, outer[1]),
+        }
     }
 
-    let keys: String = if app.search_query.is_some() && app.multi_select {
+    let keys: String = if startup_active {
+        "이번 실행에만 적용 · 선택 저장 없음".to_string()
+    } else if app.search_query.is_some() && app.multi_select {
         // Marking wins over typing for these two keys (see main.rs) — say so,
         // instead of only ever showing one of the two active modes' hints.
         "MULTI-SELECT + search · space mark · v exit multi-select · type to filter · esc exit search".to_string()
@@ -994,7 +1221,7 @@ fn main_view(f: &mut Frame, app: &mut App) {
             .alignment(Alignment::Right),
         footer_rows[2],
     );
-    if show_more_keys {
+    if show_more_keys && !startup_active {
         f.render_widget(
             Paragraph::new(Line::from(Span::styled(
                 "i in progress · c catch-up · t category · ←→ fold    ctrl-r usage · ? help",
@@ -1005,10 +1232,15 @@ fn main_view(f: &mut Frame, app: &mut App) {
         );
     }
 
+    if startup_active {
+        startup_configuration_sheet(f, app, outer[1]);
+        return;
+    }
+
     if app.unusable_prompt.is_some() {
         unusable_account_popup(f, app);
     } else if app.help_visible {
-        help_popup(f);
+        help_popup(f, app);
     } else if app.accounts_panel.is_some() {
         accounts_popup(f, app);
     } else if app.category_menu.is_some() {
@@ -1371,7 +1603,7 @@ fn session_list(f: &mut Frame, app: &mut App, area: Rect, now: DateTime<Utc>) {
     // Worked out once: resolving a session's account is a path comparison per
     // account, and this list runs to thousands of rows.
     let account_marks = app.account_marks();
-    let focused = app.focus == Focus::List;
+    let focused = app.focus == Focus::List && !app.startup_routing.active();
     let tab = if app.show_archived {
         "archived"
     } else {
@@ -1653,7 +1885,7 @@ fn session_list(f: &mut Frame, app: &mut App, area: Rect, now: DateTime<Utc>) {
     app.list_rows = area.height.saturating_sub(2);
 
     let mut state = ListState::default();
-    if !items.is_empty() {
+    if !items.is_empty() && !app.startup_routing.active() {
         state.select(selected_item);
     }
     let rendered_rows = items.len();
@@ -1681,7 +1913,7 @@ fn session_list(f: &mut Frame, app: &mut App, area: Rect, now: DateTime<Utc>) {
     let block_h = walker::HEIGHT + GAP + 2; // strip + gap + tagline + legend
                                             // Record whether the animated hero is actually on screen, so the event loop
                                             // only forces ~12fps redraws of the list when there's something to animate.
-    app.hero_visible = region_h >= block_h + 2;
+    app.hero_visible = region_h >= block_h + 2 && !app.startup_routing.active();
     if app.hero_visible {
         let inner_x = area.x + 1;
         let inner_w = area.width.saturating_sub(2);
@@ -2334,13 +2566,15 @@ fn render_pane(
     let ended = app.ended.contains(sid);
     let (dot, dot_color) = pane_dot(app, sid, ended);
     let name = app.session_display_name(sid, pane_area.width.saturating_sub(20) as usize);
+    let count = format!(" {}/{} ", idx + 1, total);
+    let ended_label = if ended { "(ended) " } else { "" };
     // A plain-colored name blends into the border line and is easy to miss when
     // several panes are open — a bold, high-contrast chip (bg = the same color
     // as the status dot) makes "which session is this" readable at a glance
     // without stealing a content row from the terminal view.
     //
     // Focus uses a glyph and mirrored corners, never a status-colour override.
-    // Status comes before any truncatable category/name, even in a narrow pane.
+    // Status/counts come before truncatable category/name, even in a narrow pane.
     let title = Line::from(vec![
         if pane_focused {
             Span::styled(
@@ -2351,6 +2585,37 @@ fn render_pane(
             Span::raw("")
         },
         Span::styled(dot, Style::default().fg(dot_color)),
+        Span::styled(
+            count.clone(),
+            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(ended_label, Style::default().fg(DIM)),
+        if zoomed {
+            let hidden = total.saturating_sub(1);
+            let mut label = if hidden > 0 {
+                format!(" 🔍 ZOOMED · {hidden} hidden ")
+            } else {
+                " 🔍 ZOOMED ".to_string()
+            };
+            let prefix_width = usize::from(pane_focused) * 2
+                + Span::raw(dot).width()
+                + Span::raw(&count).width()
+                + Span::raw(ended_label).width();
+            if prefix_width + Span::raw(&label).width()
+                > usize::from(pane_area.width.saturating_sub(2))
+            {
+                label = " ZOOMED ".into();
+            }
+            Span::styled(
+                label,
+                Style::default()
+                    .fg(Color::Rgb(15, 17, 22))
+                    .bg(ZOOM)
+                    .add_modifier(Modifier::BOLD),
+            )
+        } else {
+            Span::raw("")
+        },
         if let Some((label, color)) = cell {
             Span::styled(
                 format!("{label} "),
@@ -2366,27 +2631,6 @@ fn render_pane(
                 .bg(dot_color)
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::styled(
-            format!(" {}/{} ", idx + 1, total),
-            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
-        ),
-        if zoomed {
-            let hidden = total.saturating_sub(1);
-            let label = if hidden > 0 {
-                format!(" 🔍 ZOOMED · {hidden} hidden ")
-            } else {
-                " 🔍 ZOOMED ".to_string()
-            };
-            Span::styled(
-                label,
-                Style::default()
-                    .fg(Color::Rgb(15, 17, 22))
-                    .bg(ZOOM)
-                    .add_modifier(Modifier::BOLD),
-            )
-        } else {
-            Span::raw("")
-        },
         // Passive "N new" badge: shown when this pane has detected, not-yet-
         // opened `.html` candidates. Rendered as PREVIEW-cyan text (not a filled
         // chip) so it reads as a quiet, lower-emphasis hint.
@@ -2397,15 +2641,10 @@ fn render_pane(
             ),
             _ => Span::raw(""),
         },
-        if ended {
-            Span::styled("(ended) ", Style::default().fg(DIM))
-        } else {
-            Span::raw("")
-        },
     ]);
     // Shape marks focus; colour always marks status, including in zoom.
     let (border_type, weight) = pane_border_for(pane_focused, zoomed);
-    let block = Block::default()
+    let mut block = Block::default()
         .borders(Borders::ALL)
         .border_type(border_type)
         .title(title)
@@ -2414,8 +2653,21 @@ fn render_pane(
                 .fg(pane_border_color(app, sid, ended))
                 .add_modifier(weight),
         );
+    let codex_pane = pane_provider(app, sid) == Some(Agent::Codex);
+    if codex_pane {
+        // Use the existing bottom border: the account stays visible without taking
+        // native terminal rows or competing with status/counts in the top title.
+        let label = truncate_pane_account_label(
+            app.pane_account_label(sid).unwrap_or("계정 미확인"),
+            usize::from(pane_area.width.saturating_sub(12)),
+        );
+        block = block.title_bottom(Line::styled(
+            format!(" codex · {label} "),
+            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+        ));
+    }
     let inner = block.inner(pane_area);
-    f.render_widget(block, pane_area);
+    f.render_widget(block.clone(), pane_area);
     app.pane_sizes
         .insert(sid.to_string(), (inner.height.max(1), inner.width.max(1)));
     app.pane_bounds.insert(
@@ -2444,9 +2696,36 @@ fn render_pane(
         // Resize before sampling the screen: the first zoom/resize frame must
         // use this pane's geometry, not cells from its previous dimensions.
         pty.resize(inner.height.max(1), inner.width.max(1));
+        let routing_status = codex_pane.then(|| pty.routing_status()).flatten();
         if let Ok(parser) = pty.parser().lock() {
             let screen = parser.render_screen();
             f.render_widget(TerminalView::new(screen).with_selection(selection), inner);
+            if let Some(overlay) = routing_status
+                .as_ref()
+                .and_then(|status| routing_overlay(screen, status, selection.is_some()))
+            {
+                match overlay {
+                    RoutingOverlay::ModelRow {
+                        row,
+                        column,
+                        label,
+                        suffix,
+                    } => {
+                        paint_routing_model_row(f, inner, row, column, &label, suffix);
+                    }
+                    RoutingOverlay::Border(label) => {
+                        // Reuse the existing border; this adds no terminal row
+                        // and leaves the PTY's dimensions and screen untouched.
+                        f.render_widget(
+                            block.clone().title_bottom(Line::from(Span::styled(
+                                label,
+                                Style::default().fg(DIM),
+                            ))),
+                            pane_area,
+                        );
+                    }
+                }
+            }
             if pane_focused && !ended && !screen.hide_cursor() {
                 let (row, col) = screen.cursor_position();
                 let cx = inner.x + col.min(inner.width.saturating_sub(1));
@@ -2457,12 +2736,253 @@ fn render_pane(
     } else {
         f.render_widget(
             Paragraph::new(Line::from(Span::styled(
-                "starting...",
+                app.account_auth_message(sid).unwrap_or("starting..."),
                 Style::default().fg(DIM),
             )))
             .alignment(Alignment::Center),
             inner,
         );
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum RoutingOverlay {
+    ModelRow {
+        row: u16,
+        column: u16,
+        label: String,
+        // Native suffix source column, target column and cell count. The
+        // renderer copies its existing cells, including context/quota styles.
+        suffix: Option<(u16, u16, u16)>,
+    },
+    Border(String),
+}
+
+fn routing_labels(status: &RoutingStatus) -> Vec<String> {
+    // Lifecycle comes from correlated protocol events, independently of the
+    // optional server model-change report. Requested effort is not a receipt.
+    let lifecycle = match status.stage {
+        RoutingStage::Ready => return vec!["입력 대기".into()],
+        RoutingStage::Judging => return vec!["Jev 판단 중".into()],
+        RoutingStage::Requested => "요청 중",
+        RoutingStage::Accepted => "요청 수락",
+        RoutingStage::Running => "실행 중",
+        RoutingStage::Completed => "완료",
+        RoutingStage::Interrupted => "중단",
+        RoutingStage::Closed => return vec!["연결 종료".into()],
+        RoutingStage::Failed => {
+            return vec![match status.reason.as_deref() {
+                Some("submission-uncertain-no-replay") => "송신 결과 미확인 · 재전송 안 함".into(),
+                Some("execution-failed") => "실행 실패".into(),
+                Some("submission-rejected") => "요청 거부".into(),
+                Some("jev-tls-error") => "Jev 인증서 오류 · 미전송".into(),
+                Some("jev-invalid-response") => "Jev 응답 오류 · 미전송".into(),
+                _ if status.turn_id.is_none() => "미전송".into(),
+                _ => "실행 실패".into(),
+            }]
+        }
+    };
+    let requested = status.model.as_deref().map(|model| {
+        let effort = status
+            .effort
+            .as_ref()
+            .map_or(String::new(), |effort| format!(" {effort}"));
+        format!("요청 {model}{effort}")
+    });
+    let reported = status
+        .observed_model
+        .as_deref()
+        .filter(|_| status.server_model_reported)
+        .map(|model| format!("서버 변경 {model}"));
+    let retention = match status.reason.as_deref() {
+        Some("external-transfer-policy-unset") => Some("Jev 전송 금지 · 네이티브"),
+        Some(
+            "context-insufficient"
+            | "context-truncated"
+            | "context-unavailable"
+            | "context-incomplete",
+        ) => Some("유지 · 맥락 부족"),
+        _ => None,
+    };
+    let selection = retention
+        .or_else(|| (status.reason.as_deref() == Some("catalog-guided-jev")).then_some("Jev 선택"));
+    let label = |selection: Option<&str>, requested: Option<&str>, reported: Option<&str>| {
+        [Some(lifecycle), selection, requested, reported]
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>()
+            .join(" · ")
+    };
+    let mut labels = vec![label(selection, requested.as_deref(), reported.as_deref())];
+    if reported.is_some() {
+        labels.push(label(selection, requested.as_deref(), None));
+    }
+    if selection == Some("Jev 선택") {
+        labels.push(label(None, requested.as_deref(), reported.as_deref()));
+        labels.push(label(None, requested.as_deref(), None));
+    }
+    // Keep policy/retention reasons in compact labels too. Ordinary turns can
+    // shrink to the lifecycle when a pane cannot fit the requested model.
+    labels.push(label(retention, None, None));
+    labels.dedup();
+    labels
+}
+
+fn fit_routing_label(status: &RoutingStatus, width: u16) -> Option<String> {
+    routing_labels(status).into_iter().find(|label| {
+        !label.chars().any(char::is_control) && Line::from(label.as_str()).width() <= width as usize
+    })
+}
+
+/// Recognize only the native GPT footer grammar. An arbitrary line mentioning
+/// a model, an editable prompt, or a menu entry is never an overlay target.
+fn native_model_columns(line: &str) -> Option<(u16, u16, u16)> {
+    let trimmed = line.trim_start();
+    let model = trimmed.split_whitespace().next()?;
+    let lower = model.to_ascii_lowercase();
+    if !lower.starts_with("gpt-")
+        || !lower.as_bytes().get(4).is_some_and(u8::is_ascii_digit)
+        || !model
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"._:/-".contains(&byte))
+    {
+        return None;
+    }
+    let mut rest = trimmed[model.len()..].trim_start();
+    if let Some(token) = rest.split_whitespace().next() {
+        if matches!(
+            token,
+            "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | "ultra"
+        ) {
+            rest = rest[token.len()..].trim_start();
+        }
+    }
+    rest = rest
+        .strip_prefix('·')
+        .or_else(|| rest.strip_prefix('|'))?
+        .trim_start();
+    let first = rest.split(['·', '|']).next()?.trim().to_ascii_lowercase();
+    let percent = first.find('%')?;
+    let numeric_left = !first[..percent].trim().is_empty()
+        && first[..percent]
+            .trim()
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || byte == b'.')
+        && matches!(
+            first[percent + 1..].trim(),
+            "left" | "context left" | "context remaining"
+        );
+    if !numeric_left && !first.starts_with("context ") && !first.starts_with("weekly ") {
+        return None;
+    }
+    let column = Line::from(&line[..line.len() - trimmed.len()]).width() as u16;
+    let suffix_column = Line::from(&line[..line.len() - rest.len()]).width() as u16;
+    let suffix_width = Line::from(rest.trim_end()).width() as u16;
+    Some((column, suffix_column, suffix_width))
+}
+
+fn routing_overlay(
+    screen: &vt100::Screen,
+    status: &RoutingStatus,
+    selected: bool,
+) -> Option<RoutingOverlay> {
+    let (rows, cols) = screen.size();
+    if selected
+        || screen.scrollback() > 0
+        || rows < 4
+        || crate::pty::routing_overlay_blocked(screen)
+    {
+        return None;
+    }
+    let cursor_row = screen.cursor_position().0;
+    let candidates: Vec<_> = screen
+        .rows(0, cols)
+        .enumerate()
+        .skip(rows.saturating_sub(8) as usize)
+        .filter_map(|(row, line)| {
+            native_model_columns(&line).map(|columns| (row as u16, columns, line))
+        })
+        .collect();
+    if let [(row, (column, suffix_column, suffix_width), line)] = candidates.as_slice() {
+        // The native UI may briefly repaint or move its input here. Hidden
+        // cursors still carry an address, so exclude the row unconditionally.
+        if *row == cursor_row {
+            return None;
+        }
+        let labels = if status.stage == RoutingStage::Ready {
+            let model_prefix = line.trim_start().split(['·', '|']).next()?.trim();
+            vec![format!("{model_prefix} · 입력 대기")]
+        } else {
+            routing_labels(status)
+        };
+        let fits = |label: &&String, width: u16| {
+            !label.chars().any(char::is_control)
+                && Line::from(label.as_str()).width() <= width as usize
+        };
+        // Prefer a compact model-bearing label that keeps both native usage
+        // values, before spending the whole row on the detailed status.
+        let available = cols.saturating_sub(*column);
+        let label = labels
+            .iter()
+            .find(|label| {
+                status
+                    .model
+                    .as_deref()
+                    .is_none_or(|model| label.contains(model))
+                    && fits(
+                        label,
+                        available.saturating_sub(suffix_width.saturating_add(2)),
+                    )
+            })
+            .or_else(|| labels.iter().find(|label| fits(label, available)));
+        if let Some(label) = label {
+            let label_end = column.saturating_add(Line::from(label.as_str()).width() as u16);
+            let target = (*suffix_column).max(label_end.saturating_add(2));
+            let suffix = (target.saturating_add(*suffix_width) <= cols).then_some((
+                *suffix_column,
+                target,
+                *suffix_width,
+            ));
+            return Some(RoutingOverlay::ModelRow {
+                row: *row,
+                column: *column,
+                label: label.clone(),
+                suffix,
+            });
+        }
+        if status.stage == RoutingStage::Ready {
+            return None;
+        }
+    }
+    fit_routing_label(status, cols).map(RoutingOverlay::Border)
+}
+
+fn paint_routing_model_row(
+    f: &mut Frame,
+    inner: Rect,
+    row: u16,
+    column: u16,
+    label: &str,
+    suffix: Option<(u16, u16, u16)>,
+) {
+    let y = inner.y + row;
+    let native_suffix = suffix.map(|(source, target, width)| {
+        let cells: Vec<_> = (source..source + width)
+            .map(|column| f.buffer_mut()[(inner.x + column, y)].clone())
+            .collect();
+        (target, cells)
+    });
+    for x in column..inner.width {
+        f.buffer_mut()[(inner.x + x, y)].set_symbol(" ");
+    }
+    f.render_widget(
+        Paragraph::new(Span::styled(label, Style::default().fg(DIM))),
+        Rect::new(inner.x + column, y, inner.width.saturating_sub(column), 1),
+    );
+    if let Some((target, cells)) = native_suffix {
+        for (offset, cell) in cells.into_iter().enumerate() {
+            f.buffer_mut()[(inner.x + target + offset as u16, y)] = cell;
+        }
     }
 }
 
@@ -2645,12 +3165,12 @@ fn handoff_popup(f: &mut Frame, choice: usize, source: Option<&Session>, app: &A
 /// The width `help_popup` asks for, before the frame clamps it.
 const HELP_WIDTH: u16 = 96;
 
-fn help_popup(f: &mut Frame) {
+fn help_popup(f: &mut Frame, app: &App) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(ACCENT))
         .title(" Keyboard shortcuts ");
-    let lines = help_lines();
+    let lines = help_lines(codex_input_choice_visible(app));
     let width = HELP_WIDTH.min(f.area().width);
     let area = centered(f.area(), width, wrapped_popup_height(&lines, width));
     f.render_widget(Clear, area);
@@ -2665,7 +3185,7 @@ fn help_popup(f: &mut Frame) {
 
 /// Every row of the shortcuts popup. Split out from the drawing so a test can
 /// check the real list against the height it will be given.
-fn help_lines() -> Vec<Line<'static>> {
+fn help_lines(codex_input_choice: bool) -> Vec<Line<'static>> {
     let section = |title: &'static str| {
         Line::from(Span::styled(
             title,
@@ -2681,7 +3201,7 @@ fn help_lines() -> Vec<Line<'static>> {
             Span::raw(text),
         ])
     };
-    vec![
+    let mut lines = vec![
         section("Session"),
         item("ctrl-g", "live pane: open full-screen Trace for the focused session"),
         item("esc / ctrl-g", "Trace: return to the live session"),
@@ -2747,7 +3267,14 @@ fn help_lines() -> Vec<Line<'static>> {
         item("shift/alt/ctrl-enter", "insert newline in text modals"),
         item("esc", "cancel modal or close this help"),
         item("?", "show or close this help"),
-    ]
+    ];
+    if codex_input_choice {
+        lines.push(item(
+            "F6 (Codex)",
+            "Jev ON/OFF · 세션 유지 · 기본 OFF · ON은 외부 전송 동의",
+        ));
+    }
+    lines
 }
 
 /// Rows a bordered popup needs to show `lines` at `width` without clipping —
@@ -2955,6 +3482,40 @@ fn is_wide_char(code: u32) -> bool {
     )
 }
 
+fn truncate_pane_account_label(label: &str, max: usize) -> String {
+    if max == 0 {
+        return String::new();
+    }
+    let safe: String = label
+        .chars()
+        .filter(|ch| {
+            !ch.is_control()
+                && !matches!(*ch, '\u{061c}' | '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
+        })
+        .collect();
+    let label = if safe.trim().is_empty() {
+        "계정 미확인"
+    } else {
+        safe.trim()
+    };
+    let span = Span::raw(label);
+    if span.width() <= max {
+        return label.to_string();
+    }
+    let mut out = String::new();
+    let mut width = 0;
+    for grapheme in span.styled_graphemes(Style::default()) {
+        let cells = Span::raw(grapheme.symbol).width();
+        if width + cells > max - 1 {
+            break;
+        }
+        out.push_str(grapheme.symbol);
+        width += cells;
+    }
+    out.push('…');
+    out
+}
+
 fn truncate(s: &str, max: usize) -> String {
     if s.chars().count() <= max {
         s.to_string()
@@ -3054,6 +3615,7 @@ fn relative_time(t: Option<DateTime<Utc>>, now: DateTime<Utc>) -> String {
 const ACCOUNT_HINTS: &[&str] = &[
     "w use this one",
     "enter session on it",
+    "v verify / bind account identity",
     "a add",
     "r rename",
     "l sign in",
@@ -3204,6 +3766,32 @@ fn accounts_popup(f: &mut Frame, app: &App) {
                         format!("   {activity}{origin}"),
                         Style::default().fg(DIM),
                     ));
+                    if matches!(account.provider, Agent::Codex | Agent::Claude) {
+                        spans.push(Span::styled(
+                            format!(
+                                "   {}",
+                                account.identity_fingerprint().map_or(
+                                    "identity unverified",
+                                    |id| {
+                                        if app.accounts.iter().any(|other| {
+                                            other.provider == account.provider
+                                                && other.name != account.name
+                                                && other.identity_fingerprint() == Some(id)
+                                        }) {
+                                            "identity shared"
+                                        } else {
+                                            "identity bound"
+                                        }
+                                    }
+                                )
+                            ),
+                            Style::default().fg(if account.identity_fingerprint().is_some() {
+                                IDLE
+                            } else {
+                                ERROR
+                            }),
+                        ));
+                    }
                     lines.push(Line::from(spans));
                     // A provider can meter more than one window (Claude's five
                     // hour and weekly), and hiding the second would hide the
@@ -3231,10 +3819,9 @@ fn accounts_popup(f: &mut Frame, app: &App) {
 
     if let Some(error) = &panel.error {
         lines.push(Line::from(""));
-        lines.push(Line::from(Span::styled(
-            error.clone(),
-            Style::default().fg(ERROR),
-        )));
+        for row in wrapped_text_rows(error, f.area().width.saturating_sub(4) as usize) {
+            lines.push(Line::from(Span::styled(row, Style::default().fg(ERROR))));
+        }
     }
     // The widest row decides the popup, and the hint is folded to whatever
     // width is left rather than being cut off — a key the user cannot see is
@@ -3280,6 +3867,1077 @@ fn accounts_popup(f: &mut Frame, app: &App) {
 mod tests {
     use super::*;
     use crate::pty::PtySession;
+    use crate::startup_routing::StartupRouting;
+
+    fn startup_app() -> App {
+        let mut app = isolated_app();
+        app.screen = Screen::Main;
+        app.focus = Focus::List;
+        app.startup_routing = StartupRouting::default();
+        app.cwd = PathBuf::from("/work");
+        app.accounts = vec![mindplayer_core::accounts::Account::inherited(Agent::Codex)];
+        app.limits = Some(Vec::new());
+        app.quota_cache = None;
+        app.all_sessions = [Agent::Codex, Agent::Claude, Agent::Kiro, Agent::Cursor]
+            .into_iter()
+            .enumerate()
+            .map(|(index, agent)| {
+                let mut session = session(agent, 0);
+                session.id = format!("startup-{index}");
+                session.title = format!("real-{}", agent.as_str());
+                session.last_active = Some(Utc::now());
+                session
+            })
+            .collect();
+        app.rebuild_visible();
+        app
+    }
+
+    fn startup_frame(app: &mut App, width: u16, height: u16) -> ratatui::buffer::Buffer {
+        use ratatui::{backend::TestBackend, Terminal};
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal.draw(|frame| render(frame, app)).unwrap();
+        terminal.backend().buffer().clone()
+    }
+
+    fn frame_text(buffer: &ratatui::buffer::Buffer) -> String {
+        (buffer.area.y..buffer.area.bottom())
+            .map(|row| rendered_row(buffer, row))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn session_jev_starts_at_the_list_with_a_persistent_f6_hint() {
+        let mut app = startup_app();
+        app.startup_routing = StartupRouting::per_prompt();
+        for (width, height) in [(88, 29), (140, 40), (40, 24)] {
+            let text = frame_text(&startup_frame(&mut app, width, height));
+            assert!(
+                text.lines()
+                    .next()
+                    .unwrap()
+                    .contains("Codex · F6 세션 유지"),
+                "{text}"
+            );
+            assert!(!text.contains("MindPlayer / 실행 설정표"), "{text}");
+            assert!(!text.contains("Jev 시작 준비"), "{text}");
+            assert!(text.contains("enter open"), "{text}");
+            assert!(!app.startup_routing.active());
+            assert!(app.ptys.is_empty());
+        }
+    }
+
+    #[test]
+    fn session_jev_header_and_help_hide_controls_in_non_codex_panes() {
+        let mut app = startup_app();
+        app.startup_routing = StartupRouting::per_prompt();
+        app.focus = Focus::Terminal;
+        for agent in [Agent::Codex, Agent::Claude, Agent::Kiro, Agent::Cursor] {
+            let id = app
+                .all_sessions
+                .iter()
+                .find(|session| session.agent == agent)
+                .unwrap()
+                .id
+                .clone();
+            app.panes = vec![id];
+            app.focused = 0;
+            let text = frame_text(&startup_frame(&mut app, 140, 60));
+            assert_eq!(
+                text.contains("Codex · F6 세션 유지"),
+                agent == Agent::Codex,
+                "{text}"
+            );
+            app.help_visible = true;
+            let help = frame_text(&startup_frame(&mut app, 140, 60));
+            assert_eq!(help.contains("F6 (Codex)"), agent == Agent::Codex, "{help}");
+            assert!(!help.contains("F7"), "{help}");
+            if agent == Agent::Codex {
+                assert!(help.contains("ON/OFF"), "{help}");
+                assert!(help.contains("세션 유지"), "{help}");
+                assert!(help.contains("기본 OFF"), "{help}");
+            }
+            if agent != Agent::Codex {
+                assert!(!help.contains("Jev"), "{help}");
+            }
+            app.help_visible = false;
+        }
+    }
+
+    #[test]
+    fn claude_panes_never_render_a_stale_jev_status_channel() {
+        let mut fixture = RoutingPtyFixture::new(RoutingStage::Judging, 8, 20);
+        let id = fixture.id();
+        fixture
+            .quiet
+            .app
+            .pane_accounts
+            .insert(id.clone(), (Agent::Claude, "native".into()));
+        fixture.quiet.app.startup_routing = StartupRouting::per_prompt();
+        paint_native_footer(
+            &mut fixture.quiet.app.ptys[&id].parser().lock().unwrap(),
+            "claude native model",
+        );
+        let text = frame_text(&startup_frame(&mut fixture.quiet.app, 140, 40));
+        assert!(text.contains("native draft"), "{text}");
+        assert!(!text.contains("Jev"), "{text}");
+        assert!(!text.contains("입력마다 선택"), "{text}");
+    }
+
+    fn pane_account_app() -> App {
+        let mut app = startup_app();
+        app.startup_routing = StartupRouting::per_prompt();
+        app.focus = Focus::Terminal;
+        app.all_sessions = ["account-left", "account-right"]
+            .into_iter()
+            .map(|id| {
+                let mut session = session(Agent::Codex, 0);
+                session.id = id.into();
+                session.title = "a long session title that must leave room for the account".into();
+                session.file = PathBuf::new();
+                session
+            })
+            .collect();
+        app.panes = app
+            .all_sessions
+            .iter()
+            .map(|session| session.id.clone())
+            .collect();
+        app.active = app.panes.first().cloned();
+        app
+    }
+
+    fn pane_account_borders(app: &mut App, width: u16, zoomed: bool) -> (String, String) {
+        use ratatui::{backend::TestBackend, Terminal};
+        let mut terminal = Terminal::new(TestBackend::new(width, 8)).unwrap();
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                render_pane(
+                    frame,
+                    app,
+                    "account-left",
+                    0,
+                    2,
+                    area,
+                    true,
+                    zoomed,
+                    Some(("a-long-category-name", CATEGORY)),
+                );
+            })
+            .unwrap();
+        assert_eq!(app.pane_sizes["account-left"], (6, width - 2));
+        (
+            rendered_row(terminal.backend().buffer(), 0),
+            rendered_row(terminal.backend().buffer(), 7),
+        )
+    }
+
+    #[test]
+    fn pane_account_labels_follow_each_pane_in_split_and_zoom() {
+        let mut app = pane_account_app();
+        for (id, label) in [("account-left", "cedar"), ("account-right", "cobalt")] {
+            app.pane_accounts
+                .insert(id.into(), (Agent::Codex, label.into()));
+        }
+        for width in [80, 140] {
+            app.zoomed = false;
+            let buffer = startup_frame(&mut app, width, 24);
+            for (id, expected, other, count) in [
+                ("account-left", "cedar", "cobalt", "1/2"),
+                ("account-right", "cobalt", "cedar", "2/2"),
+            ] {
+                let (x, y, rows, cols) = app.pane_bounds[id];
+                let header = (x..x + cols)
+                    .map(|column| buffer[(column, y - 1)].symbol())
+                    .collect::<String>();
+                let account = (x..x + cols)
+                    .map(|column| buffer[(column, y + rows)].symbol())
+                    .collect::<String>();
+                assert!(
+                    account.contains(&format!("codex · {expected}")),
+                    "{account}"
+                );
+                assert!(!account.contains(other), "{account}");
+                assert!(header.contains(count), "{header}");
+            }
+            app.zoomed = true;
+            app.focused = 1;
+            let text = frame_text(&startup_frame(&mut app, width, 24));
+            assert!(text.contains("codex · cobalt"), "{text}");
+            assert!(!text.contains("codex · cedar"), "{text}");
+            assert!(text.contains("2/2"), "{text}");
+            assert!(text.contains("ZOOMED"), "{text}");
+            assert!(text.contains("1 hidden"), "{text}");
+            app.focused = 0;
+        }
+    }
+
+    #[test]
+    fn pane_account_labels_use_exact_transcript_ownership_without_default_guessing() {
+        use mindplayer_core::accounts::Account;
+        let mut app = pane_account_app();
+        let mut inherited = Account::inherited(Agent::Codex);
+        inherited.name = "cedar-default".into();
+        let outer = Account::isolated(Path::new("/fixture"), Agent::Codex, "cobalt").unwrap();
+        let mut nested = outer.clone();
+        nested.name = "nested-owner".into();
+        nested.slot = mindplayer_core::accounts::Slot::Isolated {
+            path: outer.session_root(Path::new("/fixture")).join("nested"),
+        };
+        app.accounts = vec![inherited, nested.clone(), outer.clone()];
+        app.all_sessions[0].file = nested
+            .session_root(Path::new("/fixture"))
+            .join("rollout.jsonl");
+        let (_, title) = pane_account_borders(&mut app, 100, false);
+        assert!(title.contains("codex · nested-owner"), "{title}");
+        assert!(!title.contains("cedar-default"), "{title}");
+        app.pane_accounts
+            .insert("account-left".into(), (Agent::Codex, "exact-pane".into()));
+        let (_, title) = pane_account_borders(&mut app, 100, true);
+        assert!(title.contains("codex · exact-pane"), "{title}");
+        assert!(!title.contains("nested-owner"), "{title}");
+        app.pane_accounts.clear();
+        for file in [
+            PathBuf::new(),
+            PathBuf::from("relative/rollout.jsonl"),
+            PathBuf::from("/unowned/rollout.jsonl"),
+            outer
+                .session_root(Path::new("/fixture"))
+                .join("../other/rollout.jsonl"),
+        ] {
+            app.all_sessions[0].file = file;
+            let (_, title) = pane_account_borders(&mut app, 100, false);
+            assert!(title.contains("codex · 계정 미확인"), "{title}");
+            assert!(!title.contains("cedar-default"), "{title}");
+        }
+        app.pane_accounts.insert(
+            "account-left".into(),
+            (Agent::Claude, "claude-owner".into()),
+        );
+        let (_, title) = pane_account_borders(&mut app, 100, false);
+        assert!(!title.contains("codex ·"), "{title}");
+    }
+
+    #[test]
+    fn pane_account_labels_reject_ambiguous_transcript_roots() {
+        let mut app = pane_account_app();
+        let account = mindplayer_core::accounts::Account::isolated(
+            Path::new("/fixture"),
+            Agent::Codex,
+            "cedar",
+        )
+        .unwrap();
+        let mut same_root = account.clone();
+        same_root.name = "cobalt".into();
+        app.all_sessions[0].file = account
+            .session_root(Path::new("/fixture"))
+            .join("rollout.jsonl");
+        app.accounts = vec![account, same_root];
+        let (_, label) = pane_account_borders(&mut app, 100, false);
+        assert!(label.contains("codex · 계정 미확인"), "{label}");
+        assert!(
+            !label.contains("cedar") && !label.contains("cobalt"),
+            "{label}"
+        );
+        app.pane_accounts
+            .insert("account-left".into(), (Agent::Codex, "cedar".into()));
+        let (_, label) = pane_account_borders(&mut app, 100, true);
+        assert!(label.contains("codex · cedar"), "{label}");
+    }
+
+    #[test]
+    fn pane_account_labels_truncate_whole_graphemes_and_strip_terminal_controls() {
+        for (label, width, expected) in [
+            ("任意名", 3, "任…"),
+            ("e\u{301}🧑‍💻tail", 2, "e\u{301}…"),
+            ("🧑‍💻x", 2, "…"),
+            ("a\n\r\t\u{1b}\u{202e}b", 20, "ab"),
+            ("\n\u{202e}", 20, "계정 미확인"),
+            ("long-label", 1, "…"),
+            ("long-label", 0, ""),
+        ] {
+            let actual = truncate_pane_account_label(label, width);
+            assert_eq!(actual, expected, "label={label:?} width={width}");
+            assert!(Line::from(actual.as_str()).width() <= width);
+        }
+    }
+
+    #[test]
+    fn pane_account_long_unicode_labels_leave_status_and_counts_visible() {
+        let mut app = pane_account_app();
+        app.ended.insert("account-left".into());
+        app.pane_accounts.insert(
+            "account-left".into(),
+            (
+                Agent::Codex,
+                "라벨\n\t\r\u{1b}\u{202e}界e\u{301} 🧑‍💻 arbitrary label".repeat(8),
+            ),
+        );
+        for width in [36, 48, 80] {
+            for zoomed in [false, true] {
+                let (title, account) = pane_account_borders(&mut app, width, zoomed);
+                assert!(account.contains("codex · 라벨"), "{account}");
+                assert!(account.contains('…'), "{account}");
+                assert!(title.contains('○'), "{title}");
+                assert!(title.contains("1/2"), "{title}");
+                assert!(title.contains("(ended)"), "{title}");
+                assert_eq!(title.contains("ZOOMED"), zoomed, "{title}");
+                assert!(!account.chars().any(char::is_control), "{account:?}");
+                assert!(!account.contains('\u{202e}'), "{account:?}");
+                assert!(Line::from(title.as_str()).width() <= usize::from(width));
+                assert!(Line::from(account.as_str()).width() <= usize::from(width));
+            }
+        }
+    }
+
+    #[test]
+    fn saved_provider_identity_is_a_binding_not_a_claim_of_live_authentication() {
+        for provider in [Agent::Codex, Agent::Claude] {
+            let mut app = startup_app();
+            app.startup_routing = StartupRouting::confirmed(RoutingMode::Native);
+            let mut account = mindplayer_core::accounts::Account::inherited(provider);
+            account.set_identity_fingerprint(Some("saved-identity".into()));
+            app.accounts = vec![account];
+            app.open_accounts();
+            let text = frame_text(&startup_frame(&mut app, 170, 35));
+            assert!(text.contains("identity bound"), "{text}");
+            assert!(!text.contains("identity verified"), "{text}");
+        }
+    }
+
+    #[test]
+    fn startup_gallery_seven_centers_a_run_configuration_sheet_above_the_footer() {
+        for (width, height) in [(88, 29), (140, 40)] {
+            for selection in [RoutingMode::Native, RoutingMode::Jev] {
+                let mut app = startup_app();
+                app.startup_routing.selection = selection;
+                let buffer = startup_frame(&mut app, width, height);
+                let text = frame_text(&buffer);
+                let rows: Vec<_> = text.lines().collect();
+                let sheet_y = rows
+                    .iter()
+                    .position(|row| row.contains("MindPlayer / 실행 설정표"))
+                    .unwrap();
+                assert!(sheet_y > 1 && sheet_y < usize::from(height / 2), "{text}");
+                let sheet_x = (width - 72) / 2;
+                assert_eq!(buffer[(sheet_x, sheet_y as u16)].symbol(), "┌", "{text}");
+                assert_eq!(
+                    buffer[(sheet_x + 71, sheet_y as u16)].symbol(),
+                    "┐",
+                    "{text}"
+                );
+                assert!(
+                    rows[..sheet_y].iter().any(|row| row.contains("Sessions")),
+                    "{text}"
+                );
+                for label in [
+                    "적용 범위",
+                    "이번 MindPlayer 실행",
+                    "세션",
+                    "기존 재개 + 새 세션",
+                    "모델 판단",
+                    "선택 저장",
+                    "하지 않음",
+                    "←→ 변경",
+                    "Enter 시작",
+                    "Esc 종료",
+                ] {
+                    assert!(text.contains(label), "missing {label}: {text}");
+                }
+                let selected_label = match selection {
+                    RoutingMode::Native => "◀ Jev 사용 안 함 ▶",
+                    RoutingMode::Jev => "◀ Jev 사용 ▶",
+                    RoutingMode::PerPrompt => unreachable!("legacy choice fixture"),
+                };
+                assert!(text.contains(selected_label), "{text}");
+                let model_y = rows
+                    .iter()
+                    .position(|row| row.contains(selected_label))
+                    .unwrap() as u16;
+                assert_eq!(buffer[(sheet_x + 4, model_y)].bg, Color::Rgb(48, 60, 96));
+                assert!(text.contains("sessions ·"), "{text}");
+                assert!(!rows[0].contains("Jev 사용 (Codex)"));
+                assert!(!rows[0].contains("CLI 그대로"));
+                assert!(app.startup_routing.active());
+                assert!(app.ptys.is_empty());
+                assert!(app.pending.is_none());
+                assert!(!app.hero_visible);
+                assert_eq!(app.all_sessions[0].title, "real-codex");
+                for row in 1..sheet_y as u16 {
+                    assert!(
+                        (0..width)
+                            .all(|column| { buffer[(column, row)].bg != Color::Rgb(48, 60, 96) }),
+                        "startup session rows must be read-only: {text}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn startup_gallery_seven_wraps_narrow_sheet_without_losing_the_choice_or_exit() {
+        for (width, height) in [(40, 24), (52, 29), (60, 24)] {
+            for selection in [RoutingMode::Native, RoutingMode::Jev] {
+                let mut app = startup_app();
+                app.startup_routing.selection = selection;
+                let buffer = startup_frame(&mut app, width, height);
+                let text = frame_text(&buffer);
+                assert!(text.contains("MindPlayer / 실행 설정표"), "{text}");
+                assert!(text.contains("적용 범위"), "{text}");
+                assert!(text.contains("모델 판단"), "{text}");
+                assert!(
+                    text.contains(match selection {
+                        RoutingMode::Native => "◀ Jev 사용 안 함 ▶",
+                        RoutingMode::Jev => "◀ Jev 사용 ▶",
+                        RoutingMode::PerPrompt => unreachable!("legacy choice fixture"),
+                    }),
+                    "{text}"
+                );
+                assert!(text.contains("Enter"), "{text}");
+                assert!(text.contains("Esc 종료"), "{text}");
+                assert!(!text.contains("enter open"), "{text}");
+                assert!(text.contains("sessions ·"), "{text}");
+            }
+        }
+    }
+
+    #[test]
+    fn startup_sheet_waits_for_main_and_never_reappears_after_confirmation() {
+        let mut app = startup_app();
+        for screen in [Screen::ScopeSelect, Screen::Scanning, Screen::ScanSummary] {
+            app.screen = screen;
+            let text = frame_text(&startup_frame(&mut app, 88, 29));
+            assert!(!text.contains("MindPlayer / 실행 설정표"), "{text}");
+            assert!(app.startup_routing.active());
+        }
+        app.screen = Screen::Main;
+        assert!(frame_text(&startup_frame(&mut app, 88, 29)).contains("MindPlayer / 실행 설정표"));
+        app.startup_routing.confirm();
+        for focus in [Focus::List, Focus::Terminal, Focus::List] {
+            app.focus = focus;
+            let text = frame_text(&startup_frame(&mut app, 88, 29));
+            assert!(
+                text.lines().next().unwrap().contains("CLI 그대로"),
+                "{text}"
+            );
+            assert!(!text.contains("MindPlayer / 실행 설정표"), "{text}");
+        }
+    }
+
+    #[test]
+    fn startup_sheet_precedes_unusable_help_and_other_popups_even_with_terminal_focus() {
+        let mut app = startup_app();
+        app.focus = Focus::Terminal;
+        app.panes = vec!["not-started".into()];
+        app.help_visible = true;
+        app.unusable_prompt = Some(mindplayer_core::accounts::Account::inherited(Agent::Codex));
+        app.new_picker = Some(0);
+        for stage in [
+            StartupStage::Choice,
+            StartupStage::Checking,
+            StartupStage::Blocked,
+        ] {
+            app.startup_routing.stage = stage;
+            let text = frame_text(&startup_frame(&mut app, 88, 29));
+            assert!(text.contains("MindPlayer / 실행 설정표"), "{text}");
+            assert!(!text.contains("Account unavailable"), "{text}");
+            assert!(!text.contains("Keyboard shortcuts"), "{text}");
+            assert!(!text.contains("starting..."), "{text}");
+            assert!(app.pane_bounds.is_empty());
+            assert!(app.ptys.is_empty());
+        }
+    }
+
+    #[test]
+    fn startup_checking_is_bounded_local_readiness_and_keeps_back_visible() {
+        let mut app = startup_app();
+        app.startup_routing.selection = RoutingMode::Jev;
+        app.startup_routing.stage = StartupStage::Checking;
+        for (width, height) in [(88, 29), (140, 40), (40, 24)] {
+            let text = frame_text(&startup_frame(&mut app, width, height));
+            assert!(text.contains("Jev 시작 준비 확인 중"), "{text}");
+            assert!(text.contains("로컬 실행 조건"), "{text}");
+            assert!(text.contains("Esc 선택 화면으로 돌아가기"), "{text}");
+            assert!(!text.contains("인증 완료"));
+            assert!(!text.contains("잔액 확인"));
+            assert_eq!(app.startup_routing.mode(), None);
+        }
+    }
+
+    #[test]
+    fn startup_jev_discloses_external_transfer_before_enter_without_a_consent_checkbox() {
+        let mut app = startup_app();
+        app.startup_routing.selection = RoutingMode::Jev;
+        for (width, height) in [(88, 29), (140, 40), (40, 24), (52, 29)] {
+            let buffer = startup_frame(&mut app, width, height);
+            let text = frame_text(&buffer);
+            // Ignore character-cell borders when joining wrapped notice rows.
+            let content = text
+                .lines()
+                .map(|line| line.trim_matches(|ch| ch == '│' || ch == ' '))
+                .collect::<Vec<_>>()
+                .join(" ");
+            let words = content.split_whitespace().collect::<Vec<_>>().join(" ");
+            assert!(words.contains("외부 Jev로 전송됩니다."), "{text}");
+            assert!(text.contains("Codex"), "{text}");
+            assert!(text.contains("모델 + effort"), "{text}");
+            assert!(text.contains("Claude / Kiro / Cursor"), "{text}");
+            assert!(text.contains("Enter로 전송 동의"), "{text}");
+            for obsolete in ["[x]", "[ ]", "c 동의", "전송 동의 후 시작"] {
+                assert!(!text.contains(obsolete), "{text}");
+            }
+            assert!(text.contains("Esc 종료"), "{text}");
+            assert_eq!(app.startup_routing.mode(), None);
+        }
+    }
+
+    #[test]
+    fn startup_blocked_bounds_the_cause_and_never_falls_back_to_native() {
+        let mut app = startup_app();
+        app.startup_routing.selection = RoutingMode::Jev;
+        app.startup_routing.stage = StartupStage::Blocked;
+        app.startup_routing.error = Some(concat!(
+            "설정 실패\n\x1b ",
+            "원인 원인 원인 원인 원인 원인 원인 원인 원인 원인 원인 원인 원인 원인 원인 원인 ",
+            "원인 원인 원인 원인 원인 원인 원인 원인 원인 원인 원인 원인 원인 원인 원인 원인 ",
+            "원인 원인 원인 원인 원인 원인 원인 원인 원인 원인 원인 원인 원인 원인 원인 원인 ",
+            "원인 원인 원인 원인 원인 원인 원인 원인 원인 원인 원인 원인 원인 원인 원인 원인 ",
+            "끝표시"
+        ));
+        for (width, height) in [(88, 29), (140, 40), (40, 24)] {
+            let text = frame_text(&startup_frame(&mut app, width, height));
+            assert!(text.contains("Jev로 시작할 수 없음"), "{text}");
+            assert!(text.contains("설정 실패"), "{text}");
+            assert!(
+                !text.contains("끝표시"),
+                "a long cause must be capped: {text}"
+            );
+            assert!(
+                text.lines().filter(|row| row.contains("원인")).count() <= 2,
+                "{text}"
+            );
+            assert!(!text.contains('\x1b'));
+            assert!(
+                text.contains("자동으로 미사용 전환하지 않습니다."),
+                "{text}"
+            );
+            assert!(text.contains("Esc 선택 화면으로 돌아가기"), "{text}");
+            assert!(!text.lines().next().unwrap().contains("CLI 그대로"));
+            assert!(app.startup_routing.active());
+            assert_eq!(app.startup_routing.mode(), None);
+            assert_eq!(app.startup_routing.selection, RoutingMode::Jev);
+        }
+    }
+
+    #[test]
+    fn startup_confirmed_mode_is_read_only_in_list_and_live_titles_at_every_width() {
+        for mode in [RoutingMode::Native, RoutingMode::Jev] {
+            let mut app = startup_app();
+            app.startup_routing = StartupRouting::confirmed(mode);
+            for (width, height) in [(88, 29), (140, 40), (40, 24)] {
+                for focus in [Focus::List, Focus::Terminal, Focus::List] {
+                    app.focus = focus;
+                    let text = frame_text(&startup_frame(&mut app, width, height));
+                    let label = match mode {
+                        RoutingMode::Native => "CLI 그대로",
+                        RoutingMode::Jev => "Jev 사용 (Codex)",
+                        RoutingMode::PerPrompt => unreachable!("legacy mode fixture"),
+                    };
+                    assert!(text.lines().next().unwrap().contains(label), "{text}");
+                    assert!(!text.contains("MindPlayer / 실행 설정표"), "{text}");
+                    assert_eq!(app.startup_routing.mode(), Some(mode));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn shared_codex_login_renders_both_measured_gauges_resets_and_identity_warning() {
+        use mindplayer_core::limits::{mark_shared_logins, QuotaRow};
+        let mut app = startup_app();
+        app.accounts = ["work", "personal"]
+            .map(|name| {
+                let mut account = mindplayer_core::accounts::Account::inherited(Agent::Codex);
+                account.name = name.into();
+                account
+            })
+            .to_vec();
+        let mut rows = ["work", "personal"]
+            .into_iter()
+            .flat_map(|account| {
+                ["codex weekly", "codex credits"].map(|label| QuotaRow {
+                    label: label.into(),
+                    agent: Agent::Codex,
+                    account: account.into(),
+                    used_percent: Some(32.0),
+                    resets: Some("10-22 15:14".into()),
+                    identity: Some("same-account-fixture".into()),
+                    ..Default::default()
+                })
+            })
+            .collect::<Vec<_>>();
+        mark_shared_logins(&mut rows);
+        app.limits = Some(rows);
+        for startup in [true, false] {
+            if !startup {
+                app.startup_routing = StartupRouting::confirmed(RoutingMode::Native);
+            }
+            for (width, height) in [(88, 29), (140, 40)] {
+                let text = frame_text(&startup_frame(&mut app, width, height));
+                let quotas: Vec<_> = text
+                    .lines()
+                    .filter(|line| line.contains("weekly") || line.contains("credits"))
+                    .collect();
+                assert_eq!(quotas.len(), 4, "{text}");
+                for account in ["work", "personal"] {
+                    for window in ["weekly", "credits"] {
+                        let row = quotas
+                            .iter()
+                            .find(|line| line.contains(&format!("{account} {window}")))
+                            .unwrap();
+                        assert!(row.contains("▰▰▱▱▱▱"), "{text}");
+                        assert!(row.contains("32.0%"), "{text}");
+                        assert!(row.contains("resets 10-22 15:14"), "{text}");
+                        if account == "personal" {
+                            assert!(row.contains("same login as work"), "{text}");
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn startup_confirmed_modes_preserve_four_plus_three_and_full_width_quotas() {
+        let mut app = startup_app();
+        app.focus = Focus::Terminal;
+        app.panes = (0..7).map(|index| format!("pane-{index}")).collect();
+        app.layout = PaneLayout::Horizontal;
+        app.limits = Some(vec![mindplayer_core::limits::QuotaRow {
+            label: "codex weekly".into(),
+            agent: Agent::Codex,
+            used_percent: Some(32.0),
+            resets: Some("10-22 15:14".into()),
+            ..Default::default()
+        }]);
+        for (width, height) in [(88, 29), (140, 40), (196, 55)] {
+            app.startup_routing = StartupRouting::confirmed(RoutingMode::Native);
+            let native = startup_frame(&mut app, width, height);
+            let bounds = app.pane_bounds.clone();
+            app.startup_routing = StartupRouting::confirmed(RoutingMode::Jev);
+            let jev = startup_frame(&mut app, width, height);
+            assert_eq!(app.pane_bounds, bounds);
+            assert_eq!(bounds.len(), 7);
+            let first_y = bounds.values().map(|bounds| bounds.1).min().unwrap();
+            assert_eq!(
+                bounds.values().filter(|bounds| bounds.1 == first_y).count(),
+                4
+            );
+            assert_eq!(
+                bounds.values().filter(|bounds| bounds.1 != first_y).count(),
+                3
+            );
+            let rectangles: Vec<_> = bounds
+                .values()
+                .map(|&(x, y, rows, cols)| Rect::new(x - 1, y - 1, cols + 2, rows + 2))
+                .collect();
+            for (index, rectangle) in rectangles.iter().enumerate() {
+                for other in &rectangles[index + 1..] {
+                    assert!(rectangle.intersection(*other).is_empty());
+                }
+            }
+            for row in 1..height {
+                for column in 0..width {
+                    assert_eq!(
+                        native[(column, row)],
+                        jev[(column, row)],
+                        "mode label changed body/footer at {column},{row}"
+                    );
+                }
+            }
+            let text = frame_text(&jev);
+            let quota_y = text.lines().position(|row| row.contains("32.0%")).unwrap();
+            assert!(rectangles
+                .iter()
+                .all(|rectangle| rectangle.bottom() <= quota_y as u16));
+            assert!(
+                text.lines().nth(quota_y).unwrap().contains("10-22 15:14"),
+                "{text}"
+            );
+            assert!(text.contains("ctrl-g trace · ctrl-x list"), "{text}");
+        }
+    }
+
+    #[test]
+    fn startup_confirmed_jev_preserves_native_input_lifecycle_and_trace() {
+        let mut fixture = RoutingPtyFixture::new(RoutingStage::Ready, 8, 20);
+        let id = fixture.id();
+        fixture.quiet.app.limits = Some(Vec::new());
+        fixture.quiet.app.quota_cache = None;
+        fixture.quiet.app.startup_routing = StartupRouting::confirmed(RoutingMode::Jev);
+        startup_frame(&mut fixture.quiet.app, 140, 40);
+        for (stage, label) in [
+            (RoutingStage::Ready, "입력 대기"),
+            (RoutingStage::Judging, "Jev 판단 중"),
+            (RoutingStage::Accepted, "요청 수락"),
+            (RoutingStage::Running, "실행 중"),
+            (RoutingStage::Completed, "완료"),
+            (RoutingStage::Failed, "미전송"),
+        ] {
+            let pty = fixture.quiet.app.ptys.get_mut(&id).unwrap();
+            let mut status = pty.routing_status().unwrap();
+            status.stage = stage;
+            status.revision += 1;
+            std::fs::write(&fixture.path, serde_json::to_vec(&status).unwrap()).unwrap();
+            assert!(pty.take_dirty());
+            paint_native_footer(
+                &mut pty.parser().lock().unwrap(),
+                "gpt-5.1 medium · 98% left",
+            );
+            let before = pty.parser().lock().unwrap().screen().contents();
+            let cursor = pty.parser().lock().unwrap().screen().cursor_position();
+            let text = frame_text(&startup_frame(&mut fixture.quiet.app, 140, 40));
+            assert!(
+                text.lines().next().unwrap().contains("Jev 사용 (Codex)"),
+                "{text}"
+            );
+            assert!(text.contains(label), "{stage:?}: {text}");
+            assert!(text.contains("› native draft"), "{text}");
+            let parser = fixture.quiet.app.ptys[&id].parser().lock().unwrap();
+            assert_eq!(parser.screen().contents(), before);
+            assert_eq!(parser.screen().cursor_position(), cursor);
+        }
+        fixture.quiet.app.toggle_observer();
+        let text = frame_text(&startup_frame(&mut fixture.quiet.app, 140, 40));
+        assert!(text.contains("TRACE"), "{text}");
+        assert!(text.contains("READ ONLY"), "{text}");
+        assert!(
+            text.lines().next().unwrap().contains("Jev 사용 (Codex)"),
+            "{text}"
+        );
+        assert!(fixture.quiet.app.observe_bounds.is_some());
+        assert!(!text.contains("MindPlayer 시작"));
+    }
+
+    fn routing_status_fixture(stage: RoutingStage) -> RoutingStatus {
+        serde_json::from_value(serde_json::json!({
+            "schemaVersion": 2, "generation": "ui-test", "revision": 1,
+            "stage": stage, "threadId": "main-thread", "requestId": 1,
+            "turnId": null, "model": "gpt-5.5", "effort": "high",
+            "observedModel": null, "reason": null, "serverModelReported": false,
+        }))
+        .unwrap()
+    }
+
+    fn paint_native_footer(parser: &mut vt100::Parser, footer: &str) {
+        let (rows, _) = parser.screen().size();
+        parser.process(
+            format!(
+            "\x1b[2J\x1b[Hnative transcript\x1b[{};1H› native draft\x1b[{};1H  {footer}\x1b[{};4H",
+            rows - 2, rows, rows - 2
+        )
+            .as_bytes(),
+        );
+    }
+
+    #[test]
+    fn routing_model_recognizer_accepts_only_native_footer_grammar() {
+        for effort in [
+            "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra",
+        ] {
+            assert!(native_model_columns(&format!(
+                "  gpt-5.5 {effort} · 98% context left · weekly 85%"
+            ))
+            .is_some());
+        }
+        for line in [
+            "GPT-5.5 · 98% left · ~/work",
+            "gpt-5.5 high | Context 98% | weekly 85%",
+        ] {
+            assert!(native_model_columns(line).is_some(), "{line}");
+        }
+        for line in [
+            "› gpt-5.5 high · 98% left",
+            "MODEL gpt-5.5 high · 98% left",
+            "gpt-5.5 explained this · 98% left",
+            "gpt-5.5 high · finished",
+            "gpt-example high · 98% left",
+            "gpt-5.5 high · 98% of the tests",
+        ] {
+            assert!(native_model_columns(line).is_none(), "{line}");
+        }
+    }
+
+    #[test]
+    fn routing_overlay_preserves_native_model_until_the_first_selection() {
+        let mut parser = vt100::Parser::new(10, 100, 100);
+        paint_native_footer(
+            &mut parser,
+            "gpt-5.1 medium · 98% context left · weekly 85%",
+        );
+        let status = routing_status_fixture(RoutingStage::Ready);
+        let Some(RoutingOverlay::ModelRow { label, .. }) =
+            routing_overlay(parser.render_screen(), &status, false)
+        else {
+            panic!("missing ready footer")
+        };
+        assert!(label.contains("gpt-5.1 medium"));
+        assert!(label.contains("입력 대기"));
+        assert!(!label.contains("gpt-5.5"));
+    }
+
+    #[test]
+    fn routing_overlay_prefers_compact_selected_model_with_both_usage_values() {
+        let mut parser = vt100::Parser::new(10, 70, 100);
+        paint_native_footer(
+            &mut parser,
+            "gpt-5.1 medium · 98% context left · weekly 85%",
+        );
+        let status = routing_status_fixture(RoutingStage::Running);
+        let Some(RoutingOverlay::ModelRow { label, suffix, .. }) =
+            routing_overlay(parser.render_screen(), &status, false)
+        else {
+            panic!("missing model overlay")
+        };
+        assert_eq!(label, "실행 중 · 요청 gpt-5.5 high");
+        assert!(
+            suffix.is_some(),
+            "compact status should retain context and weekly values"
+        );
+    }
+
+    #[test]
+    fn routing_overlay_keeps_the_request_and_optional_server_report_separate() {
+        let mut status = routing_status_fixture(RoutingStage::Running);
+        let running = routing_labels(&status).join(" / ");
+        assert!(running.contains("실행 중"), "{running}");
+        assert!(!running.contains("미확인") && !running.contains("서버 변경"));
+        status.server_model_reported = true;
+        assert!(
+            !routing_labels(&status).join(" ").contains("서버 변경"),
+            "a flag alone is insufficient"
+        );
+        status.observed_model = Some("gpt-5.6".into());
+        let reported = &routing_labels(&status)[0];
+        assert!(
+            reported.contains("요청 gpt-5.5 high") && reported.contains("서버 변경 gpt-5.6"),
+            "{reported}"
+        );
+        assert!(!reported.contains("실행 확인") && !reported.contains("실제 실행"));
+        status.stage = RoutingStage::Completed;
+        status.server_model_reported = false;
+        assert!(routing_labels(&status)
+            .iter()
+            .all(|label| label.contains("완료")
+                && !label.contains("서버 변경")
+                && !label.contains("미확인")));
+    }
+
+    #[test]
+    fn routing_lifecycle_labels_do_not_wait_for_a_model_reroute_report() {
+        for (stage, expected) in [
+            (RoutingStage::Running, "실행 중"),
+            (RoutingStage::Completed, "완료"),
+            (RoutingStage::Requested, "요청 중"),
+            (RoutingStage::Accepted, "요청 수락"),
+            (RoutingStage::Judging, "Jev 판단 중"),
+        ] {
+            let status = routing_status_fixture(stage);
+            for label in routing_labels(&status) {
+                assert!(label.contains(expected), "{stage:?}: {label}");
+                assert!(!label.contains("미확인"), "{stage:?}: {label}");
+            }
+        }
+    }
+
+    #[test]
+    fn routing_ack_only_label_is_distinct_from_running() {
+        let accepted = serde_json::from_str("\"accepted\"")
+            .expect("a start ACK must render as accepted before turn/started");
+        let labels = routing_labels(&routing_status_fixture(accepted));
+        assert!(labels.iter().all(|label| label.contains("요청 수락")));
+        assert!(labels
+            .iter()
+            .all(|label| !label.contains("실행 중") && !label.contains("미확인")));
+        assert_ne!(
+            labels,
+            routing_labels(&routing_status_fixture(RoutingStage::Running))
+        );
+    }
+
+    #[test]
+    fn routing_requested_model_and_effort_are_explicit_with_optional_jev_selection() {
+        for stage in [
+            RoutingStage::Requested,
+            RoutingStage::Running,
+            RoutingStage::Completed,
+        ] {
+            let mut status = routing_status_fixture(stage);
+            status.reason = Some("catalog-guided-jev".into());
+            let detailed = &routing_labels(&status)[0];
+            assert!(detailed.contains("Jev 선택"), "{detailed}");
+            assert!(detailed.contains("요청 gpt-5.5 high"), "{detailed}");
+            let compact =
+                fit_routing_label(&status, 30).expect("selected request should fit a small pane");
+            assert!(compact.contains("요청 gpt-5.5 high"), "{compact}");
+            assert!(!compact.contains("미확인"), "{compact}");
+        }
+    }
+
+    #[test]
+    fn routing_reported_model_is_separate_from_requested_effort_and_lifecycle() {
+        for (stage, lifecycle) in [
+            (RoutingStage::Running, "실행 중"),
+            (RoutingStage::Completed, "완료"),
+        ] {
+            let mut status = routing_status_fixture(stage);
+            // Use the serialized contract so this test also detects the old field name.
+            let mut value = serde_json::to_value(&status).unwrap();
+            value["serverModelReported"] = serde_json::json!(true);
+            value["observedModel"] = serde_json::json!("gpt-5.6");
+            value["turnId"] = serde_json::json!("turn-1");
+            status = serde_json::from_value(value)
+                .expect("server reports must not claim execution verification");
+            let label = &routing_labels(&status)[0];
+            assert!(label.contains(lifecycle), "{label}");
+            assert!(label.contains("요청 gpt-5.5 high"), "{label}");
+            assert!(label.contains("서버 변경 gpt-5.6"), "{label}");
+            assert!(
+                !label.contains("gpt-5.6 high"),
+                "effort belongs to the request: {label}"
+            );
+            assert!(
+                !label.contains("실행 확인") && !label.contains("실제 실행"),
+                "{label}"
+            );
+        }
+    }
+
+    #[test]
+    fn routing_lifecycle_fits_narrow_views_and_preserves_the_native_screen() {
+        for (stage, lifecycle) in [
+            (RoutingStage::Requested, "요청 중"),
+            (RoutingStage::Running, "실행 중"),
+            (RoutingStage::Completed, "완료"),
+        ] {
+            let mut status = routing_status_fixture(stage);
+            status.reason = Some("catalog-guided-jev".into());
+            for width in [120, 70, 48, 32, 20, 12] {
+                let mut parser = vt100::Parser::new(10, width, 100);
+                paint_native_footer(&mut parser, "gpt-5.1 medium · 98% left");
+                let before = parser.screen().contents_formatted();
+                let cursor = parser.screen().cursor_position();
+                let overlay = routing_overlay(parser.render_screen(), &status, false)
+                    .expect("the lifecycle should fit even when the model does not");
+                let (label, available) = match overlay {
+                    RoutingOverlay::ModelRow { label, column, .. } => (label, width - column),
+                    RoutingOverlay::Border(label) => (label, width),
+                };
+                assert!(label.contains(lifecycle), "width={width}: {label}");
+                assert!(!label.contains("미확인"), "width={width}: {label}");
+                assert!(Line::from(label.as_str()).width() <= available as usize);
+                if width >= 32 {
+                    assert!(
+                        label.contains("요청 gpt-5.5 high"),
+                        "width={width}: {label}"
+                    );
+                }
+                assert_eq!(parser.screen().contents_formatted(), before);
+                assert_eq!(parser.screen().cursor_position(), cursor);
+            }
+        }
+    }
+
+    #[test]
+    fn routing_failures_and_policy_exceptions_have_distinct_korean_labels() {
+        let mut status = routing_status_fixture(RoutingStage::Failed);
+        for (reason, expected) in [
+            (
+                "submission-uncertain-no-replay",
+                "송신 결과 미확인 · 재전송 안 함",
+            ),
+            ("execution-failed", "실행 실패"),
+            ("selector-error", "미전송"),
+            ("selector-timeout", "미전송"),
+            ("jev-tls-error", "Jev 인증서 오류 · 미전송"),
+            ("jev-invalid-response", "Jev 응답 오류 · 미전송"),
+        ] {
+            status.reason = Some(reason.into());
+            assert_eq!(routing_labels(&status), [expected]);
+        }
+        for stage in [
+            RoutingStage::Requested,
+            RoutingStage::Running,
+            RoutingStage::Completed,
+        ] {
+            status.stage = stage;
+            status.reason = Some("external-transfer-policy-unset".into());
+            assert!(routing_labels(&status)
+                .iter()
+                .all(|label| label.contains("Jev 전송 금지") && label.contains("네이티브")));
+            status.reason = Some("context-incomplete".into());
+            assert!(routing_labels(&status)
+                .iter()
+                .all(|label| label.contains("유지 · 맥락 부족")));
+        }
+    }
+
+    #[test]
+    fn routing_overlay_yields_to_input_selection_scrollback_menus_and_approvals() {
+        let status = routing_status_fixture(RoutingStage::Requested);
+        let mut parser = vt100::Parser::new(12, 100, 100);
+        paint_native_footer(
+            &mut parser,
+            "gpt-5.1 medium · 98% context left · weekly 85%",
+        );
+        assert!(routing_overlay(parser.render_screen(), &status, true).is_none());
+        parser.process(b"\x1b[12;1H");
+        assert!(
+            routing_overlay(parser.render_screen(), &status, false).is_none(),
+            "cursor row is never a status target"
+        );
+        for dialog in [
+            "\x1b[8;1H/help  help\x1b[9;1H/model  choose\x1b[10;1Hesc to cancel · ↑↓ to navigate · ↵ to select",
+            "\x1b[9;1HEnter to select · arrows to navigate · Esc to cancel",
+            "\x1b[9;1HDo you want to proceed?",
+        ] {
+            paint_native_footer(&mut parser, "gpt-5.1 medium · 98% context left · weekly 85%");
+            parser.process(dialog.as_bytes());
+            assert!(routing_overlay(parser.render_screen(), &status, false).is_none(), "dialog must own the screen: {dialog}");
+        }
+        parser.process("\x1b[2J\x1b[Hhistory\r\n".as_bytes());
+        for _ in 0..30 {
+            parser.process(b"history\r\n");
+        }
+        paint_native_footer(
+            &mut parser,
+            "gpt-5.1 medium · 98% context left · weekly 85%",
+        );
+        parser.set_scrollback(1);
+        assert!(parser.render_screen().scrollback() > 0);
+        assert!(routing_overlay(parser.render_screen(), &status, false).is_none());
+    }
+
+    #[test]
+    fn routing_overlay_requires_a_unique_bottom_model_row_and_skips_short_transients() {
+        let status = routing_status_fixture(RoutingStage::Judging);
+        let mut parser = vt100::Parser::new(20, 100, 100);
+        parser.process("\x1b[2;1Hgpt-5.1 high · 98% left\x1b[18;1H> draft".as_bytes());
+        assert_eq!(
+            routing_overlay(parser.render_screen(), &status, false),
+            Some(RoutingOverlay::Border("Jev 판단 중".into()))
+        );
+        paint_native_footer(&mut parser, "gpt-5.1 high · 98% left");
+        parser.process("\x1b[15;1Hgpt-5.2 high · 98% left\x1b[18;1H".as_bytes());
+        assert!(matches!(
+            routing_overlay(parser.render_screen(), &status, false),
+            Some(RoutingOverlay::Border(_))
+        ));
+        parser.set_size(3, 100);
+        assert!(routing_overlay(parser.render_screen(), &status, false).is_none());
+    }
 
     #[test]
     fn prompt_text_estimate_is_local_and_utf8_aware() {
@@ -3303,6 +4961,7 @@ mod tests {
         use mindplayer_core::limits::QuotaRow;
         use ratatui::{backend::TestBackend, Terminal};
         let mut app = App::new();
+        app.startup_routing = StartupRouting::confirmed(RoutingMode::Native);
         app.screen = Screen::Main;
         app.accounts = ["work", "personal"]
             .into_iter()
@@ -3551,6 +5210,7 @@ mod tests {
 
     fn isolated_app() -> App {
         let mut app = App::new();
+        app.startup_routing = StartupRouting::confirmed(RoutingMode::Native);
         let state_dir =
             std::env::temp_dir().join(format!("mindplayer-ui-geometry-{}", std::process::id()));
         std::fs::create_dir_all(&state_dir).unwrap();
@@ -3621,6 +5281,377 @@ mod tests {
         fn drop(&mut self) {
             self.app.ptys.clear();
             let _ = std::fs::remove_dir_all(&self.state_dir);
+        }
+    }
+
+    struct RoutingPtyFixture {
+        quiet: QuietPtyFixture,
+        root: PathBuf,
+        path: PathBuf,
+    }
+
+    impl RoutingPtyFixture {
+        fn new(stage: RoutingStage, rows: u16, cols: u16) -> Self {
+            let mut quiet = QuietPtyFixture::new(rows, cols);
+            let root = std::env::temp_dir().join(format!(
+                "mp-ui-routing-{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+            let channel = crate::local_router::RoutingStatusChannel::create_at(&root).unwrap();
+            let path = channel.path().to_path_buf();
+            let mut status = routing_status_fixture(stage);
+            status.generation = channel.snapshot().unwrap().generation;
+            std::fs::write(&path, serde_json::to_vec(&status).unwrap()).unwrap();
+            let id = quiet.app.panes[0].clone();
+            quiet
+                .app
+                .pane_accounts
+                .insert(id.clone(), (Agent::Codex, "routing-fixture".into()));
+            let pty = quiet.app.ptys.get_mut(&id).unwrap();
+            pty.set_routing_status_for_test(channel);
+            assert!(pty.take_dirty());
+            Self { quiet, root, path }
+        }
+
+        fn id(&self) -> String {
+            self.quiet.app.panes[0].clone()
+        }
+    }
+
+    impl Drop for RoutingPtyFixture {
+        fn drop(&mut self) {
+            self.quiet.app.ptys.clear();
+            let _ = std::fs::remove_dir_all(&self.root);
+        }
+    }
+
+    fn rendered_row(buffer: &ratatui::buffer::Buffer, row: u16) -> String {
+        let mut text = String::new();
+        let mut column = buffer.area.x;
+        while column < buffer.area.right() {
+            let symbol = buffer[(column, row)].symbol();
+            text.push_str(symbol);
+            column += Span::raw(symbol).width().max(1) as u16;
+        }
+        text
+    }
+
+    #[test]
+    fn routing_render_followup_resets_the_previous_turn_model_and_report() {
+        use ratatui::{backend::TestBackend, Terminal};
+        let mut fixture = RoutingPtyFixture::new(RoutingStage::Completed, 10, 118);
+        let id = fixture.id();
+        let parser = fixture.quiet.app.ptys[&id].parser().clone();
+        paint_native_footer(&mut parser.lock().unwrap(), "gpt-5.1 medium · 98% left");
+        let before = parser.lock().unwrap().screen().contents_formatted();
+        let cursor = parser.lock().unwrap().screen().cursor_position();
+        let output_seq = fixture.quiet.app.ptys[&id].output_seq();
+        let mut value =
+            serde_json::to_value(fixture.quiet.app.ptys[&id].routing_status().unwrap()).unwrap();
+        value["turnId"] = serde_json::json!("turn-1");
+        value["observedModel"] = serde_json::json!("gpt-5.6");
+        value["serverModelReported"] = serde_json::json!(true);
+        let mut terminal = Terminal::new(TestBackend::new(120, 12)).unwrap();
+        for (stage, lifecycle) in [
+            ("completed", "완료"),
+            ("judging", "Jev 판단 중"),
+            ("requested", "요청 중"),
+            ("accepted", "요청 수락"),
+            ("running", "실행 중"),
+            ("completed", "완료"),
+        ] {
+            value["revision"] = serde_json::json!(value["revision"].as_u64().unwrap() + 1);
+            value["stage"] = serde_json::json!(stage);
+            if stage == "judging" {
+                value["requestId"] = serde_json::json!(2);
+                for field in ["turnId", "model", "effort", "observedModel", "reason"] {
+                    value[field] = serde_json::Value::Null;
+                }
+                value["serverModelReported"] = serde_json::json!(false);
+            } else if stage == "requested" {
+                value["model"] = serde_json::json!("gpt-5.4-mini");
+                value["effort"] = serde_json::json!("low");
+                value["reason"] = serde_json::json!("catalog-guided-jev");
+            } else if stage == "running" {
+                value["turnId"] = serde_json::json!("turn-2");
+            }
+            std::fs::write(&fixture.path, serde_json::to_vec(&value).unwrap()).unwrap();
+            assert!(
+                fixture.quiet.app.ptys[&id].take_dirty(),
+                "metadata must redraw {stage}"
+            );
+            terminal
+                .draw(|frame| {
+                    render_pane(
+                        frame,
+                        &mut fixture.quiet.app,
+                        &id,
+                        0,
+                        1,
+                        Rect::new(0, 0, 120, 12),
+                        true,
+                        false,
+                        None,
+                    )
+                })
+                .unwrap();
+            let footer = rendered_row(terminal.backend().buffer(), 10);
+            assert!(footer.contains(lifecycle), "{stage}: {footer}");
+            assert!(!footer.contains("미확인"), "{stage}: {footer}");
+            if value["requestId"] == 1 {
+                assert!(footer.contains("요청 gpt-5.5 high"), "{footer}");
+                assert!(footer.contains("서버 변경 gpt-5.6"), "{footer}");
+            } else {
+                assert!(
+                    !footer.contains("gpt-5.5") && !footer.contains("gpt-5.6"),
+                    "{footer}"
+                );
+                if stage != "judging" {
+                    assert!(footer.contains("요청 gpt-5.4-mini low"), "{footer}");
+                }
+            }
+            assert_eq!(parser.lock().unwrap().screen().contents_formatted(), before);
+            assert_eq!(parser.lock().unwrap().screen().cursor_position(), cursor);
+            assert_eq!(fixture.quiet.app.ptys[&id].output_seq(), output_seq);
+            assert_eq!(fixture.quiet.app.pane_sizes[&id], (10, 118));
+        }
+    }
+
+    #[test]
+    fn routing_render_replaces_old_model_preserving_native_usage_styles_input_cursor_and_screen() {
+        use ratatui::{backend::TestBackend, Terminal};
+        let mut fixture = RoutingPtyFixture::new(RoutingStage::Requested, 10, 118);
+        let id = fixture.id();
+        let parser = fixture.quiet.app.ptys[&id].parser().clone();
+        paint_native_footer(
+            &mut parser.lock().unwrap(),
+            "gpt-5.1 medium · \x1b[32m98% context left\x1b[0m · \x1b[35mweekly 85%\x1b[0m",
+        );
+        let before = parser.lock().unwrap().screen().contents_formatted();
+        let cursor = parser.lock().unwrap().screen().cursor_position();
+        let mut terminal = Terminal::new(TestBackend::new(120, 12)).unwrap();
+        terminal
+            .draw(|frame| {
+                render_pane(
+                    frame,
+                    &mut fixture.quiet.app,
+                    &id,
+                    0,
+                    1,
+                    Rect::new(0, 0, 120, 12),
+                    true,
+                    false,
+                    None,
+                )
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        let footer = rendered_row(buffer, 10);
+        assert!(
+            footer.contains("요청 gpt-5.5 high") && footer.contains("요청 중"),
+            "{footer}"
+        );
+        assert!(!footer.contains("gpt-5.1"));
+        assert!(footer.contains("98% context left") && footer.contains("weekly 85%"));
+        assert!(rendered_row(buffer, cursor.0 + 1).contains("native draft"));
+        assert!(buffer
+            .content()
+            .iter()
+            .any(|cell| cell.symbol() == "9" && cell.fg == Color::Indexed(2)));
+        assert!(buffer
+            .content()
+            .iter()
+            .any(|cell| cell.symbol() == "w" && cell.fg == Color::Indexed(5)));
+        assert_eq!(parser.lock().unwrap().screen().contents_formatted(), before);
+        assert_eq!(parser.lock().unwrap().screen().cursor_position(), cursor);
+        let painted_cursor = terminal.get_cursor_position().unwrap();
+        assert_eq!(
+            (painted_cursor.x, painted_cursor.y),
+            (cursor.1 + 1, cursor.0 + 1)
+        );
+        assert_eq!(fixture.quiet.app.pane_sizes[&id], (10, 118));
+    }
+
+    #[test]
+    fn routing_render_resizes_without_repeating_the_old_model_or_mutating_native_rows() {
+        use ratatui::{backend::TestBackend, Terminal};
+        let mut fixture = RoutingPtyFixture::new(RoutingStage::Running, 10, 118);
+        let id = fixture.id();
+        let mut terminal = Terminal::new(TestBackend::new(120, 12)).unwrap();
+        for width in [120, 78, 50, 34, 120] {
+            terminal.backend_mut().resize(width, 12);
+            let pty = fixture.quiet.app.ptys.get_mut(&id).unwrap();
+            pty.resize(10, width - 2);
+            let parser = pty.parser().clone();
+            paint_native_footer(&mut parser.lock().unwrap(), "gpt-5.1 medium · 98% left");
+            let before = parser.lock().unwrap().screen().contents_formatted();
+            terminal
+                .draw(|frame| {
+                    render_pane(
+                        frame,
+                        &mut fixture.quiet.app,
+                        &id,
+                        0,
+                        1,
+                        Rect::new(0, 0, width, 12),
+                        true,
+                        false,
+                        None,
+                    )
+                })
+                .unwrap();
+            let footer = rendered_row(terminal.backend().buffer(), 10);
+            assert!(footer.contains("gpt-5.5 high"), "width={width}: {footer}");
+            assert!(!footer.contains("gpt-5.1"), "width={width}: {footer}");
+            assert!(
+                footer.contains("실행 중") && footer.contains("요청 gpt-5.5 high"),
+                "width={width}: {footer}"
+            );
+            assert!(!footer.contains("미확인"), "width={width}: {footer}");
+            assert_eq!(parser.lock().unwrap().screen().contents_formatted(), before);
+            assert_eq!(fixture.quiet.app.pane_sizes[&id], (10, width - 2));
+        }
+    }
+
+    #[test]
+    fn routing_fallback_uses_only_the_existing_bottom_border() {
+        use ratatui::{backend::TestBackend, Terminal};
+        let mut fixture = RoutingPtyFixture::new(RoutingStage::Judging, 10, 78);
+        let id = fixture.id();
+        let parser = fixture.quiet.app.ptys[&id].parser().clone();
+        parser
+            .lock()
+            .unwrap()
+            .process(b"\x1b[Hnative content\x1b[8;1H> native draft");
+        let before = parser.lock().unwrap().screen().contents_formatted();
+        let mut terminal = Terminal::new(TestBackend::new(80, 12)).unwrap();
+        terminal
+            .draw(|frame| {
+                render_pane(
+                    frame,
+                    &mut fixture.quiet.app,
+                    &id,
+                    0,
+                    1,
+                    Rect::new(0, 0, 80, 12),
+                    true,
+                    false,
+                    None,
+                )
+            })
+            .unwrap();
+        assert!(rendered_row(terminal.backend().buffer(), 11).contains("Jev 판단 중"));
+        assert!(!rendered_row(terminal.backend().buffer(), 10).contains("Jev"));
+        assert_eq!(parser.lock().unwrap().screen().contents_formatted(), before);
+        assert_eq!(fixture.quiet.app.pane_sizes[&id], (10, 78));
+    }
+
+    #[test]
+    fn routing_channel_polls_idle_updates_and_moves_with_the_pty_on_adoption() {
+        let mut fixture = RoutingPtyFixture::new(RoutingStage::Judging, 10, 80);
+        let id = fixture.id();
+        let pty = &fixture.quiet.app.ptys[&id];
+        pty.take_dirty();
+        let before_seq = pty.output_seq();
+        let mut owned = pty.routing_status().unwrap();
+        owned.revision += 1;
+        owned.stage = RoutingStage::Requested;
+        std::fs::write(&fixture.path, serde_json::to_vec(&owned).unwrap()).unwrap();
+        assert!(
+            pty.take_dirty(),
+            "metadata alone must trigger redraw on an idle pane"
+        );
+        assert_eq!(
+            pty.output_seq(),
+            before_seq,
+            "metadata must not become terminal output or lifecycle activity"
+        );
+        let mut cloned = pty.routing_status().unwrap();
+        cloned.model = Some("mutated-copy".into());
+        assert_ne!(
+            pty.routing_status().unwrap(),
+            cloned,
+            "accessors return owned copies"
+        );
+        let moved = fixture.quiet.app.ptys.remove(&id).unwrap();
+        fixture
+            .quiet
+            .app
+            .ptys
+            .insert("adopted-session".into(), moved);
+        let adopted = fixture.quiet.app.ptys.remove("adopted-session").unwrap();
+        assert_eq!(adopted.routing_status(), Some(owned));
+        let owned_dir = fixture.path.parent().unwrap().to_path_buf();
+        assert!(fixture.path.exists());
+        drop(adopted);
+        assert!(
+            !owned_dir.exists(),
+            "drop must terminate before cleaning just this channel"
+        );
+    }
+
+    #[test]
+    fn routing_status_keeps_the_actual_four_plus_three_pty_geometry_and_full_width_footer() {
+        use ratatui::{backend::TestBackend, Terminal};
+        let mut fixture = RoutingPtyFixture::new(RoutingStage::Judging, 8, 20);
+        for index in 2..7 {
+            let id = format!("ui-routing-grid-{index}");
+            let pty = PtySession::spawn(
+                &mindplayer_core::Command {
+                    program: "cat".into(),
+                    args: vec![],
+                    cwd: PathBuf::new(),
+                    env: Default::default(),
+                },
+                &id,
+                8,
+                20,
+            )
+            .unwrap();
+            fixture.quiet.app.panes.push(id.clone());
+            fixture.quiet.app.ptys.insert(id, pty);
+        }
+        fixture.quiet.app.layout = PaneLayout::Horizontal;
+        let mut terminal = Terminal::new(TestBackend::new(196, 55)).unwrap();
+        terminal
+            .draw(|frame| render(frame, &mut fixture.quiet.app))
+            .unwrap();
+        let bounds = fixture.quiet.app.pane_bounds.clone();
+        let first_y = bounds.values().map(|bounds| bounds.1).min().unwrap();
+        assert_eq!(
+            bounds.values().filter(|bounds| bounds.1 == first_y).count(),
+            4
+        );
+        assert_eq!(
+            bounds.values().filter(|bounds| bounds.1 != first_y).count(),
+            3
+        );
+        let full_width_footer = rendered_row(terminal.backend().buffer(), 54);
+        for (id, &(x, _, rows, cols)) in &bounds {
+            let pty = fixture.quiet.app.ptys.get_mut(id).unwrap();
+            assert_eq!((pty.rows, pty.cols), (rows, cols));
+            assert!(x + cols < 196);
+            paint_native_footer(
+                &mut pty.parser().lock().unwrap(),
+                "gpt-5.1 medium · 98% left",
+            );
+        }
+        terminal
+            .draw(|frame| render(frame, &mut fixture.quiet.app))
+            .unwrap();
+        assert_eq!(fixture.quiet.app.pane_bounds, bounds);
+        assert_eq!(
+            rendered_row(terminal.backend().buffer(), 54),
+            full_width_footer
+        );
+        for (id, &(_, _, rows, cols)) in &bounds {
+            let pty = &fixture.quiet.app.ptys[id];
+            assert_eq!((pty.rows, pty.cols), (rows, cols));
+            assert_eq!(pty.parser().lock().unwrap().screen().size(), (rows, cols));
         }
     }
 
@@ -3699,7 +5730,7 @@ mod tests {
     /// for all of it at the width the popup actually asks for.
     #[test]
     fn every_shortcut_fits_in_the_help_popup() {
-        let lines = help_lines();
+        let lines = help_lines(true);
         let inner = HELP_WIDTH - 2;
         let needed: u16 = lines
             .iter()
@@ -3717,7 +5748,7 @@ mod tests {
     /// what the cursor is on.
     #[test]
     fn no_shortcut_key_is_listed_twice() {
-        let keys: Vec<String> = help_lines()
+        let keys: Vec<String> = help_lines(true)
             .iter()
             .filter(|l| l.spans.len() == 2)
             .map(|l| l.spans[0].content.trim().to_string())

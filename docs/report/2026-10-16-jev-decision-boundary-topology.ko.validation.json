@@ -1,0 +1,76 @@
+{
+  "anonymization": {
+    "date": "2026-10-17",
+    "accounts": "Display labels use work-account/personal-account; identifier keys use work_account/personal_account.",
+    "paths": "Evidence paths are relative to the repository root; .. retains locations outside it. Historical commands anchor external paths at ${PWD}. Evidence was not copied or moved.",
+    "history": "Original timestamps, hashes, results and caveats are retained. Labels and paths are anonymized representations; historical verification does not attest to edited bytes or current live state."
+  },
+  "diagram_kind": "architecture+dataflow+lifecycle",
+  "output": "docs/report/2026-10-16-jev-decision-boundary-topology.ko.html",
+  "source": "docs/report/2026-10-16-jev-decision-boundary-topology.ko.html",
+  "evidence_scope": "repository: MindPlayer Codex local-model-router; not live or installed-runtime evidence",
+  "collected_at": "2026-10-16T12:00:35+09:00",
+  "source_revision": "54529865aa69ef134c25b88a78c8139ce99b181f",
+  "source_dirty": true,
+  "artifact_sha256": "42288e36028408aceefff228960d45265243d283bb8370ddcb4a31b0c84981a3",
+  "changed_files": [
+    "docs/report/2026-10-16-jev-decision-boundary-topology.ko.html",
+    "docs/report/2026-10-16-jev-decision-boundary-topology.ko.validation.json",
+    "docs/tests/jev-decision-boundary-topology.test.cjs"
+  ],
+  "internal_plan": "working2/.omx/plans/2026-10-16-mindplayer-jev-decision-boundary.md",
+  "simplifications": [
+    "Reuse the existing direct configuration Choice path instead of adding a prompt-to-grade mapping or new execution service",
+    "Separate bounded judgment input from native execution context; no full-history paging requirement"
+  ],
+  "selected_approach": "direct semantic HTML + CSS, standalone offline flow",
+  "alternatives_rejected": [
+    "Graphviz SVG: responsive explanatory text requires a second layout",
+    "embedded Mermaid: unnecessary bundle/version dependency for a small graph"
+  ],
+  "external_references": [
+    { "url": "https://c4model.com/diagrams/container", "adopted": "ownership/system boundaries, responsibilities and communication" },
+    { "url": "https://www.w3.org/WAI/WCAG22/Understanding/reflow.html", "adopted": "vertical narrow-screen reflow; table-local scrolling" },
+    { "url": "https://docs.typesafe.ai/primitives/choice", "adopted": "caller-owned options and typed selected ID" },
+    { "url": "https://docs.typesafe.ai/concepts/state", "adopted": "input-state boundary and independent questions" }
+  ],
+  "validation": {
+    "existing_mocked_router_tests": { "passed": 193, "failed": 0 },
+    "document_test": {
+      "status": "passed",
+      "command": "MINDPLAYER_PLAYWRIGHT_MODULE=${PWD}/../../../../../../.npm/_npx/705bc6b22212b352/node_modules/playwright node docs/tests/jev-decision-boundary-topology.test.cjs",
+      "verified_at": "2026-10-16T12:11:18.725+09:00",
+      "browser": "Chromium 155.0.8059.80 (installed Google Chrome)",
+      "viewports": [1440, 969, 390, 320],
+      "primary_nodes": 8,
+      "checks": [
+        "HTML browser parse, Korean document, unique IDs and valid local references",
+        "No runtime assets, external requests, credentials or personal email patterns",
+        "No document overflow, node overlap, text clipping or ownership-boundary overflow",
+        "Seven keyboard-operable disclosures and six user examples",
+        "Narrow comparison table scrolls locally with keyboard",
+        "Stable artifact checksum; JavaScript syntax check and git diff --check passed"
+      ],
+      "console_errors": [],
+      "external_requests": [],
+      "actual_jev_calls": 0
+    },
+    "visual_review": {
+      "status": "passed",
+      "screenshots": "../../../../../../../../var/folders/t8/nkh_jkgj0db5bs30rywyn4gr0000gq/T/mindplayer-jev-topology-0ayZ7I",
+      "inspected": ["1440-map.png", "390-map.png", "1440-top.png"],
+      "correction": "Removed inherited stack margin from grid siblings and added boundary-containment regression assertions",
+      "reference_second_review": "C4 ownership/external boundaries remain explicit; WCAG-inspired vertical reflow works without whole-document horizontal scrolling"
+    },
+    "default_browser_open": {
+      "command": "open docs/report/2026-10-16-jev-decision-boundary-topology.ko.html",
+      "status": "succeeded",
+      "opened_at": "2026-10-16T12:11:44+09:00"
+    }
+  },
+  "verification_gaps": [
+    "No live Jev call or new-rubric accuracy evaluation",
+    "No verified cost savings or executed-effort receipt",
+    "No installed-binary verification; application implementation unchanged"
+  ]
+}

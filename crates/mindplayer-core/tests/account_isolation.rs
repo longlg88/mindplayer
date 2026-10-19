@@ -72,6 +72,34 @@ fn signed_out(text: &str, markers: &[&str]) -> bool {
 }
 
 #[test]
+fn inherited_codex_and_claude_select_the_native_default_without_moving_home() {
+    let home = std::env::var_os("HOME").expect("test requires HOME");
+    {
+        let env = Account::inherited(Agent::Codex).launch_env();
+        assert_eq!(
+            env.set,
+            vec![(
+                "CODEX_HOME".to_string(),
+                PathBuf::from(&home)
+                    .join(".codex")
+                    .to_string_lossy()
+                    .into_owned()
+            )]
+        );
+        assert!(!env.unset.is_empty());
+        assert!(!env.set.iter().any(|(key, _)| key == "HOME"));
+    }
+    let claude = Account::inherited(Agent::Claude).launch_env();
+    assert!(claude.set.is_empty());
+    for key in ["CLAUDE_CONFIG_DIR", "CLAUDE_SECURESTORAGE_CONFIG_DIR"] {
+        assert!(claude.unset.iter().any(|name| name == key));
+    }
+    for agent in [Agent::Kiro, Agent::Cursor] {
+        assert!(Account::inherited(agent).launch_env().is_empty());
+    }
+}
+
+#[test]
 fn a_slot_environment_makes_each_cli_read_a_different_login() {
     let mut exercised = 0;
     for agent in mindplayer_core::accounts::MULTI_ACCOUNT_AGENTS {
@@ -82,10 +110,10 @@ fn a_slot_environment_makes_each_cli_read_a_different_login() {
         }
 
         let inherited = Account::inherited(agent);
-        if agent != Agent::Codex {
+        if !matches!(agent, Agent::Codex | Agent::Claude) {
             assert!(inherited.launch_env().is_empty());
         }
-        let Some(before) = run(base_command(program, args)) else {
+        let Some(before) = run(account_command(program, args, &inherited)) else {
             eprintln!("skip {}: {program} did not answer in time", agent.as_str());
             continue;
         };
@@ -105,15 +133,7 @@ fn a_slot_environment_makes_each_cli_read_a_different_login() {
         })
         .unwrap();
 
-        let mut command = base_command(program, args);
-        let env = account.launch_env();
-        for (key, value) in &env.set {
-            command.env(key, value);
-        }
-        for key in &env.unset {
-            command.env_remove(key);
-        }
-        let Some(after) = run(command) else {
+        let Some(after) = run(account_command(program, args, &account)) else {
             panic!("{program} answered untouched but hung under an isolated slot");
         };
 
@@ -126,6 +146,18 @@ fn a_slot_environment_makes_each_cli_read_a_different_login() {
         let _ = std::fs::remove_dir_all(&home);
     }
     eprintln!("verified isolation for {exercised} provider(s)");
+}
+
+fn account_command(program: &str, args: &[&str], account: &Account) -> Command {
+    let mut command = base_command(program, args);
+    let env = account.launch_env();
+    for (key, value) in env.set {
+        command.env(key, value);
+    }
+    for key in env.unset {
+        command.env_remove(key);
+    }
+    command
 }
 
 /// The parent's environment is inherited on purpose: an ambient credential is

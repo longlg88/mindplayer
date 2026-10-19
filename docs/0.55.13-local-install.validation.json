@@ -1,0 +1,141 @@
+{
+  "schemaVersion": 1,
+  "scope": "Requested local terminal-only version bump from 0.55.12 to 0.55.13; no behavior changes",
+  "predecessor": "claude-jev-installed-2026-10-18.validation.json",
+  "source": {
+    "revision": "54529865aa69ef134c25b88a78c8139ce99b181f",
+    "dirty": true,
+    "version": "0.55.13",
+    "versionOverride": false,
+    "manifestFiles": 123,
+    "sha256Before": "7f07d60160ce42e6484b2de129d90d62df525d5eefcdd51a7ff165047068d840",
+    "manifestDefinition": "Same sorted path NUL per-file SHA256 newline algorithm as predecessor; Cargo.toml/Cargo.lock plus crates and tools/local-model-router .rs/.toml/.mjs/.json/.cjs/.ts",
+    "normalizedToPreviousVersionSha256": "68d69068fc3ffc4afcc7b505b2c8073ed3d335c7627cf4166f2bbc2af916cb8b",
+    "normalizedProof": "Replacing only version = 0.55.13 with 0.55.12 in Cargo.toml/Cargo.lock reproduces the exact previously tested source manifest",
+    "sha256After": "7f07d60160ce42e6484b2de129d90d62df525d5eefcdd51a7ff165047068d840"
+  },
+  "changedFiles": [
+    "Cargo.toml",
+    "Cargo.lock",
+    "README.md",
+    "docs/0.55.13-local-install.validation.json"
+  ],
+  "changes": "Workspace package version and two local Cargo.lock package versions updated; existing dependency and runtime code unchanged",
+  "verification": [
+    {
+      "command": "Installed --version equals mindplayer 0.55.13 assertion before update",
+      "exitCode": 1,
+      "expectedRed": true,
+      "actual": "mindplayer 0.55.12"
+    },
+    {
+      "command": "env -u MINDPLAYER_VERSION -u MINDPLAYER_TEST_BINARY -u MINDPLAYER_TEST_REAL_JEV -u NODE_OPTIONS -u CODEX_HOME cargo test --locked -p mindplayer-tui local_router -- --test-threads=1",
+      "exitCode": 0,
+      "passed": 21,
+      "failed": 0
+    },
+    {
+      "command": "cargo test --locked -p mindplayer-tui --test smoke -- claude_jev_ claude_native_ embedded_router_ --list",
+      "exitCode": 0,
+      "tests": 11
+    },
+    {
+      "command": "env -u MINDPLAYER_VERSION -u MINDPLAYER_TEST_BINARY -u MINDPLAYER_TEST_REAL_JEV -u NODE_OPTIONS -u CODEX_HOME cargo test --locked -p mindplayer-tui --test smoke -- claude_jev_ claude_native_ embedded_router_ --nocapture --test-threads=1",
+      "exitCode": 0,
+      "passed": 11,
+      "failed": 0,
+      "durationSeconds": 39.73
+    },
+    {
+      "command": "cargo fmt --all -- --check",
+      "exitCode": 0
+    },
+    {
+      "command": "env -u MINDPLAYER_VERSION -u NODE_OPTIONS cargo clippy --locked --workspace --all-targets -- -D warnings",
+      "exitCode": 0
+    },
+    {
+      "command": "git diff --check",
+      "exitCode": 0
+    },
+    {
+      "command": "env -u MINDPLAYER_VERSION -u MINDPLAYER_TEST_BINARY -u MINDPLAYER_TEST_REAL_JEV -u NODE_OPTIONS -u CODEX_HOME cargo build --locked --release -p mindplayer-tui",
+      "exitCode": 0,
+      "durationSeconds": 36.04
+    },
+    {
+      "command": "Installed and release --version each equals mindplayer 0.55.13; SHA256 installed==release; backup SHA256 unchanged",
+      "exitCode": 0,
+      "result": "GREEN"
+    },
+    {
+      "command": "env -u MINDPLAYER_VERSION -u MINDPLAYER_TEST_REAL_JEV -u NODE_OPTIONS -u CODEX_HOME MINDPLAYER_TEST_BINARY=/Users/eden.jang/.local/bin/mindplayer cargo test --locked -p mindplayer-tui --test smoke -- claude_jev_ claude_native_ embedded_router_ --nocapture --test-threads=1",
+      "exitCode": 0,
+      "passed": 11,
+      "failed": 0,
+      "durationSeconds": 38.15,
+      "note": "Exact installed executable, actual PTYs/launcher/broker/staged plugin, synthetic native CLI and Jev fixtures;19 extracted assets match checkout byte-for-byte"
+    },
+    {
+      "command": "Fresh login shell: command -v mindplayer; separate mindplayer --version",
+      "exitCode": 0,
+      "resolvedPath": "/Users/eden.jang/.local/bin/mindplayer",
+      "output": "mindplayer 0.55.13"
+    }
+  ],
+  "backup": {
+    "path": "/Users/eden.jang/.local/bin/mindplayer-0.55.12-rollback.vpxgef/mindplayer",
+    "version": "0.55.12",
+    "sha256": "212fdaf7a08be7d6792427d76e96bb68256ce70cd5df1ad40162f76b6997c6e6",
+    "verifiedBeforeReplacement": true
+  },
+  "cleanup": {
+    "sourceSuite": {
+      "pid": 26161,
+      "fixtureRoots": 13,
+      "pidsChecked": 50,
+      "livePids": [],
+      "portsChecked": 10,
+      "openPorts": [],
+      "pluginRootsChecked": 3,
+      "remainingPluginRoots": [],
+      "suiteAlive": false,
+      "realJevCredentialFiles": 0
+    },
+    "installedSuite": {
+      "suite": 28618,
+      "fixtureRoots": 13,
+      "pidsChecked": 50,
+      "livePids": [],
+      "portsChecked": 10,
+      "openPorts": [],
+      "pluginRootsChecked": 3,
+      "remainingPluginRoots": [],
+      "suiteAlive": false,
+      "realJevCredentialFiles": 0
+    }
+  },
+  "simplifications": "Only source version metadata changed; reused the same tested build/install/PTY paths without new dependencies or runtime changes",
+  "remainingRisks": [
+    "Existing live processes/panes keep the previously loaded binary until restarted; they were not interrupted",
+    "Claude best-effort extension and actual-provider verification boundaries remain as recorded in predecessor",
+    "No remote release/tag/publication performed"
+  ],
+  "installation": {
+    "path": "/Users/eden.jang/.local/bin/mindplayer",
+    "version": "mindplayer 0.55.13",
+    "sha256": "4595f893f68c5d8a0241e20030b2109c4582dba1dee836be4da6f5e0408f5c13",
+    "releaseSha256": "4595f893f68c5d8a0241e20030b2109c4582dba1dee836be4da6f5e0408f5c13",
+    "method": "Verified regular paths and previous backup; exclusive staged copy, checksum verification and atomic rename",
+    "versionOverride": false
+  },
+  "boundaries": {
+    "desktopFiles": 24,
+    "desktopManifestSha256": "b9076097dadd60a17ce3da7623af4c88a007025924b0e20bc7f33652e7bbe3e3",
+    "commitOrPush": false,
+    "providerInference": false,
+    "credentialsOrLoginsChanged": false,
+    "globalClaudeSettingsOrPluginsChanged": false
+  },
+  "verifiedAt": "2026-10-18T12:03:10Z"
+}

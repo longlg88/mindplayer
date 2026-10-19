@@ -258,8 +258,19 @@ test('unrecognized local exceptions are reduced to a fixed generic reason', t =>
   writeCredentials(f);
   const preload = `
     import fs from 'node:fs';
+    const open = fs.openSync;
     const close = fs.closeSync;
-    fs.closeSync = fd => { close(fd); throw new Error(${JSON.stringify(SECRET)}); };
+    const credentialFds = new Set();
+    fs.openSync = (path, ...args) => {
+      const fd = open(path, ...args);
+      if (path === ${JSON.stringify(f.credentials)}) credentialFds.add(fd);
+      return fd;
+    };
+    // Inject inside application cleanup, leaving Node's module-loader closes alone.
+    fs.closeSync = fd => {
+      close(fd);
+      if (credentialFds.delete(fd)) throw new Error(${JSON.stringify(SECRET)});
+    };
     syncBuiltinESMExports();
   `;
   assert.equal(runCheck(f, 'startup-check-failed', preload), '');

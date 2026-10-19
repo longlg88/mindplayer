@@ -34,6 +34,7 @@ async function start(t, options = {}) {
     await stopped;
     assert.equal(server.listening, false);
     assert.equal(sockets.size, 0);
+    assert.equal(closeCount, 1, 'close notification must occur exactly once after socket closure');
   });
   server.on('upgrade', (request, socket, head) => {
     acceptWebSocket(request, socket, head, {

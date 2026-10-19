@@ -1,0 +1,158 @@
+{
+  "anonymization": {
+    "date": "2026-10-17",
+    "accounts": "Display labels use work-account/personal-account; identifier keys use work_account/personal_account.",
+    "paths": "Evidence paths are relative to the repository root; .. retains locations outside it. Historical commands anchor external paths at ${PWD}. Evidence was not copied or moved.",
+    "history": "Original timestamps, hashes, results and caveats are retained. Labels and paths are anonymized representations; historical verification does not attest to edited bytes or current live state."
+  },
+  "schemaVersion": 1,
+  "date": "2026-10-16",
+  "status": "verified-local-install",
+  "source": {
+    "repository": ".",
+    "revision": "54529865aa69ef134c25b88a78c8139ce99b181f",
+    "dirty": true,
+    "existingChangesPreserved": true,
+    "version": "0.55.7",
+    "committed": false,
+    "pushed": false,
+    "changedFilesThisFix": [
+      "Cargo.toml", "Cargo.lock", "crates/mindplayer-tui/src/local_router.rs",
+      "crates/mindplayer-tui/src/ui.rs", "crates/mindplayer-tui/tests/smoke.rs",
+      "tools/local-model-router/jev.mjs", "tools/local-model-router/jev.test.mjs",
+      "tools/local-model-router/router.mjs", "tools/local-model-router/router.test.mjs",
+      "tools/local-model-router/system-fetch.mjs", "tools/local-model-router/system-fetch.test.mjs",
+      "tools/local-model-router/README.ko.md", "AGENTS.md",
+      "docs/jev-gateway-0.55.7.validation.json"
+    ],
+    "fileSha256": {
+      "Cargo.toml": "efc0522cbdf3aea146f17374f2e1ee286f01f2e8ec441d97ffb397531d1037d0",
+      "Cargo.lock": "44d77c345a48224a5518e8d2dc2d89960628da25a61a1e53420666d4ba9e7e59",
+      "crates/mindplayer-tui/src/local_router.rs": "8eb966468d0e6655265a90f59ba39b035cc70c4538e6c8a3f4075f13001aebbe",
+      "crates/mindplayer-tui/src/ui.rs": "470b8feade3992168181b35799d9f2f4e2411c718492a8032e6e5dd4451abcea",
+      "crates/mindplayer-tui/tests/smoke.rs": "e5839230dd2343ef01a9c46f213443436f3d967d110625eda5324bc5b50ab52e",
+      "tools/local-model-router/jev.mjs": "94831248caf8baa044f584d45cf74cd0ed261b0ab0d2a966eb08fa480e902634",
+      "tools/local-model-router/jev.test.mjs": "cd98f30e2f4dda4dc725fb9a60ea283c5104d33ba35a13a5c6bd939b5208d660",
+      "tools/local-model-router/router.mjs": "5cc090b3ecf1a331bb063e047adb6b5a9504c6d7f4bb2af582c283bca5fbd14a",
+      "tools/local-model-router/router.test.mjs": "a8f3635bf13b8ec8727fdf22dcac4c9639432f3bfed841b1a7c3100437e3bb97",
+      "tools/local-model-router/system-fetch.mjs": "de8d17c6117c210413ccbddf851ba17767e11139f7f2bf14d9c45f64d47bec1e",
+      "tools/local-model-router/system-fetch.test.mjs": "ae05d6c352be27893eb23bdffd79e2d45f2b56e921d86593cc26ca5709d16872",
+      "tools/local-model-router/README.ko.md": "11eefc85270e82f1f26aba35861f50812e01c2f35c984b72733914f93aabc049",
+      "AGENTS.md": "deb62ac3c245f5289b2bbab433aa9b7e80a74bd41da356bb4ff96bee90435593"
+    }
+  },
+  "additionalCauseFoundDuringInstalledVerification": {
+    "auditReason": "invalid-response",
+    "provider": "gateway",
+    "observation": "A real 32-option configuration Choice had valid keys, ranges, model, usage and other judgments, but rounded configuration probabilities summed to 0.9900000000000001. The previous strict 1e-6 sum check rejected it before submission.",
+    "evidence": "../../../../../../../../private/tmp/mindplayer-0557-verification.ABhsHQ/transport-diagnostics.jsonl",
+    "evidenceSha256": "bdd5fe48877e4741515e07e6aebfd7fc8574ca38cad89b0f5d81d9daa70c9e4b",
+    "upstreamRoundingIsEmpiricalNotDocumentedGuarantee": true,
+    "fix": "Only Gateway configuration Choice may accept hundredth-quantized values whose rounding intervals admit a normalized distribution and preserve a unique winner throughout. Preserve received probabilities without renormalization.",
+    "unchanged": ["capability and quality-policy probability validation", "direct TypeSafe response validation", "malformed-response blocking", "no automatic resend"],
+    "diagnosticPayloadsPersisted": false,
+    "temporaryDiagnosticPreloadRemoved": true,
+    "finalNativeVerificationUsedPreload": false
+  },
+  "cause": {
+    "failedPaneProvider": "gateway",
+    "auditReason": "tls-error",
+    "beforeSubmission": true,
+    "unauthenticatedReproduction": {
+      "nodeVersion": "23.9.0",
+      "gatewayFetch": "UNABLE_TO_GET_ISSUER_CERT_LOCALLY",
+      "gatewayFetchWithSystemCAFlag": "UNABLE_TO_GET_ISSUER_CERT_LOCALLY",
+      "gatewayFetchWithSystemPEM": "UNABLE_TO_GET_ISSUER_CERT_LOCALLY",
+      "nativeSystemCurl": "HTTPS verified; HTTP 405",
+      "directTypeSafeFetch": "HTTPS verified; HTTP 405"
+    },
+    "explanation": "The Gateway connection is intercepted by a company-managed TLS certificate trusted by macOS but not accepted by this Node trust-store path. A previous direct TypeSafe success did not verify the Gateway path used by the user's pane.",
+    "credentialOrPromptPrinted": false
+  },
+  "alternatives": [
+    {"option": "Node system CA flag", "decision": "Rejected as sole fix: reproduced the same failure with the flag."},
+    {"option": "Export arbitrary Keychain certificates into Node trust", "decision": "Rejected: could promote certificates that are not trusted for TLS."},
+    {"option": "macOS-native verified HTTPS transport", "decision": "Selected for Gateway on macOS only; no TLS bypass, redirect, retry, provider switch, or dependency installation."}
+  ],
+  "duplicateSessionInvestigation": {
+    "reportedFiles": 3,
+    "uniqueResumableIds": 3,
+    "uniquePersistedSessionIds": 3,
+    "nativeSpawnEdgesBetweenReportedIds": 0,
+    "conclusion": "These records do not establish a common thread. Preserve all resumable IDs; do not merge by title, cwd, empty token usage, or failure. Verify same-thread consecutive prompts separately.",
+    "legacyEntriesDeletedOrMerged": false,
+    "finalInstalledVerification": {
+      "rolloutsBefore": 1,
+      "rolloutsAfter": 1,
+      "listRowsBefore": 1,
+      "listRowsAfter": 1,
+      "resumes": 1,
+      "additionalThreadStarts": 0,
+      "threadForks": 0,
+      "sameResumableIdAcrossThreeTurns": true
+    },
+    "remainingGap": "The trigger for previously recorded independent thread creation remains unproven. No speculative discovery/grouping fix was made."
+  },
+  "verification": {
+    "node": {"command": "node --test tools/local-model-router/*.test.mjs", "passed": 337, "failed": 0, "log": "${PWD}/../../../../../../../../private/tmp/mindplayer-0557-node-final.log", "sha256": "0b7f5f718d5dc617b3895f96ed161a9bb7577eb35f357f29a83ab37e5da9534d"},
+    "rust": {"command": "cargo test --workspace --locked --quiet", "passed": 773, "ignored": 6, "failed": 0, "log": "${PWD}/../../../../../../../../private/tmp/mindplayer-0557-rust-final.log", "sha256": "90e5b043dc800a62fc91c2abe5747745b96d7febfc957435cbc127f9a7f3e5e0"},
+    "installedSmoke": {"command": "MINDPLAYER_TEST_BINARY=${PWD}/../../../../../../.local/bin/mindplayer cargo test -p mindplayer-tui --test smoke --locked -- --test-threads=1", "passed": 22, "ignored": 1, "failed": 0, "log": "${PWD}/../../../../../../../../private/tmp/mindplayer-0557-installed-smoke-final.log", "sha256": "f80d992bd5a2bb587ffe7239fe7be154c87858eb7a15ee97ab49d8f6e804345f"},
+    "staticChecks": {"cargoFmtCheck": "passed", "clippyAllTargetsDenyWarnings": "passed", "nodeSyntaxChecks": "passed", "gitDiffCheck": "passed"},
+    "credentialScan": {"actualCredentialValues": 2, "sourceBinaryReceiptAndLogFiles": 20, "credentialLeaks": 0, "valuesPrinted": false, "nonSecretConsentVersionExcluded": true},
+    "regressionFirst": "The new cent-rounding test failed with invalid-response before the implementation and passed afterward.",
+    "independentReadOnlyReview": {"blockingFindings": 0, "jevAndPolicyTestsPassed": 202, "integerOracleCasesMatched": 11701, "oracleFallbackAcceptances": 584},
+    "nativeInstalledGateway": {
+      "nativeVersion": "0.162.1",
+      "nodeVersion": "23.9.0",
+      "provider": "gateway",
+      "authenticatedRealJev": true,
+      "resumedThreadId": "01a13ff3-0174-75d1-83f2-9fbd5df26dee",
+      "testWorkingDirectory": "../../../../../../../../private/tmp/mindplayer-installed-ui.Mwtpxq",
+      "testStateDirectory": "../../../../../../../../private/tmp/mindplayer-0557-verification.ABhsHQ",
+      "audit": "../../../../../../../../var/folders/t8/nkh_jkgj0db5bs30rywyn4gr0000gq/T/mindplayer-local-router-sgPBvZ/routing.jsonl",
+      "auditSha256AfterCleanExit": "1ca9f24ad636c12dae395e33111546a92ea123ab31698b95389fa90572ac3ade",
+      "submittedFreshPrompts": 3,
+      "jevJudgments": 3,
+      "jevFailures": 0,
+      "routeFailures": 0,
+      "completedTurns": 3,
+      "finalAnswersMatchExpected": true,
+      "requestIds": [12, 13, 14],
+      "requestedConfiguration": {"model": "gpt-6-luna", "effort": "low", "reason": "catalog-guided-jev"},
+      "gatewayReportedJevCostsUsd": [0.000136122, 0.000135912, 0.000135912],
+      "executionModelIndependentlyAttested": false,
+      "sourceAndInstalledRuntimeAssetsByteEqual": 11,
+      "nativeQuitAndMindPlayerExit": "clean"
+    }
+  },
+  "installation": {
+    "path": "../../../../../../.local/bin/mindplayer",
+    "version": "0.55.7",
+    "sha256": "4d7867b6b07aa2feaa9693370c103f20e6c735c82c4a04c1e6d92c73890dc344",
+    "releaseBuildChecksumMatches": true,
+    "runtimeDirectory": "../../../../../../.mindplayer/runtime/codex-router-e96b1e73ba0e4921",
+    "rollbackPath": "../../../../../../.mindplayer/mindplayer-rollback-0556.HrFzoa/mindplayer",
+    "rollbackVersion": "0.55.6",
+    "rollbackSha256": "743fea0f2733fd5568ff00ea30ab7c0ff22d45330c5035740ddb2b114adf6090",
+    "alreadyOpenPanesUpgradedInPlace": false
+  },
+  "simplifications": [
+    "Reuse macOS verified HTTPS trust instead of exporting and maintaining a separate CA bundle.",
+    "Keep the existing input/model line; add no controls, dependencies, provider fallback or automatic retry.",
+    "Only fixed allowlisted error causes reach the UI; upstream bodies and credentials are not forwarded."
+  ],
+  "remainingRisks": [
+    "Already-running panes retain their old bundled runtime until reopened.",
+    "Live verification covers resumed sequential text turns on this Mac, not every account, queued turn, attachment or network environment.",
+    "Backend request acceptance and completion do not independently attest the physical serving model.",
+    "Catalog-guided selection does not establish empirical quality parity, quota savings or minimum total cost.",
+    "Malformed or ambiguous rounded responses still stop before submission without an automatic retry."
+  ],
+  "references": [
+    "https://nodejs.org/download/release/v23.9.0/docs/api/cli.html#--use-system-ca",
+    "https://curl.se/docs/manpage.html",
+    "https://docs.typesafe.ai/api",
+    "https://docs.typesafe.ai/primitives/choice",
+    "https://learn.chatgpt.com/docs/app-server"
+  ]
+}

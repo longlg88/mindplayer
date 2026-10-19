@@ -1,0 +1,139 @@
+{
+  "schemaVersion": 1,
+  "verifiedAt": "2026-10-17T23:52:41Z",
+  "scope": "Terminal Codex latest-family source implementation; Claude native integration blocked pending a scope decision",
+  "source": {
+    "revision": "54529865aa69ef134c25b88a78c8139ce99b181f",
+    "dirty": true,
+    "version": "0.55.12",
+    "manifestScope": "Sorted Cargo.toml/Cargo.lock and rg --files crates tools/local-model-router matching .rs/.toml/.mjs/.json/.cjs; per-file shasum -a 256, then aggregate shasum -a 256",
+    "frozenBefore": "e24824af749325a47e7b1680e0deaa273cff7d872e3b43d0a20b89ab66a07eb6",
+    "frozenAfter": "e24824af749325a47e7b1680e0deaa273cff7d872e3b43d0a20b89ab66a07eb6",
+    "fixtureLaneReportedManifest": {
+      "files": 151,
+      "scope": "All then-existing .rs/.toml/.mjs/.json/.cjs plus Cargo files, excluding generated/runtime directories; excludes this subsequently added validation artifact",
+      "sha256BeforeAndAfter": "b56b5827b9094df80167ce2607800404feb4ffd3df48bc7578c983f9c8f6c868"
+    }
+  },
+  "changedFiles": [
+    "AGENTS.md",
+    "tools/local-model-router/current-family.mjs",
+    "tools/local-model-router/current-family.test.mjs",
+    "tools/local-model-router/latest-family.test.mjs",
+    "tools/local-model-router/service.mjs",
+    "tools/local-model-router/rubric.mjs",
+    "tools/local-model-router/rubric.test.mjs",
+    "tools/local-model-router/jev.mjs",
+    "tools/local-model-router/router.mjs",
+    "tools/local-model-router/router.test.mjs",
+    "tools/local-model-router/run.mjs",
+    "tools/local-model-router/decision-boundary.test.mjs",
+    "tools/local-model-router/mindplayer-fixture.mjs",
+    "tools/local-model-router/mindplayer-jev-fixture.mjs",
+    "tools/local-model-router/README.ko.md",
+    "crates/mindplayer-tui/src/local_router.rs",
+    "crates/mindplayer-tui/tests/smoke.rs",
+    "docs/plans/jev-latest-family-claude-2026-10-18.md",
+    "docs/jev-latest-family-claude-2026-10-18.validation.json"
+  ],
+  "implementation": {
+    "registryVersion": "codex-native-0.162.1-2026-10-18",
+    "current": { "light": "gpt-6-luna", "standard": "gpt-6.1-sol", "frontier": "gpt-6-astra" },
+    "reviewedAt": "2026-10-17T15:00:00Z",
+    "reviewDeadline": "2026-11-18T00:00:00Z",
+    "basis": "Reviewed native catalog descriptions, not numeric name ordering, perpetual latestness, public release evidence or entitlement proof",
+    "enforcement": [
+      "Integrated launcher explicitly supplies the reviewed registry",
+      "Validate the exact actual baseline against full native eligibility before any migration",
+      "Recognized eligible legacy descriptor-mode baselines migrate only to the current frontier at the exact same effort",
+      "Keep actual baseline separate from validated current-family fallback c0",
+      "Restrict descriptor and empirical candidates and fallbacks to current native-eligible models",
+      "Preserve ultra delegation scope; ordinary turns cannot acquire ultra",
+      "Bind registry version/digest, catalog, account and lifecycle freshness through actual router send",
+      "Block unknown defaults/upgrades, expiry, incompatible empirical migration, consent veto and failed Jev without legacy/native fallback"
+    ],
+    "simplifications": [
+      "Reuse existing JevService, ModelRouter, embedded assets and native PTY lifecycle",
+      "One immutable reviewed registry; no new dependencies or replacement UI",
+      "Preserve exact state/lifecycle assertions; replace obsolete fixture-name label counting with the same model-independent semantic prefix"
+    ]
+  },
+  "verification": [
+    {
+      "command": "node --test tools/local-model-router/*.test.mjs",
+      "exitCode": 0, "tests": 564, "passed": 533, "failed": 0, "skipped": 31,
+      "durationMs": 20251.315917,
+      "liveProviderOptIns": false
+    },
+    {
+      "command": "env -u MINDPLAYER_TEST_BINARY -u MINDPLAYER_TEST_REAL_JEV cargo test --workspace -- --test-threads=1 --skip a_slot_environment_makes_each_cli_read_a_different_login --skip an_empty_home_reads_as_unavailable_and_a_real_one_does_not --skip the_trust_override_reaches_codex_even_for_a_dotted_path",
+      "exitCode": 0, "passed": 939, "failed": 0, "ignored": 8, "filtered": 3,
+      "note": "Three real-account CLI integration checks deliberately excluded; default ignored tests not enabled"
+    },
+    {
+      "command": "env -u MINDPLAYER_TEST_BINARY -u MINDPLAYER_TEST_REAL_JEV -u NODE_OPTIONS -u CODEX_HOME cargo test --locked -p mindplayer-tui --test smoke embedded_router_ -- --nocapture --test-threads=1",
+      "reportedBy": "Independent fixture/test-engineer lane",
+      "exitCode": 0, "passed": 5, "failed": 0, "filtered": 50,
+      "durationSeconds": 20.40,
+      "proof": "Legacy entries first in actual synthetic catalog; outbound Jev menu current-only; A luna/low, B astra/high, C luna/low; new/resume/handoff bundle and late-ACK lifecycle preserved",
+      "notProofOf": "Actual provider inference, serving model identity, native authenticated effort application, quality or cost savings"
+    },
+    { "command": "cargo fmt --all -- --check", "exitCode": 0 },
+    { "command": "cargo clippy --workspace --all-targets -- -D warnings", "exitCode": 0 },
+    { "command": "rg --files tools/local-model-router -g '*.mjs' | xargs -n 1 node --check", "exitCode": 0 },
+    { "command": "git diff --check", "exitCode": 0 }
+  ],
+  "capturedRedContracts": [
+    "Fixture inline Node: 0/4 before current catalog/menu migration, 4/4 after",
+    "Current-family diagnostic test: selector-error instead of each bounded policy failure; repaired without logging upstream messages",
+    "Korean review-date test: registry rejected the current UTC time until reviewedAt was corrected to Asia/Seoul midnight",
+    "Full Node: one obsolete rubric-v1 expectation, then 533 pass/31 skip",
+    "Source PTY: 0/5 due to obsolete exact state-key and fixture-name label selectors, then 5/5 with strict assertions retained"
+  ],
+  "independentReview": {
+    "codeReviewer": { "recommendation": "APPROVE", "files": 17, "findings": 0, "targetedNodePassed": 90, "syntaxPassed": 13, "astParsed": 15 },
+    "architect": { "status": "CLEAR", "targetedNodePassed": 90 },
+    "synthesis": "APPROVE for scoped Codex source changes, not completion of Claude or installed/live-provider validation",
+    "typecheckGap": "Reviewer lsp_diagnostics reported tsc skipped: no tsconfig found; no JavaScript typecheck clearance claimed"
+  },
+  "fixtureCleanup": {
+    "reportedBy": "Independent fixture/test-engineer lane",
+    "passingRun": { "roots": 7, "childPidsGone": 14, "proxyPortsClosed": 7, "realJevCredentialFileStaged": false },
+    "failingRun": { "roots": 5, "childPidsGone": 10, "proxyPortsClosed": 5 },
+    "diagnosticMarkersRetained": true
+  },
+  "claude": {
+    "status": "Not connected; pre-existing native path unchanged pending scope decision",
+    "installedVersion": "2.1.302",
+    "binarySha256": "5262ce9de86243fed0d21edc39b271555d56780d0112e2b194439fe1c6662d37",
+    "finding": "Native Mods can override model/effort but failed or unloaded hooks may fall through to the original request. Startup/admission tickets do not mandate the later turn.step override. No documented session model/effort setter closes that boundary.",
+    "installedConsumerOffsetDecimal": 228983202,
+    "researchRounds": 2,
+    "officialReferences": [
+      "https://code.claude.com/docs/en/plugins/mods/events#handle-a-hook-that-fails",
+      "https://code.claude.com/docs/en/plugins/mods/reference#turns",
+      "https://code.claude.com/docs/en/plugins/mods/troubleshoot",
+      "https://code.claude.com/docs/en/hooks#block-the-action-when-a-hook-fails"
+    ],
+    "requiredDecision": "Retain fail-closed and defer Claude, relax to best-effort native integration, or authorize a different execution/enforcement surface",
+    "providerRequests": 0, "pluginsInstalled": 0, "loginChanges": 0
+  },
+  "untouchedBoundaries": {
+    "desktopManifestSha256BeforeAndAfter": "0dd58825f167f09945726523ce7d1f68c6c9edf5a0603554634d6142cf02780f",
+    "installedBinary": "/Users/eden.jang/.local/bin/mindplayer",
+    "installedVersionUnchanged": "0.55.12",
+    "installedSha256BeforeAndAfter": "391b1ee07a166a9b9300b8d3e3bd35599b5e45ceaf2367be49e7f0c8d77918fe",
+    "releaseBuildOrInstall": false,
+    "realAccountCredentialOrLoginChanges": false,
+    "dependenciesAdded": false,
+    "commitOrPush": false
+  },
+  "remainingRisks": [
+    "Registry requires manual renewal before the review deadline; unmarked future releases cannot be discovered reliably from native catalog ordering",
+    "Migration anchor is an explicit conservative policy, not measured non-inferiority",
+    "Installed executable still contains the prior source; no installed-binary behavior claim",
+    "Authenticated Jev/native model-and-effort application was not exercised in this pass",
+    "Claude strict fail-closed integration remains unresolved under the unchanged native-UI boundary",
+    "No measured quality, quota savings or cost-optimality claim"
+  ]
+}

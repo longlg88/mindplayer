@@ -1,0 +1,226 @@
+{
+  "anonymization": {
+    "date": "2026-10-17",
+    "accounts": "Display labels use work-account/personal-account; identifier keys use work_account/personal_account.",
+    "paths": "Evidence paths are relative to the repository root; .. retains locations outside it. Historical commands anchor external paths at ${PWD}. Evidence was not copied or moved.",
+    "history": "Original timestamps, hashes, results and caveats are retained. Labels and paths are anonymized representations; historical verification does not attest to edited bytes or current live state."
+  },
+  "schemaVersion": 1,
+  "validatedAt": "2026-10-17T04:12:06Z",
+  "status": "installed-and-verified-with-shared-login-caveat",
+  "repository": ".",
+  "sourceRevision": "54529865aa69ef134c25b88a78c8139ce99b181f",
+  "sourceDirty": true,
+  "preexistingChangesPreserved": true,
+  "commitOrPush": false,
+  "sourceVersion": "0.55.11",
+  "versionOverrideUsed": false,
+  "release": {
+    "version": "mindplayer 0.55.11",
+    "sha256": "79d5f538750fd73f07dfbcf6180f617423abeff38ab1e32bc841f5e2c0bb850a",
+    "installed": true,
+    "path": "../../../../../../.local/bin/mindplayer",
+    "behavioralSmoke": { "passed": 34, "failed": 0, "ignored": 2 }
+  },
+  "privateNative": {
+    "sourceRevision": "092d3acd6bec3e3a14bdc7e7a2810ab628ab759d",
+    "sourceDirtyWithReviewedPatch": true,
+    "patchSha256": "251ed63c1cac225bb8e2dbdf24232926594e6f2d3d484bae82771720b9684710",
+    "version": "codex-cli 0.162.1",
+    "contract": "mindplayer-native-routing-v2",
+    "binarySha256": "3a15a70d97739214de4c1b7ef74fd9a61fe3e23b14b97150d68275c5f3d187b8",
+    "binary": "../../../../../../.mindplayer/native-codex/builds/3a15a70d97739214de4c1b7ef74fd9a61fe3e23b14b97150d68275c5f3d187b8/codex",
+    "activeManifestSha256": "5c2a0e37384a65d2b54f2238e819e8f3d90bdfea28140dcf3b71013fbdfeab83",
+    "activated": true,
+    "strictInstalledPathReadiness": "passed",
+    "globalCodexReplaced": false,
+    "codeModeHost": {
+      "kind": "official-prebuilt",
+      "package": "@openai/codex@0.162.1-darwin-arm64",
+      "packageIntegrity": "sha512-YVXpg57itBuQxjofay3KDF5UbnZF4Y1ZmNFzUCz0ZQiQN+DndxOjN5V87rnXvPaC4qCPO2El74DzewoBP8JyPQ==",
+      "binarySha256": "0960435a104cf926e18bb938b8f6f8fcdf7e27be0c8d88e1911bc22a1de7d3e6",
+      "sourceBuildAttested": false,
+      "actualNativeToolTest": "passed: successful CommandExecution receipt with exit_code 0 in the second real completed turn"
+    }
+  },
+  "rollback": {
+    "directory": "../../../../../../.mindplayer/mindplayer-routing-rollback.HscCr0",
+    "binarySha256": "d6676812732c10ebb8cbbfb1c13aae620a5f93056c99b4cc4b23672e413e1cf8",
+    "nativeManifestSha256": "a44b9dca9d2f2b714bae6d2e5f7a503424fe257704ff8058ac9505cb344deda9"
+  },
+  "changes": [
+    {
+      "files": [
+        "crates/mindplayer-core/src/limits.rs",
+        "crates/mindplayer-core/tests/live_account_quotas.rs"
+      ],
+      "purpose": "Keep both actual measured gauges and resets, retain shared-login warning, invalidate old suppressed quota cache."
+    },
+    {
+      "files": [
+        "crates/mindplayer-tui/src/startup_routing.rs",
+        "crates/mindplayer-tui/src/main.rs",
+        "crates/mindplayer-tui/src/ui.rs",
+        "crates/mindplayer-tui/tests/smoke.rs"
+      ],
+      "purpose": "User-selected 07 run-local configuration sheet, one informed Enter, no redundant c checkbox; actual PTY regression coverage."
+    },
+    {
+      "files": [
+        "tools/local-model-router/router.mjs",
+        "tools/local-model-router/service.mjs",
+        "tools/local-model-router/status.mjs",
+        "tools/local-model-router/private-ui.mjs"
+      ],
+      "purpose": "Exact pending attempt cancellation, no late-result reuse, fresh judgment for identical resubmission, v2 private-UI feature gate."
+    },
+    {
+      "files": [
+        "tools/native-codex/queue.patch",
+        "tools/native-codex/build.mjs",
+        "tools/native-codex/README.ko.md"
+      ],
+      "purpose": "Native event-loop responsiveness before start ACK and truthful Core-applied per-turn model/effort receipts."
+    },
+    {
+      "files": [
+        "tools/local-model-router/installed-retry-live.test.mjs",
+        "tools/local-model-router/native-cancel.test.mjs",
+        "tools/local-model-router/native-queue.test.mjs",
+        "tools/local-model-router/terminal-screen-fixture.mjs",
+        "tools/local-model-router/terminal-screen.test.mjs"
+      ],
+      "purpose": "Real native PTY cancellation regressions and explicit opt-in installed/live Jev verification without credential copying."
+    },
+    {
+      "files": [
+        "Cargo.toml",
+        "Cargo.lock",
+        "DESIGN.md",
+        "AGENTS.md",
+        "README.md",
+        "tools/local-model-router/README.ko.md"
+      ],
+      "purpose": "Patch version and latest approved terminal UI/behavior contract."
+    }
+  ],
+  "simplifications": [
+    "Removed separate consent stage/checkbox: visible Jev choice plus Enter supplies consent once.",
+    "Removed suppression of independently measured account-slot gauges.",
+    "Cancellation binds to an input attempt, never prompt text; no text cache workaround or automatic replay.",
+    "Native applied settings are observed from Core, not fabricated from a routing decision or ACK.",
+    "No new dependencies or global Codex replacement."
+  ],
+  "checks": {
+    "rustWorkspace": {
+      "passed": 830,
+      "failed": 0,
+      "ignored": 7,
+      "command": "env -u MINDPLAYER_VERSION -u MINDPLAYER_TEST_BINARY -u MINDPLAYER_TEST_REAL_JEV CARGO_INCREMENTAL=0 cargo test --offline --locked --workspace -q -- --test-threads=2"
+    },
+    "nodeRouter": {
+      "passed": 511,
+      "failed": 0,
+      "skipped": 31,
+      "command": "node --test --test-concurrency=2 --test-reporter=spec tools/local-model-router/*.test.mjs",
+      "note": "One unbounded-parallel run hit the unchanged five-second startup fixture deadline under concurrent live/native work; the complete bounded-concurrency run passed without changing the runtime deadline."
+    },
+    "privateNativeTui": {
+      "passed": 37,
+      "failed": 0,
+      "testStack": "One app-dispatch integration test uses the upstream dedicated 8 MiB thread pattern; no RUST_MIN_STACK override.",
+      "covers": [
+        "Exact pending Escape cancellation and stale lifecycle prompt preservation, including top-level app backtracking guards",
+        "Core-applied unchanged and changed model/effort receipt correlation without persistence",
+        "Completion before start ACK releases one eligible follow-up only after the real reply",
+        "Late completed ACK cannot rearm an older turn over a newer one, including background input state",
+        "Obsolete lifecycle cannot overwrite a newer active turn",
+        "Late cancellation never interrupts a completed or newer turn"
+      ]
+    },
+    "privateNativeProtocol": { "passed": 3, "failed": 0 },
+    "privateNativeServer": { "passed": 2, "failed": 0 },
+    "privateNativeRealPty": {
+      "passed": 23,
+      "failed": 0,
+      "skipped": 3,
+      "skippedScope": "Nonshipping experimental keymap cases; default keymap cancellation/queue/model-effort cases ran.",
+      "backendAndJev": "synthetic; no credentials or inference",
+      "initialFailure": "Four cancellation cases caught app-level Escape being consumed by previous-message backtracking; repaired both top-level Escape guards and added a unit regression before rebuilding.",
+      "command": "MINDPLAYER_TEST_NATIVE_UI=1 MINDPLAYER_NATIVE_CODEX=<privateNative.binary> node --test tools/local-model-router/native-queue.test.mjs tools/local-model-router/native-cancel.test.mjs"
+    },
+    "installedRealJevNativePty": {
+      "passed": 1,
+      "failed": 0,
+      "skipped": 0,
+      "command": "MINDPLAYER_TEST_INSTALLED_RETRY_LIVE=1 MINDPLAYER_TEST_BINARY=${PWD}/../../../../../../.local/bin/mindplayer MINDPLAYER_TEST_CODEX_HOME=${PWD}/../../../../../../.codex node --test tools/local-model-router/installed-retry-live.test.mjs",
+      "version": "mindplayer 0.55.11",
+      "jevAttempts": 3,
+      "completedRealJevJudgments": 2,
+      "cancelledBeforeSubmission": true,
+      "identicalResubmissionJudgedAfresh": true,
+      "nativeCompletions": 2,
+      "coreTurnContexts": [
+        { "model": "gpt-6.1-sol", "effort": "xhigh" },
+        { "model": "gpt-6.1-sol", "effort": "xhigh" }
+      ],
+      "matchesCorrelatedJevSelection": true,
+      "collaborationSettingsAlsoMatch": true,
+      "visibleNativeAppliedNotice": true,
+      "actualNativeCommandExitCode": 0,
+      "authCopied": false,
+      "configurationChanged": false,
+      "existingAccountHomeUsedInPlace": true,
+      "rollout": "../../../../../../.codex/sessions/2026/10/17/rollout-2026-10-17T13-10-50-01a1480e-2b04-7412-b7aa-8146b3f79c7a.jsonl",
+      "servingIdentityAttested": false,
+      "scope": "New explicitly labelled synthetic verification session; no user task or AWS action executed.",
+      "fixtureCorrections": [
+        "Warm newly copied macOS executable before the unchanged strict runtime readiness probe.",
+        "Project actual cursor/erase output into text cells; raw ANSI stripping cannot verify Ratatui delta-rendered notices.",
+        "Check actual owned process-group membership before signalling, rather than ambiguous Darwin kill(-pgid, 0)."
+      ],
+      "ownedProcessesStoppedAndTemporaryRootRemoved": true
+    },
+    "clippy": "passed: cargo clippy --offline --locked --workspace --all-targets -- -D warnings",
+    "format": "passed: cargo fmt --all -- --check",
+    "whitespace": "passed: git diff --check",
+    "liveAccountGauge": {
+      "passed": 1,
+      "accountSlots": [
+        "work-account",
+        "personal-account"
+      ],
+      "reportedWeeklyPercent": [
+        58,
+        58
+      ],
+      "distinctRealHomes": true,
+      "sameVerifiedEmail": true,
+      "sameBackendWorkspace": true,
+      "credentialsChanged": false,
+      "inferenceRequested": false,
+      "restoredIndependentAuthentication": false
+    },
+    "priorUserNativeEvidence": {
+      "threadId": "01a14781-961d-7383-850a-8107222c801a",
+      "turnId": "01a14786-d143-7ef0-afab-8ce0ae95d49e",
+      "model": "gpt-6.1-sol",
+      "effort": "xhigh",
+      "collaborationModel": "gpt-6.1-sol",
+      "collaborationEffort": "xhigh",
+      "source": "Existing real native rollout turn_context correlated with this pane's route/ACK/started audit.",
+      "servingIdentityAttested": false
+    }
+  },
+  "testFixtureCleanup": {
+    "earlierRetainedGeneratedRootsRemoved": 6,
+    "authFilesDeleted": 0,
+    "sourceInstalledAndRollbackBinariesRetained": true,
+    "deletedGeneratedCopiesRecoverable": false
+  },
+  "remainingRisks": [
+    "Both current slots authenticate as the same real user/workspace. Showing both gauges does not restore independent authentication. No auth copying, logout, workspace guessing or login mutation performed.",
+    "Already-running app/panes are not replaced or hot-switched.",
+    "Configuration application does not attest the provider's internal serving identity or prove quality/cost savings."
+  ]
+}

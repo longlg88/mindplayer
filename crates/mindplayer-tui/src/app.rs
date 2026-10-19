@@ -331,6 +331,8 @@ pub struct App {
     pub observe_prompt_bounds: Option<(u16, u16, u16, u16)>,
     pub observe_detail_bounds: Option<(u16, u16, u16, u16)>,
     pub screen: Screen,
+    /// Codex input policy. The child UI keeps a session toggle and stamps each submission.
+    pub(crate) startup_routing: crate::startup_routing::StartupRouting,
     /// 0 = working dir, 1 = global.
     pub scope_choice: usize,
     /// Index into [`crate::walker::ALL`] for the character walking the strip
@@ -514,6 +516,7 @@ pub struct App {
     pub pending: Option<PendingSpawn>,
     /// Additional PTY spawns queued behind `pending`, e.g. multi-select launch.
     pending_queue: VecDeque<PendingSpawn>,
+    account_auth: account_auth::AccountAuth,
     /// codex/claude picker for a new session; None when hidden.
     pub new_picker: Option<usize>,
     /// Target-agent picker for a cross-agent handoff.
@@ -563,6 +566,8 @@ pub struct App {
     /// Subscription rate-limit windows for the usage popup. `None` until the
     /// first fetch lands; the fetch does network I/O so it never blocks a keypress.
     pub limits: Option<Vec<mindplayer_core::limits::QuotaRow>>,
+    /// Start time of the last completed live fetch; disk fallback never stamps it.
+    pub(crate) limits_observed_at: Option<DateTime<Utc>>,
     pub(crate) limits_rx: Option<Receiver<UsageReading>>,
     /// The account a prompt is currently asking about, and the ones already
     /// asked this run so the question is put once rather than every refresh.
@@ -698,6 +703,7 @@ impl App {
             observe_prompt_bounds: None,
             observe_detail_bounds: None,
             screen: Screen::ScopeSelect,
+            startup_routing: crate::startup_routing::StartupRouting::per_prompt(),
             scope_choice: 0,
             walker_choice,
             walker_picker: None,
@@ -761,6 +767,7 @@ impl App {
             pending_initial_inputs: HashMap::new(),
             pending: None,
             pending_queue: VecDeque::new(),
+            account_auth: Default::default(),
             new_picker: None,
             handoff_picker: None,
             new_label: None,
@@ -776,6 +783,7 @@ impl App {
             audit_path: audit_path_for_app(),
             prompts_dir: prompts_dir_for_app(),
             limits: None,
+            limits_observed_at: None,
             limits_rx: None,
             unusable_prompt: None,
             unusable_asked: HashSet::new(),
@@ -991,6 +999,45 @@ impl App {
             &session.file,
             &limits_home_for_app(),
         )
+    }
+
+    /// Display ownership proven by a launch binding or a matching transcript root.
+    /// An unmatched session must not borrow the provider's default account label.
+    pub(crate) fn pane_account_label(&self, sid: &str) -> Option<&str> {
+        if let Some((_, name)) = self.pane_accounts.get(sid) {
+            return Some(name);
+        }
+        let session = self.all_sessions.iter().find(|session| session.id == sid)?;
+        if !session.file.is_absolute()
+            || session
+                .file
+                .components()
+                .any(|part| part == std::path::Component::ParentDir)
+        {
+            return None;
+        }
+        let home = limits_home_for_app();
+        let mut deepest = 0;
+        let mut label = None;
+        for account in self
+            .accounts
+            .iter()
+            .filter(|account| account.provider == session.agent)
+        {
+            let root = account.session_root(&home);
+            if !session.file.starts_with(&root) {
+                continue;
+            }
+            let depth = root.components().count();
+            if depth > deepest {
+                deepest = depth;
+                label = Some(account.name.as_str());
+            } else if depth == deepest {
+                // A shared root cannot prove which display account owns it.
+                label = None;
+            }
+        }
+        label
     }
 
     /// Every usable login of each provider, the one a new pane would start on leading.
@@ -1295,6 +1342,7 @@ fn trim_submit(bytes: &mut Vec<u8>) {
     }
 }
 
+mod account_auth;
 #[cfg(test)]
 mod accounts_cross_tests;
 pub mod accounts_panel;
@@ -1315,3 +1363,21 @@ mod spawn;
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod per_prompt_tests {
+    use super::*;
+    use crate::startup_routing::{RoutingMode, StartupStage};
+
+    #[test]
+    fn new_app_is_ready_for_per_prompt_routing_before_scanning() {
+        let app = App::new_in(std::env::temp_dir());
+        assert_eq!(app.screen, Screen::ScopeSelect);
+        assert_eq!(app.startup_routing.mode(), Some(RoutingMode::PerPrompt));
+        assert_eq!(app.startup_routing.stage, StartupStage::Complete);
+        assert!(!app.startup_routing.active());
+        assert!(app.startup_routing.error.is_none());
+        assert!(app.pending.is_none());
+        assert!(app.ptys.is_empty());
+    }
+}

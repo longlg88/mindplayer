@@ -1,0 +1,67 @@
+{
+  "schemaVersion": 1,
+  "scope": "HTML UI proposals only; synthetic data, no application implementation",
+  "result": "passed",
+  "verifiedAt": "2026-10-18T14:29:45.643Z",
+  "proposalCounts": { "sessionTasks": 10, "category": 10 },
+  "source": {
+    "file": "docs/plans/2026-10-18-session-tasks-category-gallery.ko.html",
+    "sha256": "d6bd44ff376d305693259d910319791c85318b2e40cf1280e06cf1f496447ad9",
+    "unchangedAcrossValidation": true
+  },
+  "harness": {
+    "file": "docs/tests/session-tasks-category-gallery.test.cjs",
+    "sha256": "ab4897b3ea40cdb8c74fad2ca612847e82cef92ac571b3473904745370790549",
+    "command": "MINDPLAYER_PLAYWRIGHT_MODULE=/Users/eden.jang/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules/playwright MINDPLAYER_GALLERY_FROZEN_SHA256=d6bd44ff376d305693259d910319791c85318b2e40cf1280e06cf1f496447ad9 node docs/tests/session-tasks-category-gallery.test.cjs",
+    "passed": 363,
+    "failed": 0,
+    "keyboardEvents": 699,
+    "screenshots": 27,
+    "elapsedMs": 27920,
+    "viewports": [1440, 1280, 768, 390, 320],
+    "browser": "Chrome 155.0.8059.85, headless",
+    "rawReceipt": "/var/folders/t8/nkh_jkgj0db5bs30rywyn4gr0000gq/T/mindplayer-session-tasks-category-gallery-KUMHYi/validation.json",
+    "artifactRetention": "Raw receipt and screenshots are OS temporary artifacts; this summary is repository-local."
+  },
+  "checks": [
+    "20 distinct compositions, each a 112-column by 34-row character grid",
+    "equal session/task halves, stable IDs, many-to-many links, exact link toggles",
+    "manual completion/reopening restores the original task status and remains separate from native completion",
+    "category move preview, cancellation, apply, undo and find preserve session IDs and titles",
+    "keyboard focus, Tab escape, independent proposal state and document controls",
+    "no document horizontal overflow; terminal-only horizontal scrolling on narrow browsers",
+    "no external requests, provider calls, console warnings/errors or page errors",
+    "awaited browser and isolated local-server closure; HTML unchanged"
+  ],
+  "productionSource": {
+    "changed": false,
+    "files": 123,
+    "aggregateSha256": "ce08afd2974dcddc4df3d49173356109cd7445901b37b1e7688524e0e7020a01",
+    "matchesPriorInstallationBaseline": true,
+    "method": "Sorted Cargo.toml/Cargo.lock plus tracked-discovery paths under crates and tools/local-model-router ending .rs/.toml/.mjs/.json/.cjs/.ts; SHA256 of path + NUL + per-file SHA256 + newline"
+  },
+  "defaultBrowserOpen": {
+    "command": "open docs/plans/2026-10-18-session-tasks-category-gallery.ko.html",
+    "exitCode": 0,
+    "openedAtUtc": "2026-10-18 14:33 UTC"
+  },
+  "changedFiles": [
+    "DESIGN.md",
+    "docs/plans/2026-10-18-session-tasks-category-gallery.ko.html",
+    "docs/plans/2026-10-18-session-tasks-category-gallery.ko.validation.json",
+    "docs/tests/session-tasks-category-gallery.test.cjs"
+  ],
+  "simplifications": [
+    "Reuse a shared terminal character-grid renderer instead of twenty separate renderers",
+    "Standalone inline assets, no new dependencies, transport or persistent storage"
+  ],
+  "recommendation": "Compare A01 first; combine B02 visibility, B07 move confirmation and B08 recovery if approved.",
+  "notVerified": [
+    "real terminal rendering, Fn-key handling and IME",
+    "Rust/CLI/provider integration or installed executable behavior",
+    "production persistence and auto-sync",
+    "screen-reader behavior",
+    "user usability validation or approval of a final layout",
+    "clearing a nonempty folded fixture: no public setter or fold shortcut"
+  ]
+}

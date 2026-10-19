@@ -10,10 +10,7 @@ impl App {
     /// It gets a row like any other pane so it is visible and closable, but it
     /// is never reconciled to a session — see `adopt_match`.
     pub fn request_login(&mut self, account: &mindplayer_core::accounts::Account) {
-        let dir = match &self.scope {
-            Scope::WorkingDir(p) => p.clone(),
-            Scope::Global => self.cwd.clone(),
-        };
+        let dir = self.account_recovery_cwd(account);
         let agent = account.provider;
         let command = mindplayer_core::login(agent, dir.clone(), account);
         self.open_login_pane(account, command, dir, "signing in");
@@ -73,7 +70,8 @@ impl App {
         self.rebuild_visible();
         self.pane_accounts
             .insert(session_id.clone(), (agent, account.name.clone()));
-        self.pending = Some(PendingSpawn {
+        self.track_account_login(account, &session_id);
+        self.enqueue_spawn(PendingSpawn {
             command,
             session_id: session_id.clone(),
             initial_input: None,
@@ -105,35 +103,54 @@ impl App {
     /// the pane starts: discovery only looks where accounts live, and a session
     /// it cannot find is one the reconciler would lose.
     pub fn request_new_fresh_login(&mut self, agent: Agent, label: &str) {
-        use mindplayer_core::accounts::Account;
+        let Some(routing_mode) = self.startup_routing.mode() else {
+            self.status = "시작바에서 이번 실행의 판단 방식을 먼저 선택하세요.".into();
+            return;
+        };
+        #[cfg(not(test))]
         let home = super::limits_home_for_app();
-        let name = (2..)
-            .map(|n| format!("{}-{n}", agent.as_str()))
-            .find(|name| {
-                !self
-                    .accounts
-                    .iter()
-                    .any(|a| a.provider == agent && &a.name == name)
-            })
-            .expect("an unbounded range always has a free name");
-        let account = match Account::isolated(&home, agent, &name) {
-            Ok(account) => account,
-            Err(e) => {
-                self.status = e.to_string();
+        #[cfg(test)]
+        let home = super::tests::fresh_login_test_home();
+        let account =
+            match mindplayer_core::accounts::reserve_fresh_account(&home, agent, &self.accounts) {
+                Ok(account) => account,
+                Err(e) => {
+                    self.status = format!("could not make a home for this sign-in: {e}");
+                    return;
+                }
+            };
+        self.accounts.push(account.clone());
+        self.persist_accounts();
+        if matches!(agent, Agent::Codex | Agent::Claude) {
+            let command = mindplayer_core::new_session(agent, self.new_session_dir(), &account);
+            self.request_new_with(&account, label, command);
+            if let Some(pending) = self.pending.take() {
+                self.hold_account_launch(&account, pending);
+            }
+            self.request_login(&account);
+            self.status = format!(
+                "{} login opened for {}; 로그인 뒤 계정 확인을 마치면 요청한 세션을 이어 엽니다",
+                agent.as_str(),
+                account.name
+            );
+            return;
+        }
+        // Prepare only the conversation command; the provider's login still
+        // runs directly before the bridge is started.
+        let start = mindplayer_core::new_session(agent, self.new_session_dir(), &account);
+        let start = match crate::local_router::prepare_for_mode(&start, routing_mode) {
+            Ok(start) => start,
+            Err(error) => {
+                self.status = error.to_string();
                 return;
             }
         };
-        if let Err(e) = mindplayer_core::private::create_dir_private(&account.slot_path()) {
-            self.status = format!("could not make a home for this sign-in: {e}");
-            return;
-        }
-        self.accounts.push(account.clone());
-        self.persist_accounts();
-        let command = mindplayer_core::resume::login_then_start(self.new_session_dir(), &account);
+        let command = mindplayer_core::resume::login_then_start_with(&account, start);
         self.request_new_with(&account, label, command);
         self.status = format!(
-            "signing in a new {} login ({name}) — the session starts once it finishes",
-            agent.as_str()
+            "signing in a new {} login ({}) — the session starts once it finishes",
+            agent.as_str(),
+            account.name
         );
     }
 
@@ -453,6 +470,11 @@ impl App {
         if extra.id.starts_with(super::accounts_panel::LOGIN_PREFIX) {
             return None;
         }
+        // A conversation waiting for authentication has not produced any
+        // rollout yet. It must not adopt another process's same-directory work.
+        if self.account_auth.owns_launch(&extra.id) {
+            return None;
+        }
         let after = extra
             .started_at
             .map(|t| t - chrono::Duration::seconds(30))
@@ -540,10 +562,59 @@ impl App {
     /// Consume a pending spawn now that the pane size is known. Other sessions'
     /// PTYs are left running in the background.
     pub fn spawn_pending(&mut self) {
-        let Some(pending) = self.pending.take() else {
+        let Some(routing_mode) = self.startup_routing.mode() else {
+            self.status = "시작바에서 이번 실행의 판단 방식을 먼저 선택하세요.".into();
+            return;
+        };
+        let Some(mut pending) = self.pending.take() else {
             return;
         };
         let id = pending.session_id.clone();
+        let account = self
+            .all_sessions
+            .iter()
+            .find(|session| session.id == id)
+            .map(|session| self.account_of_session(session));
+        // All new/resume/handoff paths share a required asynchronous live
+        // account check. Login itself is exempt, never conversation execution.
+        if !id.starts_with(super::accounts_panel::LOGIN_PREFIX)
+            && ([Agent::Codex.program(), Agent::Claude.program()]
+                .contains(&pending.command.program.as_str())
+                || account.as_ref().is_some_and(|account| {
+                    matches!(account.provider, Agent::Codex | Agent::Claude)
+                }))
+        {
+            let account = account
+                .clone()
+                .or_else(|| {
+                    self.pane_accounts.get(&id).and_then(|(agent, name)| {
+                        self.accounts
+                            .iter()
+                            .find(|a| a.provider == *agent && a.name == *name)
+                            .cloned()
+                    })
+                })
+                .unwrap_or_else(|| {
+                    mindplayer_core::accounts::Account::inherited(
+                        if pending.command.program == Agent::Claude.program() {
+                            Agent::Claude
+                        } else {
+                            Agent::Codex
+                        },
+                    )
+                });
+            let Some(verified) = self.verify_account_launch(&account, pending) else {
+                self.pending = self.pending_queue.pop_front();
+                return;
+            };
+            pending = verified;
+        }
+        crate::local_router::forward_availability(
+            &mut pending.command,
+            account.as_ref(),
+            self.limits.as_deref(),
+            self.limits_observed_at,
+        );
         // Replace only a previous (ended) PTY for this same id.
         if let Some(mut old) = self.ptys.remove(&id) {
             old.kill();
@@ -552,7 +623,10 @@ impl App {
         // A retry starts clean: the previous failure must not shadow the new
         // pane if this attempt succeeds.
         self.clear_pane_error(&id);
-        self.pending_initial_inputs.remove(&id);
+        // Peer/category synchronization can finish while authentication is
+        // pending. Preserve it until the verified PTY exists instead of
+        // clearing it at the end of that (potentially long) wait.
+        let waiting_input = self.pending_initial_inputs.remove(&id);
         self.out_seq.remove(&id);
         self.out_at.remove(&id);
         self.turn_submitted.remove(&id);
@@ -580,7 +654,7 @@ impl App {
             .get(&id)
             .copied()
             .unwrap_or((self.pty_rows, self.pty_cols));
-        match PtySession::spawn(&pending.command, &id, rows, cols) {
+        match PtySession::spawn_with_routing(&pending.command, &id, rows, cols, routing_mode) {
             Ok(pty) => {
                 if let Some(input) = pending.initial_input {
                     self.pending_initial_inputs.insert(
@@ -591,6 +665,12 @@ impl App {
                             held_input: Vec::new(),
                         },
                     );
+                }
+                if let Some(waiting) = waiting_input {
+                    self.queue_initial_input(id.clone(), waiting.bytes);
+                    if let Some(input) = self.pending_initial_inputs.get_mut(&id) {
+                        input.held_input.extend(waiting.held_input);
+                    }
                 }
                 self.ptys.insert(id.clone(), pty);
                 // The one choke point every new/resumed/handoff PTY passes

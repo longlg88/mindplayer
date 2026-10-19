@@ -6,6 +6,7 @@
 
 pub mod accounts;
 pub mod audit;
+pub mod claude_auth;
 pub mod codex_config;
 pub mod discovery;
 pub mod limits;

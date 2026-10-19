@@ -1,0 +1,316 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <link rel="icon" href="data:,">
+  <meta name="description" content="PIM 구현 없이 MindPlayer가 매 프롬프트의 실행 모델을 선택하는 세 가지 설계 의견. Vercel 연결은 제외합니다.">
+  <title>MindPlayer · PIM 없이, 입력마다 알맞은 모델로</title>
+  <style>
+    :root {
+      --paper: #f4f3ee; --ink: #242b30; --muted: #555e63; --line: #c8cbc6;
+      --accent: #235b4b; --soft: #e3ece4; --blue: #244f97;
+      --terminal: #282c34; --terminal-ink: #e1e5eb; --terminal-muted: #aeb6c3;
+      --done: #91d9ae; --busy: #f0d478; --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--paper); color: var(--ink); font: 14px/1.65 -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", sans-serif; }
+    main { max-width: 1560px; margin: auto; padding: 26px 32px 36px; }
+    h1, h2, h3, p { margin: 0; }
+    h1 { font-size: clamp(24px, 2.6vw, 36px); line-height: 1.25; letter-spacing: -1.2px; font-weight: 650; }
+    h2 { font-size: 16px; letter-spacing: -.3px; }
+    h3 { font-size: 15px; }
+    a { color: var(--blue); text-underline-offset: 3px; overflow-wrap: anywhere; }
+    button { font: inherit; cursor: pointer; }
+    button:focus-visible, a:focus-visible, summary:focus-visible, [tabindex]:focus-visible { outline: 3px solid #386ad0; outline-offset: 4px; }
+    .masthead { display: flex; justify-content: space-between; gap: 24px; align-items: start; margin-bottom: 22px; }
+    .eyebrow { color: var(--accent); font-size: 11px; font-weight: 700; letter-spacing: .06em; margin-bottom: 7px; }
+    .lede { color: var(--muted); font-size: 14px; margin-top: 8px; }
+    .scope { flex-shrink: 0; color: var(--muted); text-align: right; font-size: 12px; padding-top: 6px; }
+    .scope strong { display: block; color: var(--ink); font-weight: 600; }
+    .comparison { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 22px; }
+    .view { min-width: 0; }
+    .view-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 8px; }
+    .view-heading span { color: var(--muted); font-size: 12px; }
+    .view-heading .delta { color: var(--blue); font-weight: 600; }
+    .terminal-wrap { overflow-x: auto; border: 1px solid #5b6472; scrollbar-color: #8b97a9 var(--terminal); }
+    .terminal { min-width: 600px; background: var(--terminal); color: var(--terminal-ink); font: 11px/1.5 var(--mono); }
+    .appbar { height: 27px; padding: 4px 8px; display: flex; justify-content: space-between; color: var(--terminal-muted); }
+    .wordmark { color: #a5beff; font-weight: 600; }
+    .pane-grid { display: grid; grid-template-columns: repeat(12, minmax(0, 1fr)); grid-template-rows: 135px 135px; gap: 4px; padding: 0 5px; }
+    .pane { grid-column: span 3; min-width: 0; border: 1px solid var(--done); display: flex; flex-direction: column; overflow: hidden; padding: 0 5px; }
+    .pane:nth-child(n+5) { grid-column: span 4; }
+    .pane.focused { border-width: 2px; border-color: #8c94a2; padding: 0 4px; }
+    .focused .state { color: var(--terminal-muted); }
+    .pane.busy { border-color: var(--busy); }
+    .pane.idle { border-color: #8c94a2; }
+    .pane-head { display: flex; gap: 4px; align-items: center; height: 24px; flex-shrink: 0; white-space: nowrap; }
+    .state { color: var(--done); }
+    .busy .state { color: var(--busy); }
+    .idle .state { color: var(--terminal-muted); }
+    .focus-mark { color: #a5beff; }
+    .pane-title { color: #d7b9ef; overflow: hidden; text-overflow: ellipsis; flex: 1; }
+    .index { color: var(--terminal-muted); font-size: 9px; }
+    .pane-body { flex: 1; min-height: 0; overflow: hidden; font-size: 10px; overflow-wrap: anywhere; }
+    .pane-body p + p { margin-top: 6px; }
+    .request { color: #c4ccd8; }
+    .response { color: var(--done); }
+    .pane.busy .response { color: var(--busy); }
+    .input-area { flex-shrink: 0; height: 37px; padding-top: 3px; border-top: 1px solid #505764; }
+    .prompt-placeholder { font-size: 10px; color: #d3dae5; white-space: nowrap; overflow: hidden; }
+    .model-line { font-size: 10px; color: #dacba7; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .model-line.changed { color: #e1eaff; background: #344664; box-shadow: inset 2px 0 #a9c3ff; padding-left: 4px; }
+    .quota-footer { padding: 6px 9px 7px; color: var(--terminal-muted); }
+    .quota { border-top: 1px solid #7c8594; padding-top: 4px; display: grid; grid-template-columns: 47px minmax(0, 1fr) 66px 88px; gap: 1px 8px; font-size: 10px; }
+    .provider { color: #a5beff; }
+    .quota-value { color: var(--done); }
+    .shortcuts { margin-top: 5px; font-size: 9px; white-space: nowrap; }
+    .caption { color: var(--muted); font-size: 11px; margin-top: 7px; }
+    .recommendation { display: grid; grid-template-columns: 115px minmax(0, 1fr); gap: 16px; align-items: baseline; margin-top: 22px; border-top: 2px solid var(--accent); padding: 13px 0 15px; }
+    .recommendation strong { color: var(--accent); font-size: 13px; }
+    .recommendation p { font-size: 15px; }
+    .recommendation small { display: block; color: var(--muted); font-size: 12px; margin-top: 3px; }
+    .options { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; margin-top: 4px; }
+    details { min-width: 0; }
+    summary { cursor: pointer; }
+    .option { border: 1px solid var(--line); border-radius: 5px; background: #fafaf6; align-self: start; }
+    .option.recommended { border-color: #60806c; background: #edf2ea; }
+    .option summary { list-style: none; padding: 16px 18px; }
+    .option summary::-webkit-details-marker { display: none; }
+    .option-heading { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; }
+    .option-heading .number { font: 12px var(--mono); color: var(--muted); }
+    .option-heading .number::after { content: " +"; }
+    .option[open] .number::after { content: " −"; }
+    .option-title { display: block; margin-top: 7px; font-size: 18px; font-weight: 650; letter-spacing: -.5px; }
+    .option-tagline { display: block; color: var(--muted); font-size: 12px; margin-top: 5px; }
+    .option-body { padding: 0 18px 18px; font-size: 13px; }
+    .option-body p + p { margin-top: 10px; }
+    .option-body dl { margin: 12px 0 0; }
+    .option-body dt { font-size: 11px; font-weight: 700; margin-top: 9px; color: var(--accent); }
+    .option-body dd { margin: 2px 0 0; }
+    .annotation { color: var(--muted); font-size: 12px; }
+    .document-detail { margin-top: 18px; border-top: 1px solid var(--line); padding-top: 13px; }
+    .document-detail > summary { font-size: 13px; font-weight: 600; width: fit-content; max-width: 100%; }
+    .detail-body { margin-top: 15px; max-width: 1040px; }
+    .detail-body p + p { margin-top: 10px; }
+    .detail-body h3 { margin: 20px 0 8px; }
+    .detail-body h3:first-child { margin-top: 0; }
+    .detail-body ul, .detail-body ol { padding-left: 20px; margin: 8px 0; }
+    .detail-body li + li { margin-top: 6px; }
+    .flow { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 9px; list-style-position: inside; padding: 0 !important; margin: 12px 0 !important; }
+    .flow li { border: 1px solid var(--line); padding: 11px 12px; font-size: 12px; margin: 0 !important; border-radius: 3px; }
+    .flow strong { display: block; font-size: 13px; margin: 4px 0; }
+    .demo-buttons { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0; }
+    .demo-buttons button { background: transparent; color: var(--ink); border: 1px solid #7b8980; border-radius: 3px; padding: 7px 11px; font-size: 12px; }
+    .demo-buttons button[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: #fff; }
+    output { display: block; border-left: 3px solid var(--accent); padding-left: 12px; font-size: 13px; }
+    .table-wrap { overflow-x: auto; }
+    table { border-collapse: collapse; width: 100%; min-width: 580px; font-size: 12px; margin-top: 12px; }
+    th, td { border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; padding: 10px 12px 10px 0; }
+    th { color: var(--accent); font-weight: 600; }
+    code { font: .92em var(--mono); overflow-wrap: anywhere; }
+    pre { padding: 14px; background: #e8e9e3; overflow-x: auto; font: 12px/1.65 var(--mono); }
+    .footer { border-top: 1px solid var(--line); padding-top: 14px; margin-top: 26px; color: var(--muted); font-size: 11px; display: flex; justify-content: space-between; flex-wrap: wrap; gap: 10px; }
+    .noscript { color: #753900; border: 1px solid #b89964; padding: 14px; margin-bottom: 16px; }
+    @media (max-width: 1000px) {
+      main { padding: 22px 20px 30px; }
+      .comparison { gap: 14px; }
+      .view-heading { display: block; }
+      .view-heading span { display: block; margin-top: 2px; }
+      .option summary, .option-body { padding-left: 13px; padding-right: 13px; }
+      .option-title { font-size: 16px; }
+    }
+    @media (max-width: 760px) {
+      main { padding: 20px 14px 28px; }
+      .masthead { display: block; margin-bottom: 18px; }
+      .scope { text-align: left; margin-top: 12px; }
+      .scope strong { display: inline; margin-right: 10px; }
+      .comparison, .options { grid-template-columns: 1fr; gap: 18px; }
+      .view-heading { display: flex; }
+      .view-heading span { font-size: 11px; }
+      .recommendation { grid-template-columns: 1fr; gap: 4px; }
+      .flow { grid-template-columns: 1fr 1fr; }
+    }
+    @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; } }
+    @media print { .comparison, .options { grid-template-columns: 1fr; } .terminal-wrap { overflow: visible; } .demo-buttons { display: none; } }
+  </style>
+</head>
+<body>
+<main>
+  <header class="masthead">
+    <div><p class="eyebrow">MindPlayer · 모델 선택에 대한 세 가지 의견</p><h1>입력은 그대로.<br>모델 선택은 MindPlayer가.</h1><p class="lede">자체 판단 모델을 만들지 않고, 지금 쓸 수 있는 방법부터 비교합니다.</p></div>
+    <p class="scope"><strong>설계 제안 · 앱 미구현</strong>PIM 개발·연결 없음 / Vercel 보류<br>2026.10.15</p>
+  </header>
+
+  <noscript><p class="noscript">화면 재구성 시연에는 JavaScript가 필요합니다. 아래 세 가지 의견과 기술 설명은 그대로 읽을 수 있습니다.</p></noscript>
+  <section class="comparison" aria-label="기존 구조와 제안 구조의 화면 재구성">
+    <article class="view"><div class="view-heading"><h2>현재 구조</h2><span>선택한 모델로 입력 전달</span></div><div id="current-view" class="terminal-wrap" role="region" tabindex="0" aria-label="현재 화면 재구성, 위 4개 아래 3개 창, 가로 스크롤 가능"></div><p class="caption">현재 코드의 배치를 재구성했습니다. 실행 화면 캡처는 아닙니다.</p></article>
+    <article class="view"><div class="view-heading"><h2>자동 선택 제안</h2><span class="delta">변경 영역: 기존 모델 표시줄</span></div><div id="proposed-view" class="terminal-wrap" role="region" tabindex="0" aria-label="제안 화면 재구성, 같은 창과 입력 위치, 가로 스크롤 가능"></div><p class="caption">파란 강조는 문서용입니다. A/B는 예시이며, ‘요청’은 실제 적용 확인이 아닙니다.</p></article>
+  </section>
+
+  <aside class="recommendation" aria-label="추천 의견">
+    <strong>추천 의견 · 3안</strong><p>확실한 입력은 규칙으로, 애매한 입력은 기존 LLM에게.<small>먼저 2안으로 판단 품질을 비교하고, 검증한 경우만 규칙으로 옮깁니다. 학습은 없지만 MindPlayer의 판단·실행 연결 개발은 필요합니다.</small></p>
+  </aside>
+
+  <section class="options" aria-label="세 가지 설계 의견, 펼쳐서 장단점 비교">
+    <details class="option" id="option-rules"><summary><span class="option-heading"><span>가장 단순하게 시작</span><span class="number">01</span></span><span class="option-title">MindPlayer의 로컬 규칙</span><span class="option-tagline">추가 판단 호출 없음 · 맥락 이해에는 한계</span></summary><div class="option-body">
+      <p>입력과 같은 대화의 제공된 맥락에 명시적인 규칙을 적용합니다. 모델은 새로 학습하지 않고, 코드가 검증된 작업별 프로파일을 고릅니다.</p>
+      <dl><dt>예를 들면</dt><dd>독립적인 문장 정리 → 해당 작업에서 검증한 모델 A. 범위가 넓은 변경·불충분한 맥락 → 기존 모델 유지.</dd><dt>좋은 점</dt><dd>판정 자체는 외부로 보내지 않습니다. 결과를 재현하고 규칙별로 테스트하기 쉽습니다. 본 작업의 외부 전송은 기존과 같습니다.</dd><dt>걸리는 점</dt><dd>“계속해”, 반어, 복합 지시를 키워드만으로 이해하기 어렵습니다. 짧은 입력이 쉬운 작업이라는 가정은 금물입니다.</dd><dt>이 안을 고른다면</dt><dd>정확한 소수 규칙만 적용하고 나머지는 이전 모델을 유지합니다. 의미를 깊게 판단하는 자동 선택과는 거리가 있습니다.</dd></dl>
+    </div></details>
+    <details class="option" id="option-llm"><summary><span class="option-heading"><span>의도를 먼저 이해</span><span class="number">02</span></span><span class="option-title">기존 LLM에 매번 질문</span><span class="option-tagline">학습 없이 의미 판단 · 매번 별도 추론</span></summary><div class="option-body">
+      <p>고정된 범용 LLM에게 “실행하지 말고 이 요청의 유형과 맥락 부족만 판정하라”고 요청합니다. 판정 결과를 받은 뒤 본 작업의 모델을 선택합니다.</p>
+      <dl><dt>돌려받을 것</dt><dd>작업 유형·난도 구간·맥락 부족 여부·짧은 사유 코드. 실제 모델 ID는 MindPlayer가 허용 후보에서 결정합니다.</dd><dt>좋은 점</dt><dd>한국어 표현과 후속 지시를 다루는 기준선을 빠르게 실험할 수 있습니다. 별도 학습 데이터·PIM·자체 모델 배포가 없습니다.</dd><dt>걸리는 점</dt><dd>매번 추가 사용량과 대기가 생깁니다. JSON 형식이 맞아도 판단이 틀릴 수 있고, 프롬프트에 대한 외부 판정 호출이 하나 더 생깁니다.</dd><dt>연결 방법은 두 갈래</dt><dd>기존 Codex 로그인 기반 별도 판정 호출, 또는 별도 인증·과금의 직접 API. 같은 인증 상품이 아니며 아래 기술 설명에서 구분합니다.</dd></dl>
+    </div></details>
+    <details class="option recommended" id="option-hybrid"><summary><span class="option-heading"><span>추천 · 검증 후 확장</span><span class="number">03</span></span><span class="option-title">규칙 + 필요할 때만 LLM</span><span class="option-tagline">1안의 재현성 + 2안의 의미 판단</span></summary><div class="option-body">
+      <p>매 입력에 정책을 적용하되, 평가에서 검증한 좁은 규칙만 바로 처리합니다. 규칙으로 확정하지 못한 입력만 2안의 판단기로 보냅니다.</p>
+      <dl><dt>예를 들면</dt><dd>독립적인 정리 요청 → 검증된 규칙. “이전 방식 말고 고쳐줘” → 같은 대화의 최근 맥락을 포함해 LLM 판정.</dd><dt>좋은 점</dt><dd>단순한 경우 판정 추론을 생략하면서, 애매한 자연어는 기존 LLM에 맡길 수 있습니다. 사용자 조작은 늘지 않습니다.</dd><dt>걸리는 점</dt><dd>규칙이 잘못 확정하면 LLM 검사를 건너뜁니다. 두 경로의 품질·실제 호출 비율·총 대기를 함께 평가해야 합니다.</dd><dt>추천하는 순서</dt><dd>2안을 실행 없는 평가 기준으로 먼저 비교 → 품질이 확인된 패턴만 규칙화 → 실제 모델 전환 연결. 절감률이나 임계값은 미리 약속하지 않습니다.</dd></dl>
+    </div></details>
+  </section>
+
+  <details class="document-detail" id="scenarios"><summary>입력 예시 시연 — 문서용 버튼, 실제 모델 호출 없음</summary><div class="detail-body">
+    <p class="annotation">미리 정한 다섯 예시로 위 화면의 입력과 요청 모델만 바꿉니다. 자유 입력을 분류하거나 실제 앱을 조작하지 않습니다. 이 버튼은 제품에 추가되지 않습니다.</p>
+    <div class="demo-buttons" role="group" aria-label="브라우저 문서 시연용 입력 예시">
+      <button type="button" data-scenario="simple" aria-pressed="false">짧은 정리</button>
+      <button type="button" data-scenario="complex" aria-pressed="true">복합 원인 분석</button>
+      <button type="button" data-scenario="followup" aria-pressed="false">맥락 있는 후속</button>
+      <button type="button" data-scenario="timeout" aria-pressed="false">판정 지연</button>
+      <button type="button" data-scenario="unknown" aria-pressed="false">전송 상태 불명</button>
+    </div>
+    <output id="scenario-result" aria-live="polite"></output>
+  </div></details>
+
+  <details class="document-detail" id="execution-boundary"><summary>어떻게 모델을 바꿔 실행하나 — 세 안 모두 필요한 연결부</summary><div class="detail-body">
+    <p><strong>판정기를 고르는 것과, 현재 Codex 창의 모델을 바꾸는 것은 별개입니다.</strong> 지금 MindPlayer는 키보드 바이트를 CLI의 PTY로 전달합니다. 단순히 Enter를 감지하거나 <code>/model</code>을 대신 타이핑하는 것으로 완성된 통합을 보장할 수 없습니다.</p>
+    <ol class="flow" aria-label="제안하는 새 턴 실행 흐름">
+      <li><strong>완성된 입력</strong>같은 입력 영역에서 새 턴 제출을 명확히 구분</li>
+      <li><strong>판정 + 코드 정책</strong>규칙 / 기존 LLM / 혼합으로 모델 후보 결정</li>
+      <li><strong>허용 후보 검증</strong>계정·첨부·설정·측정된 작업 적합성 검사</li>
+      <li><strong>새 턴 1회 실행</strong>같은 계정·threadId에 모델을 명시해서 제출</li>
+    </ol>
+    <p>Codex app-server는 새 <code>turn/start</code>에서 모델을 지정할 수 있습니다. 진행 중인 턴의 <code>turn/steer</code>는 모델 변경을 받지 않습니다. 따라서 이 제안의 자동 선택 단위는 <strong>완성된 새 프롬프트</strong>이지 승인 응답이나 진행 중 추가 지시가 아닙니다. <a href="https://learn.chatgpt.com/docs/app-server#start-a-turn" target="_blank" rel="noopener noreferrer">공식 턴 시작·추가 지시 문서</a></p>
+    <p>기존 입력 위치는 유지하되 내부 제출 처리와 이벤트 렌더링은 개발해야 합니다. 기존 PTY와 app-server를 같은 대화의 동시 실행 주체로 붙이지 않습니다. 새 창의 단일 실행 소유권과 기존 대화의 정확한 재개를 각각 검증해야 합니다.</p>
+    <h3>모델은 이름이 아니라 실제 후보 중에서</h3>
+    <p>런타임 모델 목록과 계정 정책·지원 입력·검증된 설정으로 후보를 제한합니다. 목록이 있다는 사실만으로 실제 실행 권한이 증명되지는 않습니다. 후보가 하나면 바꾸지 않습니다. 모델별 속도·가격·품질 프로파일은 평가 후 정하고, 필요하면 지원되는 추론 강도를 별도 축으로 다룹니다. <a href="https://learn.chatgpt.com/docs/app-server#list-models-modellist" target="_blank" rel="noopener noreferrer">공식 모델 목록 문서</a></p>
+    <p class="annotation">A/B는 시연용 이름입니다. A가 저렴하거나 B가 언제나 더 낫다는 뜻이 아닙니다. Codex라는 실행 엔진·창·계정·대화는 고정합니다. Claude 등 다른 엔진의 지원은 별도 검증 전 약속하지 않습니다.</p>
+  </div></details>
+
+  <details class="document-detail" id="judge-transport"><summary>기존 LLM은 무엇으로 호출하나 — Codex 로그인과 직접 API의 차이</summary><div class="detail-body">
+    <div class="table-wrap" role="region" tabindex="0" aria-label="판정 호출 경로 비교, 가로 스크롤 가능"><table><thead><tr><th scope="col">경로</th><th scope="col">가능한 접근</th><th scope="col">먼저 확인할 것</th></tr></thead><tbody>
+      <tr><th scope="row">기존 Codex 로그인</th><td>별도 <code>codex exec</code> 판정과 출력 스키마 사용. 본 대화에 판정 턴을 섞지 않음.</td><td>동일 계정의 실행 환경·추가 요금제 사용량·지원 모델. 읽기 전용 샌드박스는 도구 제거가 아니므로 완전한 도구 차단·격리는 미검증.</td></tr>
+      <tr><th scope="row">직접 OpenAI API</th><td>판정 전용 요청에 도구를 제공하지 않고 <code>tool_choice: "none"</code>, 지원 모델의 JSON Schema 사용.</td><td>별도 API 인증·과금·데이터 전송 정책. ChatGPT 로그인으로 임의의 API를 무료 호출할 수 있다고 가정하지 않음.</td></tr>
+    </tbody></table></div>
+    <p>기존 CLI 인증 재사용·출력 스키마는 <a href="https://learn.chatgpt.com/docs/non-interactive-mode" target="_blank" rel="noopener noreferrer">공식 비대화형 실행 문서</a>, 로그인과 API 과금 구분은 <a href="https://learn.chatgpt.com/docs/auth" target="_blank" rel="noopener noreferrer">공식 인증 문서</a>에서 확인했습니다. 여기서 자격증명을 추출하거나 실제 판정을 실행한 것은 아닙니다.</p>
+    <p>직접 API 경로의 도구 선택·출력 형식은 <a href="https://developers.openai.com/api/reference/resources/responses/methods/create" target="_blank" rel="noopener noreferrer">Responses API 레퍼런스</a>에 근거합니다. <a href="https://developers.openai.com/api/docs/guides/structured-outputs?api-mode=responses" target="_blank" rel="noopener noreferrer">구조화 출력</a>은 형식 제약입니다. 선택의 정확도·권한·안전성을 대신 검증해 주지 않습니다.</p>
+    <h3>작업은 한 번, 판정 추론은 추가될 수 있음</h3>
+    <p>“기존 대화에서 작업 1회”는 판정까지 추론 한 번이라는 뜻이 아닙니다. 2안은 매번, 3안은 규칙으로 확정하지 못할 때 별도 판정이 있습니다. Vercel·Jev·PIM·자체 모델 학습은 이 세 안의 필수 구성요소가 아닙니다.</p>
+    <pre aria-label="제안하는 판정 결과 예시">{
+  "task": "원인_분석",
+  "complexity": "복합",
+  "context_missing": false,
+  "reason_code": "여러_변경의_상호작용"
+}
+→ MindPlayer가 허용 후보와 작업별 평가 결과로 실제 모델 ID 결정</pre>
+    <p class="annotation">설계 예시일 뿐 확정 스키마가 아닙니다. 사용자 입력은 판정 대상 데이터로 격리합니다. “모델 X를 골라”라는 본문 지시나 LLM이 만든 권한·모델 ID를 정책보다 우선하지 않습니다.</p>
+  </div></details>
+
+  <details class="document-detail" id="failure-policy"><summary>오판·지연·중복 실행은 어떻게 막나</summary><div class="detail-body">
+    <ul>
+      <li><strong>전송 전 판정 실패:</strong> 시간 초과·거절·형식 오류·맥락 부족이면 이미 사용 가능했던 기존 모델을 유지합니다. 그것도 사용할 수 없으면 기존 오류로 알립니다. 자동으로 더 약한 모델로 내리지 않습니다.</li>
+      <li><strong>전송 후 상태 불명:</strong> 모델을 바꿔 같은 작업을 다시 보내지 않습니다. 먼저 원래 턴의 상태를 확인합니다. 이 제안은 실패 후 자동 재실행·이중 실행 방식이 아닙니다.</li>
+      <li><strong>낡은 판단 차단:</strong> 창 세대·계정·threadId·입력 버전·모델 목록 버전에 판단을 묶습니다. 취소·입력 수정·창 재생성·계정 변경 시 무효화합니다. 큐 상한·역압·판정 시간 예산도 필요합니다.</li>
+      <li><strong>입력과 권한 유지:</strong> IME·붙여넣기·여러 줄·첨부·승인·추가 지시를 구분합니다. 모델 선택 확인창은 없애도 원래 도구 실행 승인·샌드박스는 유지합니다.</li>
+      <li><strong>판정 데이터 최소화:</strong> 같은 대화의 현재 입력과 필요한 최근 맥락만 사용합니다. 다른 창·계정 대화와 비밀값을 섞거나 원문을 자동 학습 자료로 저장하지 않습니다.</li>
+      <li><strong>표시의 진실성:</strong> 후보 → 요청 → 수락 → 실제 모델 관측을 구분합니다. 실행 증거가 없으면 요청 상태 또는 미확인으로 남깁니다. 이 문서도 ‘적용 완료’를 시연하지 않습니다.</li>
+    </ul>
+  </div></details>
+
+  <details class="document-detail" id="evaluation"><summary>내 의견 — 3안을 목표로 하되, 검증은 2안부터</summary><div class="detail-body">
+    <ol>
+      <li><strong>실행 없이 판단을 비교합니다.</strong> 한국어·짧은 후속 지시·긴 맥락·첨부·고위험 변경의 자체 평가셋에서 2안을 기준으로 봅니다. 실제 사용자 원문을 무단 수집하지 않습니다.</li>
+      <li><strong>맞았던 일부 사례만 규칙으로 옮깁니다.</strong> 3안이 판단 호출을 얼마나 줄이는지와 규칙 때문에 생긴 오선택을 같이 측정합니다. LLM의 자기 확신값을 검증된 정확도로 쓰지 않습니다.</li>
+      <li><strong>전환 연결은 별도로 검증합니다.</strong> 같은 대화 유지, 완성 입력 경계, 단일 실행, 승인 보존, 취소·오래된 판단 차단을 통과한 뒤 실제 사용합니다.</li>
+    </ol>
+    <p>비교할 지표는 작업 품질, 부적합 모델 선택률, 판정 포함 종단 지연, 추가 사용량·총비용, 실패 시 입력 보존입니다. <strong>현재 정확도·속도·절감률은 측정하지 않았습니다.</strong> 품질이 확인되지 않으면 기존 모델 유지가 기본입니다.</p>
+    <p class="annotation">제품의 최종 방식은 아직 선택되지 않았습니다. 이 HTML은 의견 비교와 정해진 시연만 제공하며, 실제 모델 선택 기능을 구현하지 않습니다.</p>
+  </div></details>
+
+  <details class="document-detail" id="evidence"><summary>근거·폐기 문서·검증 범위</summary><div class="detail-body">
+    <p>화면·입력 근거: <code>crates/mindplayer-tui/src/ui.rs::compute_pane_rects</code>, <code>main.rs</code>의 <code>encode_key → send_to_pty</code>, <code>app/pane.rs::paste_to_pty</code>. 새 UI가 아닌 기존 구조 유지가 기준입니다.</p>
+    <p>설계 기준: <a href="../DESIGN.md">DESIGN.md의 ‘현재 검토안 — PIM 없이 입력별 모델 선택’</a>. 이전 Sense의 자체 모델 방향을 현재 요구로 취급하지 않습니다. 완료 표시와 Ctrl-G Trace 설계도 변경하지 않습니다.</p>
+    <p>지정한 Sense 2개와 직접 관련된 Jev HTML 2개는 <a href="archive/2026-10-15-model-routing/README.md">복구 가능한 폐기 보관함</a>으로 원문 그대로 옮겼습니다. 다른 완료 표시·Trace·observer HTML과 과거 검증 기록은 유지했습니다.</p>
+    <p>이 작업의 범위는 문서·HTML·브라우저 시연 검증입니다. 실제 추론 호출, 앱의 모델 변경, 기존 창 재개, Rust 동작 검증은 하지 않았습니다. 재현 가능한 브라우저 검증은 <a href="tests/model-routing-options.test.cjs">검증 스크립트</a>와 <a href="model-routing-options.ko.validation.json">검증 결과</a>를 참고하세요.</p>
+  </div></details>
+  <footer class="footer"><span>만들 것은 새 PIM이 아니라, MindPlayer 안의 작은 선택 정책과 실행 연결부입니다.</span><span>외부 에셋·실제 모델 호출 없는 로컬 문서</span></footer>
+</main>
+
+<template id="screen-template">
+  <div class="terminal">
+    <div class="appbar"><span class="wordmark">◆ MindPlayer</span><span>7개 창 · 구조 재구성</span></div>
+    <div class="pane-grid">
+      <section class="pane"><div class="pane-head"><span class="state">●</span><span class="pane-title">문서</span><span class="index">1/7</span></div><div class="pane-body"><p class="request">› 변경 내용 정리</p><p class="response">응답 완료</p></div><div class="input-area"><div class="prompt-placeholder">› 다음 입력</div><div class="model-line">Codex · 기존 모델</div></div></section>
+      <section class="pane focused"><div class="pane-head"><span class="focus-mark">▸</span><span class="state">○</span><span class="pane-title">앱</span><span class="index">2/7</span></div><div class="pane-body"><p class="request" data-demo-prompt>› 여러 변경이 겹친 오류 원인을 찾아줘</p><p data-demo-response>다음 새 턴의 입력 예시</p></div><div class="input-area"><div class="prompt-placeholder">› 같은 입력 위치</div><div class="model-line" data-demo-model>Codex · 모델 A</div></div></section>
+      <section class="pane"><div class="pane-head"><span class="state">●</span><span class="pane-title">테스트</span><span class="index">3/7</span></div><div class="pane-body"><p class="request">› 테스트 결과 확인</p><p class="response">응답 완료</p></div><div class="input-area"><div class="prompt-placeholder">› 다음 입력</div><div class="model-line">Codex · 기존 모델</div></div></section>
+      <section class="pane"><div class="pane-head"><span class="state">●</span><span class="pane-title">메모</span><span class="index">4/7</span></div><div class="pane-body"><p class="request">› 작업 기록 정리</p><p class="response">응답 완료</p></div><div class="input-area"><div class="prompt-placeholder">› 다음 입력</div><div class="model-line">Claude · 기존 모델</div></div></section>
+      <section class="pane busy"><div class="pane-head"><span class="state">▶</span><span class="pane-title">구현</span><span class="index">5/7</span></div><div class="pane-body"><p class="request">› 기능을 구현해줘</p><p class="response">작업 중</p></div><div class="input-area"><div class="prompt-placeholder">› 기존 입력 영역</div><div class="model-line">Codex · 기존 모델</div></div></section>
+      <section class="pane"><div class="pane-head"><span class="state">●</span><span class="pane-title">검토</span><span class="index">6/7</span></div><div class="pane-body"><p class="request">› 변경 검토</p><p class="response">응답 완료</p></div><div class="input-area"><div class="prompt-placeholder">› 다음 입력</div><div class="model-line">Claude · 기존 모델</div></div></section>
+      <section class="pane idle"><div class="pane-head"><span class="state">○</span><span class="pane-title">기록</span><span class="index">7/7</span></div><div class="pane-body"><p class="request">다음 입력 대기</p></div><div class="input-area"><div class="prompt-placeholder">› 다음 입력</div><div class="model-line">Codex · 기존 모델</div></div></section>
+    </div>
+    <div class="quota-footer"><div class="quota"><span class="provider">codex</span><span>주간 · 계정 A</span><span class="quota-value">▰▰▱▱▱</span><span>사용량 예시</span><span class="provider">claude</span><span>5시간 · 계정 B</span><span class="quota-value">▰▱▱▱▱</span><span>사용량 예시</span></div><div class="shortcuts">ctrl-x 목록 · ctrl-g Trace · tab 다음 창 · 기존 단축키 유지</div></div>
+  </div>
+</template>
+<script>
+  'use strict';
+  // Fixed document examples only: no classifier, provider transport, storage, or network.
+  const screenTemplate = document.getElementById('screen-template');
+  const currentView = document.getElementById('current-view');
+  const proposedView = document.getElementById('proposed-view');
+  currentView.append(screenTemplate.content.cloneNode(true));
+  proposedView.append(screenTemplate.content.cloneNode(true));
+  const proposedModelLine = proposedView.querySelector('[data-demo-model]');
+  proposedModelLine.classList.add('changed');
+
+  const scenarios = Object.freeze({
+    simple: {
+      prompt: '이 세 문장을 한 줄로 정리해줘', model: 'Codex · A 요청',
+      result: '3안의 예시: 독립적인 정리로 검증된 규칙 → 모델 A 요청. 실제 품질·모델 적합성을 측정한 결과는 아닙니다.'
+    },
+    complex: {
+      prompt: '여러 변경이 겹친 오류 원인을 찾아줘', model: 'Codex · B 요청',
+      result: '3안의 예시: 규칙으로 확정하지 못함 → 기존 LLM 판정 → 코드 정책이 모델 B 요청. 실제 적용은 미확인입니다.'
+    },
+    followup: {
+      prompt: '이전 방식 말고 그 문제를 고쳐줘', model: 'Codex · B 요청',
+      result: '3안의 예시: 같은 대화의 최근 맥락과 함께 판정 → 모델 B 요청. “그 문제”의 맥락도 부족하면 이전 모델을 유지합니다.'
+    },
+    timeout: {
+      prompt: '이 오류의 원인을 찾아줘', model: 'Codex · A 유지',
+      result: '전송 전 판정 시간 초과의 예시: 이미 사용 가능했던 모델 A를 유지하고 작업은 한 번만 제출. A도 불가능하면 기존 오류 경로입니다.'
+    },
+    unknown: {
+      prompt: '이 변경을 반영해줘', model: 'Codex · B 미확인',
+      result: '전송 후 상태 불명의 예시: 원래 턴 상태를 확인. A로 재전송하지 않습니다. 모델을 바꾼 중복 실행은 없습니다.'
+    }
+  });
+
+  function showScenario(key) {
+    const scenario = scenarios[key];
+    if (!scenario) return;
+    for (const view of [currentView, proposedView]) {
+      view.querySelector('[data-demo-prompt]').textContent = '› ' + scenario.prompt;
+      view.querySelector('[data-demo-response]').textContent = key === 'unknown' ? '전송 후 상태 확인이 필요한 예시' : '다음 새 턴의 입력 예시';
+    }
+    proposedModelLine.textContent = scenario.model;
+    document.getElementById('scenario-result').textContent = scenario.result;
+    for (const button of document.querySelectorAll('[data-scenario]')) {
+      button.setAttribute('aria-pressed', String(button.dataset.scenario === key));
+    }
+  }
+
+  for (const button of document.querySelectorAll('[data-scenario]')) {
+    button.addEventListener('click', () => showScenario(button.dataset.scenario));
+  }
+  showScenario('complex');
+</script>
+</body>
+</html>

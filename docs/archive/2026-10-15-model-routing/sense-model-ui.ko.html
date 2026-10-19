@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>MindPlayer · 입력은 그대로, 모델은 Sense가 선택</title>
+  <style>
+    :root{color-scheme:dark;--page:#191c23;--terminal:#282c34;--ink:#eef0f5;--muted:#abb2bf;--line:#515b69;--accent:#7ea2f7;--done:#91d9ae;--busy:#f0d478;--mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+    *{box-sizing:border-box}body{margin:0;background:var(--page);color:var(--ink);font:14px/1.65 -apple-system,BlinkMacSystemFont,"Apple SD Gothic Neo",sans-serif}main{max-width:1520px;margin:auto;padding:24px 28px 30px}h1,h2,p{margin:0}h1{font-size:25px;letter-spacing:-.7px}h2{font-size:14px}a{color:#adc4ff;text-underline-offset:3px}button{font:inherit;cursor:pointer}button:focus-visible,a:focus-visible,summary:focus-visible,[tabindex]:focus-visible{outline:2px solid var(--accent);outline-offset:3px}header{display:flex;justify-content:space-between;align-items:start;gap:16px;margin-bottom:18px}header p{color:var(--muted);font-size:13px;margin-top:4px}.scope{color:var(--muted);font-size:11px;border:1px solid var(--line);padding:3px 8px;white-space:nowrap;border-radius:3px;margin-top:5px}
+    .comparison{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:20px}.view{min-width:0}.view-title{display:flex;justify-content:space-between;gap:8px;margin-bottom:8px;align-items:baseline}.view-title p{font-size:11px;color:var(--muted)}.view-title .changed{color:var(--accent)}.terminal-wrap{overflow-x:auto;border:1px solid var(--line);scrollbar-color:#7a8495 var(--terminal)}.terminal{min-width:420px;background:var(--terminal);font:11px/1.5 var(--mono)}.appbar{height:25px;padding:3px 7px;color:var(--muted);display:flex;justify-content:space-between;align-items:center}.appbar b{color:var(--accent);font-weight:600}.appbar span{font-size:10px}.grid{display:grid;grid-template-columns:repeat(12,minmax(0,1fr));grid-template-rows:repeat(2,145px);gap:3px;padding:0 4px}.pane{grid-column:span 3;border:1px solid #6f9a95;min-width:0;display:flex;flex-direction:column;padding:0 4px;overflow:hidden}.pane:nth-child(n+5){grid-column:span 4}.pane.focused{border:2px solid var(--done);padding:0 3px}.pane.busy{border-color:var(--busy)}.pane.waiting{border-color:#9ba5b4}.pane-head{height:24px;flex-shrink:0;display:flex;gap:3px;align-items:center;white-space:nowrap;font-size:10px}.focus{color:var(--accent);font-weight:700}.dot{color:var(--done)}.busy .dot{color:var(--busy)}.waiting .dot{color:#9ba5b4}.name{color:#c9a6dd;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis}.index{font-size:9px;color:var(--muted)}.pane-body{flex:1;min-height:0;overflow:hidden;color:#d7dce5;font-size:10px;overflow-wrap:anywhere}.pane-body p+p{margin-top:8px}.request{color:#b9c1cf}.complete{color:var(--done)}.quiet{color:var(--muted)}.pane-input{min-height:32px;flex-shrink:0;padding:4px 0 3px;margin-top:auto;border-top:1px solid #3f4652;font-size:10px;white-space:nowrap;overflow:hidden}.model-line{font-size:9px;color:#ead7a8;overflow:hidden;text-overflow:ellipsis}.result-model{color:#c4d5ff;text-decoration:underline;text-decoration-color:#7ea2f7;text-underline-offset:3px}.footer{min-height:75px;padding:5px 8px 6px;color:var(--muted);font-size:10px}.quota{border-top:1px solid #727c8b;padding-top:4px;display:grid;grid-template-columns:48px 1fr 86px 40px;gap:1px 8px}.provider{color:var(--accent)}.meter{color:var(--done)}.number{text-align:right}.shortcut{font-size:9px;margin-top:5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.caption{font-size:11px;color:var(--muted);margin-top:7px}.caption strong{font-weight:500;color:var(--accent)}
+    .tryout{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:18px;padding:12px 0;border-top:1px solid #3d4552}.tryout span{font-size:12px;color:var(--muted)}.sample{background:transparent;border:1px solid #6c7787;color:var(--ink);border-radius:3px;padding:5px 10px;font-size:12px}.sample[aria-pressed=true]{border-color:var(--accent);color:#c4d5ff;background:#29384f}.tryout output{font-size:12px;color:var(--muted)}.demo-note{font-size:11px;color:var(--muted)}.design-link{margin-top:18px;font-size:13px}details{margin-top:20px;border-top:1px solid #3d4552;padding-top:12px}summary{cursor:pointer;color:var(--muted);font-size:12px;width:fit-content}.notes{font-size:12px;color:var(--muted);margin-top:12px}.notes p+p{margin-top:8px}.page-footer{font-size:11px;color:var(--muted);margin-top:24px}
+    @media(max-width:760px){.comparison{grid-template-columns:1fr;gap:18px}.terminal{min-width:580px}.grid{grid-template-rows:repeat(2,120px)}}@media(max-width:650px){main{padding:18px 12px 24px}header{display:block}h1{font-size:21px}.scope{display:inline-block;margin-top:8px}.tryout output{flex-basis:100%}.view-title p{font-size:10px}}
+  </style>
+</head>
+<body>
+<main>
+  <header><div><h1>입력은 그대로. 모델은 Sense가 선택합니다.</h1><p>사용자는 입력하고 응답만 확인합니다. 설정할 것은 없습니다.</p></div><span class="scope">한국어 시안 · 실제 앱 미구현</span></header>
+  <section class="comparison" aria-label="현재 화면 재구성과 제안 화면 비교">
+    <article class="view"><div class="view-title"><h2>현재</h2><p>선택한 창에서 입력</p></div><div class="terminal-wrap" role="region" tabindex="0" aria-label="현재 화면, 위 4개와 아래 3개 창"><div class="terminal" id="current-screen">
+      <div class="appbar"><b>◆ MindPlayer</b><span>7개 창 · 구조 재구성</span></div>
+      <div class="grid">
+        <section class="pane"><div class="pane-head"><span class="dot">●</span><span class="name">문서</span><span class="index">1/7</span></div><div class="pane-body"><p class="request">› 변경 내용을 정리해줘</p><p>변경 범위를 정리했습니다.</p><p class="complete">✓ 응답 완료</p></div><div class="pane-input">› 다음 입력<div class="model-line">Codex · 사용 중인 모델</div></div></section>
+        <section class="pane focused"><div class="pane-head"><span class="focus">▸</span><span class="dot">●</span><span class="name">앱</span><span class="index">2/7</span></div><div class="pane-body"><p class="request">› 복잡한 오류 원인을 분석해줘</p><p>관련 코드를 확인했습니다.</p><p class="complete">✓ 응답 완료</p></div><div class="pane-input">› 다음 입력<div class="model-line">Codex · 빠른 모델</div></div></section>
+        <section class="pane"><div class="pane-head"><span class="dot">●</span><span class="name">테스트</span><span class="index">3/7</span></div><div class="pane-body"><p class="request">› 테스트 결과 확인</p><p>확인할 결과가 있습니다.</p><p class="complete">✓ 응답 완료</p></div><div class="pane-input">› 다음 입력<div class="model-line">Codex · 사용 중인 모델</div></div></section>
+        <section class="pane"><div class="pane-head"><span class="dot">●</span><span class="name">메모</span><span class="index">4/7</span></div><div class="pane-body"><p class="request">› 작업 기록 정리</p><p>기록을 정리했습니다.</p><p class="complete">✓ 응답 완료</p></div><div class="pane-input">› 다음 입력<div class="model-line">Claude · 사용 중인 모델</div></div></section>
+        <section class="pane busy"><div class="pane-head"><span class="dot">●</span><span class="name">구현</span><span class="index">5/7</span></div><div class="pane-body"><p class="request">› 기능을 구현해줘</p><p>관련 파일을 확인하고 있습니다.</p><p style="color:var(--busy)">▶ 작업 중</p></div><div class="pane-input">› 입력 위치 유지<div class="model-line">Codex · 사용 중인 모델</div></div></section>
+        <section class="pane"><div class="pane-head"><span class="dot">●</span><span class="name">검토</span><span class="index">6/7</span></div><div class="pane-body"><p class="request">› 변경 사항 검토</p><p>검토 내용을 정리했습니다.</p><p class="complete">✓ 응답 완료</p></div><div class="pane-input">› 다음 입력<div class="model-line">Codex · 사용 중인 모델</div></div></section>
+        <section class="pane waiting"><div class="pane-head"><span class="dot">●</span><span class="name">설계</span><span class="index">7/7</span></div><div class="pane-body"><p>다음 입력을 기다립니다.</p><p class="quiet">· 입력 대기</p></div><div class="pane-input">› 다음 입력<div class="model-line">Claude · 사용 중인 모델</div></div></section>
+      </div>
+      <div class="footer"><div class="quota"><span class="provider">Codex</span><span>계정 가 · 예시 사용량</span><span class="meter">━━━━━━──</span><span class="number">75%</span><span class="provider">Claude</span><span>계정 나 · 예시 사용량</span><span class="meter">━━──────</span><span class="number">25%</span></div><div class="shortcut">ctrl-g 기록 · ctrl-x 목록 · tab 창 이동 · ctrl-z 확대 · ctrl-q 닫기</div><div>선택한 창 2/7 · 전체 폭 사용량 하단</div></div>
+    </div></div><p class="caption">기존 분할·입력·상태·사용량.</p></article>
+    <article class="view"><div class="view-title"><h2>제안</h2><p class="changed">같은 화면. 모델 표시값만 달라집니다.</p></div><div class="terminal-wrap" role="region" tabindex="0" aria-label="제안 화면, 현재와 동일한 4개와 3개 창"><div class="terminal" id="proposed-screen"><div class="appbar"><b>◆ MindPlayer</b><span>7개 창 · 같은 세션</span></div><div class="grid" id="proposed-grid"></div><div class="footer" id="proposed-footer"></div></div></div><p class="caption"><strong>요청 모델만 읽기 전용으로 표시.</strong> 선택 버튼·설정창 없음.</p></article>
+  </section>
+  <div class="tryout" aria-label="미리 정한 입력 예시를 사용하는 브라우저 시연"><span>시연 입력</span><button class="sample" type="button" data-example="simple" aria-pressed="false">문구 수정</button><button class="sample" type="button" data-example="complex" aria-pressed="true">원인 분석</button><button class="sample" type="button" data-example="followup" aria-pressed="false">후속 요청</button><output id="demo-result" aria-live="polite"></output></div>
+  <p class="demo-note">위 버튼은 입력 예시를 바꾸는 시연 도구입니다. 모델 설정이 아니며 실제 Sense나 Codex를 호출하지 않습니다. 표시값은 요청 예시이지 실행 확인이 아닙니다.</p>
+  <p class="design-link"><a href="sense-model-topology.ko.html">Sense 이름·내부 설계 구성도 보기 →</a></p>
+  <details id="notes"><summary>유지한 것과 바뀐 것</summary><div class="notes"><p>위 4개 + 아래 3개 창, 선택 위치, 입력 위치, 상태, 전체 폭 사용량 하단, Ctrl-G 기록 화면은 유지합니다. 새 제목 배지·설정 메뉴·별도 입력창·상세 패널은 추가하지 않습니다.</p><p>새 입력은 내부 Sense를 거쳐 같은 제공자의 모델로 실행됩니다. Codex와 Claude를 서로 바꾸지 않습니다. Claude 연결은 후속 설계 범위이며 이 시안에서 작동한다고 주장하지 않습니다.</p><p>현재 모델줄은 에이전트 화면의 일부입니다. Sense가 실제로 개입하려면 기존 PTY 전달 경로 대신 완성된 입력과 턴 실행을 관리하는 어댑터가 필요합니다. 표시줄만 고쳐서는 모델이 바뀌지 않습니다.</p><p>본문·계정·사용량·모델 이름은 모두 예시입니다. ‘빠른 모델 / 정밀 모델’은 실제 모델 ID나 품질 평가가 아닙니다. 실제 적용 결과가 확인되기 전에는 요청 모델을 실행 모델로 확정해 표시하지 않습니다.</p></div></details>
+  <footer class="page-footer">2026-10-13 · 자동/고정 선택안을 폐기한 교정 시안 · 실제 앱·계정·세션 변경 없음</footer>
+</main>
+<script>
+  'use strict';
+  const $=selector=>document.querySelector(selector);
+  const before=$('#current-screen');
+  $('#proposed-grid').append(...Array.from(before.querySelector('.grid').children,child=>child.cloneNode(true)));
+  $('#proposed-footer').append(...Array.from(before.querySelector('.footer').children,child=>child.cloneNode(true)));
+  const active=$('#proposed-grid .focused');
+  active.querySelector('.model-line').id='current-model';active.querySelector('.model-line').classList.add('result-model');
+  const examples={
+    simple:{prompt:'버튼 문구의 오타를 고쳐줘',model:'빠른 모델',label:'문구 수정'},
+    complex:{prompt:'복잡한 오류 원인을 분석해줘',model:'정밀 모델',label:'원인 분석'},
+    followup:{prompt:'방금 분석한 원인을 고쳐줘',model:'정밀 모델',label:'후속 요청 + 직전 분석 맥락'}
+  };
+  function showExample(key){
+    const example=examples[key];if(!example)return;
+    active.querySelector('.request').textContent='› '+example.prompt;
+    $('#current-model').textContent='Codex · '+example.model;
+    $('#demo-result').textContent=example.label+' → '+example.model+' · 같은 Codex 창 2/7';
+    document.querySelectorAll('[data-example]').forEach(button=>button.setAttribute('aria-pressed',String(button.dataset.example===key)));
+  }
+  document.querySelectorAll('[data-example]').forEach(button=>button.addEventListener('click',()=>showExample(button.dataset.example)));
+  showExample('complex');
+</script>
+</body>
+</html>

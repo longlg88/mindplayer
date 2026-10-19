@@ -1,0 +1,114 @@
+{
+  "anonymization": {
+    "date": "2026-10-17",
+    "accounts": "Display labels use work-account/personal-account; identifier keys use work_account/personal_account.",
+    "paths": "Evidence paths are relative to the repository root; .. retains locations outside it. Historical commands anchor external paths at ${PWD}. Evidence was not copied or moved.",
+    "history": "Original timestamps, hashes, results and caveats are retained. Labels and paths are anonymized representations; historical verification does not attest to edited bytes or current live state."
+  },
+  "status": "fixed-built-installed; explicit-user-identity-choice-still-required",
+  "verified_at": "2026-10-17T11:19:41Z",
+  "source": {
+    "revision": "54529865aa69ef134c25b88a78c8139ce99b181f",
+    "dirty": true,
+    "version": "0.55.12",
+    "input_files": 113,
+    "input_sha256": "de73044e8e210322b7fb6d6173fe83221bc62a1e2bdac4bebd7e1ecdb2227c9e",
+    "hash_method": "sorted rg --files crates tools/local-model-router Cargo.toml Cargo.lock; aggregate relative-path + NUL + file SHA-256 + newline"
+  },
+  "evidence": {
+    "codex_version": "0.163.0",
+    "observed_inherited_home_quota_ms": 1122,
+    "observed_inherited_home_account_ms": 1859,
+    "old_optional_identity_grace_ms": 250,
+    "screenshot_authentication_failure_at_that_time": "not retrospectively established",
+    "live_required_identity_checks": {
+      "work_account": { "available": true, "stored_binding": true, "matches_binding": false },
+      "personal_account": { "available": true, "stored_binding": false },
+      "same_identity_across_these_homes": false,
+      "intended_identity_inferred_from_labels": false,
+      "raw_identity_or_credentials_logged": false
+    }
+  },
+  "behavior": [
+    "Required refreshed account/read is separate from optional quota presentation and uses the full bounded deadline.",
+    "Workspace-plus-normalized-user fingerprints retain the existing format; API keys and incomplete or conflicting workspace identities fail closed.",
+    "New, resumed and handoff conversations share asynchronous verification of their exact selected CODEX_HOME.",
+    "Missing/changed identity requires explicit inspection or native login; no label-based identity inference or silent rebinding.",
+    "Native Codex login is offered for inherited and isolated homes without logout; successful exit is followed by fresh verification.",
+    "Failed/cancelled login cannot authorize inference; prior approvals are invalidated when login begins.",
+    "Pending command, session label, initial handoff input and synchronization arriving during authentication are preserved.",
+    "Late results cannot redirect another account's actions, close its name editor, or steal user-changed focus.",
+    "A conversation waiting for auth cannot adopt an unrelated rollout."
+  ],
+  "validation": {
+    "red_before_green": [
+      "Inherited Codex login recovery unavailable",
+      "Delayed account/read versus old 250 ms quota enrichment",
+      "Quota error versus independent valid account",
+      "Long identity details clipping the recovery choice",
+      "Pre-login approvals surviving login start",
+      "Binding discarding another inflight launch",
+      "Closing Accounts cancelling post-login recovery",
+      "Late result redirecting another account panel",
+      "Inspection during login releasing work after cancellation",
+      "Successful background recovery dismissing another account editor"
+    ],
+    "auth_state_machine_tests": { "passed": 16, "failed": 0 },
+    "auth_pty_tests": { "passed": 6, "failed": 0 },
+    "node_router_tests": { "passed": 511, "failed": 0, "skipped": 31 },
+    "live_required_identity_probe": "passed; no inference or browser login",
+    "workspace_tests": { "passed": 871, "failed": 0, "ignored": 8 },
+    "clippy_all_targets_deny_warnings": "passed",
+    "format_and_diff_checks": "passed",
+    "review": "no known CRITICAL/HIGH issues in bounded lifecycle review after red/green regressions"
+  },
+  "installation": {
+    "path": "../../../../../../.local/bin/mindplayer",
+    "status": "atomically replaced after source-tree workspace tests passed",
+    "version": "0.55.12",
+    "sha256": "b71ddc88c669600991fb4047766cc713146e79b3fa73ff17c4d67157b12d23ba",
+    "matches_release_build": true,
+    "auth_pty_tests_after_install_confirmed": { "passed": 6, "failed": 0 },
+    "full_pty_suite_using_installed_path": { "passed": 40, "failed": 0, "ignored": 2 },
+    "rollback": "../../../../../../.local/bin/mindplayer-auth-rollback.vFzKeD/mindplayer",
+    "rollback_sha256": "4fac1e2cd45308f9a21bf08e8d77c0f32879d9714b8970f467f0ada3812d9ab9",
+    "running_user_processes_stopped": false
+  },
+  "changed_files_this_fix": [
+    "crates/mindplayer-core/src/limits.rs",
+    "crates/mindplayer-core/tests/live_account_quotas.rs",
+    "crates/mindplayer-tui/src/app.rs",
+    "crates/mindplayer-tui/src/app/codex_auth.rs",
+    "crates/mindplayer-tui/src/app/accounts_panel.rs",
+    "crates/mindplayer-tui/src/app/accounts_panel_tests.rs",
+    "crates/mindplayer-tui/src/app/accounts_render_tests.rs",
+    "crates/mindplayer-tui/src/app/pane.rs",
+    "crates/mindplayer-tui/src/app/spawn.rs",
+    "crates/mindplayer-tui/src/app/tests.rs",
+    "crates/mindplayer-tui/src/main.rs",
+    "crates/mindplayer-tui/src/pty.rs",
+    "crates/mindplayer-tui/src/ui.rs",
+    "crates/mindplayer-tui/tests/smoke.rs",
+    "README.md",
+    "AGENTS.md",
+    "docs/plans/codex-auth-recovery-2026-10-17.md",
+    "docs/codex-auth-recovery-2026-10-17.validation.json"
+  ],
+  "simplifications": [
+    "Removed synchronous rejection-only launch checking and its discarded continuation.",
+    "Reused one process runner for quota and required identity RPCs.",
+    "Centralized authentication lifecycle instead of per-launch-path login variants."
+  ],
+  "remaining_gaps": [
+    "Real interactive OAuth login/account selection was not performed. Exact-home login completion uses owned fake-provider PTY fixtures; cancellation/failure authorization is covered by state-machine regression tests.",
+    "The current saved work-account binding is stale. The user must explicitly confirm the displayed identity or sign into the intended account; credentials and bindings were not silently repaired.",
+    "API-key identities cannot provide the ChatGPT workspace/user binding required by this guard.",
+    "Rolling experimental Codex response shapes can change; current workspaceRouting was also observed directly on local Codex 0.163.0."
+  ],
+  "official_references": [
+    "https://learn.chatgpt.com/docs/app-server#1-check-auth-state",
+    "https://learn.chatgpt.com/docs/app-server#auth-endpoints",
+    "https://learn.chatgpt.com/docs/auth#login-caching"
+  ],
+  "committed_or_pushed": false
+}

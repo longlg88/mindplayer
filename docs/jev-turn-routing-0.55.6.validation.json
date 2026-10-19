@@ -1,0 +1,119 @@
+{
+  "anonymization": {
+    "date": "2026-10-17",
+    "accounts": "Display labels use work-account/personal-account; identifier keys use work_account/personal_account.",
+    "paths": "Evidence paths are relative to the repository root; .. retains locations outside it. Historical commands anchor external paths at ${PWD}. Evidence was not copied or moved.",
+    "history": "Original timestamps, hashes, results and caveats are retained. Labels and paths are anonymized representations; historical verification does not attest to edited bytes or current live state."
+  },
+  "schemaVersion": 1,
+  "date": "2026-10-15",
+  "outcome": "0.55.6 구현·로컬 설치 완료. 설치된 MindPlayer의 실제 Codex 입력 화면에서 동일 세션의 연속 3회 Jev 판단·요청·응답 완료를 확인했다.",
+  "source": {
+    "repository": ".",
+    "revision": "54529865aa69ef134c25b88a78c8139ce99b181f",
+    "dirty": true,
+    "existingUncommittedChangesPreserved": true,
+    "committed": false,
+    "pushed": false,
+    "version": "0.55.6",
+    "versionSource": "Cargo.toml / Cargo.lock; no environment-variable version override",
+    "implementationFiles": [
+      "Cargo.toml",
+      "Cargo.lock",
+      "crates/mindplayer-tui/src/local_router.rs",
+      "crates/mindplayer-tui/src/pty.rs",
+      "crates/mindplayer-tui/src/ui.rs",
+      "crates/mindplayer-tui/tests/smoke.rs",
+      "tools/local-model-router/run.mjs",
+      "tools/local-model-router/router.mjs",
+      "tools/local-model-router/router.test.mjs",
+      "tools/local-model-router/status.mjs",
+      "tools/local-model-router/status.test.mjs",
+      "tools/local-model-router/jev.mjs",
+      "tools/local-model-router/jev.test.mjs",
+      "tools/local-model-router/service.mjs",
+      "tools/local-model-router/service.test.mjs",
+      "tools/local-model-router/mindplayer-fixture.mjs",
+      "tools/local-model-router/mindplayer-jev-fixture.mjs"
+    ],
+    "implementationSHA256": "6d2666047169a4573afccd08f8298b31e74d3ef9c02c0c16c7229fdf3e8a2345",
+    "implementationHashMethod": "SHA256(JSON.stringify(implementationFiles.map(path => [path, SHA256(file bytes)])))",
+    "documentationFiles": ["DESIGN.md", "README.md", "tools/local-model-router/README.ko.md", "docs/jev-turn-routing-0.55.6.validation.json"]
+  },
+  "installation": {
+    "path": "../../../../../../.local/bin/mindplayer",
+    "versionOutput": "mindplayer 0.55.6",
+    "sha256": "743fea0f2733fd5568ff00ea30ab7c0ff22d45330c5035740ddb2b114adf6090",
+    "releaseArtifact": "target/release/mindplayer",
+    "releaseArtifactMatchesInstalled": true,
+    "buildCommand": "env -u MINDPLAYER_VERSION cargo build --release --locked -p mindplayer-tui",
+    "rollback": {
+      "path": "../../../../../../.mindplayer/mindplayer-rollback-20261015.7PJRIx/mindplayer",
+      "version": "0.55.5",
+      "sha256": "4adcd6b1109058cbe79fff46da5c404ceb3016effdd121c49865496d1ad3bb75"
+    },
+    "runtimeBundle": "../../../../../../.mindplayer/runtime/codex-router-ef146b630ddc13d9",
+    "embeddedFiles": 10,
+    "allEmbeddedFilesMatchSource": true,
+    "runtimeBundleSHA256": "87824173d1669c4baa10ed27ff48639af85fb8d991a8d8bc092252bdf18c30f9",
+    "runtimeHashMethod": "SHA256(JSON.stringify(ordered embedded [filename, SHA256(file bytes)] pairs))"
+  },
+  "verification": {
+    "workspace": {"command": "cargo test --workspace --locked --quiet", "passed": 773, "ignored": 6, "failed": 0},
+    "router": {"command": "node --test tools/local-model-router/*.test.mjs", "passed": 308, "failed": 0},
+    "installedBinary": {
+      "command": "MINDPLAYER_TEST_BINARY=${PWD}/../../../../../../.local/bin/mindplayer cargo test -p mindplayer-tui --test smoke --locked -- --test-threads=1",
+      "passed": 22,
+      "ignored": 1,
+      "failed": 0,
+      "scope": "Exact installed executable; synthetic loopback Jev/native fixtures, new/resume/handoff and A→B→A selection. This is not real-model inference evidence."
+    },
+    "format": "cargo fmt --all -- --check: passed",
+    "staticAnalysis": "cargo clippy --workspace --all-targets --locked -- -D warnings: passed",
+    "whitespace": "git diff --check: passed",
+    "regressions": [
+      "Late tool-output acknowledgement cannot resurrect a completed turn or strand later user input.",
+      "Queued turn/start waits for completion; turn/steer and tool outputs do not reroute an active turn.",
+      "Disconnect, rejected start and stale judgment never cause automatic replay.",
+      "Status channel rejects wrong owner/generation, stale requests and helper-thread status; native pane geometry, context and usage remain intact."
+    ]
+  },
+  "actualInstalledNativeUi": {
+    "nativeCodexVersion": "0.162.1",
+    "testSessionLabel": "jev-0556-verification",
+    "threadId": "01a13ff3-0174-75d1-83f2-9fbd5df26dee",
+    "cwd": "../../../../../../../../private/tmp/mindplayer-installed-ui.Mwtpxq",
+    "initialNativeModelLine": "GPT-6.1-Sol max · 입력 대기",
+    "account": "Existing personal-account Codex login, same pane/account/provider throughout; no auth files copied or modified.",
+    "observedUi": ["입력 대기", "Jev 판단 중", "gpt-6-luna low 요청", "요청 수락 · 실행 모델 미확인", "완료 · 실행 모델 미확인", "후속 입력마다 새 Jev 판단"],
+    "nativeComposerContextAndWeeklyUsagePreserved": true,
+    "requestIds": [6, 9, 10],
+    "turnIds": ["01a13ff3-d21e-77d0-801e-baee9c53fa14", "01a13ff7-6675-7b82-bd1f-8607e04c6519", "01a13ff8-34b8-7751-992f-43fd4047f2fc"],
+    "countsForOwnedUserThreadOnly": {"jevStarted": 3, "jevJudged": 3, "modelSelected": 3, "routeRequested": 3, "startAcknowledged": 3, "turnStarted": 3, "turnCompleted": 3, "routeFailed": 0, "jevFailed": 0},
+    "selectedConfigurations": [{"model": "gpt-6-luna", "effort": "low"}, {"model": "gpt-6-luna", "effort": "low"}, {"model": "gpt-6-luna", "effort": "low"}],
+    "judgedCapabilities": ["bounded_routine", "open_problem", "bounded_routine"],
+    "jevLatencyMs": [287, 204, 198],
+    "changedFromInitialBaseline": true,
+    "realModelDiversityObserved": false,
+    "servingModelVerified": false,
+    "finalPrivateStatus": {"revision": 22, "stage": "completed", "model": "gpt-6-luna", "effort": "low", "observedModel": null, "executionVerified": false, "mode": "0600"},
+    "auditPath": "../../../../../../../../var/folders/t8/nkh_jkgj0db5bs30rywyn4gr0000gq/T/mindplayer-local-router-Ush4jB/routing.jsonl",
+    "auditSHA256": "59bd553d59911974a8d3f1e9bec2d9c1a2893fbec4cf0ce510995ffc1bd91a86",
+    "knownCredentialValueFoundInInstalledBinaryOrAudit": false,
+    "cleanup": "Only the test Codex UI and its owning MindPlayer were exited normally. Pane status directory was removed by normal cleanup. Existing user sessions were not interrupted; the new test transcript remains available.",
+    "auxiliaryHarness": "Two auxiliary API-only verification attempts stopped before judgment/inference (unsupported untrusted config and startup notification handling). Their unused helper was removed; no success claim is based on them. Actual native-UI evidence above is independent."
+  },
+  "simplifications": [
+    "Reuse the native composer, model row and pane border; no dashboard, picker, toggle, popup or second input surface.",
+    "Without an empirical policy, Jev chooses exact native catalog model+effort configurations directly; no hardcoded model tiers or fabricated evaluation/cost profiles.",
+    "Remove the redundant auxiliary verification helper; exercise the installed native UI and existing smoke path instead."
+  ],
+  "remainingLimits": [
+    "Already-running binaries/panes retain their old embedded runtime. Start a new MindPlayer process and reopen the session to use this installation.",
+    "Selection uses native catalog descriptions, not measured quality or proven minimum subscription cost. All three real test prompts selected the same alternative; fixture tests separately verify A→B→A switching.",
+    "Codex start acceptance and completion do not attest physical serving-model identity. The UI explicitly shows unverified execution unless a matching server model report exists.",
+    "Active-turn queued input, interruptions and error states have automated protocol/renderer coverage, not an exhaustive authenticated native-UI run for every state.",
+    "Existing empirical policy remains authoritative; invalid policy fails closed. Missing key or Jev failure prevents submission rather than silently bypassing judgment.",
+    "The private metadata channel prevents accidental credential forwarding; mode 0600 is not isolation from other processes running as the same OS user."
+  ]
+}

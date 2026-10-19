@@ -432,6 +432,9 @@ fn run(command: &mut Command, input: &[u8], deadline: Instant) -> Result<Output,
     if Instant::now() >= deadline {
         return Err(temporary());
     }
+    for key in crate::accounts::ROUTER_SERVICE_ENV {
+        command.env_remove(key);
+    }
     let mut child = Child(
         command
             .process_group(0)
@@ -598,6 +601,71 @@ mod tests {
                 |_, _, _| Ok("synthetic-token".into()),
             )
         }
+    }
+
+    #[test]
+    fn native_auth_probes_remove_service_environment_from_native_and_http_children() {
+        let f = Fixture::new();
+        let mut native = f.command(
+            "claude",
+            "/usr/bin/env > \"$FIXTURE_ROOT/native.env\"\ncat \"$FIXTURE_ROOT/status.json\"",
+        );
+        let mut http = f.command("curl", "/usr/bin/env > \"$FIXTURE_ROOT/http.env\"\ncat > \"$FIXTURE_ROOT/request\"\ncat \"$FIXTURE_ROOT/profile.json\"\nprintf '\\n200'");
+        for command in [&mut native, &mut http] {
+            for key in [
+                "AI_GATEWAY_API_KEY",
+                "TYPESAFE_API_KEY",
+                "VERCEL_OIDC_TOKEN",
+                "MINDPLAYER_LOCAL_ROUTER_TOKEN",
+                "MINDPLAYER_ROUTER_AVAILABILITY",
+                "MINDPLAYER_ROUTER_STATUS",
+                "MINDPLAYER_CLAUDE_JEV_URL",
+                "MINDPLAYER_CLAUDE_JEV_TOKEN",
+                "MINDPLAYER_PER_PROMPT_CHOICE",
+            ] {
+                command.env(key, "synthetic-service-canary");
+            }
+        }
+        assert_eq!(
+            f.probe(&mut native, &mut http).unwrap().email,
+            "person@example.test"
+        );
+        let leaked: Vec<_> = ["native.env", "http.env"]
+            .into_iter()
+            .filter(|file| {
+                std::fs::read_to_string(f.root.path().join(file))
+                    .unwrap()
+                    .contains("synthetic-service-canary")
+            })
+            .collect();
+        assert!(
+            leaked.is_empty(),
+            "service environment leaked to {leaked:?}"
+        );
+    }
+
+    #[test]
+    fn native_auth_credential_tools_remove_service_environment() {
+        let f = Fixture::new();
+        let mut command = f.command("security", "/usr/bin/env");
+        for key in [
+            "AI_GATEWAY_API_KEY",
+            "TYPESAFE_API_KEY",
+            "VERCEL_OIDC_TOKEN",
+            "MINDPLAYER_LOCAL_ROUTER_TOKEN",
+            "MINDPLAYER_ROUTER_AVAILABILITY",
+            "MINDPLAYER_ROUTER_STATUS",
+            "MINDPLAYER_CLAUDE_JEV_URL",
+            "MINDPLAYER_CLAUDE_JEV_TOKEN",
+            "MINDPLAYER_PER_PROMPT_CHOICE",
+        ] {
+            command.env(key, "synthetic-service-canary");
+        }
+        let output = run(&mut command, &[], Instant::now() + Duration::from_secs(2)).unwrap();
+        assert!(output.status.success());
+        assert!(!String::from_utf8(output.stdout)
+            .unwrap()
+            .contains("synthetic-service-canary"));
     }
 
     #[test]

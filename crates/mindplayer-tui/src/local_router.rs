@@ -1898,10 +1898,35 @@ mod status_tests {
     #[test]
     fn per_prompt_codex_new_resume_handoff_and_login_reach_the_owned_launcher() {
         const CHILD_HOME: &str = "MP_PER_PROMPT_BOUNDARY_TEST_HOME";
+        const SERVICE_KEYS: [&str; 9] = [
+            "AI_GATEWAY_API_KEY",
+            "TYPESAFE_API_KEY",
+            "VERCEL_OIDC_TOKEN",
+            "MINDPLAYER_LOCAL_ROUTER_TOKEN",
+            "MINDPLAYER_ROUTER_AVAILABILITY",
+            "MINDPLAYER_ROUTER_STATUS",
+            "MINDPLAYER_CLAUDE_JEV_URL",
+            "MINDPLAYER_CLAUDE_JEV_TOKEN",
+            "MINDPLAYER_PER_PROMPT_CHOICE",
+        ];
         if let Some(home) = std::env::var_os(CHILD_HOME) {
-            let data_root = PathBuf::from(home).join(".mindplayer");
+            let home = PathBuf::from(home);
+            let data_root = home.join(".mindplayer");
             assert_eq!(mindplayer_core::private::data_root(), data_root);
             assert!(!data_root.exists());
+            let bin = home.join("bin");
+            let cwd = home.join("a folder");
+            fs::create_dir(&bin).unwrap();
+            fs::create_dir(&cwd).unwrap();
+            for (name, body) in [
+                ("codex", "[ \"$#\" -eq 1 ] && [ \"$1\" = login ] || exit 91\n/usr/bin/env > \"$FIXTURE_ROOT/native.env\""),
+                ("node", "printf '%s\\0' \"$@\" > \"$FIXTURE_ROOT/node.args\"\n/usr/bin/env > \"$FIXTURE_ROOT/node.env\""),
+                ("open", "exit 0"),
+            ] {
+                let path = bin.join(name);
+                fs::write(&path, format!("#!/bin/sh\nset -eu\n{body}\n")).unwrap();
+                fs::set_permissions(path, fs::Permissions::from_mode(0o700)).unwrap();
+            }
             let account = Account::inherited(Agent::Codex);
             for args in [
                 vec![],
@@ -1915,7 +1940,7 @@ mod status_tests {
                 let mut command = Command {
                     program: "codex".into(),
                     args: args.into_iter().map(String::from).collect(),
-                    cwd: "/tmp/a folder".into(),
+                    cwd: cwd.clone(),
                     env: account.launch_env(),
                 };
                 command
@@ -1970,27 +1995,83 @@ mod status_tests {
                 let owned = channel.path().parent().unwrap().to_path_buf();
                 drop(channel);
                 assert!(!owned.exists());
+                let expected_node_args = format!("{}\0", prepared.args.join("\0")).into_bytes();
                 let login = mindplayer_core::resume::login_then_start_with(&account, prepared);
                 let (spawn, channel) =
                     prepare_spawn_for_mode(&login, RoutingMode::PerPrompt).unwrap();
                 assert!(channel.is_some());
                 assert!(spawn.args[1].contains("codex login && exec env "));
-                assert!(!spawn.args[1]
-                    .split_once(" && exec ")
-                    .unwrap()
-                    .0
-                    .contains("MINDPLAYER_PER_PROMPT_CHOICE"));
-                assert!(spawn.args[1]
-                    .split_once(" && exec ")
-                    .unwrap()
-                    .1
-                    .contains("MINDPLAYER_PER_PROMPT_CHOICE=1"));
+                let (login_prefix, successor) = spawn.args[1].split_once(" && exec ").unwrap();
+                let login_unsets = SERVICE_KEYS.map(|key| format!("-u {key}")).join(" ");
+                assert!(login_prefix.ends_with(&format!("env {login_unsets} codex login")));
+                for key in SERVICE_KEYS {
+                    assert!(!login_prefix.contains(&format!("{key}=")));
+                }
+                assert!(successor.contains("MINDPLAYER_PER_PROMPT_CHOICE=1"));
                 assert!(!spawn
                     .env
                     .set
                     .iter()
                     .any(|(key, _)| key == "MINDPLAYER_PER_PROMPT_CHOICE" || key == STATUS_ENV));
                 let channel = channel.unwrap();
+                assert_eq!(spawn.cwd, command.cwd);
+                let mut child = std::process::Command::new(&spawn.program);
+                child
+                    .args(&spawn.args)
+                    .current_dir(&spawn.cwd)
+                    .env_clear()
+                    .env("HOME", &home)
+                    .env("PATH", format!("{}:/usr/bin:/bin", bin.display()))
+                    .env("FIXTURE_ROOT", &home);
+                for key in SERVICE_KEYS {
+                    child.env(key, "synthetic-service-canary");
+                }
+                for key in &spawn.env.unset {
+                    child.env_remove(key);
+                }
+                child.envs(spawn.env.set.iter().cloned());
+                let output = child.output().unwrap();
+                assert!(output.status.success(), "{output:?}");
+                let native_env = fs::read_to_string(home.join("native.env")).unwrap();
+                let node_env = fs::read_to_string(home.join("node.env")).unwrap();
+                for key in SERVICE_KEYS {
+                    assert!(
+                        !native_env
+                            .lines()
+                            .any(|line| line.starts_with(&format!("{key}="))),
+                        "native login inherited {key}"
+                    );
+                    let value = match key {
+                        "MINDPLAYER_PER_PROMPT_CHOICE" => "1".into(),
+                        "MINDPLAYER_ROUTER_STATUS" => channel.path().to_string_lossy().into_owned(),
+                        _ => "synthetic-service-canary".into(),
+                    };
+                    assert_eq!(
+                        node_env
+                            .lines()
+                            .filter(|line| line.starts_with(&format!("{key}=")))
+                            .collect::<Vec<_>>(),
+                        [format!("{key}={value}")],
+                    );
+                }
+                for env in [&native_env, &node_env] {
+                    for (key, value) in account.launch_env().set.into_iter().chain([
+                        ("HOME".into(), home.to_string_lossy().into_owned()),
+                        (
+                            "PWD".into(),
+                            fs::canonicalize(&spawn.cwd)
+                                .unwrap()
+                                .to_string_lossy()
+                                .into_owned(),
+                        ),
+                    ]) {
+                        assert!(env.lines().any(|line| line == format!("{key}={value}")));
+                    }
+                }
+                assert_eq!(
+                    fs::read(home.join("node.args")).unwrap(),
+                    expected_node_args
+                );
                 let owned = channel.path().parent().unwrap().to_path_buf();
                 drop(channel);
                 assert!(!owned.exists());

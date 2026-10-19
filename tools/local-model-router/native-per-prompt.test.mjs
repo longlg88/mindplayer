@@ -279,6 +279,114 @@ test('managed queued /plan retains OFF despite the later composer switching ON',
   assert.equal(f.calls.length, 0);
 });
 
+for (const clearContext of [false, true]) for (const mode of ['native', 'jev']) test('managed native ' + (clearContext ? 'clear-context plan confirmation' : 'plan confirmation') + ' accepts the current ' + mode + ' choice', options, async t => {
+  const f = await boot(t, { plan: true, select: () => ({ model: OTHER_MODEL, effort: 'high' }) });
+  // The plan request deliberately uses the opposite choice. Acceptance must
+  // snapshot the current composer toggle, not reuse the planning turn's choice.
+  const planningMode = mode === 'native' ? 'jev' : 'native';
+  await choose(f, planningMode);
+  await draft(f, '/plan prepare native confirmation ' + mode);
+  await submit(f, 0);
+  assertChoice(submissions(f)[0], planningMode);
+  await choose(f, mode);
+  const plan = { id: 'native-confirm-plan-' + mode, type: 'plan', text: '- Verify the native confirmation action.\n' };
+  const params = { threadId: THREAD_ID, turnId: f.starts[0].turn.id };
+  // Only backend plan content is synthetic. The native client renders the
+  // genuine confirmation menu and handles the physical Enter action itself.
+  f.deliver({ method: 'item/started', params: { ...params, item: plan, startedAtMs: 1700000000000 } });
+  f.deliver({ method: 'item/plan/delta', params: { ...params, itemId: plan.id, delta: plan.text } });
+  f.deliver({ method: 'item/completed', params: { ...params, item: plan, completedAtMs: 1700000001000 } });
+  f.starts[0].turn.items.push(plan);
+  f.complete(0);
+  await f.wait(() => f.projectedScreen().includes('Implement this plan?')
+    && f.projectedScreen().includes('Yes, implement this plan'), 'actual native plan confirmation menu');
+  if (clearContext) await f.write('\x1b[B');
+  await f.captureStable((clearContext ? 'clear-context-' : '') + 'plan-confirm-' + mode);
+  await f.write('\r');
+  await f.wait(() => f.decisions.length === 2, 'actual confirmation reaches the real service consumer');
+  const decision = f.decisions[1], request = decision.request;
+  await f.wait(() => decision.error || f.starts.length === 2, 'real confirmation acceptance or metadata rejection');
+  t.diagnostic(JSON.stringify({ action: clearContext ? 'Yes, clear context and implement' : 'Yes, implement this plan', mode,
+    choice: request.params.mindplayerRoutingChoice ?? null, serviceError: decision.error ?? null,
+    backendStarts: f.starts.length, clientUserMessageId: request.params.clientUserMessageId }));
+  assert.equal(decision.error, undefined, 'actual native confirmation must carry ON/OFF metadata rather than fail prompt-choice-required');
+  assertChoice(request, mode);
+  const implementation = clearContext
+    ? "A previous agent produced the plan below to accomplish the user's task. Implement the plan in a fresh context. Treat the plan as the source of user intent, re-read files as needed, and carry the work through implementation and verification.\n\n" + plan.text
+    : 'Implement the plan.';
+  assert.equal(promptText(request), implementation);
+  assert.equal(request.params.turnTrigger, 'user');
+  assert.equal(request.params.collaborationMode.mode, 'default');
+  assert.notEqual(request.params.clientUserMessageId, submissions(f)[0].params.clientUserMessageId);
+  const start = await f.waitStart(1);
+  assertIdentity(start, request);
+  assert.equal(start.request.params.collaborationMode.mode, 'default');
+  if (mode === 'native') assertNative(start, request);
+  else assertConfiguration(start, OTHER_MODEL, 'high');
+  assert.deepEqual(f.calls.map(call => call.text), mode === 'jev' ? [implementation] : ['prepare native confirmation native']);
+  if (clearContext) {
+    assert.equal(f.messages.filter(message => message.method === 'thread/start').length, 2, 'clear-context acceptance starts a fresh native thread');
+    await f.wait(() => f.projectedScreen().includes(labels.native), 'new thread composer starts OFF for future inputs');
+    assertMode(f, 'native');
+  }
+  // A later toggle while this exact request awaits its ACK cannot rewrite it.
+  const laterMode = mode === 'native' ? 'jev' : 'native';
+  await choose(f, laterMode);
+  assertChoice(submissions(f)[1], mode);
+  f.acknowledge(1); f.start(1); f.complete(1);
+  await idle(f, laterMode);
+  await f.expectNoSubmission();
+  assert.equal(f.clientRequests('turn/start').length, 2);
+  assert.equal(f.clientRequests('turn/steer').length, 0);
+});
+
+for (const mode of ['native', 'jev']) test('managed async question queue retains ' + mode + ' before a later toggle', options, async t => {
+  const f = await boot(t, { select: () => ({ model: OTHER_MODEL, effort: 'high' }) });
+  await running(f, 'request an asynchronous answer');
+  const item = { id: 'async-question-' + mode, type: 'agentMessage', text: 'A native asynchronous question follows.',
+    phase: 'commentary', questions: [{ title: 'Which repair should run?', options: null }] };
+  f.deliver({ method: 'item/completed', params: { threadId: THREAD_ID, turnId: f.starts[0].turn.id,
+    item, completedAtMs: 1700000001000 } });
+  f.starts[0].turn.items.push(item);
+  await choose(f, mode);
+  await draft(f, 'main composer draft survives the answer');
+  await f.write('\x1b[1;3A');
+  await f.wait(() => f.projectedScreen().includes('Which repair should run?')
+    && f.projectedScreen().includes('Type your answer'), 'actual native async question editor');
+  await f.write('accepted asynchronous repair');
+  await f.wait(() => f.projectedScreen().includes('accepted asynchronous repair'), 'physical answer entry');
+  await f.write('\t');
+  await f.wait(() => f.projectedScreen().includes('Queued follow-up inputs')
+    && f.projectedScreen().includes('accepted asynchronous repair'), 'actual native answer queue accepts the message');
+  assert.equal(submissions(f).length, 1, 'answer acceptance must not judge before queue release');
+  await choose(f, mode === 'native' ? 'jev' : 'native');
+  f.capture('async-question-queued-' + mode);
+  f.complete(0);
+  await f.wait(() => f.decisions.length === 2, 'actual answer reaches the real service consumer');
+  const decision = f.decisions[1], request = decision.request;
+  await f.wait(() => decision.error || f.starts.length === 2, 'answer acceptance or metadata rejection');
+  t.diagnostic(JSON.stringify({ action: 'async answer queue', mode,
+    choice: request.params.mindplayerRoutingChoice ?? null, serviceError: decision.error ?? null,
+    backendStarts: f.starts.length, clientUserMessageId: request.params.clientUserMessageId }));
+  assert.equal(decision.error, undefined, 'accepted async answers must not fail prompt-choice-required');
+  assertChoice(request, mode);
+  assert.notEqual(request.params.clientUserMessageId, submissions(f)[0].params.clientUserMessageId);
+  assert.ok(promptText(request).includes('accepted asynchronous repair'));
+  const start = await f.waitStart(1);
+  assertIdentity(start, request);
+  if (mode === 'native') assertNative(start, request);
+  else assertConfiguration(start, OTHER_MODEL, 'high');
+  assert.deepEqual(f.calls.map(call => call.text), mode === 'jev' ? [promptText(request)] : []);
+  const laterMode = mode === 'native' ? 'jev' : 'native';
+  assertChoice(submissions(f)[1], mode);
+  f.acknowledge(1); f.start(1); f.complete(1);
+  await idle(f, laterMode);
+  assert.ok(f.projectedScreen().includes('main composer draft survives the answer'));
+  await f.expectNoSubmission();
+  assert.equal(f.clientRequests('turn/start').length, 2);
+  assert.equal(f.clientRequests('turn/steer').length, 0);
+});
+
 test('managed /init submits OFF on the exact generated USER turn without a selection block', options, async t => {
   const f = await boot(t, { select: () => { throw new Error('native /init must not judge'); } });
   await draft(f, '/init');

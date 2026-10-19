@@ -834,10 +834,33 @@ index 560f5d5..f160ff9 100644
              && self.agents_overview.blank_sessions.contains_key(&thread_id)
              && !self.thread_event_channels.contains_key(&thread_id)
 diff --git a/codex-rs/tui/src/app/event_dispatch.rs b/codex-rs/tui/src/app/event_dispatch.rs
-index 2979e0a..d8ad311 100644
+index 2979e0a..8cf3a73 100644
 --- a/codex-rs/tui/src/app/event_dispatch.rs
 +++ b/codex-rs/tui/src/app/event_dispatch.rs
-@@ -1233,6 +1233,111 @@ impl App {
+@@ -433,6 +433,9 @@ impl App {
+                     self.chat_widget.restore_user_message_to_composer(text.into());
+                     return Ok(AppRunControl::Continue);
+                 }
++                // This action was accepted in the old session. Keep its choice
++                // even though the fresh thread's composer starts OFF.
++                let user_message = self.chat_widget.accept_user_message(text);
+                 self.clear_terminal_ui(tui, /*redraw_header*/ false)?;
+                 self.reset_app_ui_state_after_clear();
+ 
+@@ -440,11 +443,7 @@ impl App {
+                     tui,
+                     app_server,
+                     Some(ThreadStartSource::Clear),
+-                    crate::chatwidget::create_initial_user_message(
+-                        Some(text),
+-                        Vec::new(),
+-                        Vec::new(),
+-                    ),
++                    Some(user_message),
+                     /*new_thread_name*/ None,
+                 )
+                 .await;
+@@ -1233,6 +1232,111 @@ impl App {
              AppEvent::SubmitThreadOp { thread_id, op } => {
                  self.submit_thread_op(app_server, thread_id, op).await?;
              }
@@ -3587,7 +3610,7 @@ index 832104c..ccafb0d 100644
      remote_bytes: usize,
  ) -> Result<Vec<UserInput>, String> {
 diff --git a/codex-rs/tui/src/chatwidget/input_flow.rs b/codex-rs/tui/src/chatwidget/input_flow.rs
-index 6ee018e..bb97844 100644
+index 6ee018e..217a164 100644
 --- a/codex-rs/tui/src/chatwidget/input_flow.rs
 +++ b/codex-rs/tui/src/chatwidget/input_flow.rs
 @@ -47,10 +47,12 @@ impl ChatWidget {
@@ -3636,14 +3659,42 @@ index 6ee018e..bb97844 100644
              }
              InputResult::ParentOwnedInputBlocked => {
                  self.add_error_message(PARENT_OWNED_INPUT_MESSAGE.to_string());
-@@ -401,6 +410,7 @@ impl ChatWidget {
+@@ -371,6 +380,20 @@ impl ChatWidget {
+         );
+     }
+ 
++    /// Capture the current session choice at an actual non-composer acceptance.
++    /// Queued and initial-message consumers must only forward this snapshot.
++    pub(crate) fn accept_user_message(&self, text: String) -> UserMessage {
++        UserMessage {
++            mindplayer_routing_choice: self.bottom_pane.mindplayer_session_routing().map(|mode| {
++                codex_app_server_protocol::MindplayerRoutingChoice {
++                    mode,
++                    include_recent: false,
++                }
++            }),
++            ..UserMessage::from(text)
++        }
++    }
++
+     pub(crate) fn submit_user_message_with_mode(
+         &mut self,
+         text: String,
+@@ -400,13 +423,7 @@ impl ChatWidget {
+         }
          self.set_collaboration_mask_from_user_action(collaboration_mode);
          let should_queue = self.is_plan_streaming_in_tui();
-         let user_message = UserMessage {
-+            mindplayer_routing_choice: None,
-             text,
-             local_images: Vec::new(),
-             remote_image_urls: Vec::new(),
+-        let user_message = UserMessage {
+-            text,
+-            local_images: Vec::new(),
+-            remote_image_urls: Vec::new(),
+-            text_elements: Vec::new(),
+-            mention_bindings: Vec::new(),
+-        };
++        let user_message = self.accept_user_message(text);
+         if should_queue {
+             self.queue_user_message(user_message);
+         } else {
 diff --git a/codex-rs/tui/src/chatwidget/input_queue.rs b/codex-rs/tui/src/chatwidget/input_queue.rs
 index bdaedab..e6418d0 100644
 --- a/codex-rs/tui/src/chatwidget/input_queue.rs
@@ -4348,6 +4399,35 @@ index 85ea551..22a90c8 100644
              self.bottom_pane.append_question_drafts(&drafts);
              self.refresh_pending_input_preview();
              self.request_redraw();
+diff --git a/codex-rs/tui/src/chatwidget/questions.rs b/codex-rs/tui/src/chatwidget/questions.rs
+index 83884b3..59157d5 100644
+--- a/codex-rs/tui/src/chatwidget/questions.rs
++++ b/codex-rs/tui/src/chatwidget/questions.rs
+@@ -132,6 +132,7 @@ impl ChatWidget {
+                     return true;
+                 }
+                 let main = self.bottom_pane.composer_draft_snapshot();
++                let user_message = self.accept_user_message(text);
+                 let accepted = if queued
+                     || self.input_queue.submissions_paused()
+                     || self.is_plan_streaming_in_tui()
+@@ -140,14 +141,14 @@ impl ChatWidget {
+                     || self.only_user_shell_commands_running()
+                 {
+                     self.queue_user_message_with_options_and_source(
+-                        UserMessage::from(text),
++                        user_message,
+                         QueuedInputAction::Plain,
+                         Vec::new(),
+                         UserMessageSource::QuestionAnswer,
+                     )
+                 } else {
+                     self.submit_user_message_with_history_and_shell_escape_policy(
+-                        UserMessage::from(text),
++                        user_message,
+                         UserMessageHistoryRecord::UserMessageText,
+                         ShellEscapePolicy::Disallow,
+                         UserMessageSource::QuestionAnswer,
 diff --git a/codex-rs/tui/src/chatwidget/realtime_tests/transcripts.rs b/codex-rs/tui/src/chatwidget/realtime_tests/transcripts.rs
 index 0984ea3..ed247c9 100644
 --- a/codex-rs/tui/src/chatwidget/realtime_tests/transcripts.rs
@@ -4727,13 +4807,73 @@ index 9143e7a..bce5640 100644
              text_elements: Vec::new(),
          },
 diff --git a/codex-rs/tui/src/chatwidget/tests/composer_submission.rs b/codex-rs/tui/src/chatwidget/tests/composer_submission.rs
-index 6bc5164..29efbac 100644
+index 6bc5164..e6f4fca 100644
 --- a/codex-rs/tui/src/chatwidget/tests/composer_submission.rs
 +++ b/codex-rs/tui/src/chatwidget/tests/composer_submission.rs
-@@ -13,6 +13,539 @@ use codex_protocol::permissions::NetworkSandboxPolicy;
+@@ -13,6 +13,599 @@ use codex_protocol::permissions::NetworkSandboxPolicy;
  use pretty_assertions::assert_eq;
  use std::collections::VecDeque;
  
++#[tokio::test]
++async fn mindplayer_cli_initial_acceptance_captures_new_session_before_later_toggle() {
++    use codex_app_server_protocol::MindplayerRoutingMode;
++
++    let (mut chat, _events, mut operations) = make_chatwidget_manual(None).await;
++    chat.thread_id = Some(ThreadId::new());
++    // Run this same test with and without MINDPLAYER_PER_PROMPT_CHOICE=1.
++    // The factory accepts CLI arguments; ordinary draft constructors do not.
++    let initial =
++        create_initial_user_message(Some("accepted CLI prompt".into()), Vec::new(), Vec::new())
++            .unwrap();
++    let mode = chat.bottom_pane.mindplayer_session_routing();
++    assert_eq!(
++        initial
++            .mindplayer_routing_choice
++            .as_ref()
++            .map(|choice| choice.mode),
++        mode
++    );
++    assert!(mode.is_none_or(|mode| mode == MindplayerRoutingMode::Native));
++    assert!(
++        UserMessage::from("unaccepted draft")
++            .mindplayer_routing_choice
++            .is_none()
++    );
++    chat.initial_user_message = Some(initial);
++    chat.handle_key_event(KeyCode::F(6).into());
++    chat.submit_initial_user_message_if_pending();
++    let Op::UserTurn {
++        mindplayer_routing_choice,
++        ..
++    } = next_submit_op(&mut operations)
++    else {
++        panic!("accepted CLI turn");
++    };
++    assert_eq!(
++        mindplayer_routing_choice.as_ref().map(|choice| choice.mode),
++        mode
++    );
++    assert_no_submit_op(&mut operations);
++}
++
++#[tokio::test]
++async fn mindplayer_initial_handoff_preserves_missing_choice_without_fallback() {
++    let (mut chat, _events, mut operations) = make_chatwidget_manual(None).await;
++    chat.thread_id = Some(ThreadId::new());
++    chat.bottom_pane.set_mindplayer_prompt_choice_enabled(true);
++    chat.handle_key_event(KeyCode::F(6).into());
++    chat.initial_user_message = Some(UserMessage::from("uncaptured initial input"));
++    chat.submit_initial_user_message_if_pending();
++    let Op::UserTurn {
++        mindplayer_routing_choice,
++        ..
++    } = next_submit_op(&mut operations)
++    else {
++        panic!("initial turn");
++    };
++    assert!(mindplayer_routing_choice.is_none());
++}
++
 +#[tokio::test]
 +async fn mindplayer_session_plan_and_init_capture_live_and_queued_choices() {
 +    use codex_app_server_protocol::MindplayerRoutingMode;
@@ -5270,7 +5410,7 @@ index 6bc5164..29efbac 100644
  #[tokio::test]
  async fn composer_submission_sends_once_and_requests_latest() {
      let (mut chat, mut events, mut operations) =
-@@ -148,7 +681,7 @@ async fn hidden_shell_paste_restored_by_queue_edit_submits_literal_prompt() {
+@@ -148,7 +741,7 @@ async fn hidden_shell_paste_restored_by_queue_edit_submits_literal_prompt() {
  }
  
  #[tokio::test]
@@ -5279,7 +5419,7 @@ index 6bc5164..29efbac 100644
      let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
      chat.thread_id = Some(ThreadId::new());
      handle_turn_started(&mut chat, "turn-1");
-@@ -156,6 +689,8 @@ async fn hidden_shell_paste_restored_by_interrupt_submits_literal_prompt() {
+@@ -156,6 +749,8 @@ async fn hidden_shell_paste_restored_by_interrupt_submits_literal_prompt() {
  
      chat.handle_key_event(KeyEvent::from(KeyCode::Tab));
      chat.on_interrupted_turn(TurnAbortReason::Interrupted);
@@ -5288,7 +5428,7 @@ index 6bc5164..29efbac 100644
      chat.handle_key_event(KeyEvent::from(KeyCode::Enter));
  
      assert_hidden_shell_payload_is_literal(op_rx.try_recv(), payload);
-@@ -1402,6 +1937,7 @@ async fn queued_restore_with_remote_images_keeps_local_placeholder_mapping() {
+@@ -1402,6 +1997,7 @@ async fn queued_restore_with_remote_images_keeps_local_placeholder_mapping() {
      let remote_image_urls = vec!["https://example.com/queued-remote.png".to_string()];
  
      chat.restore_user_message_to_composer(UserMessage {
@@ -5296,7 +5436,7 @@ index 6bc5164..29efbac 100644
          text: text.clone(),
          local_images: local_images.clone(),
          remote_image_urls: remote_image_urls.clone(),
-@@ -1435,6 +1971,7 @@ async fn restored_message_preserves_existing_composer_draft_and_attachments() {
+@@ -1435,6 +2031,7 @@ async fn restored_message_preserves_existing_composer_draft_and_attachments() {
          .set_composer_pending_pastes(vec![(paste_placeholder.to_string(), "hello".to_string())]);
  
      chat.restore_user_message_to_composer(UserMessage {
@@ -5304,7 +5444,7 @@ index 6bc5164..29efbac 100644
          text: "[Image #1] retry prompt".to_string(),
          local_images: vec![LocalImageAttachment {
              placeholder: "[Image #1]".to_string(),
-@@ -1463,7 +2000,7 @@ async fn restored_message_preserves_existing_composer_draft_and_attachments() {
+@@ -1463,7 +2060,7 @@ async fn restored_message_preserves_existing_composer_draft_and_attachments() {
  }
  
  #[tokio::test]
@@ -5313,7 +5453,7 @@ index 6bc5164..29efbac 100644
      let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(Some("gpt-5")).await;
      chat.thread_id = Some(ThreadId::new());
      chat.set_feature_enabled(Feature::CollaborationModes, /*enabled*/ true);
-@@ -1478,6 +2015,7 @@ async fn interrupted_turn_restore_keeps_active_mode_for_resubmission() {
+@@ -1478,6 +2075,7 @@ async fn interrupted_turn_restore_keeps_active_mode_for_resubmission() {
      chat.on_task_started();
      chat.input_queue.queued_user_messages.push_back(
          UserMessage {
@@ -5321,7 +5461,7 @@ index 6bc5164..29efbac 100644
              text: "Implement the plan.".to_string(),
              local_images: Vec::new(),
              remote_image_urls: Vec::new(),
-@@ -1490,6 +2028,13 @@ async fn interrupted_turn_restore_keeps_active_mode_for_resubmission() {
+@@ -1490,6 +2088,13 @@ async fn interrupted_turn_restore_keeps_active_mode_for_resubmission() {
  
      handle_turn_interrupted(&mut chat, "turn-1");
  
@@ -5335,7 +5475,7 @@ index 6bc5164..29efbac 100644
      assert_eq!(chat.bottom_pane.composer_text(), "Implement the plan.");
      assert!(chat.input_queue.queued_user_messages.is_empty());
      assert_eq!(chat.active_collaboration_mode_kind(), expected_mode);
-@@ -1535,6 +2080,7 @@ async fn remap_placeholders_uses_attachment_labels() {
+@@ -1535,6 +2140,7 @@ async fn remap_placeholders_uses_attachment_labels() {
          },
      ];
      let message = UserMessage {
@@ -5343,7 +5483,7 @@ index 6bc5164..29efbac 100644
          text,
          text_elements: elements,
          local_images: attachments,
-@@ -1601,6 +2147,7 @@ async fn remap_placeholders_uses_byte_ranges_when_placeholder_missing() {
+@@ -1601,6 +2207,7 @@ async fn remap_placeholders_uses_byte_ranges_when_placeholder_missing() {
          },
      ];
      let message = UserMessage {
@@ -5351,7 +5491,7 @@ index 6bc5164..29efbac 100644
          text,
          text_elements: elements,
          local_images: attachments,
-@@ -1808,6 +2355,7 @@ async fn restore_thread_input_state_applies_running_state_policy() {
+@@ -1808,6 +2415,7 @@ async fn restore_thread_input_state_applies_running_state_policy() {
          text_elements: Vec::new(),
      });
      let input_state = ThreadInputState {
@@ -5359,7 +5499,7 @@ index 6bc5164..29efbac 100644
          questions: None,
          pending_thread_settings: None,
          composer: Some(ThreadComposerState {
-@@ -1829,6 +2377,8 @@ async fn restore_thread_input_state_applies_running_state_policy() {
+@@ -1829,6 +2437,8 @@ async fn restore_thread_input_state_applies_running_state_policy() {
          reconnect_pending: false,
          user_turn_pending_start: true,
          pending_user_message_client_id: None,
@@ -5368,7 +5508,7 @@ index 6bc5164..29efbac 100644
          submit_pending_steers_after_interrupt: true,
          current_collaboration_mode: chat.current_collaboration_mode.clone(),
          active_collaboration_mask: chat.active_collaboration_mask.clone(),
-@@ -2063,6 +2613,7 @@ async fn submit_user_message_ignores_inaccessible_app_mentions_from_bindings() {
+@@ -2063,6 +2673,7 @@ async fn submit_user_message_ignores_inaccessible_app_mentions_from_bindings() {
      );
  
      chat.submit_user_message(UserMessage {
@@ -5376,7 +5516,7 @@ index 6bc5164..29efbac 100644
          text: "$arabica-uae".to_string(),
          local_images: Vec::new(),
          remote_image_urls: Vec::new(),
-@@ -2212,6 +2763,7 @@ async fn task_mention_submission_and_transcript_preserve_the_visible_title() {
+@@ -2212,6 +2823,7 @@ async fn task_mention_submission_and_transcript_preserve_the_visible_title() {
          chat.set_task_mentions_enabled(enabled);
          let title = "Review database migration";
          chat.submit_user_message(UserMessage {
@@ -5384,7 +5524,7 @@ index 6bc5164..29efbac 100644
              text: format!("Inspect @{title}"),
              local_images: Vec::new(),
              remote_image_urls: Vec::new(),
-@@ -2295,7 +2847,7 @@ async fn committed_user_message_with_hidden_prompt_context_renders_local_images(
+@@ -2295,7 +2907,7 @@ async fn committed_user_message_with_hidden_prompt_context_renders_local_images(
  }
  
  #[tokio::test]
@@ -5393,7 +5533,7 @@ index 6bc5164..29efbac 100644
      let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
  
      // Simulate a running task to enable queuing of user inputs.
-@@ -2313,14 +2865,14 @@ async fn interrupt_restores_queued_messages_into_composer() {
+@@ -2313,14 +2925,14 @@ async fn interrupt_restores_queued_messages_into_composer() {
      // Deliver an interrupted turn notification as if Esc was pressed.
      handle_turn_interrupted(&mut chat, "turn-1");
  
@@ -5413,7 +5553,7 @@ index 6bc5164..29efbac 100644
      assert!(
          op_rx.try_recv().is_err(),
          "unexpected outbound op after interrupt"
-@@ -2331,7 +2883,7 @@ async fn interrupt_restores_queued_messages_into_composer() {
+@@ -2331,7 +2943,7 @@ async fn interrupt_restores_queued_messages_into_composer() {
  }
  
  #[tokio::test]
@@ -5422,7 +5562,7 @@ index 6bc5164..29efbac 100644
      let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
  
      chat.bottom_pane.set_task_running(/*running*/ true);
-@@ -2348,11 +2900,12 @@ async fn interrupt_prepends_queued_messages_before_existing_composer_text() {
+@@ -2348,11 +2960,12 @@ async fn interrupt_prepends_queued_messages_before_existing_composer_text() {
  
      handle_turn_interrupted(&mut chat, "turn-1");
  
@@ -5438,7 +5578,7 @@ index 6bc5164..29efbac 100644
      assert!(
          op_rx.try_recv().is_err(),
          "unexpected outbound op after interrupt"
-@@ -2789,7 +3342,8 @@ fn image_preparation_keeps_input_responsive_and_preserves_pending_input() {
+@@ -2789,7 +3402,8 @@ fn image_preparation_keeps_input_responsive_and_preserves_pending_input() {
                      next_interrupt_op(&mut ops);
                      if scenario == "escape" {
                          chat.on_interrupted_turn(TurnAbortReason::Interrupted);
@@ -5448,7 +5588,7 @@ index 6bc5164..29efbac 100644
                      } else {
                          chat.on_task_complete(
                              /*last_agent_message*/ None, /*completion*/ None,
-@@ -2813,7 +3367,8 @@ fn image_preparation_keeps_input_responsive_and_preserves_pending_input() {
+@@ -2813,7 +3427,8 @@ fn image_preparation_keeps_input_responsive_and_preserves_pending_input() {
                          .pending_steers
                          .push_back(pending_steer("earlier"));
                      chat.on_interrupted_turn(TurnAbortReason::Interrupted);
@@ -5458,7 +5598,7 @@ index 6bc5164..29efbac 100644
                      chat.on_images_prepared(id);
                  } else if scenario == "disconnect" {
                      chat.pause_for_disconnect();
-@@ -2841,3 +3396,31 @@ fn image_preparation_keeps_input_responsive_and_preserves_pending_input() {
+@@ -2841,3 +3456,31 @@ fn image_preparation_keeps_input_responsive_and_preserves_pending_input() {
              });
      }
  }
@@ -5521,10 +5661,185 @@ index 4e1127b..32986a3 100644
          rx.try_recv(),
          Ok(AppEvent::AppendMessageHistoryEntry { text, .. }) if text == "!echo hi"
 diff --git a/codex-rs/tui/src/chatwidget/tests/plan_mode.rs b/codex-rs/tui/src/chatwidget/tests/plan_mode.rs
-index 2b32570..e91f713 100644
+index 2b32570..5961aa3 100644
 --- a/codex-rs/tui/src/chatwidget/tests/plan_mode.rs
 +++ b/codex-rs/tui/src/chatwidget/tests/plan_mode.rs
-@@ -998,9 +998,7 @@ async fn plan_implementation_popup_skips_when_steer_follows_proposed_plan() {
+@@ -125,6 +125,92 @@ async fn plan_implementation_popup_yes_emits_submit_message_event() {
+     assert_eq!(collaboration_mode.mode, Some(ModeKind::Default));
+ }
+ 
++#[tokio::test]
++async fn mindplayer_plan_confirm_snapshots_session_choice_before_queueing() {
++    use codex_app_server_protocol::MindplayerRoutingMode;
++
++    for queued in [false, true] {
++        for mode in [
++            None,
++            Some(MindplayerRoutingMode::Native),
++            Some(MindplayerRoutingMode::Jev),
++        ] {
++            let (mut chat, mut events, mut operations) =
++                make_chatwidget_manual(Some("gpt-5")).await;
++            chat.thread_id = Some(ThreadId::new());
++            chat.set_feature_enabled(Feature::CollaborationModes, true);
++            chat.bottom_pane
++                .set_mindplayer_prompt_choice_enabled(mode.is_some());
++            let plan_mask = collaboration_modes::plan_mask(chat.model_catalog.as_ref())
++                .expect("expected Plan mode");
++            chat.set_collaboration_mask(plan_mask);
++            if mode == Some(MindplayerRoutingMode::Jev) {
++                chat.handle_key_event(KeyCode::F(6).into());
++            }
++            if queued {
++                chat.on_plan_delta("- Pending plan output\n".to_string());
++                chat.input_queue.suppress_queue_autosend = true;
++            }
++            let _ = drain_insert_history(&mut events);
++            chat.open_plan_implementation_prompt();
++            chat.handle_key_event(KeyCode::Enter.into());
++            let (text, collaboration_mode) = std::iter::from_fn(|| events.try_recv().ok())
++                .find_map(|event| match event {
++                    AppEvent::SubmitUserMessageWithMode {
++                        text,
++                        collaboration_mode,
++                    } => Some((text, collaboration_mode)),
++                    _ => None,
++                })
++                .expect("the actual Yes action must submit a user message");
++            assert_eq!(
++                text,
++                plan_implementation::PLAN_IMPLEMENTATION_CODING_MESSAGE
++            );
++            chat.submit_user_message_with_mode(text, collaboration_mode);
++
++            if queued {
++                assert_no_submit_op(&mut operations);
++                let accepted = chat.input_queue.queued_user_messages.front().unwrap();
++                assert_eq!(
++                    accepted
++                        .mindplayer_routing_choice
++                        .as_ref()
++                        .map(|choice| choice.mode),
++                    mode
++                );
++                chat.handle_key_event(KeyCode::F(6).into());
++                chat.on_plan_item_completed("- Pending plan output\n".to_string());
++                chat.input_queue.suppress_queue_autosend = false;
++                assert!(chat.maybe_send_next_queued_input());
++            }
++            let Op::UserTurn {
++                items,
++                collaboration_mode: Some(collaboration_mode),
++                mindplayer_routing_choice,
++                ..
++            } = next_submit_op(&mut operations)
++            else {
++                panic!("expected the accepted plan implementation turn");
++            };
++            assert_eq!(collaboration_mode.mode, ModeKind::Default);
++            assert_eq!(
++                items,
++                vec![UserInput::Text {
++                    text: plan_implementation::PLAN_IMPLEMENTATION_CODING_MESSAGE.to_string(),
++                    text_elements: Vec::new(),
++                }]
++            );
++            assert_eq!(
++                mindplayer_routing_choice.as_ref().map(|choice| choice.mode),
++                mode
++            );
++            assert!(mindplayer_routing_choice.is_none_or(|choice| !choice.include_recent));
++            assert_no_submit_op(&mut operations);
++        }
++    }
++}
++
+ #[tokio::test]
+ async fn plan_implementation_popup_clear_context_emits_clear_submit_event() {
+     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(Some("gpt-5")).await;
+@@ -149,6 +235,81 @@ async fn plan_implementation_popup_clear_context_emits_clear_submit_event() {
+     );
+ }
+ 
++#[tokio::test]
++async fn mindplayer_clear_context_acceptance_survives_new_session_and_later_toggle() {
++    use codex_app_server_protocol::MindplayerRoutingMode;
++
++    for mode in [
++        None,
++        Some(MindplayerRoutingMode::Native),
++        Some(MindplayerRoutingMode::Jev),
++    ] {
++        let (mut chat, mut events, _operations) = make_chatwidget_manual(None).await;
++        chat.bottom_pane
++            .set_mindplayer_prompt_choice_enabled(mode.is_some());
++        if mode == Some(MindplayerRoutingMode::Jev) {
++            chat.handle_key_event(KeyCode::F(6).into());
++        }
++        chat.on_plan_item_completed("- Approved plan\n".into());
++        let _ = drain_insert_history(&mut events);
++        chat.open_plan_implementation_prompt();
++        chat.handle_key_event(KeyCode::Down.into());
++        chat.handle_key_event(KeyCode::Enter.into());
++        let text = std::iter::from_fn(|| events.try_recv().ok())
++            .find_map(|event| match event {
++                AppEvent::ClearUiAndSubmitUserMessage { text } => Some(text),
++                _ => None,
++            })
++            .expect("actual clear-context acceptance");
++        let accepted = chat.accept_user_message(text);
++        assert_eq!(
++            accepted
++                .mindplayer_routing_choice
++                .as_ref()
++                .map(|choice| choice.mode),
++            mode
++        );
++
++        let (mut fresh, _events, mut operations) = make_chatwidget_manual(None).await;
++        fresh.thread_id = Some(ThreadId::new());
++        fresh
++            .bottom_pane
++            .set_mindplayer_prompt_choice_enabled(mode.is_some());
++        assert_eq!(
++            fresh.bottom_pane.mindplayer_session_routing(),
++            mode.map(|_| MindplayerRoutingMode::Native)
++        );
++        fresh.initial_user_message = Some(accepted.clone());
++        fresh.set_initial_user_message_submit_suppressed(true);
++        fresh.submit_initial_user_message_if_pending();
++        assert_no_submit_op(&mut operations);
++        fresh.handle_key_event(KeyCode::F(6).into());
++        fresh.set_initial_user_message_submit_suppressed(false);
++        fresh.submit_initial_user_message_if_pending();
++        let Op::UserTurn {
++            items,
++            mindplayer_routing_choice,
++            ..
++        } = next_submit_op(&mut operations)
++        else {
++            panic!("accepted initial implementation turn");
++        };
++        assert_eq!(
++            mindplayer_routing_choice.as_ref().map(|choice| choice.mode),
++            mode
++        );
++        assert!(mindplayer_routing_choice.is_none_or(|choice| !choice.include_recent));
++        assert_eq!(
++            items,
++            vec![UserInput::Text {
++                text: accepted.text,
++                text_elements: Vec::new()
++            }]
++        );
++        assert_no_submit_op(&mut operations);
++    }
++}
++
+ #[tokio::test]
+ async fn plan_implementation_clear_context_requires_default_mode_and_plan() {
+     let (chat, _rx, _op_rx) = make_chatwidget_manual(Some("gpt-5")).await;
+@@ -998,9 +1159,7 @@ async fn plan_implementation_popup_skips_when_steer_follows_proposed_plan() {
  "
          .to_string(),
      );
@@ -5535,7 +5850,7 @@ index 2b32570..e91f713 100644
  
      match next_submit_op(&mut op_rx) {
          Op::UserTurn { items, .. } => assert_eq!(
-@@ -1040,9 +1038,7 @@ async fn plan_implementation_popup_shows_after_new_plan_follows_steer() {
+@@ -1040,9 +1199,7 @@ async fn plan_implementation_popup_shows_after_new_plan_follows_steer() {
  "
          .to_string(),
      );
@@ -5546,7 +5861,7 @@ index 2b32570..e91f713 100644
  
      match next_submit_op(&mut op_rx) {
          Op::UserTurn { items, .. } => assert_eq!(
-@@ -1274,6 +1270,7 @@ async fn submit_user_message_emits_structured_plugin_mentions_from_bindings() {
+@@ -1274,6 +1431,7 @@ async fn submit_user_message_emits_structured_plugin_mentions_from_bindings() {
          }]));
  
      chat.submit_user_message(UserMessage {
@@ -5554,7 +5869,7 @@ index 2b32570..e91f713 100644
          text: "$sample".to_string(),
          local_images: Vec::new(),
          remote_image_urls: Vec::new(),
-@@ -1304,7 +1301,7 @@ async fn submit_user_message_emits_structured_plugin_mentions_from_bindings() {
+@@ -1304,7 +1462,7 @@ async fn submit_user_message_emits_structured_plugin_mentions_from_bindings() {
  }
  
  #[tokio::test]
@@ -5563,7 +5878,7 @@ index 2b32570..e91f713 100644
      let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(Some("gpt-5.5")).await;
      chat.thread_id = Some(ThreadId::new());
      chat.set_feature_enabled(Feature::CollaborationModes, /*enabled*/ true);
-@@ -1317,11 +1314,12 @@ async fn enter_submits_when_plan_stream_is_not_active() {
+@@ -1317,11 +1475,12 @@ async fn enter_submits_when_plan_stream_is_not_active() {
          .set_composer_text("submitted immediately".to_string(), Vec::new(), Vec::new());
      chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
  
@@ -5618,10 +5933,98 @@ index 074aca1..a509fa3 100644
      }
  }
 diff --git a/codex-rs/tui/src/chatwidget/tests/questions_tests.rs b/codex-rs/tui/src/chatwidget/tests/questions_tests.rs
-index c28dee3..cc93b55 100644
+index c28dee3..2ce6f28 100644
 --- a/codex-rs/tui/src/chatwidget/tests/questions_tests.rs
 +++ b/codex-rs/tui/src/chatwidget/tests/questions_tests.rs
-@@ -245,7 +245,7 @@ async fn slash_and_mode_prompts_clear_unanswered_questions_after_delivery() {
+@@ -11,6 +11,87 @@ fn questions() -> Vec<AsyncUserInputQuestion> {
+     ]
+ }
+ 
++#[tokio::test]
++async fn mindplayer_async_question_acceptance_snapshots_mode_before_queueing() {
++    use codex_app_server_protocol::MindplayerRoutingMode;
++
++    for queued in [false, true] {
++        for mode in [
++            None,
++            Some(MindplayerRoutingMode::Native),
++            Some(MindplayerRoutingMode::Jev),
++        ] {
++            let (mut chat, _events, mut operations) = make_chatwidget_manual(None).await;
++            chat.thread_id = Some(ThreadId::new());
++            chat.bottom_pane
++                .set_mindplayer_prompt_choice_enabled(mode.is_some());
++            if mode == Some(MindplayerRoutingMode::Jev) {
++                chat.handle_key_event(KeyCode::F(6).into());
++            }
++            if queued {
++                handle_turn_started(&mut chat, "prior");
++            }
++            chat.bottom_pane
++                .set_composer_text("main draft".into(), Vec::new(), Vec::new());
++            chat.add_async_questions("message", &questions());
++            chat.handle_key_event(KeyEvent::new(KeyCode::Up, KeyModifiers::ALT));
++            chat.bottom_pane.handle_paste("accepted answer".into());
++            assert_no_submit_op(&mut operations);
++            assert!(chat.input_queue.queued_user_messages.is_empty());
++            chat.handle_key_event(KeyEvent::from(if queued {
++                KeyCode::Tab
++            } else {
++                KeyCode::Enter
++            }));
++            assert_eq!(question_count(&chat), 1);
++            assert_eq!(chat.bottom_pane.composer_text(), "main draft");
++            if queued {
++                assert_no_submit_op(&mut operations);
++                let accepted = chat.input_queue.queued_user_messages.front().unwrap();
++                assert_eq!(accepted.source, UserMessageSource::QuestionAnswer);
++                assert_eq!(
++                    accepted
++                        .mindplayer_routing_choice
++                        .as_ref()
++                        .map(|choice| choice.mode),
++                    mode
++                );
++                chat.bottom_pane
++                    .questions
++                    .as_mut()
++                    .unwrap()
++                    .set_expanded(false);
++                chat.handle_key_event(KeyCode::F(6).into());
++                if mode.is_some() {
++                    assert_ne!(chat.bottom_pane.mindplayer_session_routing(), mode);
++                } else {
++                    assert!(chat.bottom_pane.mindplayer_session_routing().is_none());
++                }
++                handle_turn_completed(&mut chat, "prior", None);
++            }
++            let operation = next_submit_op(&mut operations);
++            let Op::UserTurn {
++                mindplayer_routing_choice,
++                ..
++            } = &operation
++            else {
++                panic!("expected the accepted question answer");
++            };
++            assert_eq!(
++                mindplayer_routing_choice.as_ref().map(|choice| choice.mode),
++                mode
++            );
++            assert!(
++                mindplayer_routing_choice
++                    .as_ref()
++                    .is_none_or(|choice| !choice.include_recent)
++            );
++            assert_answer(operation, "> Which way?\n\naccepted answer");
++            assert_no_submit_op(&mut operations);
++        }
++    }
++}
++
+ #[tokio::test]
+ async fn unavailable_send_keeps_answer_and_skip_remains_available() {
+     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+@@ -245,7 +326,7 @@ async fn slash_and_mode_prompts_clear_unanswered_questions_after_delivery() {
      chat.thread_id = Some(ThreadId::new());
      chat.add_async_questions("old", &questions());
      chat.handle_composer_input_result(
@@ -5630,7 +6033,7 @@ index c28dee3..cc93b55 100644
          /*had_modal_or_popup*/ false,
      );
      assert_answer(op_rx.try_recv().unwrap(), "New plan");
-@@ -265,7 +265,7 @@ async fn accepted_review_clears_questions_but_rejected_review_preserves_them() {
+@@ -265,7 +346,7 @@ async fn accepted_review_clears_questions_but_rejected_review_preserves_them() {
      chat.thread_id = Some(ThreadId::new());
      chat.add_async_questions("old", &questions());
      chat.handle_composer_input_result(
@@ -5639,7 +6042,7 @@ index c28dee3..cc93b55 100644
          /*had_modal_or_popup*/ false,
      );
      assert_matches!(
-@@ -279,7 +279,7 @@ async fn accepted_review_clears_questions_but_rejected_review_preserves_them() {
+@@ -279,7 +360,7 @@ async fn accepted_review_clears_questions_but_rejected_review_preserves_them() {
      chat.add_async_questions("new", &questions());
      chat.blocks_direct_input = true;
      chat.handle_composer_input_result(
@@ -5648,7 +6051,7 @@ index c28dee3..cc93b55 100644
          /*had_modal_or_popup*/ false,
      );
      assert_eq!(question_count(&chat), 2);
-@@ -295,6 +295,7 @@ async fn queued_model_slash_prompt_clears_questions_but_local_slash_command_does
+@@ -295,6 +376,7 @@ async fn queued_model_slash_prompt_clears_questions_but_local_slash_command_does
      for text in ["/model", "/goal clear"] {
          chat.handle_composer_input_result(
              InputResult::Queued {
@@ -5656,7 +6059,7 @@ index c28dee3..cc93b55 100644
                  text: text.into(),
                  text_elements: Vec::new(),
                  action: QueuedInputAction::ParseSlash,
-@@ -306,6 +307,7 @@ async fn queued_model_slash_prompt_clears_questions_but_local_slash_command_does
+@@ -306,6 +388,7 @@ async fn queued_model_slash_prompt_clears_questions_but_local_slash_command_does
      }
      chat.handle_composer_input_result(
          InputResult::Queued {
@@ -5664,7 +6067,7 @@ index c28dee3..cc93b55 100644
              text: "/plan New work".into(),
              text_elements: Vec::new(),
              action: QueuedInputAction::ParseSlash,
-@@ -319,6 +321,7 @@ async fn queued_model_slash_prompt_clears_questions_but_local_slash_command_does
+@@ -319,6 +402,7 @@ async fn queued_model_slash_prompt_clears_questions_but_local_slash_command_does
      chat.add_async_questions("new", &questions());
      chat.handle_composer_input_result(
          InputResult::Queued {
@@ -5672,7 +6075,7 @@ index c28dee3..cc93b55 100644
              text: "/diff explain the change".into(),
              text_elements: Vec::new(),
              action: QueuedInputAction::ParseSlash,
-@@ -337,6 +340,7 @@ async fn rejected_synchronous_literal_prompt_keeps_questions() {
+@@ -337,6 +421,7 @@ async fn rejected_synchronous_literal_prompt_keeps_questions() {
      chat.set_model("");
      chat.handle_composer_input_result(
          InputResult::Queued {
@@ -6369,7 +6772,7 @@ index 5754109..499e46f 100644
              None
          } else {
 diff --git a/codex-rs/tui/src/chatwidget/user_messages.rs b/codex-rs/tui/src/chatwidget/user_messages.rs
-index ed99725..df75b53 100644
+index ed99725..a629867 100644
 --- a/codex-rs/tui/src/chatwidget/user_messages.rs
 +++ b/codex-rs/tui/src/chatwidget/user_messages.rs
 @@ -15,8 +15,10 @@ use crate::bottom_pane::LocalImageAttachment;
@@ -6426,15 +6829,23 @@ index ed99725..df75b53 100644
              text: text.to_string(),
              local_images: Vec::new(),
              remote_image_urls: Vec::new(),
-@@ -225,6 +235,7 @@ pub(crate) fn create_initial_user_message(
+@@ -225,6 +235,15 @@ pub(crate) fn create_initial_user_message(
              })
              .collect();
          Some(UserMessage {
-+            mindplayer_routing_choice: None,
++            // CLI arguments are accepted before the new composer exists. Its
++            // explicit initial mode is OFF; draft/restoration constructors stay
++            // unset, and later initial-message delivery never infers a choice.
++            mindplayer_routing_choice: (std::env::var("MINDPLAYER_PER_PROMPT_CHOICE").as_deref()
++                == Ok("1"))
++            .then_some(codex_app_server_protocol::MindplayerRoutingChoice {
++                mode: codex_app_server_protocol::MindplayerRoutingMode::Native,
++                include_recent: false,
++            }),
              text,
              local_images,
              remote_image_urls: Vec::new(),
-@@ -357,6 +368,7 @@ fn remap_placeholders_for_message_and_history_record(
+@@ -357,6 +376,7 @@ fn remap_placeholders_for_message_and_history_record(
      next_label: &mut usize,
  ) -> (UserMessage, UserMessageHistoryRecord) {
      let UserMessage {
@@ -6442,7 +6853,7 @@ index ed99725..df75b53 100644
          text,
          text_elements,
          local_images,
-@@ -379,6 +391,7 @@ fn remap_placeholders_for_message_and_history_record(
+@@ -379,6 +399,7 @@ fn remap_placeholders_for_message_and_history_record(
  
      (
          UserMessage {
@@ -6450,7 +6861,7 @@ index ed99725..df75b53 100644
              text,
              local_images: remapped_images,
              remote_image_urls,
-@@ -434,6 +447,7 @@ pub(super) fn merge_user_messages(messages: Vec<UserMessage>) -> UserMessage {
+@@ -434,6 +455,7 @@ pub(super) fn merge_user_messages(messages: Vec<UserMessage>) -> UserMessage {
  
  fn merge_remapped_user_messages(messages: impl IntoIterator<Item = UserMessage>) -> UserMessage {
      let mut combined = UserMessage {
@@ -6458,7 +6869,7 @@ index ed99725..df75b53 100644
          text: String::new(),
          text_elements: Vec::new(),
          local_images: Vec::new(),
-@@ -446,6 +460,7 @@ fn merge_remapped_user_messages(messages: impl IntoIterator<Item = UserMessage>)
+@@ -446,6 +468,7 @@ fn merge_remapped_user_messages(messages: impl IntoIterator<Item = UserMessage>)
              combined.text.push('\n');
          }
          let UserMessage {
@@ -6466,7 +6877,7 @@ index ed99725..df75b53 100644
              text,
              text_elements,
              local_images,
-@@ -470,6 +485,9 @@ pub(super) fn user_message_for_restore(
+@@ -470,6 +493,9 @@ pub(super) fn user_message_for_restore(
      mut message: UserMessage,
      history_record: &UserMessageHistoryRecord,
  ) -> UserMessage {
@@ -6476,7 +6887,7 @@ index ed99725..df75b53 100644
      match history_record {
          UserMessageHistoryRecord::Override(history) if !history.text.is_empty() => UserMessage {
              text: history.text.clone(),
-@@ -852,6 +870,46 @@ impl ChatWidget {
+@@ -852,6 +878,46 @@ impl ChatWidget {
  }
  
  impl ThreadInputState {

@@ -297,7 +297,7 @@ test('contract output, exit status and execution time are bounded', { timeout: 1
 test('integrated launch uses the verified private binary for probe, UI and app-server', t => {
   const f = fixture(t);
   const result = launch(f, true, { tty: true });
-  assert.equal(result.status, 0);
+  assert.equal(result.status, 0, result.stderr);
   assert.deepEqual(readFileSync(f.calls, 'utf8').trim().split('\n'), ['private-app-server', 'private-ui', 'private-app-server']);
 });
 

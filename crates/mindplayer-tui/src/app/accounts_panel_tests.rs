@@ -3,7 +3,26 @@
 
 use super::accounts_panel::{AccountRow, LOGIN_PREFIX};
 use super::*;
-use mindplayer_core::accounts::{Account, Role, DEFAULT_ACCOUNT, MULTI_ACCOUNT_AGENTS};
+use mindplayer_core::accounts::{Account, LaunchEnv, Role, DEFAULT_ACCOUNT, MULTI_ACCOUNT_AGENTS};
+
+fn expected_codex_login_env(account: &Account) -> LaunchEnv {
+    let mut env = account.launch_env();
+    env.unset.extend(
+        [
+            "AI_GATEWAY_API_KEY",
+            "TYPESAFE_API_KEY",
+            "VERCEL_OIDC_TOKEN",
+            "MINDPLAYER_LOCAL_ROUTER_TOKEN",
+            "MINDPLAYER_ROUTER_AVAILABILITY",
+            "MINDPLAYER_ROUTER_STATUS",
+            "MINDPLAYER_CLAUDE_JEV_URL",
+            "MINDPLAYER_CLAUDE_JEV_TOKEN",
+            "MINDPLAYER_PER_PROMPT_CHOICE",
+        ]
+        .map(String::from),
+    );
+    env
+}
 
 fn open() -> App {
     let mut app = App::new();
@@ -103,7 +122,7 @@ fn inherited_codex_sign_in_is_available_without_logging_anyone_out() {
     assert_eq!(pending.command.args, ["login"]);
     assert_eq!(
         pending.command.env,
-        Account::inherited(Agent::Codex).launch_env()
+        expected_codex_login_env(&Account::inherited(Agent::Codex))
     );
 }
 
@@ -581,7 +600,7 @@ fn a_new_pane_opens_for_the_account_being_added() {
     assert_eq!(pending.command.args, vec!["login"]);
     assert_eq!(
         pending.command.env,
-        account.launch_env(),
+        expected_codex_login_env(&account),
         "a pane outside the slot would write over the existing login"
     );
     assert!(

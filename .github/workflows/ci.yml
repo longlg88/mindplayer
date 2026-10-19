@@ -12,6 +12,17 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  router-test:
+    name: offline router tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: router regressions (no provider credentials or inference)
+        run: node --test --test-concurrency=1 tools/local-model-router/*.test.mjs
+
   commit-lint:
     name: commit messages (Conventional Commits)
     # Only meaningful on PRs, where there's a base..head range to check.

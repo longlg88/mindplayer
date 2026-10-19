@@ -175,7 +175,8 @@ Jev를 사용하는 경로는 Codex의 매 새 사용자 턴에서 버전이 고
 유지하지만 이를 작업 완료 사실로 취급하지 않습니다. 설치본의 실제 Jev 연속 3회와
 한·영 예시 12건 확인은 [0.55.8 검증 기록](docs/jev-decision-boundary-0.55.8.validation.json)에 있습니다.
 Codex 실행은 합성 backend이며 실제 실행 모델/effort나 품질·비용 절감의 증명은 아닙니다.
-Jev 경로에는 Node.js 22 이상과 아래의 검증된 전용 Codex UI가 필요합니다.
+새로 여는 모든 Codex pane은 Jev ON/OFF와 관계없이 Node.js 22 이상과 아래의
+검증된 전용 Codex UI가 필요합니다. OFF에서는 Jev 키·정책 조회와 판단 호출을 건너뜁니다.
 일반 PATH의 Codex로 조용히 대체하지 않습니다.
 기존 pane은 그대로 두며, 새로 여는 Codex pane에 적용합니다.
 정책 파일이 없으면 현재 모델 목록 설명 기반의 선택을 사용하며, 측정된 비용 절감은

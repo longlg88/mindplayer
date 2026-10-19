@@ -254,17 +254,12 @@ export class JevService {
       this.audit({ event: 'thread-ownership', threadId: thread.id, owned, ephemeral: helper,
         startup, resumed, forked, userSource, policyVersion: 'mindplayer-private-ui-lifecycle-v3' });
       this.threads.set(thread.id, { owned, excluded, history: [], contextKnown: request.method === 'thread/start', version: (prior?.version ?? 0) + 1,
+        resumeContextPending: request.method === 'thread/resume',
         modelProvider: response.result.modelProvider ?? prior?.modelProvider ?? null,
         baseline: { model: response.result.model ?? request.params?.model ?? this.baseline?.model,
           effort: response.result.reasoningEffort !== undefined ? response.result.reasoningEffort : request.params?.reasoningEffort !== undefined ? request.params.reasoningEffort : this.baseline?.effort } });
       lifecycleThreadId = thread.id;
       if (owned || prior?.owned) this.revision++;
-      const policy = owned && request.method === 'thread/resume' ? this.policyReader()?.policy : null;
-      // The default decision uses the current prompt and a bounded prior
-      // judgment, not the transcript. Only explicit empirical policy hydrates it.
-      if (policy && this.rpc && this.apiKey && this.transferAllowed(policy)) {
-        this.threads.get(thread.id).contextRead = this.readContext(thread.id);
-      }
     }
     if (request?.method === 'account/read' && !response.error) {
       const fingerprint = loginFingerprint(response.result?.account, this.accountHome);
@@ -392,6 +387,12 @@ export class JevService {
     if (policy?.consent?.externalPromptTransfer === false) return transferUnset();
     if (!this.transferAllowed(policy) && this.apiKey) return transferUnset();
     if (!this.catalogReady) throw fail('catalog-refresh-incomplete');
+    // Opening an OFF session must not read Jev configuration or history. Only
+    // an authorized ON turn with explicit empirical policy needs hydration.
+    if (thread.resumeContextPending && policy && this.rpc && this.apiKey && this.transferAllowed(policy)) {
+      thread.resumeContextPending = false;
+      thread.contextRead = this.readContext(request.params.threadId);
+    }
     if (thread.contextRead) {
       try { await waitBounded(thread.contextRead, 1000, signal); }
       finally { thread.contextReadVersion = (thread.contextReadVersion ?? 0) + 1; delete thread.contextRead; }

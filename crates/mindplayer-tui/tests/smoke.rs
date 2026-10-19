@@ -5203,6 +5203,175 @@ fn claude_auth_cancelled_native_login_does_not_start_the_held_conversation() {
     claude_unsuccessful_login_never_starts_conversation(true);
 }
 
+fn hidden_claude_login_preserves_resume_and_focus(list_focus: bool) {
+    let mut mp = Mp::launch_claude_auth_fixture();
+    mp.start_into_main_list();
+    let home = claude_fixture_home(&mp, true);
+    let other_home = claude_fixture_home(&mp, false);
+    std::fs::write(home.join("signed-out"), "synthetic native login required\n").unwrap();
+    std::fs::write(home.join("hold-login"), "hold\n").unwrap();
+    request_claude_fixture_resume(&mut mp, true);
+    mp.expect(
+        "l로 이 홈에 로그인",
+        STEP_TIMEOUT,
+        "hold the original resume",
+    );
+    mp.send(b"l");
+    mp.wait_for_claude_auth_events(&home, "login", 1);
+    mp.send(b"\x11"); // Ctrl-Q hides the login without ending its PTY.
+    mp.expect("closed pane", STEP_TIMEOUT, "hide the running login pane");
+    mp.send(b"\x18");
+    mp.expect("multi-select", STEP_TIMEOUT, "return to the session list");
+    request_claude_fixture_resume(&mut mp, false);
+    mp.wait_for_claude_auth_events(&other_home, "conversation", 1);
+    mp.expect(
+        PANE_READY,
+        STEP_TIMEOUT,
+        "another account owns the focused pane",
+    );
+    if list_focus {
+        mp.send(b"\x18");
+        mp.expect(
+            "multi-select",
+            STEP_TIMEOUT,
+            "leave the other pane for the list",
+        );
+    }
+
+    assert!(mp.claude_auth_events(Some(&home), "login-exit").is_empty());
+    assert!(mp
+        .claude_auth_events(Some(&home), "conversation")
+        .is_empty());
+    std::fs::remove_file(home.join("hold-login")).unwrap();
+    mp.wait_for_claude_auth_events(&home, "login-exit", 1);
+    mp.wait_for_claude_auth_events(&home, "conversation", 1);
+    let login = &mp.claude_auth_events(Some(&home), "login")[0];
+    let exit = &mp.claude_auth_events(Some(&home), "login-exit")[0];
+    assert_eq!(
+        login["pid"], exit["pid"],
+        "the original hidden PTY must finish"
+    );
+    assert_eq!(exit["code"], 0);
+    let launch = &mp.claude_auth_events(Some(&home), "conversation")[0];
+    assert_eq!(launch["pane"], "claude-alfa-0001");
+    assert_eq!(
+        launch["args"],
+        serde_json::json!(["--resume", "claude-alfa-0001"])
+    );
+    assert_claude_launch_context(&mp, &home, true, &mp._tmp.join("scope/session-cwd"), launch);
+    assert!(exit["at"].as_u64().unwrap() <= launch["at"].as_u64().unwrap());
+    if list_focus {
+        mp.expect(
+            "multi-select",
+            STEP_TIMEOUT,
+            "hidden login completion keeps list focus",
+        );
+        assert!(!mp.screen().contains(PANE_READY), "{}", mp.screen());
+        mp.send(b"\x18");
+    }
+    mp.expect(
+        PANE_READY,
+        STEP_TIMEOUT,
+        "return to the previously focused pane",
+    );
+    mp.send(b"still-the-other-pane\r");
+    assert!(
+        mp.wait_until(STEP_TIMEOUT, |_| {
+            mp.claude_auth_events(Some(&other_home), "input")
+                .iter()
+                .filter_map(|event| event["text"].as_str())
+                .collect::<String>()
+                .contains("still-the-other-pane")
+        }),
+        "successful background recovery stole terminal focus\n{}",
+        mp.screen()
+    );
+    assert!(mp.claude_auth_events(Some(&home), "input").is_empty());
+    let settled = Instant::now();
+    while settled.elapsed() < Duration::from_millis(350) {
+        assert_eq!(mp.claude_auth_events(Some(&home), "login").len(), 1);
+        assert_eq!(mp.claude_auth_events(Some(&home), "conversation").len(), 1);
+        assert_eq!(mp.claude_auth_events(None, "conversation").len(), 2);
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+#[test]
+fn claude_auth_hidden_login_resumes_once_without_stealing_another_pane() {
+    hidden_claude_login_preserves_resume_and_focus(false);
+}
+
+#[test]
+fn claude_auth_hidden_login_resumes_once_without_stealing_list_focus() {
+    hidden_claude_login_preserves_resume_and_focus(true);
+}
+
+#[test]
+fn claude_auth_hidden_login_keeps_same_home_guard_until_exit() {
+    let mut mp = Mp::launch_claude_auth_fixture();
+    mp.start_into_main_list();
+    let home = claude_fixture_home(&mp, false);
+    std::fs::write(home.join("signed-out"), "synthetic native login required\n").unwrap();
+    std::fs::write(home.join("hold-login"), "hold\n").unwrap();
+    request_claude_fixture_resume(&mut mp, false);
+    mp.expect(
+        "l로 이 홈에 로그인",
+        STEP_TIMEOUT,
+        "hold the original resume",
+    );
+    mp.send(b"l");
+    mp.wait_for_claude_auth_events(&home, "login", 1);
+    mp.send(b"\x11");
+    mp.expect("closed pane", STEP_TIMEOUT, "hide the running login");
+    mp.send(b"\x18");
+    mp.expect(
+        "multi-select",
+        STEP_TIMEOUT,
+        "list remains usable during login",
+    );
+    let checks = mp.claude_auth_events(Some(&home), "status").len();
+    mp.send(b"u\x1b[B\x1b[B\x1b[B");
+    mp.expect(
+        "▶ cobalt",
+        STEP_TIMEOUT,
+        "select the home whose login is hidden",
+    );
+    mp.send(b"vv");
+    mp.expect(
+        "로그인 진행 중",
+        STEP_TIMEOUT,
+        "hidden login still owns this home",
+    );
+    let held = Instant::now();
+    while held.elapsed() < Duration::from_millis(350) {
+        assert_eq!(mp.claude_auth_events(Some(&home), "login").len(), 1);
+        assert_eq!(mp.claude_auth_events(Some(&home), "status").len(), checks);
+        assert!(mp.claude_auth_events(Some(&home), "login-exit").is_empty());
+        mp.assert_no_session_child();
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    mp.send(b"\x1b");
+    mp.expect_absent(
+        "Accounts",
+        STEP_TIMEOUT,
+        "dismiss accounts before login finishes",
+    );
+    std::fs::remove_file(home.join("hold-login")).unwrap();
+    mp.wait_for_claude_auth_events(&home, "login-exit", 1);
+    mp.wait_for_claude_auth_events(&home, "conversation", 1);
+    mp.expect(
+        "multi-select",
+        STEP_TIMEOUT,
+        "the delayed resume preserves list focus",
+    );
+    assert_eq!(mp.claude_auth_events(Some(&home), "login").len(), 1);
+    assert_eq!(mp.claude_auth_events(None, "conversation").len(), 1);
+    assert_eq!(
+        mp.claude_auth_events(Some(&home), "conversation")[0]["args"],
+        serde_json::json!(["--resume", "claude-brvo-0002"])
+    );
+}
+
 #[test]
 fn claude_auth_delayed_profile_keeps_list_focus_until_explicitly_opened() {
     let mut mp = Mp::launch_claude_auth_fixture();

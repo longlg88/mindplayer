@@ -39,9 +39,12 @@ impl AccountAuth {
             .retain(|check| matches!(check.purpose, Purpose::Launch(_) | Purpose::AfterLogin));
     }
     pub(super) fn cancel(&mut self, id: &str) {
+        self.cancel_launch(id);
+        self.logins.remove(id);
+    }
+    pub(super) fn cancel_launch(&mut self, id: &str) {
         self.blocked.remove(id);
         self.approved.remove(id);
-        self.logins.remove(id);
         self.checks
             .retain(|check| !matches!(&check.purpose, Purpose::Launch(p) if p.session_id == id));
     }
@@ -732,6 +735,56 @@ macro_rules! lifecycle_tests {
                 assert!(app.account_auth.checks.is_empty());
                 assert!(app.pending.is_none());
                 assert_eq!(app.account_auth.blocked.len(), 1);
+            }
+
+            #[test]
+            fn closing_a_held_launch_during_login_does_not_revive_it() {
+                let account = account();
+                let mut app = app(&account);
+                app.hold_account_launch(&account, pending(&account, "cancelled"));
+                app.track_account_login(&account, &login_id());
+                app.remove_pane("cancelled");
+                assert_eq!(app.account_auth.logins.get(&login_id()), Some(&account));
+                app.account_login_finished(&login_id(), true);
+                app.complete_account_checks_for_test(identity("expected"));
+                assert!(app.pending.is_none());
+                assert!(app.pending_queue.is_empty());
+                assert!(!app.account_auth.owns_launch("cancelled"));
+            }
+
+            #[test]
+            fn closing_a_login_without_a_live_pty_releases_its_home_guard() {
+                let account = account();
+                let mut app = app(&account);
+                app.track_account_login(&account, &login_id());
+                app.remove_pane(&login_id());
+                assert!(app.account_auth.logins.is_empty());
+                assert!(app
+                    .verify_account_launch(&account, pending(&account, "retry"))
+                    .is_none());
+                assert!(app.account_auth.blocked.is_empty());
+                assert!(app.account_auth.owns_launch("retry"));
+                app.complete_account_checks_for_test(identity("expected"));
+                assert_eq!(app.pending.as_ref().unwrap().session_id, "retry");
+            }
+
+            #[test]
+            fn hidden_login_keeps_same_home_checks_and_launches_blocked_until_exit() {
+                let account = account();
+                let mut app = app(&account);
+                app.track_account_login(&account, &login_id());
+                app.account_auth.cancel_launch(&login_id());
+                app.inspect_account_identity(&account, None);
+                app.verify_account_launch(&account, pending(&account, "waiting"));
+                assert!(app.account_auth.checks.is_empty());
+                assert!(app.pending.is_none());
+                assert!(app.account_auth.blocked.contains_key("waiting"));
+                assert_eq!(app.account_auth.logins.get(&login_id()), Some(&account));
+                app.account_login_finished(&login_id(), false);
+                assert!(app.account_auth.logins.is_empty());
+                app.verify_account_launch(&account, pending(&account, "waiting"));
+                assert!(app.account_auth.blocked.is_empty());
+                assert_eq!(app.account_auth.checks.len(), 1);
             }
 
             #[test]

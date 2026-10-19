@@ -22,6 +22,20 @@ pub const MULTI_ACCOUNT_AGENTS: [Agent; 4] =
 /// The name given to the login that already exists on this machine.
 pub const DEFAULT_ACCOUNT: &str = "default";
 
+/// Router service state to remove at native auth and credential boundaries.
+/// Do not scrub Codex's shared launch environment, which also starts Node.
+pub(crate) const ROUTER_SERVICE_ENV: &[&str] = &[
+    "AI_GATEWAY_API_KEY",
+    "TYPESAFE_API_KEY",
+    "VERCEL_OIDC_TOKEN",
+    "MINDPLAYER_LOCAL_ROUTER_TOKEN",
+    "MINDPLAYER_ROUTER_AVAILABILITY",
+    "MINDPLAYER_ROUTER_STATUS",
+    "MINDPLAYER_CLAUDE_JEV_URL",
+    "MINDPLAYER_CLAUDE_JEV_TOKEN",
+    "MINDPLAYER_PER_PROMPT_CHOICE",
+];
+
 /// Which login an account reads.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "lowercase")]
@@ -72,6 +86,17 @@ impl LaunchEnv {
     /// True when launching needs no environment changes.
     pub fn is_empty(&self) -> bool {
         self.set.is_empty() && self.unset.is_empty()
+    }
+
+    pub(crate) fn without_router_service_env(mut self) -> Self {
+        self.set
+            .retain(|(key, _)| !ROUTER_SERVICE_ENV.contains(&key.as_str()));
+        for key in ROUTER_SERVICE_ENV {
+            if !self.unset.iter().any(|unset| unset == key) {
+                self.unset.push((*key).into());
+            }
+        }
+        self
     }
 }
 
@@ -385,7 +410,7 @@ pub(crate) fn claude_launch_env(config_dir: Option<&Path>) -> LaunchEnv {
     if config_dir.is_none() {
         env.unset.push("CLAUDE_CONFIG_DIR".into());
     }
-    env
+    env.without_router_service_env()
 }
 
 fn join(base: &Path, tail: &str) -> String {
@@ -521,7 +546,7 @@ pub fn signed_out(account: &Account, home: &Path) -> Option<bool> {
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
-    let env = account.launch_env();
+    let env = account.launch_env().without_router_service_env();
     for name in &env.unset {
         command.env_remove(name);
     }
@@ -594,6 +619,123 @@ pub fn save_accounts(home: &Path, accounts: &[Account]) -> std::io::Result<()> {
 #[cfg(test)]
 mod claude_account_tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn native_auth_signed_out_fixture_child() {
+        let Some(home) = std::env::var_os("MINDPLAYER_AUTH_ENV_FIXTURE") else {
+            return;
+        };
+        let home = PathBuf::from(home);
+        for provider in [Agent::Codex, Agent::Claude] {
+            let account = Account::isolated(&home, provider, "synthetic").unwrap();
+            assert_eq!(signed_out(&account, &home), Some(true));
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn native_auth_signed_out_checks_remove_service_environment() {
+        use std::os::unix::fs::PermissionsExt;
+        let home = tempfile::tempdir().unwrap();
+        for (program, marker) in [
+            ("codex", "not logged in"),
+            ("claude", "\"loggedIn\": false"),
+        ] {
+            let path = home.path().join(program);
+            std::fs::write(
+                &path,
+                format!("#!/bin/sh\n/usr/bin/env > \"$HOME/{program}.env\"\nprintf '%s\\n' '{marker}'\n"),
+            )
+            .unwrap();
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+        command
+            .args([
+                "--exact",
+                "accounts::claude_account_tests::native_auth_signed_out_fixture_child",
+                "--test-threads=1",
+            ])
+            .env_clear()
+            .env("HOME", home.path())
+            .env("PATH", home.path())
+            .env("MINDPLAYER_AUTH_ENV_FIXTURE", home.path());
+        for key in [
+            "AI_GATEWAY_API_KEY",
+            "TYPESAFE_API_KEY",
+            "VERCEL_OIDC_TOKEN",
+            "MINDPLAYER_LOCAL_ROUTER_TOKEN",
+            "MINDPLAYER_ROUTER_AVAILABILITY",
+            "MINDPLAYER_ROUTER_STATUS",
+            "MINDPLAYER_CLAUDE_JEV_URL",
+            "MINDPLAYER_CLAUDE_JEV_TOKEN",
+            "MINDPLAYER_PER_PROMPT_CHOICE",
+        ] {
+            command.env(key, "synthetic-service-canary");
+        }
+        let output = command.output().unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+        let leaked: Vec<_> = ["codex.env", "claude.env"]
+            .into_iter()
+            .filter(|file| {
+                std::fs::read_to_string(home.path().join(file))
+                    .unwrap()
+                    .contains("synthetic-service-canary")
+            })
+            .collect();
+        assert!(
+            leaked.is_empty(),
+            "service environment leaked to {leaked:?}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn native_auth_service_environment_stays_out_of_claude_but_reaches_codex_router() {
+        let home = tempfile::tempdir().unwrap();
+        for provider in [Agent::Codex, Agent::Claude] {
+            for account in [
+                Account::inherited(provider),
+                Account::isolated(home.path(), provider, "synthetic").unwrap(),
+            ] {
+                let mut command = std::process::Command::new("/usr/bin/env");
+                command.env_clear();
+                for key in [
+                    "AI_GATEWAY_API_KEY",
+                    "TYPESAFE_API_KEY",
+                    "VERCEL_OIDC_TOKEN",
+                    "MINDPLAYER_LOCAL_ROUTER_TOKEN",
+                    "MINDPLAYER_ROUTER_AVAILABILITY",
+                    "MINDPLAYER_ROUTER_STATUS",
+                    "MINDPLAYER_CLAUDE_JEV_URL",
+                    "MINDPLAYER_CLAUDE_JEV_TOKEN",
+                    "MINDPLAYER_PER_PROMPT_CHOICE",
+                ] {
+                    command.env(key, "synthetic-service-canary");
+                }
+                let env = account.launch_env();
+                for key in &env.unset {
+                    command.env_remove(key);
+                }
+                command.envs(env.set);
+                let output = command.output().unwrap();
+                assert!(output.status.success());
+                let environment = String::from_utf8(output.stdout).unwrap();
+                let count = environment.matches("=synthetic-service-canary").count();
+                assert_eq!(
+                    count,
+                    if provider == Agent::Codex { 9 } else { 0 },
+                    "{provider:?} {:?} service environment",
+                    account.slot
+                );
+            }
+        }
+    }
 
     #[test]
     fn claude_identity_survives_an_account_file_round_trip() {

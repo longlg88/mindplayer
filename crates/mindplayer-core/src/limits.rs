@@ -1849,6 +1849,9 @@ fn configure_codex_app_server_command(command: &mut Command, codex_home: &Path) 
         .env_remove("CODEX_ACCESS_TOKEN")
         .env_remove("CODEX_API_KEY")
         .env_remove("OPENAI_API_KEY");
+    for key in crate::accounts::ROUTER_SERVICE_ENV {
+        command.env_remove(key);
+    }
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
@@ -4528,6 +4531,61 @@ mod a_capped_account_says_so {
 mod codex_auth_probe_tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn native_auth_codex_account_and_quota_probes_remove_service_environment() {
+        let fake = super::tests::fake_codex_script(&format!(
+            r#"#!/bin/sh
+/usr/bin/env > "$CODEX_HOME/probe.env"
+while IFS= read -r line; do
+  case "$line" in
+    *'"method":"initialize"'*) printf '%s\n' '{{"id":1,"result":{{}}}}' ;;
+    *'"method":"account/read"'*) printf '%s\n' '{}' ;;
+    *'"method":"account/rateLimits/read"'*) printf '%s\n' '{}' ;;
+  esac
+done
+"#,
+            account_response(),
+            quota_response()
+        ));
+        let mut leaked = Vec::new();
+        for required_id in [2, 3] {
+            let home = tempfile::tempdir().unwrap();
+            let mut command = Command::new(fake.path().join("codex"));
+            command.env_clear().env("PATH", "/usr/bin:/bin");
+            for key in [
+                "AI_GATEWAY_API_KEY",
+                "TYPESAFE_API_KEY",
+                "VERCEL_OIDC_TOKEN",
+                "MINDPLAYER_LOCAL_ROUTER_TOKEN",
+                "MINDPLAYER_ROUTER_AVAILABILITY",
+                "MINDPLAYER_ROUTER_STATUS",
+                "MINDPLAYER_CLAUDE_JEV_URL",
+                "MINDPLAYER_CLAUDE_JEV_TOKEN",
+                "MINDPLAYER_PER_PROMPT_CHOICE",
+            ] {
+                command.env(key, "synthetic-service-canary");
+            }
+            let (required, _) = run_codex_app_server(
+                &mut command,
+                home.path(),
+                CODEX_APP_SERVER_TIMEOUT,
+                required_id,
+            )
+            .unwrap();
+            assert_eq!(required["id"], required_id);
+            if std::fs::read_to_string(home.path().join("probe.env"))
+                .unwrap()
+                .contains("synthetic-service-canary")
+            {
+                leaked.push(required_id);
+            }
+        }
+        assert!(
+            leaked.is_empty(),
+            "service environment leaked to probe IDs {leaked:?}"
+        );
+    }
 
     fn identity_probe(account: Value, quota: Value) -> Result<String, ProbeError> {
         let fake = super::tests::fake_codex_script(&format!(

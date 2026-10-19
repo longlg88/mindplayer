@@ -1,0 +1,63 @@
+{
+  "schemaVersion": 1,
+  "verifiedAt": "2026-10-16T14:00:38.169Z",
+  "scope": "standalone UI prototype only; not Rust launch/resume, Jev inference or installation",
+  "source": {
+    "html": "docs/plans/2026-10-16-session-routing-choice.ko.html",
+    "sha256": "57000eef6a97134c7a17a63d25098fee91d1c93a6a864115b95cdc0bb5955de5",
+    "head": "54529865aa69ef134c25b88a78c8139ce99b181f",
+    "worktree": "pre-existing dirty changes preserved"
+  },
+  "browser": {
+    "name": "Google Chrome via Playwright",
+    "version": "155.0.8059.80",
+    "headless": true
+  },
+  "result": "passed",
+  "groups": [
+    "static: Korean, assessment first, draft scope, unique IDs, inline syntax, no credentials/network/storage",
+    "desktop: direction assessment and current/proposed TUI choice in first viewport",
+    "existing + new: native default, no Jev key required, cancellation, unchanged identity, all native stages",
+    "existing + new: separate consent, model + effort, request/start distinction, follow-up, queue and fail-closed",
+    "missing key + transfer-denied policy + unsupported CLI: explicit native change only, no silent fallback",
+    "live reattach: preserves active process and effective mode; no hot switch or duplicate spawn",
+    "keyboard: radio arrows, Escape, Enter submit and expandable three alternatives",
+    "layout: seven panes in 4+3 rows and one full-width usage footer",
+    "responsive: 969/390px, internal TUI scroll only, reduced motion, zero browser errors/external requests"
+  ],
+  "externalRequests": 0,
+  "browserErrors": 0,
+  "actualJevCalls": 0,
+  "actualModelCalls": 0,
+  "appCodeChanged": false,
+  "appInstalled": false,
+  "viewports": [
+    {
+      "width": 1440,
+      "height": 1000,
+      "coreFitsHeight": 900
+    },
+    {
+      "width": 969,
+      "height": 1000
+    },
+    {
+      "width": 390,
+      "height": 1000
+    }
+  ],
+  "screenshots": [
+    "/var/folders/t8/nkh_jkgj0db5bs30rywyn4gr0000gq/T/mindplayer-routing-choice-ftdU6X/desktop-first-viewport.png",
+    "/var/folders/t8/nkh_jkgj0db5bs30rywyn4gr0000gq/T/mindplayer-routing-choice-ftdU6X/desktop-jev-running.png",
+    "/var/folders/t8/nkh_jkgj0db5bs30rywyn4gr0000gq/T/mindplayer-routing-choice-ftdU6X/desktop-four-plus-three.png",
+    "/var/folders/t8/nkh_jkgj0db5bs30rywyn4gr0000gq/T/mindplayer-routing-choice-ftdU6X/viewport-969.png",
+    "/var/folders/t8/nkh_jkgj0db5bs30rywyn4gr0000gq/T/mindplayer-routing-choice-ftdU6X/viewport-390.png"
+  ],
+  "notVerified": [
+    "Rust integration",
+    "real CLI mode persistence and queue behavior",
+    "service authentication",
+    "actual model/effort switching",
+    "cost savings / quality / cache performance"
+  ]
+}

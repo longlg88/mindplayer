@@ -1,0 +1,283 @@
+{
+  "anonymization": {
+    "date": "2026-10-17",
+    "accounts": "Display labels use work-account/personal-account; identifier keys use work_account/personal_account.",
+    "paths": "Evidence paths are relative to the repository root; .. retains locations outside it. Historical commands anchor external paths at ${PWD}. Evidence was not copied or moved.",
+    "history": "Original timestamps, hashes, results and caveats are retained. Labels and paths are anonymized representations; historical verification does not attest to edited bytes or current live state."
+  },
+  "schemaVersion": 1,
+  "date": "2026-10-16",
+  "verifiedAt": "2026-10-16T05:59:08.176Z",
+  "status": "verified-local-install",
+  "scope": "Replace incorrect execution-unconfirmed UI with correlated native turn lifecycle, without changing Jev decision policy.",
+  "source": {
+    "repository": ".",
+    "revision": "54529865aa69ef134c25b88a78c8139ce99b181f",
+    "dirty": true,
+    "existingChangesPreserved": true,
+    "version": "0.55.9",
+    "versionOverrideUsed": false,
+    "committed": false,
+    "pushed": false,
+    "changedFilesThisTask": [
+      "Cargo.toml",
+      "Cargo.lock",
+      "AGENTS.md",
+      "DESIGN.md",
+      "README.md",
+      "crates/mindplayer-tui/src/local_router.rs",
+      "crates/mindplayer-tui/src/ui.rs",
+      "crates/mindplayer-tui/tests/smoke.rs",
+      "tools/local-model-router/router.mjs",
+      "tools/local-model-router/router.test.mjs",
+      "tools/local-model-router/status.mjs",
+      "tools/local-model-router/status.test.mjs",
+      "tools/local-model-router/run.mjs",
+      "tools/local-model-router/mindplayer-jev-fixture.mjs",
+      "tools/local-model-router/README.ko.md",
+      "docs/jev-routing-lifecycle-0.55.9.validation.json"
+    ],
+    "fileSha256": {
+      "Cargo.toml": "d1b59245bd88af1553068d9886107e6504beda5a2e4b67d0f1e55bc100dcf4ef",
+      "Cargo.lock": "534ddfddbb0a0e3f58a24fdb46c50a134a468cb45a77db6b716bd0abb24c0165",
+      "AGENTS.md": "3505bbdcbb6a41e4239484a227f35d96842c941ed373b5114b5665f18f7979aa",
+      "DESIGN.md": "2be69e408ddbf12ff2b43c8c780ffdf3216b089aa24093884b5131405c6d543f",
+      "README.md": "6973b4003a40afee4bddbc41c36e6711d01e1c9d97d7578ac067e78e3634fda5",
+      "crates/mindplayer-tui/src/local_router.rs": "698b12e434ef886b7d0d7f760e7faebcb3577f8b937b9cb944698d35f30b79b1",
+      "crates/mindplayer-tui/src/ui.rs": "62bddf3c9f27863c2d659c7c861d696e98ad0e022ec6a9a5f6a00321d1f40a8b",
+      "crates/mindplayer-tui/tests/smoke.rs": "00d78e4ba95a6153559872a23ef599762d5b787c88ba6a3a30fe989d987064d4",
+      "tools/local-model-router/router.mjs": "c9fb8313374efca4c346cd0abe52fbeb1a492b91818f0f2109c2ccbe547629a0",
+      "tools/local-model-router/router.test.mjs": "e2b03ba9dfae72e46f8e2fdb4d76c600d994ed833d1f09045b8c97e81e252805",
+      "tools/local-model-router/status.mjs": "54e17384fe42064f0bcb66e0a8f1fa8cc6e8ac10d64f253f006152512dc1671c",
+      "tools/local-model-router/status.test.mjs": "927035493e3e7035cb351461e455912e133a8694cf0624b50be5e5017525f0f4",
+      "tools/local-model-router/run.mjs": "3ba4a08f449e12a536028bca11e6cb7453ee6746b58bb9bd07f81926770b36ef",
+      "tools/local-model-router/mindplayer-jev-fixture.mjs": "a73bfa8c114667b124b0239658514e906af1ea3822733b9d295ef8a4f8ab38c7",
+      "tools/local-model-router/README.ko.md": "1ae3ef7e76b65a46c7526c8d344fb66446226c3ad165058bb73952c7f56b3657"
+    }
+  },
+  "implementation": {
+    "statusSchemaVersion": 2,
+    "statusFieldCount": 12,
+    "lifecycle": [
+      "ready",
+      "judging",
+      "requested",
+      "accepted",
+      "running",
+      "completed/interrupted/failed",
+      "closed"
+    ],
+    "acknowledgmentIsAcceptanceOnly": true,
+    "runningRequiresCorrelatedTurnStarted": true,
+    "noRerouteRequiredForNormalExecution": true,
+    "requestedModelAndEffortSeparateFromOptionalServerModelReport": true,
+    "renamedField": {
+      "from": "executionVerified",
+      "to": "serverModelReported"
+    },
+    "lateAckCannotRegressRunningOrCompletion": true,
+    "oldTurnCannotOverwriteFollowupStatus": true,
+    "completedTurnMembershipBeforeAckBound": 128,
+    "closedThreadHistoryBound": 1000,
+    "excessiveProtocolHistoryFailsClosedWithoutReplay": true,
+    "closedThreadIgnoresLateStartsAndAcks": true,
+    "queuedInterruptsRejectedOnThreadClosure": true,
+    "closedThreadReopensOnlyAfterSuccessfulExplicitThreadLifecycle": true,
+    "noAutomaticReplay": true,
+    "genuineSubmissionUncertaintyStillVisible": true,
+    "unchanged": [
+      "Jev rubric and decision policy",
+      "account and credentials",
+      "original prompt and thread",
+      "permissions and sandbox policy",
+      "existing UI geometry and controls"
+    ],
+    "newDependencies": 0,
+    "newUiControls": 0
+  },
+  "alternatives": [
+    {
+      "approach": "Replace unknown label only",
+      "rejectedBecause": "Would still conflate acknowledgment with running."
+    },
+    {
+      "approach": "Require model/rerouted for execution confirmation",
+      "rejectedBecause": "Optional model-change telemetry is absent in ordinary turns and is not a serving receipt."
+    },
+    {
+      "approach": "Separate correlated turn lifecycle from requested configuration and optional server report",
+      "selected": true
+    }
+  ],
+  "simplifications": [
+    "Reuse the existing model/status line; no new panel, picker or workflow layer.",
+    "Remove duplicate Rust routing-label helper.",
+    "Keep a bounded metadata-only pane status channel; no prompts, replies or credentials."
+  ],
+  "protocolEvidence": {
+    "nativeVersion": "codex-cli 0.162.1",
+    "localSchemaCommand": "codex app-server generate-json-schema --out ${PWD}/../../../../../../../../private/tmp/mindplayer-0559-verification.QViVeV/protocol",
+    "checkedSchemas": [
+      "TurnStartParams",
+      "TurnStartedNotification",
+      "TurnCompletedNotification",
+      "ModelReroutedNotification",
+      "ThreadStartParams"
+    ],
+    "officialDocumentation": [
+      "https://learn.chatgpt.com/docs/app-server#start-a-turn",
+      "https://learn.chatgpt.com/docs/app-server#turn-events",
+      "https://learn.chatgpt.com/docs/app-server#message-schema"
+    ],
+    "conclusion": "turn/start reply acknowledges a request; turn/started establishes harness execution; turn/completed supplies terminal outcome. Conditional model/rerouted is supplementary, not an inference model/effort receipt.",
+    "notificationBeforeAckSupported": true
+  },
+  "regressionEvidence": {
+    "beforeFix": {
+      "rustFailingTests": 9,
+      "jsInitialLifecycleFailingTests": 4,
+      "jsReviewFailingTests": 5
+    },
+    "scenarios": [
+      "ACK-only remains accepted",
+      "normal no-reroute execution and completion",
+      "notification before ACK",
+      "completion before ACK",
+      "unrelated late completion cannot erase completion membership",
+      "A→B→A followup state reset",
+      "helper thread and typed request ID isolation",
+      "malformed completion cannot claim terminal status",
+      "closed thread status",
+      "late starts/ACKs after closure cannot revive activity",
+      "closure rejects queued interrupts",
+      "explicit successful resume permits new activity",
+      "bounded history and private status metadata"
+    ]
+  },
+  "checks": [
+    {
+      "command": "node --test --test-concurrency=1 --test-reporter=spec tools/local-model-router/*.test.mjs",
+      "exitCode": 0,
+      "passed": 378,
+      "failed": 0
+    },
+    {
+      "command": "env -u MINDPLAYER_VERSION -u MINDPLAYER_TEST_REAL_JEV -u MINDPLAYER_TEST_BINARY cargo test --offline --locked --workspace -q -- --test-threads=2",
+      "exitCode": 0,
+      "passed": 787,
+      "ignored": 7,
+      "failed": 0,
+      "groups": {
+        "core": 193,
+        "integration": 25,
+        "tui": 542,
+        "smoke": 27
+      }
+    },
+    {
+      "command": "cargo fmt --all -- --check",
+      "exitCode": 0
+    },
+    {
+      "command": "env -u MINDPLAYER_VERSION cargo clippy --offline --locked --workspace --all-targets -- -D warnings",
+      "exitCode": 0
+    },
+    {
+      "command": "git diff --check",
+      "exitCode": 0
+    },
+    {
+      "command": "node --check (router, status, run, fixture)",
+      "exitCode": 0
+    },
+    {
+      "command": "env -u MINDPLAYER_VERSION cargo build --offline --locked --release -p mindplayer-tui --target-dir target",
+      "exitCode": 0
+    }
+  ],
+  "installed": {
+    "path": "../../../../../../.local/bin/mindplayer",
+    "version": "mindplayer 0.55.9",
+    "sha256": "9a2b14c704dcbab0545d01bbd16ba0e27d1df05c7863daa3b82bf3c3e774e853",
+    "releaseSha256": "9a2b14c704dcbab0545d01bbd16ba0e27d1df05c7863daa3b82bf3c3e774e853",
+    "buildAndInstallEqual": true,
+    "rollback": {
+      "path": "../../../../../../.mindplayer/mindplayer-rollback-0558.CSA6qD/mindplayer",
+      "version": "mindplayer 0.55.8",
+      "sha256": "6ca7b398b15a1a4634bf38e0d2919c2ca8cfdfe6abc6bf9ac286ef579c084752"
+    },
+    "behavior": {
+      "command": "MINDPLAYER_TEST_REAL_JEV=0 MINDPLAYER_TEST_BINARY=${PWD}/../../../../../../.local/bin/mindplayer cargo test --offline --locked -p mindplayer-tui --test smoke embedded_router -q -- --test-threads=1",
+      "exitCode": 0,
+      "passed": 4,
+      "failed": 0,
+      "syntheticCodexBackend": true,
+      "realPtyRendering": true,
+      "checkoutAssetsByteEqual": 12,
+      "assertions": [
+        "ACK-only renders 요청 수락, not 실행 중",
+        "turn/started renders 실행 중 without reroute",
+        "turn/completed renders 완료 without reroute",
+        "same-thread A→B→A applies exact requested model/effort",
+        "late ACK preserves Running and Completed",
+        "new/resume/handoff share exact embedded assets",
+        "keys absent from child and status"
+      ]
+    },
+    "authenticatedJev": {
+      "command": "MINDPLAYER_TEST_REAL_JEV=1 MINDPLAYER_TEST_BINARY=${PWD}/../../../../../../.local/bin/mindplayer MINDPLAYER_TEST_JEV_PROOF=${PWD}/../../../../../../../../private/tmp/mindplayer-0559-verification.QViVeV/live-proof.json cargo test --offline --locked -p mindplayer-tui --test smoke installed_binary_uses_current_jev_provider_for_consecutive_turns -- --ignored --exact --test-threads=1 --nocapture",
+      "exitCode": 0,
+      "passed": 1,
+      "provider": "typesafe",
+      "jevModel": "jev-1.13.0",
+      "consecutiveCalls": 3,
+      "httpStatus": [
+        200,
+        200,
+        200
+      ],
+      "usage": [
+        {
+          "inputTokens": 1859,
+          "outputTokens": 128
+        },
+        {
+          "inputTokens": 1926,
+          "outputTokens": 128
+        },
+        {
+          "inputTokens": 1924,
+          "outputTokens": 128
+        }
+      ],
+      "latencyMs": [
+        308,
+        275,
+        179
+      ],
+      "previousDecisionBound": [
+        false,
+        true,
+        true
+      ],
+      "automaticRetries": 0,
+      "syntheticCodexBackend": true,
+      "codexInference": false,
+      "stagedTemporaryCredentialRemoved": true,
+      "credentialValuesLogged": false
+    }
+  },
+  "independentReview": {
+    "actionableFindingsRemaining": 0,
+    "reviewerTargetedTestsPassed": 43,
+    "independentEdgeProbesPassed": true,
+    "lspAvailable": false,
+    "compilerAndClippyPassed": true
+  },
+  "remainingRisks": [
+    "Already-running MindPlayer processes and panes were intentionally not restarted. The replacement applies to newly launched processes/panes.",
+    "Installed PTY tests use a synthetic Codex backend; this run did not perform native Codex inference or attest actual serving model/effort.",
+    "Authenticated Jev verification used the ordinarily available TypeSafe provider, not a newly verified Vercel Gateway credential.",
+    "No actual model quality or cost-savings claim is made."
+  ]
+}

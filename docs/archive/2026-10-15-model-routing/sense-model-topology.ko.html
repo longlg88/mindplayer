@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Sense · MindPlayer 내부 모델 판단 서비스 설계</title>
+  <style>
+    :root{color-scheme:dark;--page:#191c23;--surface:#232730;--ink:#eef0f5;--muted:#abb2bf;--line:#515b69;--accent:#7ea2f7;--green:#91d9ae;--mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}*{box-sizing:border-box}body{margin:0;background:var(--page);color:var(--ink);font:14px/1.7 -apple-system,BlinkMacSystemFont,"Apple SD Gothic Neo",sans-serif}main{max-width:1340px;margin:auto;padding:24px 28px 34px}h1,h2,h3,p{margin:0}h1{font-size:29px;letter-spacing:-.7px}h1 small{font-size:17px;color:var(--muted);font-weight:400}h2{font-size:17px}h3{font-size:14px}a{color:#adc4ff;text-underline-offset:3px}a:focus-visible,summary:focus-visible,[tabindex]:focus-visible{outline:2px solid var(--accent);outline-offset:3px}header{display:flex;justify-content:space-between;align-items:start;gap:20px;margin-bottom:18px}header p{color:var(--muted);margin-top:4px}.scope{color:var(--muted);font-size:11px;border:1px solid var(--line);padding:3px 8px;white-space:nowrap;border-radius:3px;margin-top:5px}.promise{border-left:2px solid var(--accent);padding:8px 12px;margin-bottom:22px;font-size:13px;background:var(--surface)}.promise strong{color:#c4d5ff;font-weight:500}.section-title{display:flex;align-items:baseline;justify-content:space-between;gap:12px;margin-bottom:8px}.section-title span{color:var(--muted);font-size:11px}.diagram-wrap{background:var(--surface);border:1px solid var(--line);overflow-x:auto;scrollbar-color:#7a8495 var(--surface)}svg{display:block;width:100%;min-width:860px}svg text{font-family:-apple-system,BlinkMacSystemFont,"Apple SD Gothic Neo",sans-serif}svg .title{font-size:20px;fill:#eef0f5}svg .sub{font-size:15px;fill:#c1c9d6}svg .edge{font-size:16px;fill:#bac7dd}svg .small{font-size:13px;fill:#bbc3d0}svg .scope-label{font-size:17px;fill:#abb2bf}.legend{font-size:11px;color:var(--muted);margin-top:8px}.legend b{font-weight:400;color:var(--accent)}.link-row{display:flex;align-items:baseline;justify-content:space-between;gap:18px;flex-wrap:wrap;margin-top:18px}.link-row p{font-size:12px;color:var(--muted)}
+    details{border-top:1px solid #3d4552;padding-top:14px;margin-top:22px}summary{cursor:pointer;color:var(--ink);font-size:14px;width:fit-content}.details-body{margin-top:15px;color:var(--muted);font-size:13px}.details-body h3{color:var(--ink);margin-bottom:6px}.details-body p+p{margin-top:9px}.two-col{display:grid;grid-template-columns:1fr 1fr;gap:28px;margin-top:18px}.details-body ul,.details-body ol{padding-left:20px;margin:7px 0}.details-body li+li{margin-top:5px}.table-wrap{overflow-x:auto}table{border-collapse:collapse;width:100%;min-width:560px;font-size:12px;margin:8px 0}th,td{padding:9px 12px 9px 0;border-bottom:1px solid #424b58;text-align:left;vertical-align:top}th{color:#dbe2ed;font-weight:500}td:first-child{color:#dbe2ed}code{font:12px var(--mono);color:#d8dfed}pre{font:12px/1.65 var(--mono);white-space:pre-wrap;overflow-wrap:anywhere;background:#242b37;padding:14px;border:1px solid var(--line);color:#d8dfed;margin:12px 0}.development-path{display:flex;gap:12px;align-items:stretch;margin:14px 0;flex-wrap:wrap}.development-path div{flex:1;min-width:180px;border:1px solid var(--line);padding:10px 13px;background:var(--surface)}.development-path span{display:block;font-size:11px;color:var(--muted)}.development-path b{color:var(--ink);font-size:13px;font-weight:500}.note{border-left:2px solid #a1aab8;padding:8px 12px;margin-top:15px;background:var(--surface);font-size:12px}.references a{display:block;margin-top:7px}.page-footer{margin-top:24px;font-size:11px;color:var(--muted)}
+    @media(max-width:760px){main{padding:18px 12px 26px}header{display:block}h1{font-size:25px}h1 small{display:block;margin-top:2px;font-size:15px}.scope{display:inline-block;margin-top:10px}.two-col{grid-template-columns:1fr;gap:18px}.section-title{display:block}.section-title span{display:block;margin-top:3px}.link-row{gap:8px}.promise{font-size:12px}}
+  </style>
+</head>
+<body>
+<main>
+  <header><div><h1>Sense <small>센스 · MindPlayer 내부 모델 판단 서비스</small></h1><p>새 입력마다 의미를 판단하고, 같은 창에서 쓸 모델을 자동으로 지정합니다.</p></div><span class="scope">이름 제안 · 설계 초안 · 연결 미구현</span></header>
+  <p class="promise"><strong>사용자는 입력만 합니다.</strong> 자동/고정 선택, 모델 선택창, 활성화 버튼, 모델 변경 승인창은 만들지 않습니다. 제공자·창·대화·계정·권한은 그대로 둡니다.</p>
+  <section aria-labelledby="runtime-title">
+    <div class="section-title"><h2 id="runtime-title">실행 구성도 · 새 턴이 시작되기 전</h2><span>MindPlayer 내부 Rust 모듈 + Codex의 공식 실행 인터페이스</span></div>
+    <div class="diagram-wrap" role="region" tabindex="0" aria-label="Sense 실행 구성도, 좁은 화면에서는 가로 스크롤">
+      <svg viewBox="0 0 1270 475" role="img" aria-labelledby="svg-title svg-desc">
+        <title id="svg-title">MindPlayer 내부 Sense와 Codex의 모델 선택 데이터 흐름</title>
+        <desc id="svg-desc">기존 창의 새 입력을 턴 게이트가 수집한다. Sense 내부의 의미 판정기와 모델 선택 정책이 제공자별 카탈로그와 측정 프로파일을 사용한다. Codex 턴 어댑터가 같은 threadId로 turn/start.model을 지정한다. 응답은 같은 창으로 돌아온다. 결정 기록은 로컬 기록 경로를 사용한다. 파란 점선 구성요소와 모든 연결은 새로 구현할 설계다.</desc>
+        <defs><marker id="arrow-blue" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0L8 4L0 8Z" fill="#7ea2f7"/></marker><marker id="arrow-gray" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0L8 4L0 8Z" fill="#aebaca"/></marker></defs>
+        <rect x="12" y="18" width="975" height="437" rx="4" fill="#20252d" stroke="#596677"/>
+        <text x="30" y="47" class="scope-label">MindPlayer 프로세스 · 기존 화면 + 새 내부 서비스</text>
+        <rect x="430" y="66" width="350" height="250" rx="4" fill="#273449" stroke="#7ea2f7" stroke-dasharray="6 4"/>
+        <text x="446" y="94" class="title">Sense</text><text x="526" y="93" class="sub">내장 Rust 판단 서비스</text>
+        <g data-node="pane"><rect x="34" y="125" width="170" height="110" rx="3" fill="#282c34" stroke="#8993a3"/><text x="119" y="155" text-anchor="middle" class="title">기존 창</text><text x="119" y="181" text-anchor="middle" class="sub">입력 · 응답 · 상태</text><text x="119" y="206" text-anchor="middle" class="sub">분할과 위치 유지</text><text x="119" y="226" text-anchor="middle" class="small">현재 TUI / 연결은 제안</text></g>
+        <g data-node="gate"><rect x="252" y="125" width="135" height="110" rx="3" fill="#29384f" stroke="#7ea2f7" stroke-dasharray="5 4"/><text x="319" y="155" text-anchor="middle" class="title">턴 게이트</text><text x="319" y="181" text-anchor="middle" class="sub">완성된 새 입력</text><text x="319" y="206" text-anchor="middle" class="sub">창별 큐 · 스냅샷</text><text x="319" y="226" text-anchor="middle" class="small">Rust / 새 구현</text></g>
+        <g data-node="judge"><rect x="450" y="125" width="140" height="110" rx="3" fill="#2d405e" stroke="#7ea2f7" stroke-dasharray="5 4"/><text x="520" y="155" text-anchor="middle" class="title">의미 판정</text><text x="520" y="181" text-anchor="middle" class="sub">작업 · 난도 · 위험</text><text x="520" y="206" text-anchor="middle" class="sub">맥락 의존도</text><text x="520" y="226" text-anchor="middle" class="small">자체 소형 모델 목표</text></g>
+        <g data-node="policy"><rect x="620" y="125" width="142" height="110" rx="3" fill="#2d405e" stroke="#7ea2f7" stroke-dasharray="5 4"/><text x="691" y="155" text-anchor="middle" class="title">모델 선택</text><text x="691" y="181" text-anchor="middle" class="sub">후보 필터 · 정책</text><text x="691" y="206" text-anchor="middle" class="sub">품질 · 지연 기준</text><text x="691" y="226" text-anchor="middle" class="small">Rust / 같은 제공자만</text></g>
+        <g data-node="catalog"><rect x="620" y="257" width="142" height="48" rx="3" fill="#2d405e" stroke="#7ea2f7" stroke-dasharray="5 4"/><text x="691" y="278" text-anchor="middle" class="sub">모델 카탈로그</text><text x="691" y="296" text-anchor="middle" class="small">목록 + 측정 프로파일</text></g>
+        <g data-node="adapter"><rect x="805" y="125" width="150" height="110" rx="3" fill="#29384f" stroke="#7ea2f7" stroke-dasharray="5 4"/><text x="880" y="155" text-anchor="middle" class="title">턴 어댑터</text><text x="880" y="181" text-anchor="middle" class="sub">같은 threadId</text><text x="880" y="206" text-anchor="middle" class="sub">매 턴 모델 지정</text><text x="880" y="226" text-anchor="middle" class="small">Rust / Codex 연결</text></g>
+        <g data-node="codex"><rect x="1025" y="125" width="210" height="110" rx="3" fill="#282c34" stroke="#8993a3"/><text x="1130" y="155" text-anchor="middle" class="title">Codex app-server</text><text x="1130" y="181" text-anchor="middle" class="sub">같은 인증 · 대화 세션</text><text x="1130" y="206" text-anchor="middle" class="sub">공식 실행 인터페이스</text><text x="1130" y="226" text-anchor="middle" class="small">별도 하위 프로세스</text></g>
+        <g data-node="record"><rect x="415" y="344" width="330" height="44" rx="3" fill="#29384f" stroke="#7ea2f7" stroke-dasharray="5 4"/><text x="580" y="364" text-anchor="middle" class="sub">로컬 결정 기록 → 기존 기록 경로</text><text x="580" y="381" text-anchor="middle" class="small">요청 모델 · 제공자 통지 · 정책 버전 / 원문 기본 미저장</text></g>
+        <g fill="none" stroke="#7ea2f7" stroke-width="1.8" marker-end="url(#arrow-blue)">
+          <path data-edge="pane-gate" d="M204 174H252"/><path data-edge="gate-judge" d="M387 174H450"/><path data-edge="judge-policy" d="M590 174H620"/><path data-edge="policy-adapter" d="M762 174H805"/><path data-edge="adapter-codex" d="M955 174H1025"/>
+          <path data-edge="catalog-policy" d="M691 257V235"/><path data-edge="adapter-list" d="M955 211H1025"/>
+          <path data-edge="codex-catalog" d="M1105 235V281H762"/>
+          <path data-edge="adapter-record" d="M880 235V366H745"/>
+        </g>
+        <path data-edge="codex-pane" d="M1185 235V429H119V235" fill="none" stroke="#aebaca" stroke-width="1.8" stroke-dasharray="5 4" marker-end="url(#arrow-gray)"/>
+        <text x="228" y="112" text-anchor="middle" class="small">새 입력</text><text x="418" y="112" text-anchor="middle" class="small">판정 요청</text><text x="605" y="247" text-anchor="middle" class="small">판단 결과</text><text x="784" y="112" text-anchor="middle" class="small">모델 ID</text>
+        <text x="995" y="85" text-anchor="middle" class="edge">turn/start(model)</text><text x="995" y="106" text-anchor="middle" class="small">JSON-RPC / 표준 입출력</text><text x="995" y="249" text-anchor="middle" class="small">model/list 요청</text>
+        <text x="961" y="305" text-anchor="middle" class="small">목록 응답 / 사용 권한 증명 아님</text><text x="876" y="330" text-anchor="end" class="small">결정·수신 이벤트</text>
+        <text x="520" y="419" text-anchor="middle" class="edge">응답 · 상태 이벤트 → 같은 창에 표시</text>
+      </svg>
+    </div>
+    <p class="legend">회색 실선: 기존 화면 또는 확인한 외부 인터페이스　<b>파란 점선: 새로 구현할 내부 구성요소</b>　화살표: 제안 데이터 흐름　회색 점선 화살표: 응답 이벤트</p>
+  </section>
+  <div class="link-row"><a href="sense-model-ui.ko.html">선택 버튼을 없앤 MindPlayer 화면 보기 →</a><p>내부 서비스는 새로 만들지만, 사용자가 배워야 할 조작은 추가하지 않습니다.</p></div>
+
+  <details id="service-design"><summary>Sense 자체는 무엇을 구현하는가</summary><div class="details-body">
+    <h3>의미 판정과 모델 적용은 다른 책임입니다.</h3><p>Jev에서 참고하는 부분은 자연어와 상태를 좁은 구조화 판단으로 바꾸는 역할입니다. Sense의 판정기는 입력·최근 대화 맥락을 보고 작업 유형, 추론 요구, 변경 위험, 맥락 의존도를 반환합니다. 일반 에이전트처럼 계획이나 답변을 생성하지 않습니다.</p>
+    <p>정책 코드는 이 판단과 해당 제공자의 모델별 측정 프로파일을 결합해 모델 ID를 결정합니다. 모델 목록은 런타임에서 발견하되, 목록에 있다는 사실만으로 계정의 실행 권한을 보장하지 않습니다. 계정 정책·지원 입력·검증된 설정·최근 거부 정보를 함께 봅니다.</p>
+    <div class="table-wrap"><table><thead><tr><th>내부 구성</th><th>입력</th><th>출력 / 책임</th></tr></thead><tbody><tr><td>턴 게이트</td><td>완성된 입력 + 창의 상태</td><td>새 턴인지 구분, 창별 대기열, 세션 스냅샷</td></tr><tr><td>의미 판정기</td><td>프롬프트 + 필요한 최근 맥락</td><td>작업·난도·위험·맥락의 유한 타입 판단</td></tr><tr><td>모델 정책</td><td>판단 + 카탈로그 + 프로파일</td><td>같은 제공자의 모델 ID, 짧은 사유 코드, 대체 선택</td></tr><tr><td>턴 어댑터</td><td>입력 스냅샷 + 선택 결과</td><td>모델을 지정해 새 턴 시작, 기존 권한 요청 전달</td></tr><tr><td>결정 기록</td><td>선택·전송 상태·제공자 이벤트</td><td>요청 모델과 통지 모델을 구분한 로컬 기록</td></tr></tbody></table></div>
+    <div class="two-col"><section><h3>배치와 언어</h3><p>실행부는 Rust로 MindPlayer 안에 둡니다. TUI를 막지 않도록 백그라운드 작업과 창별 큐를 씁니다. 서비스마다 별도 HTTP 서버를 만들지 않습니다.</p><p>자체 판정모델의 학습·평가는 Python으로 분리합니다. 추론 라이브러리와 모델 파일 형식은 실제 성능 검증 전까지 미정입니다. 현재 학습된 Sense 모델은 없습니다.</p></section><section><h3>모델 이름 대신 능력을 판단</h3><p>‘분석’이면 특정 모델이라는 고정 키워드 표를 제품 로직으로 쓰지 않습니다. 직전 지시, 변경 범위, 맥락 길이, 입력 형태도 판단에 포함합니다.</p><p>새 모델이 추가되면 카탈로그·성능 프로파일을 갱신합니다. 모델 이름이 바뀔 때마다 판정기를 재학습할 필요가 없도록 판단과 정책을 분리합니다.</p></section></div>
+  </div></details>
+
+  <details id="contract"><summary>입력·출력 계약과 턴 처리 규칙</summary><div class="details-body">
+    <p>아래 타입은 자체 서비스의 설계 계약입니다. 기존 API나 구현 완료된 코드가 아닙니다. 계정 인증정보·샌드박스 권한은 어댑터가 보유하며, 판정모델에 비밀값을 전달하지 않습니다.</p>
+    <pre>판정 입력
+  요청 ID · 고정 제공자 · 계정 참조 · 창 ID/세대 · 고정 threadId
+  활성 턴 ID · 입력 버전/해시 · 상태 버전
+  새 프롬프트 · 필요한 최근 맥락 · 입력 형태
+  카탈로그 버전 · 정책 버전 · 현재 요청 모델
+
+판정 출력
+  작업 유형: 수정 | 분석 | 검토 | 설계 | 설명 | 미판정
+  추론 요구 / 변경 위험 / 맥락 의존도: 유한한 단계
+  근거 충분 여부 · 판정모델 버전
+
+선택 출력
+  요청 ID · 같은 창 ID · 같은 제공자 · 같은 threadId
+  선택 모델 ID · 사유 코드 · 정책/카탈로그 버전
+  일반 선택 또는 판정 실패 시 대체 선택
+
+결정 기록
+  후보 모델 · 요청 모델 · 제공자 수락 여부
+  관측 모델 또는 미확인 · 근거 이벤트 · 결정/판정 버전</pre>
+    <h3>같은 대화의 새 턴에 명시적으로 모델을 지정</h3>
+    <pre>{
+  "method": "turn/start",
+  "id": 101,
+  "params": {
+    "threadId": "기존 대화 ID",
+    "model": "Sense가 선택한 실제 모델 ID",
+    "input": [{"type": "text", "text": "사용자가 제출한 프롬프트"}]
+  }
+}</pre>
+    <p>이 예시는 모델 제어 위치를 보여줍니다. 실제 입력에서는 첨부·스킬 등 필요한 항목도 보존해야 합니다. 매 새 턴에 모델을 지정합니다. Codex의 모델 덮어쓰기는 후속 턴에도 남기 때문입니다. 모델 선택을 이유로 계정, 작업 경로, 승인·샌드박스 설정을 변경하지 않습니다.</p>
+    <div class="table-wrap"><table><thead><tr><th>상황</th><th>자동 처리 제안</th></tr></thead><tbody><tr><td>대기 중의 새 프롬프트</td><td>Sense 판단 → 모델 지정 → 같은 대화에서 새 턴</td></tr><tr><td>작업 중 들어온 새 프롬프트</td><td>창별 다음 턴 큐에 보관. 실행 직전 상태를 다시 확인하고 모델 지정</td></tr><tr><td>현재 턴의 추가 지시</td><td>기존 제어 동작은 steer로 전달. 현재 턴의 모델은 변경하지 않음</td></tr><tr><td>승인 응답·입력 편집·붙여넣기 내부 개행</td><td>새 프롬프트로 분류하지 않음. 기존 의미 보존</td></tr><tr><td>취소·창 닫기·세션 변경</td><td>대기 중 판단 무효화. 다른 창에 결과를 적용하지 않음</td></tr><tr><td>판정 실패·시간초과</td><td>사용 가능한 기존 모델 유지. 선택 팝업 없이 진행</td></tr><tr><td>카탈로그에 없거나 사용할 수 없는 모델</td><td>후보에서 제외. 확정적 사전 거부와 전송 후 불명확 상태를 구분</td></tr><tr><td>전송 뒤 응답이 끊겨 시작 여부 불명확</td><td>상태 확인. 다른 모델로 동일 작업을 중복 실행하지 않음</td></tr></tbody></table></div>
+    <p class="note">현재 PTY는 키 입력 바이트를 전달합니다. 완성된 프롬프트를 안전하게 얻는 어댑터는 새 구현이 필요합니다. 같은 시각적 입력 영역의 소유권을 MindPlayer로 가져오는 제안이며, 현재 Codex CLI에 단순히 hook을 붙이면 된다고 주장하지 않습니다. 원래 CLI의 입력·첨부·승인 동작을 보존하는 것은 구현 검증 항목입니다.</p>
+    <p>목표 어댑터는 구조화된 제출과 app-server 실행·이벤트 렌더링을 소유합니다. 기존 CLI의 PTY와 app-server가 같은 대화를 동시에 실행하지 않습니다. 신규 창의 실행 소유권과 기존 threadId의 정확한 재개·단일 소유권 이전을 따로 검증해야 합니다. 메타데이터 조회 성공은 기존 창에 붙을 수 있다는 증명이 아닙니다.</p>
+    <p>판정 작업은 제공자·계정 참조·창 세대·threadId·활성 턴·입력·카탈로그 버전에 묶습니다. 승인, steer, 새 입력, 창 재생성·닫기·재식별 시 오래된 결과를 폐기합니다. 새 턴/steer의 구분은 입력 제어 이벤트가 담당하며 판정모델이 임의로 결정하지 않습니다.</p>
+    <p>최근 맥락은 같은 계정·대화의 필요한 턴만 포함하고 출처를 남깁니다. 같은 분류라는 이유로 다른 창의 대화를 합치지 않습니다. 판단 시간 예산·큐 상한·취소·역압 동작은 구현 전 결정하고 검증합니다. 대체 모델도 없으면 정상 오류 경로를 따르며, 성공한 척하거나 입력을 버리지 않습니다.</p>
+  </div></details>
+
+  <details id="training"><summary>우리의 판단모델을 만드는 경로 · REA의 위치</summary><div class="details-body">
+    <div class="development-path" aria-label="실행 경로와 별개인 개발 및 학습 경로"><div><span>1 · 조사</span><b>공개 계약 + REA</b><p>공개/허가된 클라이언트와 동작을 조사</p></div><div><span>2 · 데이터와 기준</span><b>직접 만든 평가셋</b><p>입력·맥락·모델별 품질과 지연을 측정</p></div><div><span>3 · 자체 학습</span><b>소형 의미 판정모델</b><p>Python 학습·보정·미지 입력 평가</p></div><div><span>4 · 앱에 배포</span><b>버전 있는 추론 모델</b><p>Sense의 추론 포트에 연결</p></div></div>
+    <p>REA는 분석 가능한 바이너리·JavaScript·실행 동작의 조사 도구입니다. 서비스의 실시간 입력 경로에는 들어가지 않습니다. 클라이언트 분석만으로 원격 Jev의 비공개 가중치·원래 신경망 구조·학습 파이프라인을 복구할 수 있다고 주장하지 않습니다.</p>
+    <p>첫 평가셋에는 한국어 표현 변화, 짧은 후속 요청, 긴 맥락, 단순 문구 수정, 다중 파일 분석, 높은 변경 위험, 입력 중 명령, 판정 실패를 포함합니다. 같은 입력을 여러 후보 모델로 평가해 성공 품질과 지연을 기록하고, 정책이 선택한 모델의 결과를 비교합니다.</p>
+    <p>범용 LLM의 구조화 출력은 초기 평가 기준선으로 비교할 수 있습니다. 이것을 학습된 자체 Jev와 같다고 부르지 않습니다. 학습/검증/최종 평가를 분리하고, 확률이 잘 보정되었는지 별도 검증합니다. 실제 사용자 원문을 자동으로 학습 수집하거나 외부 전송하지 않습니다.</p>
+    <div class="two-col"><section><h3>배포 승인에 필요한 증거</h3><ul><li>IME·소프트 개행·붙여넣기·첨부·초기 대기 입력의 손실 없는 제출.</li><li>새 턴·steer·승인 응답이 올바르게 구분됨.</li><li>정확한 기존 threadId 재개·단일 실행 소유권·같은 계정과 권한 유지.</li><li>중복 실행·다른 창 적용·전송 후 불명확 재시도가 없음.</li></ul></section><section><h3>판단 품질에 필요한 증거</h3><ul><li>한국어와 보지 못한 프로젝트의 정확도·보정 평가.</li><li>판정 지연과 실패율·대체 선택 결과·큐 상한 측정.</li><li>현재 모델 유지 기준선 대비 실제 품질·지연 개선.</li><li>요청·수락·관측 모델과 미확인 상태의 구분.</li></ul></section></div>
+  </div></details>
+
+  <details id="alternatives"><summary>이름·배치·판정 방식의 대안 비교</summary><div class="details-body">
+    <div class="table-wrap"><table><thead><tr><th>이름 후보</th><th>선택</th><th>의미</th></tr></thead><tbody><tr><td>Sense · 센스</td><td>제안</td><td>입력의 의미와 필요한 능력을 판단. 실행 에이전트와 구분</td></tr><tr><td>Pilot · 파일럿</td><td>제외</td><td>실행 전체를 지휘하는 오케스트레이터로 오해하기 쉬움</td></tr><tr><td>Switch · 스위치</td><td>제외</td><td>의미 판단 없이 모델만 바꾸는 장치처럼 보임</td></tr></tbody></table></div>
+    <div class="table-wrap"><table><thead><tr><th>서비스 배치</th><th>결정</th><th>주요 비용</th></tr></thead><tbody><tr><td>Rust 프로세스 내부 + 추론 포트</td><td>기본 제안</td><td>기존 수명·창 식별자 재사용, 별도 서버 운영 없음</td></tr><tr><td>로컬 Python 데몬</td><td>추론 호환성이 필요하면 재검토</td><td>모델 실험은 쉽지만 프로세스·IPC·배포 관리 추가</td></tr><tr><td>원격 판단 API</td><td>초기 비교 실험 후보</td><td>별도 호출 지연·원문 전송·비용·장애 의존</td></tr></tbody></table></div>
+    <div class="table-wrap"><table><thead><tr><th>판정 방식</th><th>결정</th><th>제약</th></tr></thead><tbody><tr><td>키워드 규칙</td><td>제품의 주 판정기로 제외</td><td>맥락과 표현 변화에 취약</td></tr><tr><td>범용 LLM 구조화 출력</td><td>평가 기준선</td><td>초기 구축은 빠르지만 호출 지연과 출력 검증 필요</td></tr><tr><td>자체 소형 판정모델 + 코드 정책</td><td>목표안</td><td>직접 평가셋과 학습·보정·추론 검증이 필요</td></tr></tbody></table></div>
+    <p>표현은 단독 HTML/CSS·직접 작성한 SVG를 선택했습니다. 외부 라이브러리나 네트워크 없이 열리고 수정할 수 있습니다. Graphviz 정적 그림은 UI 시연과 연결하기에 추가 생성 단계가 필요하고, 외부 그래프 라이브러리는 이 규모에서 의존성만 늘립니다. ‘Sense’는 내부 이름 제안이며 상표 충돌을 검증한 것은 아닙니다.</p>
+  </div></details>
+
+  <details id="evidence"><summary>확인한 사실 · 검증 범위 · 참고 문서</summary><div class="details-body">
+    <h3>저장소에서 확인</h3><p><code>ui.rs:1759</code>의 분할, <code>main.rs:1058</code>의 키 처리, <code>app/pane.rs:1149</code>의 PTY 전달이 현재 경계입니다. 기존 코드에 Sense나 턴별 모델 어댑터가 구현되었다고 표시하지 않습니다. 기준 리비전 <code>109c3e480d02edfadd02bb9e62460ac64558d3ff</code>, 기존 수정이 있는 작업트리를 조사했습니다.</p>
+    <h3 style="margin-top:16px">Codex 설치본과 공식 인터페이스 확인</h3><p>설치본은 <code>codex-cli 0.162.1</code>입니다. 생성한 스키마에서 새 턴의 모델 지정, 후속 턴 지속, steer의 모델 필드 부재를 확인했습니다. 메타데이터 전용 실제 프로세스 확인에서는 초기화와 모델 목록 1개 조회가 성공했습니다.</p>
+    <pre>initialize: ok
+model/list: ok · 반환 1개 · 다음 페이지 있음
+전송: initialize, initialized, model/list
+프롬프트 제출: 0 · 대화 변경: 0
+스키마: 모델 지정 지속 있음 · steer 모델 필드 없음</pre>
+    <p>모델 목록 조회는 실행 권한 확인이 아닙니다. <code>turn/start</code> 응답의 Turn에는 일반적인 실행 모델 영수증 필드가 없습니다. <code>model/rerouted</code> 통지가 오면 제공자가 알린 변경을 기록하되, 그 통지가 없다는 이유만으로 실행 모델을 독립 검증했다고 표시하지 않습니다.</p>
+    <p class="note">검증하지 않은 것: 실제 추론·모델 변경·기존 PTY 창 연결·세션 재개 후 일관성·자체 판정 정확도·Claude 어댑터. 메타데이터 조회와 HTML 시연은 이 검증을 대체하지 않습니다. 모델 제어 때문에 권한 승인을 없애는 설계도 아닙니다. 모델 변경 선택 UI만 없앱니다.</p>
+    <div class="references"><a href="https://learn.chatgpt.com/docs/app-server#turns">OpenAI 공식 문서 · Codex 새 턴과 모델 지정</a><a href="https://learn.chatgpt.com/docs/app-server#steer-an-active-turn">OpenAI 공식 문서 · 진행 중 턴 추가 지시와 제약</a><a href="https://developers.openai.com/siwc/token-sharing-open-source/codex-app-server">OpenAI 공식 문서 · 모델 카탈로그의 한계</a><a href="https://docs.typesafe.ai/concepts/system-one">TypeSafe · 좁은 구조화 판단</a><a href="https://docs.typesafe.ai/concepts/state">TypeSafe · 입력 상태와 맥락</a><a href="https://docs.typesafe.ai/confidence">TypeSafe · 확률·신뢰도와 검증</a><a href="https://github.com/morluto/rea/blob/bb540826d65316c164d2de8ba4ef10f81a8ad073/README.md">REA · 조사 가능한 자료와 동작 범위</a><a href="https://c4model.com/diagrams/notation">C4 · 구성요소 경계·역할·화살표 표기</a><a href="https://www.w3.org/WAI/ARIA/apg/patterns/disclosure/">W3C · 접힌 상세 영역의 키보드 동작</a><a href="../DESIGN.md">저장소 설계 기록</a></div>
+  </div></details>
+  <footer class="page-footer">설계 증거 범위: 저장소 + 공식 문서 + 설치본 메타데이터 검사 · 2026-10-13 13:18:47 +09:00 · 실제 서비스 미구현</footer>
+</main>
+</body>
+</html>

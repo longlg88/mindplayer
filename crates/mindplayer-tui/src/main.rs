@@ -6,10 +6,12 @@ mod convo_log;
 mod handoff;
 mod kiro_patterns;
 mod links;
+mod local_router;
 mod mascot;
 mod observe;
 mod pty;
 mod render_writer;
+mod startup_routing;
 mod terminal_view;
 mod text_input;
 mod turn_status;
@@ -59,7 +61,13 @@ OPTIONS:
                               Actually write those two files (additive —
                               never removes or reorders your existing hooks)
 
-On the first screen choose 'working dir' (this DIR) or 'global' (all sessions).";
+On the first screen choose 'working dir' (this DIR) or 'global' (all sessions).
+After scanning, open a session directly. Codex starts OFF: F6 toggles Jev ON/OFF
+in the native input row for the same session. The mode remains for subsequent prompts;
+selection alone never submits. Enter submits using the current mode. Jev ON sends
+the bounded judgment context externally. OFF keeps the current native model and
+effort and makes no Jev call. Claude / Kiro / Cursor sessions keep their native
+input and controls.";
 
 fn main() -> Result<()> {
     // Resolve the target directory from args BEFORE touching the terminal, so
@@ -276,10 +284,16 @@ fn run(terminal: &mut Terminal<CrosstermBackend<FrameSink>>, app: &mut App) -> R
         // from a fragmented cursor-position report. Release genuine Escapes on
         // the normal event-loop clock even when no further key arrives.
         app.flush_terminal_reply_guards();
-        if app.raise_unusable_prompt() {
+        if app.poll_account_auth() {
             needs_draw = true;
         }
-        if app.screen == Screen::Main && app.pending.is_some() {
+        if app.startup_routing.poll() {
+            needs_draw = true;
+        }
+        if !app.startup_routing.active() && app.raise_unusable_prompt() {
+            needs_draw = true;
+        }
+        if app.screen == Screen::Main && !app.startup_routing.active() && app.pending.is_some() {
             // Pane sizes are normally recorded by `ui::render`, but publishing
             // that first layout used to expose a transient `starting...` frame
             // before the PTY existed. Measure the exact same layout against an
@@ -391,6 +405,7 @@ fn run(terminal: &mut Terminal<CrosstermBackend<FrameSink>>, app: &mut App) -> R
             // Drain everything queued this frame so pastes / fast typing aren't
             // throttled to one event per frame.
             loop {
+                let startup_input = app.screen == Screen::Main && app.startup_routing.active();
                 match event::read()? {
                     Event::Key(key) if key.kind != KeyEventKind::Release => {
                         handle_key(app, key);
@@ -402,14 +417,17 @@ fn run(terminal: &mut Terminal<CrosstermBackend<FrameSink>>, app: &mut App) -> R
                         }
                     }
                     Event::Paste(text) => {
-                        if app.paste_to_pty(&text) {
+                        if !app.startup_routing.active() && app.paste_to_pty(&text) {
                             needs_draw = true;
                         }
                     }
                     Event::Resize(_, _) => needs_draw = true,
                     _ => {}
                 }
-                if !event::poll(Duration::from_millis(0))? {
+                // Publish the Jev disclosure after a choice change before
+                // accepting a queued Enter as consent. Normal native typing
+                // continues to drain the whole event batch below.
+                if startup_input || !event::poll(Duration::from_millis(0))? {
                     break;
                 }
             }
@@ -461,7 +479,7 @@ fn run(terminal: &mut Terminal<CrosstermBackend<FrameSink>>, app: &mut App) -> R
 /// Mouse wheel: scroll the live session's scrollback (so history that ran off
 /// the top is readable) or move the list selection. Returns true to redraw.
 fn handle_mouse(app: &mut App, me: MouseEvent) -> bool {
-    if app.screen != Screen::Main {
+    if app.screen != Screen::Main || app.startup_routing.active() {
         return false;
     }
     const STEP: isize = 3;
@@ -694,6 +712,26 @@ fn handle_key(app: &mut App, key: KeyEvent) {
 }
 
 fn handle_main_key(app: &mut App, key: KeyEvent) {
+    if app.startup_routing.active() {
+        use startup_routing::StartupStage;
+        let stage = app.startup_routing.stage;
+        if key.modifiers.contains(KeyModifiers::CONTROL)
+            && normalize_shortcut(key.code) == KeyCode::Char('c')
+        {
+            app.quit();
+        } else if (key.modifiers & !KeyModifiers::SHIFT).is_empty() {
+            match normalize_shortcut(key.code) {
+                KeyCode::Esc | KeyCode::Char('q') if stage == StartupStage::Choice => app.quit(),
+                KeyCode::Esc => app.startup_routing.back(),
+                KeyCode::Left | KeyCode::Right | KeyCode::Up | KeyCode::Down => {
+                    app.startup_routing.toggle();
+                }
+                KeyCode::Enter => app.startup_routing.confirm(),
+                _ => {}
+            }
+        }
+        return;
+    }
     // Checked first because it is drawn over every other popup, so the key goes where the eye is.
     if app.unusable_prompt.is_some() {
         match key.code {
@@ -770,6 +808,7 @@ fn handle_main_key(app: &mut App, key: KeyEvent) {
                 KeyCode::Char('a') => app.accounts_start_add(),
                 KeyCode::Char('r') => app.accounts_start_rename(),
                 KeyCode::Char('l') => app.accounts_relogin(),
+                KeyCode::Char('v') => app.accounts_verify_identity(),
                 KeyCode::Char('w') => app.accounts_make_primary(),
                 KeyCode::Char('d') => app.accounts_toggle_disabled(),
                 KeyCode::Char('x') => app.accounts_remove(),
@@ -1352,6 +1391,8 @@ mod tests {
         let mut app = App::new_in(std::env::temp_dir());
         app.screen = Screen::Main;
         app.focus = Focus::List;
+        app.startup_routing =
+            startup_routing::StartupRouting::confirmed(startup_routing::RoutingMode::Native);
         app
     }
 
@@ -1373,6 +1414,234 @@ mod tests {
         }];
         app.visible = vec![app::Row::Session(0)];
         app
+    }
+
+    #[test]
+    fn default_app_does_not_gate_list_actions_on_startup_consent() {
+        let mut app = App::new_in(std::env::temp_dir());
+        app.screen = Screen::Main;
+        app.focus = Focus::List;
+        handle_main_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE),
+        );
+        assert_eq!(app.new_picker, Some(0));
+        assert_eq!(
+            app.startup_routing.mode(),
+            Some(startup_routing::RoutingMode::PerPrompt)
+        );
+        assert!(!app.startup_routing.active());
+        assert!(app.pending.is_none());
+        assert!(app.ptys.is_empty());
+    }
+
+    #[test]
+    fn codex_choice_keys_keep_the_native_child_encoding() {
+        for (code, expected) in [
+            (KeyCode::F(6), b"\x1b[17~".as_slice()),
+            (KeyCode::F(7), b"\x1b[18~".as_slice()),
+        ] {
+            assert_eq!(
+                encode_key(KeyEvent::new(code, KeyModifiers::NONE)).as_deref(),
+                Some(expected)
+            );
+        }
+        assert_eq!(
+            encode_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)).as_deref(),
+            Some(b"\r".as_slice())
+        );
+        assert_eq!(
+            encode_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::ALT)).as_deref(),
+            Some(b"\n".as_slice())
+        );
+    }
+
+    #[test]
+    fn f6_and_f7_reach_only_the_focused_codex_or_claude_child_unchanged() {
+        fn captured_hex(text: &str) -> Vec<&str> {
+            text.split_once("KEYS_READY")
+                .map(|(_, hex)| hex.split_whitespace().collect())
+                .unwrap_or_default()
+        }
+
+        let mut app = main_app();
+        app.startup_routing = startup_routing::StartupRouting::per_prompt();
+        app.focus = Focus::Terminal;
+        for agent in [Agent::Codex, Agent::Claude] {
+            let id = format!("choice-keys-{}-{}", agent.as_str(), std::process::id());
+            let command = mindplayer_core::Command {
+                program: "sh".into(),
+                args: vec![
+                    "-c".into(),
+                    "stty -echo -icanon min 1 time 0; printf KEYS_READY; od -An -tx1 -N 10".into(),
+                ],
+                cwd: std::env::temp_dir(),
+                env: Default::default(),
+            };
+            let child = pty::PtySession::spawn_with_routing(
+                &command,
+                &id,
+                10,
+                100,
+                startup_routing::RoutingMode::Native,
+            )
+            .unwrap();
+            app.ptys.insert(id.clone(), child);
+            app.pane_accounts
+                .insert(id.clone(), (agent, "native-key-test".into()));
+            app.panes.push(id);
+        }
+        for focused in [0, 1] {
+            app.focused = focused;
+            app.active = Some(app.panes[focused].clone());
+            let id = app.panes[focused].clone();
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while !app.ptys[&id]
+                .parser()
+                .lock()
+                .unwrap()
+                .screen()
+                .contents()
+                .contains("KEYS_READY")
+            {
+                assert!(Instant::now() < deadline, "child did not become ready");
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            for code in [KeyCode::F(6), KeyCode::F(7)] {
+                handle_main_key(&mut app, KeyEvent::new(code, KeyModifiers::NONE));
+            }
+            let deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                let text = app.ptys[&id].parser().lock().unwrap().screen().contents();
+                if captured_hex(&text)
+                    == ["1b", "5b", "31", "37", "7e", "1b", "5b", "31", "38", "7e"]
+                {
+                    break;
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "focused child did not receive unchanged keys: {text}"
+                );
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            if focused == 0 {
+                let other = app.ptys[&app.panes[1]]
+                    .parser()
+                    .lock()
+                    .unwrap()
+                    .screen()
+                    .contents();
+                assert!(
+                    captured_hex(&other).is_empty(),
+                    "keys leaked to the unfocused Claude child"
+                );
+            }
+            assert_eq!(app.focus, Focus::Terminal);
+            assert_eq!(app.focused, focused);
+            assert!(app.pending.is_none());
+            assert!(!app.observer_open());
+        }
+        app.ptys.clear(); // PtySession::drop terminates and reaps each owned child.
+    }
+
+    #[test]
+    fn session_jev_help_describes_persistent_off_default_without_f7() {
+        assert!(HELP.contains("Codex"));
+        assert!(HELP.contains("F6"));
+        assert!(HELP.contains("starts OFF"));
+        assert!(HELP.contains("same session"));
+        assert!(HELP.contains("subsequent prompts"));
+        assert!(!HELP.contains("F7"));
+        assert!(!HELP.contains("fresh input-row choice"));
+        assert!(!HELP.contains("sessions inherit the choice"));
+        assert!(!HELP.contains("startup configuration sheet"));
+    }
+
+    #[test]
+    fn startup_sheet_owns_list_keys_until_one_run_local_choice() {
+        let mut app = main_app_with_session("startup-readonly");
+        app.startup_routing = startup_routing::StartupRouting::default();
+        for code in [
+            KeyCode::Char('n'),
+            KeyCode::Char('u'),
+            KeyCode::Char('h'),
+            KeyCode::Char(' '),
+            KeyCode::Char('/'),
+            KeyCode::Char('v'),
+        ] {
+            handle_main_key(&mut app, KeyEvent::new(code, KeyModifiers::NONE));
+        }
+        assert!(app.startup_routing.active());
+        assert!(app.pending.is_none());
+        assert!(app.accounts_panel.is_none());
+        assert!(app.ptys.is_empty());
+        assert!(app.search_query.is_none());
+        handle_main_key(&mut app, KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+        assert_eq!(
+            app.startup_routing.selection,
+            startup_routing::RoutingMode::Jev
+        );
+        handle_main_key(&mut app, KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
+        handle_main_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(
+            app.startup_routing.mode(),
+            Some(startup_routing::RoutingMode::Native)
+        );
+        assert!(
+            app.pending.is_none(),
+            "choice must not also open selected session"
+        );
+        assert!(app.ptys.is_empty());
+    }
+
+    #[test]
+    fn startup_mouse_cannot_open_or_focus_a_session() {
+        let mut app = main_app_with_session("startup-mouse");
+        app.startup_routing = startup_routing::StartupRouting::default();
+        assert!(!handle_mouse(
+            &mut app,
+            MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: 4,
+                row: 4,
+                modifiers: KeyModifiers::NONE,
+            },
+        ));
+        assert!(app.pending.is_none());
+        assert_eq!(app.focus, Focus::List);
+    }
+
+    #[test]
+    fn startup_confirmation_requires_unmodified_enter_and_c_has_no_consent_action() {
+        let mut app = main_app();
+        app.startup_routing = startup_routing::StartupRouting::default();
+        app.startup_routing.selection = startup_routing::RoutingMode::Jev;
+        handle_main_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('c'), KeyModifiers::ALT),
+        );
+        handle_main_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('C'), KeyModifiers::SHIFT),
+        );
+        handle_main_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::ALT));
+        assert!(app.startup_routing.active());
+        assert_eq!(
+            app.startup_routing.stage,
+            startup_routing::StartupStage::Choice
+        );
+        assert_eq!(app.startup_routing.mode(), None);
+        assert!(app.pending.is_none());
+        handle_main_key(
+            &mut app,
+            KeyEvent::new(
+                KeyCode::Char('C'),
+                KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+            ),
+        );
+        assert!(app.should_quit);
+        assert!(app.startup_routing.active());
+        assert!(app.pending.is_none());
     }
 
     #[test]

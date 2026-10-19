@@ -1,0 +1,364 @@
+{
+  "anonymization": {
+    "date": "2026-10-17",
+    "accounts": "Display labels use work-account/personal-account; identifier keys use work_account/personal_account.",
+    "paths": "Evidence paths are relative to the repository root; .. retains locations outside it. Historical commands anchor external paths at ${PWD}. Evidence was not copied or moved.",
+    "history": "Original timestamps, hashes, results and caveats are retained. Labels and paths are anonymized representations; historical verification does not attest to edited bytes or current live state."
+  },
+  "schemaVersion": 1,
+  "verifiedAt": "2026-10-15T11:54:16Z",
+  "source": {
+    "cwd": ".",
+    "revision": "54529865aa69ef134c25b88a78c8139ce99b181f",
+    "dirty": true,
+    "status": [
+      "M Cargo.lock",
+      " M Cargo.toml",
+      " M DESIGN.md",
+      " M README.md",
+      " M crates/mindplayer-core/src/resume.rs",
+      " M crates/mindplayer-tui/src/app.rs",
+      " M crates/mindplayer-tui/src/app/session_list.rs",
+      " M crates/mindplayer-tui/src/app/spawn.rs",
+      " M crates/mindplayer-tui/src/app/tests.rs",
+      " M crates/mindplayer-tui/src/main.rs",
+      " M crates/mindplayer-tui/src/pty.rs",
+      " M crates/mindplayer-tui/tests/smoke.rs",
+      "?? AGENTS.md",
+      "?? crates/mindplayer-tui/src/local_router.rs",
+      "?? docs/account-usage-rename-validation-2026-10-13.json",
+      "?? docs/archive/",
+      "?? docs/codex-account-rename-recovery-2026-10-13.md",
+      "?? docs/codex-completion-ui-proposal.html",
+      "?? docs/completion-status-validation-2026-10-12.md",
+      "?? docs/jev-model-auto-simple.ko.validation.json",
+      "?? docs/model-routing-options.ko.html",
+      "?? docs/model-routing-options.ko.validation.json",
+      "?? docs/plans/2026-10-15-jev-cost-routing-design.ko.html",
+      "?? docs/plans/2026-10-15-jev-cost-routing-design.ko.validation.json",
+      "?? docs/resize-validation-2026-10-12.md",
+      "?? docs/sense-model-design.validation.json",
+      "?? docs/tests/",
+      "?? tools/"
+    ],
+    "sha256": {
+      "Cargo.toml": "d03478a8caf5b403c398371f082bc15527bb1ad438d2f699ac8c00bce7223af2",
+      "Cargo.lock": "289e3f487b843dd598f10c5781a9d6263e3f8d4c29e348d87d5546cbed4067bb",
+      "tools/local-model-router/run.mjs": "7f232e95a723f4d5aeaffbae4c515954f71c53e1803b5c46a72519e69a59fc5a",
+      "tools/local-model-router/launch.mjs": "7f4cfb58fc9396279c82769032d51023efb8ff1f6d90f10b93bad9d50d3f9999",
+      "tools/local-model-router/router.mjs": "a3e1fa92a85e322829772316f758e5bbf409d5410f06426717cf1ecc602c0e94",
+      "tools/local-model-router/proxy.mjs": "aa189600cb177d7804a05566124737885b95480c98aa91d49d614e52b3350bac",
+      "tools/local-model-router/app-server.mjs": "eb2b670ff29501af8aff632df57ec8fe0c6fef0c8f8bd0d19990b21d5767610e",
+      "tools/local-model-router/websocket.mjs": "0983d8e2db0449458738459e464705c00b9eccb0cd49e1e6f7b9340d84fb750f",
+      "tools/local-model-router/jev.mjs": "9965e1ce50c8c228eac214c2a8f9c15a95abdc909c088029da306aa23c9a3ca2",
+      "tools/local-model-router/policy.mjs": "93aaef61373d5248ac9b32aa396260762595381b504db91b7df56d1f53f4e5a2",
+      "tools/local-model-router/service.mjs": "f97a5be0bcfe9a98316f339b5feabc6086fcc048daa0bd642a1b6bb8828f817c",
+      "tools/local-model-router/mindplayer-fixture.mjs": "46bf38b3c633a4747c8789726dcc298ba1b0975616aebffd85bc3d43556f034f",
+      "tools/local-model-router/mindplayer-jev-fixture.mjs": "8a64184a82fbdaf965ea9a44acae85d46e7748623e46f2264e9df9fa350fbef1",
+      "crates/mindplayer-tui/src/local_router.rs": "f58ce2f865b3510d03fd7a31515d8726570620d16d715dc2df84209e1d6a0e4e",
+      "crates/mindplayer-tui/src/app.rs": "8fbbaeb0a411a861bd648e0feb69e9f88f9edfdab2105987de2ea8edd51a233a",
+      "crates/mindplayer-tui/src/app/session_list.rs": "80c8d04dc965c871f03c3f33eb453d1c8f6cf3cf18407eac7b5bc78326f8891a",
+      "crates/mindplayer-tui/src/app/spawn.rs": "8e4118043e9bf1ee40629a85f857d5069f24b23031129116c3171322a5775e85",
+      "crates/mindplayer-tui/tests/smoke.rs": "de124983c93bff7cb15c12e91d4a6a4b21f16e65f8e217a2cf2c9b60562bd313"
+    }
+  },
+  "installed": {
+    "path": "../../../../../../.local/bin/mindplayer",
+    "version": "mindplayer 0.55.5",
+    "sha256": "4adcd6b1109058cbe79fff46da5c404ceb3016effdd121c49865496d1ad3bb75",
+    "buildSha256": "4adcd6b1109058cbe79fff46da5c404ceb3016effdd121c49865496d1ad3bb75",
+    "rollbackPath": "../../../../../../.mindplayer/mindplayer-rollback-20261015.0PZnwu/mindplayer",
+    "rollbackVersion": "mindplayer 0.55.4",
+    "rollbackSha256": "18a73a85593da417eb3fb4474c8538ef719b9ecfe74e6dcbedffe23de06f45ac"
+  },
+  "status": "per-prompt-real-Jev-classification-installed; evidence-gated-adaptive-switching-not-released",
+  "currentIncrementFiles": [
+    "AGENTS.md",
+    "Cargo.toml",
+    "Cargo.lock",
+    "README.md",
+    "tools/local-model-router/README.ko.md",
+    "tools/local-model-router/jev.mjs",
+    "tools/local-model-router/jev.test.mjs",
+    "tools/local-model-router/service.mjs",
+    "tools/local-model-router/service.test.mjs",
+    "tools/local-model-router/policy.mjs (JSDoc only)",
+    "tools/local-model-router/run.mjs",
+    "tools/local-model-router/mindplayer-fixture.mjs",
+    "tools/local-model-router/mindplayer-jev-fixture.mjs",
+    "crates/mindplayer-tui/tests/smoke.rs",
+    "tools/local-model-router/jev-integration.validation.json"
+  ],
+  "changes": {
+    "modules": [
+      "tools/local-model-router/jev.mjs",
+      "tools/local-model-router/policy.mjs",
+      "tools/local-model-router/service.mjs",
+      "tools/local-model-router/router.mjs",
+      "tools/local-model-router/run.mjs",
+      "tools/local-model-router/launch.mjs",
+      "tools/local-model-router/proxy.mjs",
+      "tools/local-model-router/app-server.mjs"
+    ],
+    "rust": [
+      "crates/mindplayer-tui/src/local_router.rs",
+      "crates/mindplayer-tui/src/app.rs",
+      "crates/mindplayer-tui/src/app/session_list.rs",
+      "crates/mindplayer-tui/src/app/spawn.rs",
+      "crates/mindplayer-tui/tests/smoke.rs"
+    ],
+    "version": [
+      "Cargo.toml",
+      "Cargo.lock"
+    ],
+    "documentation": [
+      "README.md",
+      "tools/local-model-router/README.ko.md",
+      "docs/plans/2026-10-15-jev-cost-routing-design.ko.html"
+    ],
+    "tests": [
+      "tools/local-model-router/jev.test.mjs",
+      "tools/local-model-router/policy.test.mjs",
+      "tools/local-model-router/service.test.mjs",
+      "tools/local-model-router/launch.test.mjs",
+      "tools/local-model-router/mindplayer-fixture.mjs"
+    ],
+    "simplifications": [
+      "Removed keyword/catalog-order selection from MindPlayer-integrated path; standalone A/B harness remains explicit.",
+      "No new dependencies, UI controls, daemon, PIM, commits or pushes.",
+      "Removed implicit unrestricted permission overrides for resume; explicit original permissions remain unchanged.",
+      "Separated judgment from model-change eligibility; missing cost/context evidence no longer suppresses authorized judgment."
+    ]
+  },
+  "subagents": {
+    "model": "gpt-6.1-sol",
+    "reasoningEffort": "max",
+    "roleFilesVerifiedPerRoot": 22,
+    "roots": [
+      "../../../.codex",
+      "../../../../../../.codex"
+    ],
+    "runtimeVerifiedAgents": [
+      "Dalton",
+      "Hooke",
+      "Hypatia",
+      "Carson"
+    ],
+    "mainModelChanged": false
+  },
+  "verification": [
+    {
+      "command": "node --test tools/local-model-router/*.test.mjs",
+      "exitCode": 0,
+      "passed": 277,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "command": "cargo fmt --all -- --check",
+      "exitCode": 0
+    },
+    {
+      "command": "cargo clippy --all-targets -- -D warnings",
+      "exitCode": 0
+    },
+    {
+      "command": "cargo test --workspace -- --test-threads=2",
+      "exitCode": 0,
+      "passed": 754,
+      "failed": 0,
+      "ignored": 6,
+      "groups": [
+        {
+          "passed": 193,
+          "ignored": 1
+        },
+        {
+          "passed": 3,
+          "ignored": 0
+        },
+        {
+          "passed": 0,
+          "ignored": 1
+        },
+        {
+          "passed": 4,
+          "ignored": 0
+        },
+        {
+          "passed": 18,
+          "ignored": 0
+        },
+        {
+          "passed": 514,
+          "ignored": 3
+        },
+        {
+          "passed": 22,
+          "ignored": 1
+        }
+      ]
+    },
+    {
+      "command": "cargo build --release -p mindplayer-tui",
+      "exitCode": 0
+    },
+    {
+      "command": "MINDPLAYER_TEST_BINARY=${PWD}/../../../../../../.local/bin/mindplayer cargo test -p mindplayer-tui --test smoke -- --test-threads=2",
+      "exitCode": 0,
+      "passed": 22,
+      "failed": 0,
+      "ignored": 1,
+      "behavior": [
+        "Exact installed binary: new/resume/handoff share all nine embedded runtime assets.",
+        "Every fixture prompt gets one offline Jev judgment; native model retained without deployment policy.",
+        "Gateway and TypeSafe keys absent from UI/backend environments.",
+        "Account/home/CWD, original input, permissions and cleanup retained.",
+        "Fake provider protocol and mocked Jev used for this offline whole-suite run."
+      ]
+    },
+    {
+      "command": "MINDPLAYER_TEST_BINARY=${PWD}/../../../../../../.local/bin/mindplayer MINDPLAYER_TEST_REAL_JEV=1 cargo test -p mindplayer-tui --test smoke embedded_router -- --test-threads=1",
+      "exitCode": 0,
+      "passed": 2,
+      "failed": 0,
+      "successfulRealJevJudgments": 6,
+      "backendStarts": 6,
+      "entryPoints": ["new", "resume", "handoff"],
+      "behavior": [
+        "Exact installed executable -> embedded service -> real authenticated direct TypeSafe API.",
+        "One HTTP 200 validated Jev response and one backend turn/start per test prompt, including handoff bootstrap.",
+        "Resolved physical Jev model, valid capabilities/Nouls and nonzero token usage asserted.",
+        "Native Codex UI/app-server protocol is a fixture, not real native inference or demonstrated adaptive switching.",
+        "Keys stripped from UI/backend; metadata files private; no keys or raw prompts recorded."
+      ]
+    },
+    {
+      "command": "git diff --check",
+      "exitCode": 0
+    }
+  ],
+  "modelSelectionProof": {
+    "transport": "real loopback HTTP mock -> Jev wire schema -> policy -> router -> backend fixture",
+    "models": [
+      "native",
+      "strong",
+      "native"
+    ],
+    "sameThread": true,
+    "noncePreserved": true,
+    "oneJudgeAndOneStartPerTurn": true,
+    "qualityAndCostEvidence": "synthetic-only, not production evaluation",
+    "concurrency": "two fixture panes with separate account homes/keys/snapshots and reversed judgment completion order",
+    "negativeCases": [
+      "Missing key cannot bypass excluded baseline; zero candidates error.",
+      "Unknown context/tools/token requirements cannot switch.",
+      "Policy/account/catalog/context changes and close discard late judgments.",
+      "No retry after uncertain backend submission.",
+      "Partial paginated catalog refresh cannot select models.",
+      "Historical attachments prevent adaptive selection.",
+      "Restrictive resume profile is not overridden."
+    ]
+  },
+  "nativeProvenance": {
+    "codexVersion": "0.162.1",
+    "initialEvidence": "../../../../../../../../private/tmp/mindplayer-native-owner.9lzXlR/result.json",
+    "harness": "../../../../../../../../private/tmp/mindplayer-native-owner.9lzXlR/probe.mjs",
+    "actualStartup": {
+      "ephemeral": false,
+      "sessionStartSource": null,
+      "threadSource": "user",
+      "backendSource": "vscode",
+      "backendOriginator": "codex-tui",
+      "actualServiceOwnedMain": true,
+      "inferenceRequestsForwarded": 0,
+      "ownedProcessGroupsReaped": true
+    },
+    "resume": {
+      "selectedIdMatches": true,
+      "backendResumeSucceeded": false,
+      "observedErrorCode": -32600,
+      "scope": "unauthenticated dummy-provider probe; no inference"
+    },
+    "authenticatedAccountNotificationOrdering": "unverified",
+    "queuedTurnOwnership": "unverified",
+    "helperBoundary": "known ephemeral/subagent/unknown/later-lookalike cases covered by fixtures; full native helper E2E remains a release gate"
+  },
+  "html": {
+    "path": "docs/plans/2026-10-15-jev-cost-routing-design.ko.html",
+    "sha256": "dedb15debc69685556bbba41ccadd63880930e8fb6fb6a659b3a8c8ca963c1f5",
+    "testCommand": "MINDPLAYER_PLAYWRIGHT_MODULE=${PWD}/../../../../../../.npm/_npx/e41f203b7505f1fb/node_modules/playwright node docs/tests/jev-cost-routing-design.test.cjs",
+    "exitCode": 0,
+    "browser": "155.0.8059.80",
+    "viewports": [
+      1440,
+      969,
+      390
+    ],
+    "layout": "4+3 panes; full-width quota; no new controls",
+    "externalRequests": 0,
+    "consoleErrors": 0,
+    "screenshots": "../../../../../../../../var/folders/t8/nkh_jkgj0db5bs30rywyn4gr0000gq/T/mindplayer-jev-design-O9UwUl",
+    "defaultBrowserOpenExitCode": 0
+  },
+  "review": {
+    "initialHighFindings": 2,
+    "resolved": [
+      "Resume permission defaults removed.",
+      "Every explicit-policy fallback validates exact eligible baseline before key/config checks.",
+      "Unrelated helper lifecycle/output no longer invalidates an owned main decision.",
+      "Resume context hydration wait is bounded and cancellable; late reads cannot overwrite the turn snapshot.",
+      "Concurrent Jev calls are serialized and actual request start times respect cooldown; no rapid-prompt skip."
+    ],
+    "finalNodeSuiteIncludesCorrectedAuditReasonAssertion": true,
+    "boundedReReview": "Both medium findings resolved; six additional offline reviewer checks passed; no actionable findings."
+  },
+  "liveState": {
+    "gatewayInferenceCalls": 0,
+    "directTypeSafeInferenceCalls": 9,
+    "externalPromptTransferEnabled": true,
+    "policyFileCreated": false,
+    "actualAutomaticModelSwitching": false,
+    "default": "Classify each authorized idle-main user turn with Jev; retain exact native model/effort without switching evidence.",
+    "existingRunningPane": "Not restarted, killed or hot-patched. New executable/runtime must be opened to apply this increment.",
+    "activeTurnSteering": "Native turn/start during an active turn and turn/steer remain native; model changes are only considered at an idle main-user turn boundary.",
+    "directApiProof": {
+      "endpoint": "https://api.typesafe.ai/v1/systemone",
+      "requestedModel": "jev-latest",
+      "resolvedModel": "jev-1.13.0",
+      "rawTransportDiagnosticCalls": 1,
+      "serviceAndRouterDiagnosticCalls": 2,
+      "installedBinaryFixtureCalls": 6,
+      "automaticRetries": 0,
+      "observedCapabilities": ["bounded_routine", "open_problem"],
+      "actualCostUsd": null,
+      "codexInferenceUsed": false
+    },
+    "credentialProtection": {
+      "storage": "Outside repository, owner-only regular JSON credential file",
+      "path": "../../../../../../.mindplayer/jev-credentials.json",
+      "mode": "0600",
+      "ownerMatches": true,
+      "valuesPrinted": false,
+      "forwardedToUiOrBackendEnvironment": false,
+      "credentialLeakFoundInSourceAndInstalledBinary": false,
+      "recentLogsAndReportsScanned": 68,
+      "credentialLeakFoundInRecentLogsAndReports": false,
+      "sameUserFilesystemIsolation": false
+    },
+    "requirements": "requirementsForTurn local adapter boundary; production default unknown; static policy.contextTokens never counts as per-turn evidence."
+  },
+  "remainingReleaseGates": [
+    "Verified native per-turn full-thread token, modality and tool requirements; never infer tokens from prompt length or prior-turn totals.",
+    "Server-side spending limits and actual billing validation; local classification has bounded requests, deadlines and pacing but is not a verified dollar cap.",
+    "Account-scoped evaluated quality floors/non-inferiority and comparable all-in cost evidence; synthetic fixtures must not be deployed as profiles.",
+    "Native successful resumed-main, queued input, helper and authenticated account-change E2E.",
+    "Real native Codex inference/model telemetry remains unverified; no cost-saving claim."
+  ],
+  "references": [
+    "https://docs.typesafe.ai/api.md",
+    "https://vercel.com/docs/ai-gateway/sdks-and-apis/typesafe",
+    "https://learn.chatgpt.com/docs/config-file/config-reference"
+  ],
+  "noCommitOrPush": true
+}

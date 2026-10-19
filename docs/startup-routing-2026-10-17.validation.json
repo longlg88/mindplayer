@@ -1,0 +1,215 @@
+{
+  "anonymization": {
+    "date": "2026-10-17",
+    "accounts": "Display labels use work-account/personal-account; identifier keys use work_account/personal_account.",
+    "paths": "Evidence paths are relative to the repository root; .. retains locations outside it. Historical commands anchor external paths at ${PWD}. Evidence was not copied or moved.",
+    "history": "Original timestamps, hashes, results and caveats are retained. Labels and paths are anonymized representations; historical verification does not attest to edited bytes or current live state."
+  },
+  "schemaVersion": 1,
+  "validatedAt": "2026-10-17T00:32:53Z",
+  "status": "locally-installed-and-behaviorally-verified",
+  "scope": "Approved option 4: one bottom startup bar per MindPlayer process, with downstream Native/Jev session and turn UI",
+  "design": "docs/plans/2026-10-17-startup-routing-gallery.ko.html",
+  "approvedOption": 4,
+  "source": {
+    "repository": ".",
+    "head": "54529865aa69ef134c25b88a78c8139ce99b181f",
+    "dirty": true,
+    "builtFromUncommittedWorkingTree": true,
+    "preexistingUserChangesPreserved": true,
+    "versionFromCargoSource": "0.55.10",
+    "environmentVersionOverrideUsed": false,
+    "committed": false,
+    "pushed": false,
+    "sha256": {
+      "crates/mindplayer-tui/src/main.rs": "fc82fef22b26865d57292bdd07347133af4c2b702bb46922db3ddb6e4ba4129d",
+      "crates/mindplayer-tui/src/startup_routing.rs": "5b3b41d390b4eb7cefe6797d6ae27fd9f8d9398ff307efd9fc690b31fbcba5e6",
+      "crates/mindplayer-tui/src/local_router.rs": "006bce188337bb0cb67f203d2af0cdc56da76e555fa93424e817bbc85cd4eb6f",
+      "crates/mindplayer-tui/src/ui.rs": "365313ef26317b17a011093d55d486ca30e23a45bd5674c183f7b4d270ae6738",
+      "tools/local-model-router/startup-check.mjs": "fd24f90d190f19d216931928cae9a3bffe5441a0f5d34faa55e016fc1cda4ec5"
+    }
+  },
+  "installation": {
+    "sourceBinary": "target/release/mindplayer",
+    "installedBinary": "../../../../../../.local/bin/mindplayer",
+    "versionOutput": "mindplayer 0.55.10",
+    "versionBumpedInThisTask": false,
+    "sourceAndInstalledSha256": "a86276bbee33b5bb807c4baf12ba249d98f245d25168383cddddc7e3524d7b05",
+    "rollback": {
+      "preservedBeforeReplacement": true,
+      "binary": "../../../../../../.mindplayer/mindplayer-rollback-startup.PsJlmq/mindplayer",
+      "sha256": "ce15dfcc0798772c5574f3c119c0f4053fe6913bfddbe6656079ea6340705ff5"
+    },
+    "existingProcessesAndPanesReplaced": false,
+    "ghostty": {
+      "openCommandExitCode": 0,
+      "command": "open -na ${PWD}/../../../../../../../../Applications/Ghostty.app --args -e ${PWD}/../../../../../../.local/bin/mindplayer ${PWD}/../../..",
+      "observedProcessChain": [
+        {"pid": 74817, "parent": 1, "command": "${PWD}/../../../../../../../../Applications/Ghostty.app/Contents/MacOS/ghostty"},
+        {"pid": 74832, "parent": 74817, "command": "/usr/bin/login"},
+        {"pid": 74833, "parent": 74832, "command": "mindplayer"}
+      ],
+      "choiceMadeForUser": false
+    },
+    "incremental": {
+      "buildEnvironment": "CARGO_INCREMENTAL=0",
+      "targetDebugIncrementalObservedSize": "0B",
+      "materialUserDataDeletedInThisTask": false
+    }
+  },
+  "behavior": {
+    "startup": "Existing scope picker and scan, then a read-only real session list with the approved bottom startup bar",
+    "initialSelection": "Native, unconfirmed; no mode restored from a previous process",
+    "choiceControls": "Arrow keys choose, Enter confirms, Esc/q exits; modified keys cannot accidentally authorize",
+    "jevConsentControls": "After local readiness, c explicitly toggles external-transfer consent, then Enter starts; Esc returns to choice",
+    "beforeConfirmation": "Keyboard, paste, mouse and background-resume paths cannot spawn a PTY",
+    "native": "Original CLI/account/cwd/permissions/model/effort; dedicated routing secrets stripped; no Jev assets, key, Node readiness or private UI dependency",
+    "jev": "Bounded asynchronous local-only prerequisites check, then separate external-transfer consent; no API request or model probe during readiness",
+    "localReadinessFailure": "Fixed safe reason, no silent Native fallback and no automatic retry/replay",
+    "modeScope": "All new launches and resumptions in this process, including new-account login, handoff, multi-select and background-resume paths",
+    "reattach": "Existing pane PID, draft and effective running mode preserved; no chooser or hot switching",
+    "modeDisplay": "Read-only CLI 그대로 or Jev 사용 (Codex) in list/live headers",
+    "providerScope": "Codex routing only; Claude/Kiro/Cursor retain the original CLI in either startup mode",
+    "turnUi": "Existing judgment, model-plus-effort request, acknowledgement, actual start, completion, follow-up, interrupted/error and independent queued-input lifecycle plus Trace",
+    "preserved": ["native composer", "4+3 pane layout", "full-width usage footer", "Ctrl-G Trace", "native permissions", "existing account and session persistence"],
+    "notAdded": ["per-session mode picker", "new prompt editor", "saved global preference", "runtime mode toggle", "automatic fallback", "new dependencies"]
+  },
+  "regressions": {
+    "rustWorkspace": {
+      "command": "env -u MINDPLAYER_VERSION -u MINDPLAYER_TEST_REAL_JEV -u MINDPLAYER_TEST_BINARY CARGO_INCREMENTAL=0 cargo test --offline --locked --workspace -q -- --test-threads=2",
+      "passed": 814,
+      "failed": 0,
+      "ignored": 7,
+      "includes": "State, key modifiers, async cancellation, spawn boundaries, native secret stripping, render/narrow layouts and real app PTY smoke"
+    },
+    "javascript": {
+      "command": "node --test over every tools/local-model-router/*.test.mjs, with live opt-ins unset",
+      "total": 521,
+      "passed": 496,
+      "failed": 0,
+      "optInSkipped": 25,
+      "durationMs": 19611.1455
+    },
+    "format": "cargo fmt --all -- --check passed",
+    "clippy": "CARGO_INCREMENTAL=0 cargo clippy --offline --locked --workspace --all-targets -- -D warnings passed",
+    "whitespace": "git diff --check passed"
+  },
+  "finalInstalledJevLive": {
+    "test": "tools/local-model-router/native-ui-live.test.mjs",
+    "optIn": "MINDPLAYER_TEST_NATIVE_UI_LIVE=1; exact installed MindPlayer; verified private CLI/host; existing authenticated account",
+    "installedBinarySha256": "a86276bbee33b5bb807c4baf12ba249d98f245d25168383cddddc7e3524d7b05",
+    "passed": 14,
+    "failed": 0,
+    "skipped": 0,
+    "provider": "typesafe-direct",
+    "actualJevTransports": 2,
+    "actualNativeCompletedTurns": 2,
+    "secondInputEnteredWhileFirstCommandActive": true,
+    "sameOwnedThread": true,
+    "privateCodeModeHostObserved": true,
+    "modelAndEffortMatchedDurableNativeContext": true,
+    "normalNativeShutdownBeforeForcedCleanup": true,
+    "proof": [
+      {
+        "requestId": 7,
+        "threadId": "01a1473f-5849-7463-8d8c-f1b17b75423c",
+        "turnId": "01a1473f-5bd2-7492-a3a6-e132124fad07",
+        "model": "gpt-6.1-sol",
+        "effort": "medium",
+        "collaborationModel": "gpt-6.1-sol",
+        "collaborationEffort": "medium",
+        "mindplayerRequireNewTurn": true,
+        "status": "completed"
+      },
+      {
+        "requestId": 8,
+        "threadId": "01a1473f-5849-7463-8d8c-f1b17b75423c",
+        "turnId": "01a1473f-87d5-74d0-a7b9-deaa5d378d59",
+        "model": "gpt-6.1-sol",
+        "effort": "medium",
+        "collaborationModel": "gpt-6.1-sol",
+        "collaborationEffort": "medium",
+        "mindplayerRequireNewTurn": true,
+        "status": "completed"
+      }
+    ],
+    "servingAttestation": false,
+    "selectedConfigurationsDiffered": false,
+    "costSavingsMeasured": false
+  },
+  "finalInstalledNativeLive": {
+    "test": "tools/local-model-router/startup-native-live.test.mjs",
+    "optIn": "MINDPLAYER_TEST_STARTUP_NATIVE_LIVE=1; exact installed MindPlayer; global original Codex launcher; existing authenticated account",
+    "installedBinarySha256": "a86276bbee33b5bb807c4baf12ba249d98f245d25168383cddddc7e3524d7b05",
+    "passed": 5,
+    "failed": 0,
+    "skipped": 0,
+    "nativeVersion": "codex-cli 0.162.1",
+    "codexLauncher": "../../../../../../../../opt/homebrew/bin/codex",
+    "codexLauncherSha256": "61b0194f3bb6534439c8d26a3ed57d0805f84b884588b761795323eeb92fcf70",
+    "model": "gpt-6.1-sol",
+    "effort": "medium",
+    "durableContexts": 1,
+    "completedTurns": 1,
+    "assistantFinals": 1,
+    "canonicalUserInputCount": 1,
+    "approvalPolicy": "never",
+    "sandbox": "danger-full-access",
+    "permissionsMatchOriginalAppLaunchFlags": true,
+    "routingLogs": 0,
+    "privateUi": 0,
+    "jevCredentialPresent": false,
+    "jevRuntimeCreated": false,
+    "isolatedHome": true,
+    "onlyAuthCopiedFromExistingAccount": true,
+    "ownedProcessesAndTemporaryAuthCleaned": true,
+    "harnessCorrections": "Native readiness uses phase-scoped composer/header and outer paste mode; persisted input uses canonical response_item, not optional legacy user_message UI events"
+  },
+  "runtime": {
+    "privateCodexVersion": "0.162.1",
+    "sourceRevision": "092d3acd6bec3e3a14bdc7e7a2810ab628ab759d",
+    "contract": "mindplayer-native-queue-v1",
+    "privateCliSha256": "132c98b3d8c4fc39a1a4c337ce24e67f837d65ae39312c72812607d00c4e45a0",
+    "codeModeHostSha256": "0960435a104cf926e18bb938b8f6f8fcdf7e27be0c8d88e1911bc22a1de7d3e6",
+    "priorRuntimeEvidence": "docs/jev-native-queue-0.55.10.validation.json",
+    "globalCodexModified": false
+  },
+  "changedFileGroups": [
+    {
+      "files": ["crates/mindplayer-tui/src/startup_routing.rs", "crates/mindplayer-tui/src/main.rs", "crates/mindplayer-tui/src/app.rs"],
+      "purpose": "Process-local startup state, async readiness and input/event gating"
+    },
+    {
+      "files": ["crates/mindplayer-tui/src/app/spawn.rs", "crates/mindplayer-tui/src/pty.rs", "crates/mindplayer-tui/src/local_router.rs", "tools/local-model-router/startup-check.mjs"],
+      "purpose": "Explicit Native/Jev launch boundary and bounded local prerequisites check"
+    },
+    {
+      "files": ["crates/mindplayer-tui/src/ui.rs", "crates/mindplayer-tui/src/app/accounts_render_tests.rs"],
+      "purpose": "Approved bottom bar, checking/consent/blocked views, readonly mode and preserved pane/footer layouts"
+    },
+    {
+      "files": ["crates/mindplayer-tui/src/app/tests.rs", "crates/mindplayer-tui/tests/smoke.rs", "tools/local-model-router/startup-check.test.mjs", "tools/local-model-router/native-ui-live.test.mjs", "tools/local-model-router/startup-native-live.test.mjs"],
+      "purpose": "Regression and exact installed Native/Jev behavior verification"
+    },
+    {
+      "files": ["DESIGN.md", "README.md", "AGENTS.md", "tools/local-model-router/README.ko.md", "docs/startup-routing-2026-10-17.validation.json"],
+      "purpose": "Approved design, operational controls, source/install provenance and verification limits"
+    }
+  ],
+  "simplifications": [
+    "One explicit process-local choice instead of repeated per-session pickers or preference persistence",
+    "Native bypasses the routing stack entirely rather than requiring Jev assets and then disabling decisions",
+    "Reuse existing native composer, routing lifecycle, queue and Trace instead of another input UI",
+    "No new dependencies, policy rewrite or additional background service"
+  ],
+  "remainingRisksAndGaps": [
+    "Readiness verifies local prerequisites, not live authentication, account balance or future upstream availability",
+    "This task's fresh real Jev proof used direct TypeSafe; Gateway readiness has offline regression coverage, not a fresh authenticated live Gateway call",
+    "Fresh actual inference proof covers Codex Native/Jev; Claude/Kiro/Cursor original launch behavior is not a new live-provider integration test",
+    "Requested and durable native model/effort match; this is not server-side serving attestation or a measured quality/cost optimization result",
+    "Both real Jev turns retained the same model/effort; different-selection transitions are regression-covered rather than demonstrated by this live pair",
+    "Already running user panes retain their old executable and launch mode; only new launches use the installed startup choice",
+    "Same source version 0.55.10 denotes a local modified build; use the recorded hash to distinguish it from the earlier 0.55.10 executable",
+    "The saved gallery remains the approved design comparison artifact; the completed behavior is the actual Rust terminal UI, not an updated browser mockup"
+  ]
+}

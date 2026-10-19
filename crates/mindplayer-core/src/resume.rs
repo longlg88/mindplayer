@@ -146,7 +146,7 @@ pub fn login(agent: Agent, cwd: PathBuf, account: &Account) -> Command {
         program: agent.program().to_string(),
         args,
         cwd,
-        env: account.launch_env(),
+        env: account.launch_env().without_router_service_env(),
     }
 }
 
@@ -233,7 +233,7 @@ pub fn relogin(cwd: PathBuf, account: &Account) -> Result<Command, String> {
         program: "sh".to_string(),
         args: vec!["-c".to_string(), line],
         cwd,
-        env: account.launch_env(),
+        env: account.launch_env().without_router_service_env(),
     })
 }
 
@@ -245,10 +245,42 @@ pub fn relogin(cwd: PathBuf, account: &Account) -> Result<Command, String> {
 /// holds whichever account the sign-in lands on. If the sign-in is abandoned the
 /// session never starts, because the two are joined with `&&`.
 pub fn login_then_start(cwd: PathBuf, account: &Account) -> Command {
+    let start = new_session(account.provider, cwd, account);
+    login_then_start_with(account, start)
+}
+
+/// Keep sign-in native, then hand over to the caller's prepared session
+/// command. The TUI uses this to route a fresh account's first conversation
+/// through the same local bridge as every other Codex session.
+pub fn login_then_start_with(account: &Account, start: Command) -> Command {
+    fn shell_word(value: &str) -> String {
+        if !value.is_empty()
+            && value
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"-/_=.".contains(&b))
+        {
+            value.into()
+        } else {
+            format!("'{}'", value.replace('\'', "'\\''"))
+        }
+    }
+    let cwd = start.cwd;
     let agent = account.provider;
     let program = agent.program();
     let login_args = login(agent, cwd.clone(), account).args.join(" ");
-    let start_args = new_session(agent, cwd.clone(), account).args.join(" ");
+    // Only the native login loses service state; the following Node router
+    // still inherits the shell's environment. Preserve the " && exec " marker.
+    let login_unset = crate::accounts::ROUTER_SERVICE_ENV
+        .iter()
+        .map(|key| format!("-u {key}"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let start_args = start
+        .args
+        .iter()
+        .map(|s| shell_word(s))
+        .collect::<Vec<_>>()
+        .join(" ");
     // Printed first so it sits right above the sign-in link; the hint has no single quote to escape.
     // The chooser goes first so the browser is on it before the sign-in link
     // opens; `command -v` keeps the line quiet where `open` is not a thing.
@@ -256,12 +288,13 @@ pub fn login_then_start(cwd: PathBuf, account: &Account) -> Command {
         format!("command -v open >/dev/null 2>&1 && open '{url}'; ")
     });
     let line = format!(
-        "printf '%s\\n\\n' '{}'; {}{} {} && exec {} {}",
+        "printf '%s\\n\\n' '{}'; {}env {} {} {} && exec {} {}",
         browser_hint(agent),
         chooser,
+        login_unset,
         program,
         login_args,
-        program,
+        shell_word(&start.program),
         start_args
     );
     Command {
@@ -525,14 +558,34 @@ mod tests {
     }
 
     #[test]
-    fn the_existing_non_codex_login_launches_with_no_environment_change() {
-        for agent in [Agent::Claude, Agent::Kiro, Agent::Cursor] {
+    fn providers_without_a_required_identity_probe_keep_the_native_environment() {
+        for agent in [Agent::Kiro, Agent::Cursor] {
             let c = new_session(agent, PathBuf::from("/here"), &Account::inherited(agent));
             assert!(
                 c.env.is_empty(),
                 "{} gained an env it did not need",
                 agent.as_str()
             );
+        }
+    }
+
+    #[test]
+    fn inherited_claude_keeps_the_native_vault_and_clears_ambient_credentials() {
+        let account = Account::inherited(Agent::Claude);
+        for command in [
+            new_session(Agent::Claude, PathBuf::from("/here"), &account),
+            login(Agent::Claude, PathBuf::from("/here"), &account),
+        ] {
+            assert_eq!(command.env, account.launch_env());
+            assert!(command.env.set.is_empty());
+            for key in [
+                "CLAUDE_CONFIG_DIR",
+                "CLAUDE_SECURESTORAGE_CONFIG_DIR",
+                "ANTHROPIC_API_KEY",
+                "CLAUDE_CODE_OAUTH_TOKEN",
+            ] {
+                assert!(command.env.unset.iter().any(|name| name == key));
+            }
         }
     }
 
@@ -613,12 +666,17 @@ mod tests {
         let bin = dir.join("codex");
         std::fs::write(&bin, format!("#!/bin/sh\n{stub}\n")).unwrap();
         std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let opener = dir.join("open");
+        std::fs::write(&opener, "#!/bin/sh\nexit 0\n").unwrap();
+        std::fs::set_permissions(opener, std::fs::Permissions::from_mode(0o755)).unwrap();
 
         let account = Account::isolated(&dir, Agent::Codex, "probe").unwrap();
         let command = login_then_start(dir.clone(), &account);
         assert_eq!(command.program, "sh");
         let out = std::process::Command::new("sh")
             .args(&command.args)
+            .env_clear()
+            .env("HOME", &dir)
             .env("PATH", format!("{}:/usr/bin:/bin", dir.display()))
             .output()
             .unwrap();
@@ -650,6 +708,165 @@ mod tests {
             !out.contains("stub start"),
             "a session started although the sign-in failed:\n{out}"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn prepared_launch_runs_after_login_without_shell_interpreting_its_arguments() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join("claude");
+        std::fs::write(&bin, "#!/bin/sh\nprintf 'login-finished\\n'\n").unwrap();
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let account = Account::inherited(Agent::Claude);
+        let literal = "한글 ' $(printf SHOULD_NOT_RUN) $PATH ; a folder";
+        let start = Command {
+            program: "/bin/sh".into(),
+            args: vec![
+                "-c".into(),
+                "printf '<%s>\\n' \"$@\"".into(),
+                "--".into(),
+                literal.into(),
+            ],
+            cwd: dir.path().to_path_buf(),
+            env: account.launch_env(),
+        };
+        let command = login_then_start_with(&account, start);
+        let output = std::process::Command::new(&command.program)
+            .args(&command.args)
+            .env_clear()
+            .env("HOME", dir.path())
+            .env("PATH", format!("{}:/usr/bin:/bin", dir.path().display()))
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        assert!(String::from_utf8_lossy(&output.stdout)
+            .ends_with(&format!("login-finished\n<{literal}>\n")));
+    }
+}
+
+#[cfg(all(test, unix))]
+mod native_auth_environment_tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    const SERVICE_KEYS: &[&str] = &[
+        "AI_GATEWAY_API_KEY",
+        "TYPESAFE_API_KEY",
+        "VERCEL_OIDC_TOKEN",
+        "MINDPLAYER_LOCAL_ROUTER_TOKEN",
+        "MINDPLAYER_ROUTER_AVAILABILITY",
+        "MINDPLAYER_ROUTER_STATUS",
+        "MINDPLAYER_CLAUDE_JEV_URL",
+        "MINDPLAYER_CLAUDE_JEV_TOKEN",
+        "MINDPLAYER_PER_PROMPT_CHOICE",
+    ];
+
+    fn fixture() -> tempfile::TempDir {
+        let root = tempfile::tempdir().unwrap();
+        for (name, body) in [
+            ("codex", "case \"$*\" in login) /usr/bin/env > \"$FIXTURE_ROOT/native.env\" ;; logout) ;; *) exit 91 ;; esac"),
+            ("claude", "case \"$*\" in 'auth login') /usr/bin/env > \"$FIXTURE_ROOT/native.env\" ;; 'auth logout') ;; *) exit 92 ;; esac"),
+            ("node", "[ \"$1\" = --synthetic-router ] || exit 93\n/usr/bin/env > \"$FIXTURE_ROOT/node.env\""),
+            ("open", "exit 0"),
+        ] {
+            let path = root.path().join(name);
+            std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        root
+    }
+
+    fn run(command: &Command, root: &Path) {
+        let mut child = std::process::Command::new(&command.program);
+        child
+            .args(&command.args)
+            .current_dir(&command.cwd)
+            .env_clear()
+            .env("HOME", root)
+            .env("PATH", format!("{}:/usr/bin:/bin", root.display()))
+            .env("FIXTURE_ROOT", root);
+        for key in SERVICE_KEYS {
+            child.env(key, "synthetic-service-canary");
+        }
+        for key in &command.env.unset {
+            child.env_remove(key);
+        }
+        child.envs(command.env.set.iter().cloned());
+        let output = child.output().unwrap();
+        assert!(
+            output.status.success(),
+            "fixture command failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    fn assert_native_environment(root: &Path, account: &Account) {
+        let environment = std::fs::read_to_string(root.join("native.env")).unwrap();
+        assert!(!environment.contains("synthetic-service-canary"));
+        for (key, value) in account.launch_env().set {
+            assert!(environment
+                .lines()
+                .any(|line| line == format!("{key}={value}")));
+        }
+    }
+
+    #[test]
+    fn native_auth_explicit_login_scrubs_service_environment() {
+        let root = fixture();
+        for provider in [Agent::Codex, Agent::Claude] {
+            for account in [
+                Account::inherited(provider),
+                Account::isolated(root.path(), provider, "synthetic").unwrap(),
+            ] {
+                run(
+                    &login(provider, root.path().to_path_buf(), &account),
+                    root.path(),
+                );
+                assert_native_environment(root.path(), &account);
+            }
+        }
+    }
+
+    #[test]
+    fn native_auth_relogin_scrubs_service_environment() {
+        let root = fixture();
+        for provider in [Agent::Codex, Agent::Claude] {
+            let account = Account::isolated(root.path(), provider, "synthetic").unwrap();
+            run(
+                &relogin(root.path().to_path_buf(), &account).unwrap(),
+                root.path(),
+            );
+            assert_native_environment(root.path(), &account);
+        }
+    }
+
+    #[test]
+    fn native_auth_login_then_router_scrubs_only_the_native_login() {
+        let root = fixture();
+        for account in [
+            Account::inherited(Agent::Codex),
+            Account::isolated(root.path(), Agent::Codex, "synthetic").unwrap(),
+        ] {
+            let command = login_then_start_with(
+                &account,
+                Command {
+                    program: "node".into(),
+                    args: vec!["--synthetic-router".into()],
+                    cwd: root.path().to_path_buf(),
+                    env: account.launch_env(),
+                },
+            );
+            assert!(command.args[1].contains(" && exec node --synthetic-router"));
+            run(&command, root.path());
+            assert_native_environment(root.path(), &account);
+            let environment = std::fs::read_to_string(root.path().join("node.env")).unwrap();
+            for key in SERVICE_KEYS {
+                assert!(environment
+                    .lines()
+                    .any(|line| line == format!("{key}=synthetic-service-canary")));
+            }
+        }
     }
 }
 

@@ -1,0 +1,109 @@
+{
+  "schemaVersion": 1,
+  "verifiedAt": "2026-10-18T14:05:00Z",
+  "scope": "Terminal MindPlayer: repair the observed Claude Mythos baseline rejection, bounded Korean errors, offered-only API token-price references, source version bump and exact local installation",
+  "source": {
+    "revision": "54529865aa69ef134c25b88a78c8139ce99b181f",
+    "dirty": true,
+    "version": "0.55.14",
+    "versionOverride": false,
+    "manifestFiles": 123,
+    "manifestDefinition": "Sorted Cargo.toml/Cargo.lock plus crates and tools/local-model-router .rs/.toml/.mjs/.json/.cjs/.ts; aggregate SHA256(path NUL per-file SHA256 newline)",
+    "preTaskSha256": "7f07d60160ce42e6484b2de129d90d62df525d5eefcdd51a7ff165047068d840",
+    "frozenBeforeTestsSha256": "ce08afd2974dcddc4df3d49173356109cd7445901b37b1e7688524e0e7020a01",
+    "afterSourceTestsBuildInstallAndInstalledTestsSha256": "ce08afd2974dcddc4df3d49173356109cd7445901b37b1e7688524e0e7020a01"
+  },
+  "changedFiles": [
+    "Cargo.toml",
+    "Cargo.lock",
+    "README.md",
+    "AGENTS.md",
+    "tools/local-model-router/README.ko.md",
+    "tools/local-model-router/claude-policy.mjs",
+    "tools/local-model-router/claude-policy.test.mjs",
+    "tools/local-model-router/claude-mod.mjs",
+    "tools/local-model-router/claude-mod.test.mjs",
+    "tools/local-model-router/claude-mod.native.test.ts",
+    "tools/local-model-router/claude-integration.test.mjs",
+    "tools/local-model-router/jev.mjs",
+    "tools/local-model-router/jev.test.mjs",
+    "tools/local-model-router/rubric.mjs",
+    "tools/local-model-router/rubric.test.mjs",
+    "tools/local-model-router/mindplayer-jev-fixture.mjs",
+    "crates/mindplayer-tui/tests/smoke.rs",
+    "docs/plans/2026-10-18-jev-pricing-baseline-repair.md",
+    "docs/report/2026-10-18-jev-code-guide.ko.html",
+    "docs/0.55.14-local-install.validation.json"
+  ],
+  "repairs": {
+    "claude": "Exact incoming native claude-mythos-5-1 is a reviewed specialized baseline, preserved as c0. Its 20 model/effort combinations reach Jev; ordinary baselines retain 15 combinations and do not acquire verification-gated Mythos. Unknown models remain blocked. No default-model/settings/login changes.",
+    "failureText": "Only locally created preparation failures can expose a fixed allowlisted reason code plus Korean explanation; forged errors and upstream text stay generic. Both streamed text and generator final return are checked; failure sends no native request and performs no retry.",
+    "priceReferences": "Shared rubric helper adds dated, offered-only exact-ID first-party Standard/global API reference rates to the configuration question only. Per-million units, input/output/cache distinctions, conditional long-prompt tiers, unknown token quantities and billing regime, expiration per request. No expected execution dollars or subscription quota claims. Existing capability questions, c0 and empirical policy gates remain intact.",
+    "priceReview": {
+      "verifiedAt": "2026-10-18",
+      "validUntilExclusive": "2026-11-18",
+      "sources": [
+        "https://developers.openai.com/api/docs/pricing",
+        "https://developers.openai.com/api/docs/models/gpt-6.1-sol",
+        "https://platform.claude.com/docs/en/about-claude/pricing",
+        "https://platform.claude.com/docs/en/models/overview",
+        "https://platform.claude.com/docs/en/models/mythos-5-1/overview",
+        "https://platform.claude.com/docs/en/build-with-claude/effort",
+        "https://platform.claude.com/docs/en/api/messages/create",
+        "https://ai-gateway.vercel.sh/v1/models"
+      ],
+      "method": "Official documentation followed by independent official model-page/public unauthenticated catalog cross-check; no inference. Mythos absent from Gateway catalog, so its official Anthropic page is used without an alias or entitlement assumption."
+    }
+  },
+  "redEvidence": [
+    { "command": "node --test --test-name-pattern=Mythos tools/local-model-router/claude-policy.test.mjs", "exitCode": 1, "passed": 0, "failed": 2, "reason": "registry-review-required before judge construction" },
+    { "command": "node --test tools/local-model-router/claude-mod.test.mjs", "passed": 15, "failed": 30, "reason": "bounded public reason and Korean explanation absent before the repair" },
+    { "command": "node --test --test-name-pattern='reference prices|conditional Haiku|reference freshness|complete reviewed' tools/local-model-router/rubric.test.mjs", "exitCode": 1, "passed": 0, "failed": 4, "reason": "price-reference helper absent" },
+    { "check": "Pre-install executable", "actual": "mindplayer 0.55.13", "expected": "mindplayer 0.55.14" }
+  ],
+  "verification": [
+    { "command": "Offline Node suite: env removes every native/live-provider opt-in, NODE_OPTIONS and installed/version overrides; node --test tools/local-model-router/*.test.mjs", "exitCode": 0, "tests": 679, "passed": 648, "skipped": 31, "failed": 0, "durationSeconds": 25.595 },
+    { "command": "node --check for every tools/local-model-router .mjs", "exitCode": 0, "files": 54 },
+    { "command": "Claude 2.1.302 plugin validate production-staged private plugin", "exitCode": 0, "warnings": "Three optional manifest metadata warnings: version, description and author; no global plugin installation" },
+    { "command": "Claude 2.1.302 plugin test private production-staged module plus claude-mod.native.test.ts", "exitCode": 0, "passed": 11, "failed": 0, "note": "Actual native dispatcher/schema, synthetic env/http/session/next, no provider inference; staged plugin and isolated home removed" },
+    { "command": "env -u MINDPLAYER_VERSION -u MINDPLAYER_TEST_BINARY -u MINDPLAYER_TEST_REAL_JEV -u NODE_OPTIONS -u CODEX_HOME cargo test --locked -p mindplayer-tui --test smoke -- claude_jev_ claude_native_ embedded_router_ --nocapture --test-threads=1", "exitCode": 0, "passed": 13, "failed": 0, "compileSeconds": 19.04, "durationSeconds": 44.68 },
+    { "command": "env -u MINDPLAYER_VERSION -u MINDPLAYER_TEST_BINARY -u MINDPLAYER_TEST_REAL_JEV -u NODE_OPTIONS -u CODEX_HOME cargo test --locked -p mindplayer-tui local_router -- --test-threads=1", "exitCode": 0, "passed": 21, "failed": 0 },
+    { "command": "cargo fmt --all -- --check", "exitCode": 0 },
+    { "command": "env -u MINDPLAYER_VERSION -u NODE_OPTIONS cargo clippy --locked --workspace --all-targets -- -D warnings", "exitCode": 0 },
+    { "command": "git diff --check", "exitCode": 0 },
+    { "command": "env -u MINDPLAYER_VERSION -u MINDPLAYER_TEST_BINARY -u MINDPLAYER_TEST_REAL_JEV -u NODE_OPTIONS -u CODEX_HOME cargo build --locked --release -p mindplayer-tui", "exitCode": 0, "durationSeconds": 37.25 },
+    { "command": "env -u MINDPLAYER_VERSION -u MINDPLAYER_TEST_REAL_JEV -u NODE_OPTIONS -u CODEX_HOME MINDPLAYER_TEST_BINARY=/Users/eden.jang/.local/bin/mindplayer cargo test --locked -p mindplayer-tui --test smoke -- claude_jev_ claude_native_ embedded_router_ --nocapture --test-threads=1", "exitCode": 0, "passed": 13, "failed": 0, "durationSeconds": 43.45, "note": "Exact installed executable; 19 extracted assets equal checkout bytes. Two added tests consume actual installed Mod -> real loopback broker -> production policy -> real Jev client serialization with synthetic upstream HTTP and synthetic native next. Fresh repeated judgments, both selected fields, API price metadata, failure stream/final return, no next/retries/secret disclosure and native cleanup verified." },
+    { "command": "Fresh login PTYs: zsh -lic 'command -v mindplayer'; separate zsh -lic 'mindplayer --version'", "exitCode": 0, "resolvedPath": "/Users/eden.jang/.local/bin/mindplayer", "output": "mindplayer 0.55.14", "note": "Non-PTY attempt resolved correctly but printed zsh job-control/gitstatus warnings; fresh PTY repetitions had no warnings. No shell configuration changes." }
+  ],
+  "installed": {
+    "path": "/Users/eden.jang/.local/bin/mindplayer",
+    "version": "mindplayer 0.55.14",
+    "sha256": "1d3af388be981877ed2c297b0b7c97ecb01bae4adce8c2d66cdd9d325aadf43a",
+    "releasePath": "target/release/mindplayer",
+    "releaseSha256": "1d3af388be981877ed2c297b0b7c97ecb01bae4adce8c2d66cdd9d325aadf43a",
+    "method": "Verified exclusive staged copy, chmod 0755, SHA256 check, atomic rename over exact validated installed path"
+  },
+  "rollback": {
+    "path": "/Users/eden.jang/.local/bin/mindplayer-0.55.13-rollback.IGmZkm/mindplayer",
+    "version": "mindplayer 0.55.13",
+    "sha256": "4595f893f68c5d8a0241e20030b2109c4582dba1dee836be4da6f5e0408f5c13",
+    "verifiedBeforeReplacement": true
+  },
+  "cleanup": {
+    "sourceSuite": { "suite": 61460, "fixtureRoots": 15, "pidsChecked": 61, "alivePids": [], "portsChecked": 12, "openPorts": [], "pluginRootsChecked": 5, "remainingPluginRoots": [], "credentialFiles": 0 },
+    "installedSuite": { "suite": 66043, "fixtureRoots": 15, "pidsChecked": 61, "alivePids": [], "portsChecked": 12, "openPorts": [], "pluginRootsChecked": 5, "remainingPluginRoots": [], "credentialFiles": 0 },
+    "fixtureMarkers": "Retained under target/tmp for inspection; no source or user data deletion",
+    "semantics": "Ctrl-Q retains running native resources; natural list-focused q ends app and reaps native/launcher/broker/plugin. No PTY behavior changes."
+  },
+  "desktop": { "files": 24, "sha256BeforeAndAfter": "b9076097dadd60a17ce3da7623af4c88a007025924b0e20bc7f33652e7bbe3e3", "changed": false },
+  "review": "Independent read-only production review found no concrete failure in baseline handling, price references, bounded failure text or consumer lifecycle. Node syntax and hashes checked; no claim of provider inference or broad merge approval.",
+  "simplifications": "Reused existing shared rubric, client transport, native hook/broker and installed PTY harness. No new runtime assets, dependencies, authentication logic, model picker, retries or global settings.",
+  "remainingRisks": [
+    "No paid Jev or native provider inference was run in this repair; entitlement, actual served model/effort, answer quality and real billing remain unverified. Official Mythos documentation supports all five API effort levels, but native Claude Code upstream acceptance/enforcement across all five was not established by controlled dispatcher tests.",
+    "Claude remains best-effort if its native extension dispatcher itself is absent, fails or times out.",
+    "API reference rates do not establish subscription quota savings or a measured cost optimum; token amounts/cache/billing regime are unknown.",
+    "Reviewed registries and price references need manual review by 2026-11-18; unknown IDs remain fail-closed.",
+    "Already-running user panes retain their previous immutable runtime bundle; newly launched MindPlayer/panes use this installation."
+  ],
+  "commitOrPush": false
+}

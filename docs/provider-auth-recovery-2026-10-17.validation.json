@@ -1,0 +1,149 @@
+{
+  "status": "implemented-built-installed-and-PTY-verified; real-OAuth-restoration-not-claimed",
+  "verified_at": "2026-10-17T14:53:00Z",
+  "scope": {
+    "included": "Terminal executable, shared core, regression tests and generic repository examples",
+    "excluded": "Desktop app/ source, desktop build and desktop installation",
+    "existing_dirty_worktree_preserved": true,
+    "user_accounts_or_credentials_edited": false,
+    "real_browser_login_or_logout_performed": false,
+    "commit_or_push_performed": false
+  },
+  "source": {
+    "revision": "54529865aa69ef134c25b88a78c8139ce99b181f",
+    "dirty": true,
+    "version": "0.55.12",
+    "version_bump_requested": false,
+    "input_sha256": "370c4c62b5ef7f233d1b52340e91b414d0e8e32a61672514d8b4df667344ce5c",
+    "hash_method": "Cargo.toml + Cargo.lock + rg --files crates tools/local-model-router filtered to rs/toml/mjs/json/cjs; sort relative filenames; xargs shasum -a 256; shasum -a 256 over manifest",
+    "test_source_sha256": "eaacb243238fd035ee0c8e09f4492d393e3667ba0e129e5a24bf57428b9526d4",
+    "same_inputs_before_and_after_workspace_tests_and_release_build": true
+  },
+  "desktop": {
+    "changed_files": [],
+    "before_and_after_tree_manifest_sha256": "0dd58825f167f09945726523ce7d1f68c6c9edf5a0603554634d6142cf02780f",
+    "hash_method": "rg --files app | sort | xargs shasum -a 256 | shasum -a 256",
+    "built_or_installed": false
+  },
+  "behavior": [
+    "Codex and Claude use one asynchronous account verification and recovery lifecycle for new/resume/handoff launches.",
+    "Account labels are arbitrary display labels, not routing or identity selectors. Existing Codex bindings remain backward-compatible; Claude bindings are optional and separate.",
+    "Healthy matching identity continues without forcing another browser login. Missing credentials and mismatches offer native login to the exact selected home or explicit fresh-read confirmation.",
+    "Native login does not run logout first. Success requires another fresh identity check before the original conversation can start once; failure or cancellation cannot authorize it.",
+    "The original command, cwd, label, handoff input and queued synchronization are preserved. Focused matching held project takes priority over deterministic held fallback and standalone scope.",
+    "Claude status is cached configuration metadata, not proof of a working token. A required authenticated profile response establishes live identity; metadata disagreement and unknown response shapes fail closed.",
+    "Claude inherited native vault differs from an explicit config override even at the same path. Account launch, native status, login and profile probes retain the selected namespace and project context.",
+    "Ambient OAuth refresh credentials, scopes, custom headers, API keys, gateway URLs and provider overrides are cleared. Authentication settings overrides are refused rather than weakening managed login policies.",
+    "Saved binding badges say identity bound, not currently verified. Stale results cannot authorize work or redirect unrelated account edits/focus."
+  ],
+  "simplifications": [
+    "Generalized the existing Codex lifecycle instead of adding a parallel Claude state machine.",
+    "Centralized recovery cwd selection for inspection and native login.",
+    "Removed the redundant scope-wide post-login check; verify each exact held command directly.",
+    "Reused account launch environments for provider probes and native conversation/login commands."
+  ],
+  "verification": {
+    "red_before_green": [
+      "Claude account-panel login and arbitrary-label support",
+      "Cached loggedIn metadata with a rejected authenticated profile",
+      "Native default vault versus explicit same-path override",
+      "Pending project B checked or confirmed from unrelated scope A",
+      "Both providers native recovery login incorrectly used scope A instead of held B",
+      "Two held projects selected earlier A instead of focused B for first verification and login",
+      "Saved fingerprint badge incorrectly claimed current verification"
+    ],
+    "shared_auth_lifecycle_tests": { "passed": 47, "failed": 0 },
+    "claude_pty_tests": { "passed": 12, "failed": 0 },
+    "workspace_tests": { "passed": 941, "failed": 0, "ignored": 8 },
+    "workspace_breakdown_passed": {
+      "core_unit": 239,
+      "account_isolation": 4,
+      "long_running": 4,
+      "scan": 18,
+      "terminal_unit": 624,
+      "terminal_pty": 52
+    },
+    "node_router_tests": { "passed": 511, "failed": 0, "skipped": 31 },
+    "cargo_fmt_check": "passed",
+    "cargo_clippy_workspace_all_targets_deny_warnings": "passed",
+    "git_diff_check": "passed",
+    "release_build": "passed; offline locked build from the tested source inputs",
+    "fixtures": "Synthetic CLI/profile/Keychain-stub PTYs in task-owned temporary homes; no real inference, browser OAuth or account switching. Real account-isolation integration tests inspect native status only.",
+    "installed_pty_suite": {
+      "passed": 52,
+      "failed": 0,
+      "ignored": 2,
+      "duration_seconds": 65.46,
+      "command": "MINDPLAYER_TEST_BINARY=/Users/eden.jang/.local/bin/mindplayer cargo test --offline --locked -p mindplayer-tui --test smoke -- --test-threads=2",
+      "claude_auth_scenarios_included": 12,
+      "synthetic_not_real_OAuth": true
+    }
+  },
+  "independent_review": {
+    "code_spec_security": {
+      "recommendation": "COMMENT",
+      "known_critical_or_high": 0,
+      "bounded_files_reviewed": 7,
+      "confirmed": "Fresh post-login checks, selected home/cwd, refreshed confirmation and ambient credential/header clearing"
+    },
+    "architecture": {
+      "status": "WATCH",
+      "unresolved_blockers": 0,
+      "watch": "Invalidating a probe discards its result but does not cancel its detached worker. Claude subprocess work is bounded by a shared eight-second deadline; harmful credential races were not demonstrated. Namespace cancellation/serialization is a follow-up."
+    },
+    "synthesis": "COMMENT; no merge-ready approval claimed"
+  },
+  "installation": {
+    "path": "/Users/eden.jang/.local/bin/mindplayer",
+    "version": "0.55.12",
+    "sha256": "391b1ee07a166a9b9300b8d3e3bd35599b5e45ceaf2367be49e7f0c8d77918fe",
+    "matches_release_build": true,
+    "replacement": "Atomic same-directory rename after workspace tests passed",
+    "rollback": "/Users/eden.jang/.local/bin/mindplayer-provider-auth-rollback.rPbVXn/mindplayer",
+    "rollback_sha256": "b71ddc88c669600991fb4047766cc713146e79b3fa73ff17c4d67157b12d23ba",
+    "running_user_processes_stopped": false
+  },
+  "sanitization": {
+    "case_insensitive_personal_company_account_literal_matches": 0,
+    "excluded": [".git", "target", "node_modules", ".omc", ".omx"],
+    "user_account_configuration_edited": false,
+    "content_files_anonymized": 19,
+    "detailed_manifest": "docs/plans/2026-10-15-jev-turn-ui.ko.validation.json#anonymizationVerification",
+    "historical_evidence": "Original timestamps, checksums and verification caveats retained; anonymized historical records do not attest to current edited bytes.",
+    "edited_html": "docs/plans/2026-10-15-jev-turn-ui.ko.html",
+    "edited_html_default_browser_open": "succeeded",
+    "edited_html_fixture_checks": "1440/969/390 viewport checks passed; zero runtime errors or external requests"
+  },
+  "changed_files_this_extension": [
+    "crates/mindplayer-core/src/accounts.rs",
+    "crates/mindplayer-core/src/claude_auth.rs",
+    "crates/mindplayer-core/src/lib.rs",
+    "crates/mindplayer-core/src/limits.rs",
+    "crates/mindplayer-core/src/resume.rs",
+    "crates/mindplayer-core/tests/account_isolation.rs",
+    "crates/mindplayer-tui/src/app.rs",
+    "crates/mindplayer-tui/src/app/account_auth.rs",
+    "crates/mindplayer-tui/src/app/accounts_panel.rs",
+    "crates/mindplayer-tui/src/app/accounts_panel_tests.rs",
+    "crates/mindplayer-tui/src/app/accounts_render_tests.rs",
+    "crates/mindplayer-tui/src/app/pane.rs",
+    "crates/mindplayer-tui/src/app/spawn.rs",
+    "crates/mindplayer-tui/src/app/tests.rs",
+    "crates/mindplayer-tui/src/main.rs",
+    "crates/mindplayer-tui/src/ui.rs",
+    "crates/mindplayer-tui/tests/smoke.rs",
+    "README.md",
+    "AGENTS.md",
+    "docs/plans/provider-auth-recovery-2026-10-17.md",
+    "docs/provider-auth-recovery-2026-10-17.validation.json",
+    "19 existing examples/docs/test files in the sanitization manifest"
+  ],
+  "remaining_risks_and_gaps": [
+    "No successful real Claude authenticated profile or actual browser login/account restoration was performed. Synthetic responses prove lifecycle behavior, not restoration of the user's intended account.",
+    "Claude profile URL and shape follow installed Claude Code 2.1.302 source, not a guaranteed public API. Future incompatible contracts fail closed and require adaptation.",
+    "Explicit Claude config paths needing Unicode NFC normalization are refused by the macOS vault hasher rather than risking selection of a wrong vault.",
+    "Detached stale probes are bounded but not actively cancelled; see architecture WATCH.",
+    "Running panes are not restarted or silently reauthenticated. Default provider homes remain shared with other native applications.",
+    "Desktop sources were unchanged and the desktop application was neither built nor installed. Shared core is also consumed by desktop discovery."
+  ]
+}

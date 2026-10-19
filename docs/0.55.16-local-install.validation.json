@@ -1,0 +1,285 @@
+{
+  "schemaVersion": 1,
+  "status": "complete-installed-and-behaviorally-verified",
+  "verifiedAt": "2026-10-19T06:10:52.568Z",
+  "scope": "Terminal MindPlayer: pane-bound Codex account label, session-sticky F6 Jev ON/OFF, remove F7 preview. Claude remains native/Jev-free; desktop untouched.",
+  "source": {
+    "revision": "54529865aa69ef134c25b88a78c8139ce99b181f",
+    "dirty": true,
+    "version": "0.55.16",
+    "versionOverride": false,
+    "finalFrozenSha256": "c75691da159eaf3187de668e8d9ba80575270e35c12baa9606995262484a3e91",
+    "manifestFiles": 115,
+    "manifestDefinition": "Sorted Cargo.toml/Cargo.lock, tools/native-codex/queue.patch and crates/tools .rs/.toml/.mjs/.json/.cjs/.ts excluding target/node_modules/*.validation.json/validation-*.json; aggregate SHA256(path NUL per-file SHA256 newline)",
+    "unchangedAcrossFinalNodeNativePtySourceSmokeReleaseAndInstalledSmoke": true,
+    "nodeFiles": 48,
+    "nodeSha256BeforeAndAfter": "0f5dd49df926820742860180da8d878afa1e65d741bd200105219834f73359cc",
+    "inheritedDirtyChangesPreserved": true
+  },
+  "behavior": {
+    "account": "Existing launch binding, or deepest unique transcript-root ownership; unknown/ambiguous ownership is shown as 계정 미확인, never guessed from a default. Arbitrary account display labels, not an authentication attestation. Existing lower pane border in split/zoom; whole-grapheme truncation and control/bidi sanitization.",
+    "f6": "New running sessions start OFF. F6 toggles ON until another F6, across edits, paste, submission and queue drain. Enter snapshots the mode onto the actual UserMessage identity; later F6 never rewrites accepted/queued messages. OFF preserves incoming native model/effort and bypasses Jev.",
+    "ownership": "Same-thread reconnect/input restoration retains the session mode, including empty drafts. New chat/fork identity starts OFF. No disk persistence, cross-session consent inheritance or old-pane hot patch.",
+    "f7": "Removed native Jev preview UI/RPC and Node preview-token lifecycle. Retired local RPC is rejected locally, never forwarded to the backend. Native key forwarding remains ordinary.",
+    "unchanged": "Native Enter/queue, shell, approvals, Escape, Ctrl-G/Trace, Ctrl-Q hide; authentication/accounts, global CLIs/settings/plugins, dependencies and desktop app."
+  },
+  "verification": [
+    {
+      "check": "Final offline Node suite",
+      "passed": 580,
+      "skipped": 49,
+      "failed": 0,
+      "total": 629,
+      "exitCode": 0,
+      "durationSeconds": 30.296923,
+      "log": "/private/tmp/mindplayer-05516-node-final2.log",
+      "note": "All MINDPLAYER_TEST_* opt-ins and native override removed. NODE_OPTIONS/NODE_PATH/CODEX_HOME and gateway keys removed; native/live opt-ins skipped, no provider inference."
+    },
+    {
+      "check": "Actual pinned private native PTY + protocol contracts",
+      "passed": 47,
+      "failed": 0,
+      "skipped": 0,
+      "exitCode": 0,
+      "durationSeconds": 28.117957,
+      "groups": {
+        "queue": 22,
+        "cancel": 4,
+        "managedSession": 21
+      },
+      "actualPtyCases": 44,
+      "sourceContractCases": 3,
+      "actualFixtures": 45,
+      "log": "/private/tmp/mindplayer-05516-native-green.Ouadvi/native-pty.log",
+      "note": "Exact now-active candidate, real composer/default keymap/PTY/proxy/ModelRouter/JevService, synthetic backend and judge. Includes separate-session ownership, identical queued text, late ACK, /plan, /init, Escape, approvals, edits, F7 and sticky ON->ON->OFF."
+    },
+    {
+      "check": "Final same-source Rust PTY smoke",
+      "passed": 41,
+      "failed": 0,
+      "filtered": 29,
+      "exitCode": 0,
+      "durationSeconds": 91.66,
+      "log": "/private/tmp/mindplayer-05516-smoke-source2.log",
+      "note": "Isolated homes, fake CLIs, synthetic native composer/backend/judge, real outer app and embedded router. No real-Jev opt-in/version override."
+    },
+    {
+      "check": "Exact installed executable, same 41 Rust PTY smoke tests",
+      "passed": 41,
+      "failed": 0,
+      "filtered": 29,
+      "exitCode": 0,
+      "durationSeconds": 87.37,
+      "log": "/private/tmp/mindplayer-05516-smoke-installed.log",
+      "binaryOverride": "/Users/eden.jang/.local/bin/mindplayer",
+      "versionOverride": false,
+      "note": "Same audited isolated tests, including Claude native/no-Jev paths. Four stable 40x120 real-app buffers retained. Actual private native composer independently verified above."
+    },
+    {
+      "check": "Targeted pure Rust account rendering, session help, native child keys and Claude-hidden controls",
+      "passed": 10,
+      "failed": 0,
+      "filtered": 638,
+      "exitCode": 0,
+      "log": "/private/tmp/mindplayer-05516-targeted-units-corrected.log",
+      "command": "cargo test --locked -p mindplayer-tui --bin mindplayer -- pane_account_ session_jev_ claude_panes_never_render_a_stale_jev_status_channel codex_choice_keys_keep_the_native_child_encoding --nocapture"
+    },
+    {
+      "check": "cargo clippy --locked --all-targets -- -D warnings",
+      "exitCode": 0,
+      "durationSeconds": 2.64,
+      "log": "/private/tmp/mindplayer-05516-clippy-final.log"
+    },
+    {
+      "check": "cargo fmt --all -- --check; git diff --check",
+      "exitCode": 0
+    },
+    {
+      "check": "Same-source 0.55.16 release build without version override",
+      "exitCode": 0,
+      "log": "/private/tmp/mindplayer-05516-release.log",
+      "durationSeconds": 40.32,
+      "finalFrozenRebuildLog": "/private/tmp/mindplayer-05516-release-final.log",
+      "finalFrozenRebuildSeconds": 0.14,
+      "releaseAndInstalledSha256": "d2b796ae17a6c204a6cc826c16adf00cf79d7d44734b02164c76d31b6b128b91"
+    },
+    {
+      "check": "Pinned native Rust regressions and actual CLI build",
+      "passed": 57,
+      "failed": 0,
+      "groups": {
+        "tui": 51,
+        "protocol": 4,
+        "appServer": 2
+      },
+      "exitCode": 0,
+      "log": "/private/tmp/mindplayer-05516-native-build.log",
+      "profile": "dev-small",
+      "rustc": "1.95.0",
+      "incremental": false,
+      "offlineCargo": true,
+      "sourceGuardBeforeAndAfter": true
+    },
+    {
+      "check": "Pinned native owned TUI Clippy",
+      "command": "cargo clippy --locked --offline --profile dev-small -p codex-tui --lib --no-deps -- -D warnings",
+      "exitCode": 0,
+      "durationSeconds": 199,
+      "log": "/private/tmp/mindplayer-05516-native-clippy.log",
+      "note": "No upstream dependency lint suppressions or PTY semantic changes. Pinned changed Rust files also passed rustfmt --check; existing nightly-format-option warnings only."
+    },
+    {
+      "check": "Actual Core executes sibling Code Mode host and consumes its correlated result",
+      "status": "passed",
+      "pureHarnessTestsPassed": 8,
+      "result": "/private/tmp/mindplayer-code-mode-offline.kAkNfnKB/run-fBcmSc/result.json",
+      "localhostResponsesRequests": 2,
+      "providerCalls": 0,
+      "paidInference": false,
+      "note": "OS sandbox denies outbound except loopback; isolated HOME/CODEX_HOME. Actual second Core request must include custom_tool_call_output with exact call_id and random marker produced by real sibling-host JS execution. Not nested tool dispatch, native UI rendering or model quality proof."
+    },
+    {
+      "check": "Bounded installed 40x120 cell-placement review",
+      "score": 92,
+      "threshold": 90,
+      "verdict": "pass",
+      "artifact": "/private/tmp/mindplayer-05516-installed-ui.tm9cqL/installed-text-cells.png",
+      "verdictFile": "/Users/eden.jang/Work/example/working2/.omx/state/mindplayer-session-jev-toggle/ralph-progress.json",
+      "note": "Actual installed outer app buffers, synthetic native child. Account visible split/zoom and ON/OFF distinct; not original ANSI theme, OS screenshot, pixel-fidelity or IME proof."
+    },
+    {
+      "check": "Fresh interactive login-shell resolution",
+      "exitCode": 0,
+      "path": "/Users/eden.jang/.local/bin/mindplayer",
+      "version": "mindplayer 0.55.16",
+      "note": "Checked with a real tool PTY. Earlier non-TTY interactive zsh emitted monitor/zle/gitstatus startup warnings, while resolving the same correct executable; no shell settings were changed."
+    }
+  ],
+  "preservedRedAndRepairs": {
+    "firstActualNativeRun": {
+      "passed": 45,
+      "failed": 2,
+      "exitCode": 1,
+      "log": "/private/tmp/mindplayer-05516-installed-ui.tm9cqL/native-pty.log",
+      "cleanup": "/private/tmp/mindplayer-05516-installed-ui.tm9cqL/native-pty-cleanup.json",
+      "observation": "44/45 fixtures observed at 100ms; all observed PIDs/ports/roots gone. Final GREEN read-only observer uses 25ms and observes all 45 without weakening expected count."
+    },
+    "projector": "Actual vendored Rust vt100 independently showed Jev ON in both retained late-ACK captures while the test-only projection omitted the row. Three ESC M regressions captured 7/10 RED; three scrolling-margin regressions captured 10/13 RED. Minimal ESC M + CSI r + bounded line-feed fix gives 13/13 GREEN and restores the exact ON label on retained actual ANSI. No production/native behavior changed for this harness repair.",
+    "projectorOracleEvidence": "/private/tmp/mindplayer-05516-installed-ui.tm9cqL/actual-vt100-red.json",
+    "retry": "New retry test matched an identical history row as if a new typed composer draft had rendered, allowing Enter to join an unflushed typing burst. Uses existing real bracketed-paste PTY boundary for explicit retry, retaining every identity/cancellation/ON/late-result/no-replay assertion; no artificial positive sleep or RPC injection.",
+    "focusedAfterRepair": {
+      "passed": 2,
+      "failed": 0,
+      "exitCode": 0,
+      "log": "/private/tmp/mindplayer-05516-native-two-margin.log"
+    },
+    "invocationCorrection": "An attempted --lib Rust test command failed before running tests because mindplayer-tui is a binary-only package. Corrected --bin mindplayer run passed all 10 scoped tests."
+  },
+  "cleanup": {
+    "testRunInterruptions": false,
+    "scope": "Exact task-owned fixtures only. No user process killed, broad directory deleted, credentials read/staged, install performed by tests or external short timeout.",
+    "sourceSmoke": {
+      "suite": 49868,
+      "roots": 43,
+      "pidsChecked": 45,
+      "alivePids": [],
+      "portsChecked": 21,
+      "openPorts": [],
+      "diagnosticMarkersRetained": true
+    },
+    "installedSmoke": {
+      "suite": 53569,
+      "roots": 43,
+      "pidsChecked": 45,
+      "alivePids": [],
+      "portsChecked": 21,
+      "openPorts": [],
+      "diagnosticMarkersRetained": true
+    },
+    "nativePty": {
+      "ownedPidsChecked": 130,
+      "alivePids": [],
+      "portsChecked": 45,
+      "openPorts": [],
+      "runtimeRootsChecked": 45,
+      "remainingRoots": [],
+      "evidence": "/private/tmp/mindplayer-05516-native-green.Ouadvi/native-pty-cleanup.json",
+      "note": "Read-only actual descendant/remote-port/work-root observation; fixture close awaits bridge finally/waitpid and real proxy close before removing only its fresh private runtime root. Retained diagnostic captures are separate."
+    },
+    "codeModeHost": {
+      "ownedPidsChecked": 5,
+      "alivePids": [],
+      "portClosed": true
+    }
+  },
+  "installed": {
+    "path": "/Users/eden.jang/.local/bin/mindplayer",
+    "version": "mindplayer 0.55.16",
+    "sha256": "d2b796ae17a6c204a6cc826c16adf00cf79d7d44734b02164c76d31b6b128b91",
+    "nativeManifest": "/Users/eden.jang/.mindplayer/native-codex/active.json",
+    "nativeManifestSha256": "332ab98485955338e9db6c743b4c3fd85e03864183eb0a5314283d32e3561140",
+    "nativeSourceRevision": "092d3acd6bec3e3a14bdc7e7a2810ab628ab759d",
+    "nativeVersion": "0.162.1",
+    "nativeContract": "mindplayer-native-routing-v4",
+    "nativeBinary": "/Users/eden.jang/.mindplayer/native-codex/builds/0d1796f19c262c944c920c021b2c19273abe72f2ba3435e2a21788af83dedc4d/codex",
+    "nativeBinarySha256": "0d1796f19c262c944c920c021b2c19273abe72f2ba3435e2a21788af83dedc4d",
+    "patchSha256": "798c336990453cd0b336e87e03013a2ceee54c7add7704ec7ce9a0696a98d2a9",
+    "codeModeHostSha256": "0960435a104cf926e18bb938b8f6f8fcdf7e27be0c8d88e1911bc22a1de7d3e6",
+    "codeModeHostOrigin": "Explicit official prebuilt 0.162.1, not source-build attested; actual Core/host compatibility verified offline.",
+    "pairedActivation": "Staged owned regular files, verified exact hashes, manifest 0600/8 fields, runtime path/contract/hash gates retained; paired replacement with rollback on activation failure.",
+    "backup": "/Users/eden.jang/.local/bin/mindplayer-0.55.15-rollback.P55Fp3",
+    "backupBinarySha256": "99a4839c9fa80d5dac02c7f4cfae7a9134c0526ff5733e866a1ee556d23864e1",
+    "backupManifestSha256": "8435fb0063ed027eacada0d7df114afe84420aa0b5774cebcf6bbf93c8c57ee6",
+    "restartRequired": "Already-running MindPlayer/child panes retain old code. Exit/relaunch MindPlayer and reopen old panes for this version; no user session was terminated automatically."
+  },
+  "changedFiles": {
+    "production": [
+      "crates/mindplayer-tui/src/ui.rs",
+      "crates/mindplayer-tui/src/app.rs",
+      "crates/mindplayer-tui/src/main.rs",
+      "tools/native-codex/queue.patch",
+      "tools/native-codex/build.mjs",
+      "tools/local-model-router/service.mjs",
+      "tools/local-model-router/router.mjs",
+      "tools/local-model-router/run.mjs",
+      "tools/local-model-router/private-ui.mjs"
+    ],
+    "regressions": [
+      "crates/mindplayer-tui/tests/smoke.rs",
+      "tools/local-model-router/{native-per-prompt,native-queue,service,router,private-ui,terminal-screen}.test.mjs",
+      "tools/local-model-router/{native-queue,mindplayer,terminal-screen}-fixture.mjs",
+      "tools/local-model-router/{installed-retry-live,native-ui-live,startup-native-live,startup-check,mindplayer-fixture}.test.mjs"
+    ],
+    "versionAndDocs": [
+      "Cargo.toml",
+      "Cargo.lock",
+      "AGENTS.md",
+      "DESIGN.md",
+      "README.md",
+      "tools/local-model-router/README.ko.md",
+      "tools/native-codex/README.ko.md",
+      "docs/plans/2026-10-19-session-jev-toggle.md",
+      "docs/0.55.16-local-install.validation.json"
+    ],
+    "note": "Task scope, not attribution of every inherited dirty file. The native patch includes prior native routing/queue changes; do not revert unrelated work."
+  },
+  "simplifications": [
+    "Deleted the F7 native preview event/RPC/rendering paths and Node preview token machinery instead of hiding the key.",
+    "Reused pane ownership and the existing bottom border; no additional terminal row, dependency or account-specific literal.",
+    "Replaced per-message composer selection/reset states with one session toggle while retaining immutable per-message routing metadata and native queue identity."
+  ],
+  "desktop": {
+    "files": 20,
+    "sha256BeforeAndAfter": "a9384a788692717c471ec4fb1554ec1fce04a5bc291636f0bf764e1c0bade77f",
+    "method": "rg --files --hidden app excluding node_modules/target/dist/gen; sorted path NUL per-file SHA256 newline",
+    "unchanged": true,
+    "gitStatusShortApp": ""
+  },
+  "remainingRisksAndGaps": [
+    "No live Jev/OpenAI/Claude provider inference, account login or OAuth validation was requested/performed; tests use isolated synthetic backends/judges.",
+    "Text-cell evidence does not establish original terminal styling, pixel fidelity, arbitrary terminal themes or IME behavior.",
+    "Private native CLI is a pinned dev-small local verification build; Code Mode host is official prebuilt, not same-source attested.",
+    "No whole-workspace/ambient-HOME app unit run, native dependency-inclusive Clippy, commit, push, release publication, global CLI/plugin/settings or desktop change.",
+    "Existing running apps/panes require restart/reopen; their processes were deliberately left untouched."
+  ]
+}

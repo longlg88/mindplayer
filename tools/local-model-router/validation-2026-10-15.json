@@ -1,0 +1,99 @@
+{
+  "date": "2026-10-15",
+  "scope": "Local-only standalone Codex routing PoC; no MindPlayer binary integration",
+  "source": {
+    "baseRevision": "54529865aa69ef134c25b88a78c8139ce99b181f",
+    "worktreeDirty": true,
+    "changedByThisTask": "tools/local-model-router only",
+    "rustSourcesAndCargoFilesUnchanged": true,
+    "dependenciesAdded": false,
+    "versionBumped": false,
+    "globalInstallationChanged": false,
+    "committed": false,
+    "pushed": false,
+    "deployed": false
+  },
+  "runtime": {
+    "node": "23.9.0",
+    "codex": "0.162.1",
+    "catalogReadSucceeded": true,
+    "visibleCatalogModels": 7,
+    "catalogDoesNotProveEntitlement": true
+  },
+  "automatedTests": {
+    "command": "node --test --test-concurrency=1 tools/local-model-router/*.test.mjs",
+    "passed": 43,
+    "failed": 0,
+    "skipped": 0,
+    "durationMs": 3748.122208,
+    "coverage": [
+      "Loopback/auth/Origin/Host restrictions and second-client rejection",
+      "WebSocket masking, UTF-8 fragmentation, invalid close codes, payload bounds",
+      "Large startup metadata and real 17 MiB app-server stdin delivery",
+      "Linear chunked JSONL assembly with large Korean output",
+      "Same-thread per-turn model fields, nested collaboration settings, preserved input",
+      "Approvals and server-initiated request IDs in both directions",
+      "Explicit selector failure, no hidden fallback, no inference retry/replay",
+      "Matching interrupt targets, rejected starts, disconnect/late-result races",
+      "Audit I/O failure isolation and owned child/grandchild cleanup"
+    ],
+    "expectedInjectedWarning": "Audit-write failure test emits one generic warning"
+  },
+  "nativeUiFinalSourceSmoke": {
+    "command": "node tools/local-model-router/run.mjs --cwd /tmp --resume 01a13dda-0e00-7400-b3e2-c4003c177cdf",
+    "testThreadId": "01a13dda-0e00-7400-b3e2-c4003c177cdf",
+    "auditDirectoryBasename": "mindplayer-local-router-a02dyk",
+    "authenticatedConnections": 1,
+    "protocolOrRoutingErrors": 0,
+    "largestForwardedMessageBytes": 15399673,
+    "turns": [
+      {
+        "requestedModel": "gpt-6-astra",
+        "turnId": "01a13de3-1e2c-7440-a853-5abeb1b038ae",
+        "startAcknowledged": true,
+        "completion": "completed",
+        "previousNonceRecalledInNativeUi": true
+      },
+      {
+        "requestedModel": "gpt-6.1-sol",
+        "turnId": "01a13de4-13eb-77f0-841e-4cabbe993061",
+        "startAcknowledged": true,
+        "completion": "completed",
+        "previousNonceRecalledInNativeUi": true
+      },
+      {
+        "requestedModel": "gpt-6.1-sol",
+        "turnId": "01a13de4-9a90-76f2-a6c5-71c554996198",
+        "startAcknowledged": true,
+        "nativeEscSentInterrupt": true,
+        "interruptRpcSucceeded": true,
+        "completion": "interrupted"
+      }
+    ],
+    "koreanMultilineAndStreamingObserved": true,
+    "shutdown": {
+      "activeTurnsAtClose": 0,
+      "loopbackPort51781Closed": true,
+      "ownedUiAppServerAndMcpChildProcessesExited": true,
+      "normalQuitObserved": true,
+      "sigtermCleanupVerifiedOnPreviousRun": true
+    }
+  },
+  "permissionAndModelEvidence": {
+    "newThreadReadOnlyStatusObserved": true,
+    "resumePermissionOverridesOmittedBecauseCliRejectsThem": true,
+    "resumeDoesNotGuaranteeReadOnly": true,
+    "nativeStatusReportedBModelAfterBOnEarlierHealthyRun": true,
+    "nativeFooterCanRetainAModel": true,
+    "requestedAndAcknowledgedModelsAreNotProviderExecutionAttestation": true
+  },
+  "remainingLimits": [
+    "Jev/Vercel/PIM deliberately not integrated; deterministic test rules only",
+    "Codex inference still uses the existing external provider and account usage",
+    "Native background/title turns can also consume usage through this bridge",
+    "Live tool approval/execution was not exercised against private working files; protocol tests cover approval messages",
+    "64 MiB bound is an experimental memory/transport ceiling, not unlimited attachment support",
+    "Experimental remote/app-server interface and minimal local-only WebSocket transport",
+    "Not integrated into existing MindPlayer PTY sessions or installed as a daemon"
+  ]
+}

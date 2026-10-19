@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light">
+<title>MindPlayer · 시작 화면 UI 10안</title>
+<style>
+  :root{--paper:#f3f2ee;--ink:#202833;--muted:#65707b;--line:#cfd3d4;--term:#282c34;--text:#e4e7ed;--blue:#7ea2f7;--dim:#8c929e;--green:#7dbb84;--gold:#ebbc69;--purple:#b48ef0;--red:#f58278;--cw:7.2px;--lh:17px}
+  *{box-sizing:border-box}body{margin:0;background:var(--paper);color:var(--ink);font:14px/1.4 -apple-system,BlinkMacSystemFont,"Apple SD Gothic Neo",sans-serif}
+  header{position:sticky;top:0;z-index:10;background:var(--paper);border-bottom:1px solid var(--line);padding:15px 24px 12px}
+  .heading,.toolbar{display:flex;align-items:center;gap:12px;max-width:1600px;margin:auto;flex-wrap:wrap}.heading{justify-content:space-between}
+  h1{font-size:19px;margin:0;letter-spacing:-.6px}h1 span{font-weight:400;color:var(--muted)}.scope{font-size:11px;color:var(--muted)}
+  .toolbar{margin-top:10px;font:12px/1.4 ui-monospace,Menlo,monospace;gap:10px 18px}.toolbar .rule{color:#254ba6}.index{display:flex;gap:12px;margin-left:auto}
+  a{color:inherit;text-decoration:none}a:hover{text-decoration:underline;text-underline-offset:4px}main{max-width:1648px;margin:auto;padding:24px 24px 32px}
+  .gallery,.journey-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:26px 22px}article{min-width:0;scroll-margin-top:120px}
+  .idea-head{display:flex;align-items:baseline;gap:10px;padding-bottom:8px}.num{color:#596779;font:12px ui-monospace,Menlo,monospace;min-width:22px}h2{font-size:14px;font-weight:650;margin:0;letter-spacing:-.2px}.keys{margin-left:auto;color:var(--muted);font:10px ui-monospace,Menlo,monospace}
+  .terminal-scroll{background:var(--term);border:1px solid #737d90;padding:10px;overflow-x:auto;overscroll-behavior-x:contain;scrollbar-width:thin;scrollbar-color:#626b7b var(--term)}
+  .terminal{width:calc(88 * var(--cw));height:calc(29 * var(--lh));margin:auto;background:var(--term);color:var(--text);outline:none;font:12px/var(--lh) Menlo,"SFMono-Regular","Noto Sans Mono CJK KR",monospace;font-variant-ligatures:none;font-feature-settings:"liga" 0;cursor:default}
+  .terminal:focus{outline:1px solid var(--blue);outline-offset:4px}.line{height:var(--lh);display:flex;white-space:pre}.run{display:inline-block;flex-shrink:0;overflow:hidden;height:var(--lh)}
+  .blue{color:var(--blue)}.dim{color:var(--dim)}.green{color:var(--green)}.gold{color:var(--gold)}.purple{color:var(--purple)}.red{color:var(--red)}.strong{font-weight:700}.sel{background:#344361;color:#e8ecf4}
+  .section-label{display:flex;justify-content:space-between;align-items:baseline;gap:12px;border-top:1px solid var(--line);margin:36px 0 16px;padding-top:16px;scroll-margin-top:120px}.section-label span{font-size:11px;color:var(--muted)}
+  .layout-scroll{overflow-x:auto}.pane-layout-preview{background:var(--term);border:1px solid #737d90;padding:10px;min-width:660px;color:var(--text);font:11px/1.6 Menlo,monospace}.layout-header{color:var(--blue);padding-bottom:7px}.pane-row{display:grid;gap:0}.pane-row.top{grid-template-columns:repeat(4,minmax(0,1fr))}.pane-row.bottom{grid-template-columns:repeat(3,minmax(0,1fr))}.mini-pane{height:125px;border:1px solid #697b9b;padding:6px;min-width:0;white-space:pre;overflow:hidden}.mini-pane.focus{border-color:var(--gold)}.pane-title{color:var(--blue)}.mini-status{color:var(--gold);margin-top:30px}.layout-footer{border-top:1px solid #697b9b;padding-top:8px;color:var(--dim);white-space:pre}
+  footer{border-top:1px solid var(--line);display:flex;gap:12px;flex-wrap:wrap;margin-top:26px;padding-top:12px;font-size:10px;color:var(--muted)}footer span:last-child{margin-left:auto}:focus-visible{outline:2px solid #3766be;outline-offset:3px}
+  @media(max-width:1340px) and (min-width:1240px){:root{--cw:6.6px;--lh:16px}.terminal{font-size:11px}}
+  @media(max-width:1239px){.gallery,.journey-grid{grid-template-columns:1fr}.terminal-scroll{padding:12px}}
+  @media(max-width:700px){header{padding:12px 14px}h1{font-size:17px}.heading{align-items:flex-start}.index{margin-left:0;width:100%;gap:15px;flex-wrap:wrap}.toolbar{gap:8px 12px}.toolbar .rule{width:100%}main{padding:18px 12px}.terminal{margin:0}.keys{display:none}.section-label{flex-wrap:wrap}}
+  @media print{header{position:static}.gallery,.journey-grid{display:block}article{break-inside:avoid;margin-bottom:20px}.toolbar{display:none}}
+</style>
+</head>
+<body>
+<header>
+  <div class="heading"><h1>MindPlayer <span>/ 시작할 때 한 번</span></h1><span class="scope">10안 · HTML 문자 격자 시안 · 실제 호출 / 앱 적용 없음</span></div>
+  <nav class="toolbar" aria-label="UI 시안 탐색">
+    <span class="rule">이번 실행에 적용 → 기존·새 세션은 다시 묻지 않음</span>
+    <a href="#after">선택 이후</a><a href="#panes">4 + 3 pane</a><a href="#gallery" id="reset">처음 상태로</a>
+    <div class="index" id="index" aria-label="10안 바로가기"></div>
+  </nav>
+</header>
+<main>
+  <section class="gallery" id="gallery" aria-label="MindPlayer 시작 화면 UI 10개 대안"></section>
+  <div class="section-label" id="after"><h2>선택 이후</h2><span>Enter 기존 세션 · n 새 세션 · 같은 실행 방식 유지</span></div>
+  <section class="journey-grid" id="journey-grid" aria-label="선택 이후의 공통 화면"></section>
+  <div class="section-label" id="panes"><h2>기존 pane 배치 유지</h2><span>선택은 시작 시 한 번 · 사용량은 전체 폭</span></div>
+  <div class="layout-scroll"><section class="pane-layout-preview" data-layout="4+3" aria-label="4개 위 3개 아래 배치">
+    <div class="layout-header">◆ MindPlayer     이번 실행: Jev 사용 (Codex) · 다른 CLI는 그대로</div>
+    <div class="pane-row top">
+      <div class="mini-pane focus"><div class="pane-title">┌ 리뷰 · codex</div><div class="dim">기존 세션</div><div class="mini-status">Jev 판단 중</div><div class="dim">실행 미전송</div></div>
+      <div class="mini-pane"><div class="pane-title">┌ 설계 · codex</div><div class="dim">새 세션</div><div class="mini-status">실행 중</div><div class="dim">모델 + effort 요청 기록</div></div>
+      <div class="mini-pane"><div class="pane-title">┌ tower · claude</div><div class="dim">CLI 그대로 · Jev 미지원</div><div class="mini-status">실행 중</div><div class="dim">기존 CLI 설정</div></div>
+      <div class="mini-pane"><div class="pane-title">┌ report · codex</div><div class="dim">기존 → 재개</div><div class="mini-status">완료</div><div class="dim">다음 입력에서 새 판단</div></div>
+    </div>
+    <div class="pane-row bottom">
+      <div class="mini-pane"><div class="pane-title">┌ 테스트 · codex</div><div class="dim">같은 실행 방식</div><div class="mini-status">입력 대기</div><div class="dim">› Ask Codex to do anything</div></div>
+      <div class="mini-pane"><div class="pane-title">┌ 운영 · kiro</div><div class="dim">CLI 그대로 · Jev 미지원</div><div class="mini-status">입력 대기</div><div class="dim">기존 CLI 설정</div></div>
+      <div class="mini-pane"><div class="pane-title">┌ 이미 실행 중이던 창</div><div class="dim">재연결 · 기존 방식 유지</div><div class="mini-status">실행 중</div><div class="dim">몰래 전환하지 않음</div></div>
+    </div>
+    <div class="layout-footer">codex    업무 계정 weekly   ▰▰▱▱▱▱  32.0%     보조 계정 weekly   ▰▱▱▱▱▱  24.0%
+claude   wk                ▰▰▰▰▰▰  97.0%                  예시 사용량
+ctrl-g trace · ctrl-x list · tab pane · ctrl-z zoom · ctrl-q close</div>
+  </section></div>
+  <footer><span>키보드 패턴 참고</span><a href="https://github.com/charmbracelet/gum">Gum</a><a href="https://github.com/junegunn/fzf">fzf</a><a href="https://opencode.ai/docs/keybinds/">OpenCode</a><a href="https://github.com/jesseduffield/lazygit">lazygit</a><span>창 안을 클릭 → 방향키 · Enter / 10안은 입력 검색 · Esc 종료 · 저장 없음</span></footer>
+</main>
+<script>
+'use strict';
+const COLS=88,ROWS=29;
+const ideas=[['작은 시작창','compact-picker'],['시작 전용 전체 화면','full-screen-list'],['두 칸 선택','two-column-choice'],['하단 시작바','bottom-launch-bar'],['왼쪽 시작 메뉴','left-navigation'],['셸 질문형','shell-question'],['실행 설정표','configuration-sheet'],['단계형 시작','step-wizard'],['목록 미리보기','preview-tabs'],['시작 명령 검색','startup-palette']];
+const states=new Map(),frames=new Map(),timers=new Map();
+const escapeHtml=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+function width(c){const n=c.codePointAt(0);if(/\p{Mark}/u.test(c))return 0;return n>=0x1100&&(n<=0x115f||n===0x2329||n===0x232a||(n>=0x2e80&&n<=0xa4cf)||(n>=0xac00&&n<=0xd7a3)||(n>=0xf900&&n<=0xfaff)||(n>=0xfe10&&n<=0xfe6f)||(n>=0xff00&&n<=0xff60)||(n>=0xffe0&&n<=0xffe6)||n>=0x1f300)?2:1;}
+class Grid{
+  constructor(){this.rows=Array.from({length:ROWS},()=>Array.from({length:COLS},()=>({c:' ',style:''})));}
+  text(x,y,text,style='',limit=COLS-x){if(y<0||y>=ROWS)return;let pos=x;for(const c of String(text)){const w=width(c);if(!w)continue;if(pos<0){pos+=w;continue;}if(pos+w>Math.min(COLS,x+limit))break;const ink=this.rows[y][pos].style.includes('sel')&&!style.includes('sel')?style+' sel':style;this.rows[y][pos]={c,style:ink};if(w===2)this.rows[y][pos+1]={c:'',style:ink};pos+=w;}}
+  fill(x,y,w,h,style=''){for(let r=y;r<y+h;r++)for(let c=x;c<x+w;c++)if(r>=0&&r<ROWS&&c>=0&&c<COLS)this.rows[r][c]={c:' ',style};}
+  box(x,y,w,h,title='',color='blue'){this.fill(x,y,w,h);this.text(x,y,'┌'+'─'.repeat(w-2)+'┐',color);this.text(x,y+h-1,'└'+'─'.repeat(w-2)+'┘',color);for(let r=1;r<h-1;r++){this.text(x,y+r,'│',color);this.text(x+w-1,y+r,'│',color);}if(title)this.text(x+2,y,' '+title+' ',color,w-4);}
+  line(y,text,style='dim'){this.text(0,y,text,style);}
+  html(){return this.rows.map(row=>{let out='',spaces=0,ink='';const span=(text,count,style)=>'<span class="run '+style+'" style="width:calc(var(--cw) * '+count+')">'+escapeHtml(text)+'</span>';const flush=()=>{if(spaces)out+=span(' '.repeat(spaces),spaces,ink);spaces=0;};for(const cell of row){if(!cell.c)continue;if(cell.c===' '){if(cell.style!==ink){flush();ink=cell.style;}spaces++;}else{flush();out+=span(cell.c,width(cell.c),cell.style);}}flush();return '<div class="line">'+out+'</div>';}).join('');}
+}
+function fresh(id,options={}){return {id,screen:'startup',selected:'native',runMode:null,ready:'ready',consent:false,query:'',notice:'',sessionCount:0,sessions:{},entry:null,phase:'input',draft:'',current:'',turns:0,...options};}
+function route(s){return s.runMode==='jev'?'Jev 사용 (Codex)':'Jev 미사용 · CLI 그대로';}
+function selected(s){return s.selected==='jev'?'Jev 사용':'Jev 미사용';}
+function common(g,s){g.line(0,'◆ MindPlayer  Codex / Claude / Kiro / Cursor','blue');g.line(1,'─'.repeat(COLS),'dim');g.text(2,27,'이번 실행에만 적용 · 선택 저장 없음','dim');g.text(2,28,'UI 시안 · 예시 데이터 · 실제 Jev / CLI 호출 없음','dim');if(s.runMode)g.text(49,0,s.runMode==='jev'?'판단: Jev (Codex)':'판단: CLI 그대로','gold',38);}
+function choice(g,s,x,y,title,value,w=64){g.fill(x,y,w,1,s.selected===value?'sel':'');g.text(x,y,(s.selected===value?'▶ ':'  ')+title,s.selected===value?'sel':'',w);}
+function startupList(g,s){g.box(1,3,86,19,'Sessions · 시작 대기','dim');g.text(3,5,'— recent   7 sessions','dim');const rows=[['codex','리뷰 세션','2m'],['codex','설계 검토','1h'],['claude','tower','5m'],['codex','daily report','1h'],['kiro','운영 점검','2h']];rows.forEach((r,i)=>{g.text(4,7+i*2,'○  '+r[0],r[0]==='codex'?'blue':'purple');g.text(18,7+i*2,'업무 계정','dim');g.text(34,7+i*2,r[2],'dim');g.text(42,7+i*2,r[1],'dim');});}
+function startup(g,s){
+  const nat='Jev 사용 안 함',jev='Jev 사용';
+  if(s.id===1){
+    g.text(2,3,'시작하기','dim');g.box(15,7,58,13,'이번 실행의 모델 판단');g.text(19,9,'MindPlayer를 어떻게 시작할까요?','strong');choice(g,s,19,12,nat,'native',50);choice(g,s,19,14,jev,'jev',50);g.text(21,16,s.selected==='jev'?'Codex 입력마다 모델 + effort 판단':'Jev 호출 없이 원래 CLI 그대로','dim',48);g.text(19,18,'↑↓ 선택 · Enter 시작 · Esc 종료','dim');
+  }else if(s.id===2){
+    g.text(4,4,'시작 방식','strong');g.text(4,6,'이번 실행의 모든 새 실행·재개에 적용','dim');g.text(4,8,'─'.repeat(78),'blue');choice(g,s,4,11,'01   '+nat,'native',78);g.text(11,13,'기존 CLI 설정 · 외부 판단 없음','dim');choice(g,s,4,17,'02   '+jev,'jev',78);g.text(11,19,'Codex 새 입력마다 모델과 effort 선택','dim');g.text(4,24,'↑↓ 선택 · Enter 시작 · Esc 종료','dim');
+  }else if(s.id===3){
+    g.text(4,4,'이번 실행','strong');g.text(4,6,'한 번 고르고, 세션은 평소처럼','dim');[['native',3,nat],['jev',45,jev]].forEach(([value,x,title])=>{g.box(x,9,40,12,'',s.selected===value?'gold':'dim');g.fill(x+1,10,38,2,s.selected===value?'sel':'');g.text(x+3,10,(s.selected===value?'▶ ':'  ')+title,s.selected===value?'sel strong':'strong',34);g.text(x+3,14,value==='native'?'원래 CLI 실행':'Codex 모델 + effort','',34);g.text(x+3,16,value==='native'?'Jev 호출 / 전송 없음':'입력마다 자동 판단','dim',34);g.text(x+3,19,s.selected===value?'선택됨':'','gold',34);});g.text(4,24,'←→ 선택 · Enter 시작 · Esc 종료','dim');
+  }else if(s.id===4){
+    startupList(g,s);g.fill(1,16,86,10);g.text(3,16,'─ MindPlayer 시작 '+'─'.repeat(64),'blue',82);g.text(4,18,'이번 실행의 판단 방식','strong');choice(g,s,4,20,nat,'native',35);choice(g,s,45,20,jev,'jev',35);g.text(4,22,s.selected==='jev'?'Codex 입력마다 모델 + effort 판단':'원래 CLI 그대로 · Jev 호출 없음','dim');g.text(4,24,'←→ 선택 · Enter 목록으로 · Esc 종료','dim');
+  }else if(s.id===5){
+    g.box(2,4,29,20,'시작');choice(g,s,4,8,'CLI 그대로','native',25);choice(g,s,4,11,'Jev 사용','jev',25);g.text(4,21,'↑↓ · Enter','dim');g.text(4,22,'Esc 종료','dim');g.text(35,5,selected(s),'gold');g.text(35,8,s.selected==='jev'?'Codex 새 입력 → Jev 판단':'기존 CLI로 바로 실행','strong',49);g.text(35,10,s.selected==='jev'?'모델 + effort 자동 선택':'모델·effort 설정 유지','dim');g.text(35,14,'기존 세션 Enter → 그대로 재개','dim',49);g.text(35,16,'새 세션 n → 그대로 시작','dim',49);g.text(35,20,'세션별 선택창 없음','green');
+  }else if(s.id===6){
+    g.fill(0,0,COLS,2);g.text(2,1,'working2 $ mindplayer','strong');g.text(2,4,'◆ MindPlayer','blue');g.text(2,6,'이번 실행의 모델 판단을 선택하세요.','');choice(g,s,2,10,'[1]  Jev 사용 안 함','native',74);choice(g,s,2,13,'[2]  Jev 사용','jev',74);g.text(4,16,s.selected==='jev'?'Codex: 매 새 입력 → 모델 + effort':'Codex / Claude / Kiro / Cursor: CLI 그대로','dim');g.text(2,20,'선택 > '+(s.selected==='native'?'1':'2')+'_','blue');g.text(2,24,'1 / 2 또는 ↑↓ · Enter 시작 · Esc 종료','dim');
+  }else if(s.id===7){
+    g.box(8,4,72,21,'MindPlayer / 실행 설정');g.text(12,7,'적용 범위     이번 MindPlayer 실행','dim');g.text(12,9,'세션          기존 재개 + 새 세션','dim');g.text(12,11,'─'.repeat(63),'dim');g.fill(11,13,65,2,'sel');g.text(12,13,'모델 판단     ◀ '+selected(s)+' ▶','sel strong',62);g.text(12,17,s.selected==='jev'?'대상          Codex · 모델 + effort':'실행          원래 CLI 설정 그대로','dim',62);g.text(12,19,'선택 저장     하지 않음','dim');g.text(12,22,'←→ 변경 · Enter 시작 · Esc 종료','dim');
+  }else if(s.id===8){
+    g.text(6,4,'시작  ──  세션 목록  ──  작업','blue');g.text(6,7,'01 / 시작 방식','gold');g.text(6,9,'이 실행에서 Jev를 사용할까요?','strong');choice(g,s,6,12,nat,'native',76);g.text(9,14,'바로 목록으로 이동','dim');choice(g,s,6,17,jev,'jev',76);g.text(9,19,'전송 확인 후 목록으로 이동','dim');g.text(6,24,'↑↓ 선택 · Enter 다음 · Esc 종료','dim');
+  }else if(s.id===9){
+    g.fill(3,3,82,2,'');choice(g,s,3,3,'CLI 그대로','native',37);choice(g,s,45,3,'Jev 사용','jev',37);g.text(3,5,'─'.repeat(81),'blue');g.box(3,7,82,15,'시작 후 목록 미리보기','dim');g.text(6,10,'▶ codex   리뷰 세션      Enter 재개','dim');g.text(6,13,'  codex   설계 검토      같은 판단 방식','dim');g.text(6,16,'  n       새 세션        같은 판단 방식','dim');g.text(6,19,s.selected==='jev'?'상단 표시: Jev 사용 (Codex)':'상단 표시: CLI 그대로','gold');g.text(3,24,'←→ 선택 · Enter 이 방식으로 시작 · Esc 종료','dim');
+  }else if(s.id===10){
+    g.text(4,4,'MindPlayer 시작','strong');g.box(6,7,76,16,'시작 명령');g.text(9,9,'> '+s.query+'_','blue',69);g.text(9,11,'─'.repeat(69),'dim');const matches=matching(s);matches.forEach((value,i)=>{choice(g,s,9,13+i*3,value==='native'?'start --native   Jev 사용 안 함':'start --jev      Jev 사용',value,69);g.text(12,14+i*3,value==='native'?'원래 CLI 설정 그대로':'Codex 입력마다 모델 + effort 판단','dim',66);});if(!matches.length)g.text(9,13,'일치하는 시작 방식 없음','dim');g.text(9,20,'입력 검색 · ↑↓ 선택 · Enter 시작 · Esc 종료','dim',68);
+  }
+  if(s.notice)g.text(3,26,s.notice,'red',82);
+}
+function matching(s){const q=s.query.toLocaleLowerCase().replace(/\s+/g,'');return ['native','jev'].filter(value=>(value==='native'?'start--nativejev사용안함원래cli그대로':'start--jevjev사용codex모델effort자동').includes(q));}
+function confirm(g,s){g.box(10,5,68,19,'Jev 사용 / 이번 실행');g.text(14,8,'Codex 새 입력마다 모델 + effort를 판단합니다.','strong',60);g.text(14,11,'입력 프롬프트가 외부 Jev로 전송됩니다.','gold',60);g.text(14,13,'Claude / Kiro / Cursor는 기존 CLI 그대로','dim',60);g.text(14,15,'이미 실행 중인 창은 기존 방식 유지','dim',60);g.text(14,18,(s.consent?'[x]':'[ ]')+' 이번 실행의 전송에 동의 · c',s.consent?'green':'gold',60);g.text(14,21,s.notice||'c 동의 · Enter 시작 · Esc 돌아가기',s.notice?'red':'dim',60);}
+function blocked(g,s){g.box(13,7,62,15,'Jev로 시작할 수 없음','red');g.text(17,10,s.ready==='denied'?'외부 전송이 정책으로 금지됨':'Jev 키가 설정되어 있지 않음','red',54);g.text(17,13,'MindPlayer는 아직 시작하지 않았습니다.','dim',54);g.text(17,15,'자동으로 미사용 전환하지 않습니다.','dim',54);g.text(17,19,'Esc 선택 화면으로 돌아가기','dim',54);}
+function list(g,s){
+  g.box(0,2,COLS,21,'Sessions · recent first · active (7)');g.text(2,4,'— recent   7 sessions','dim');g.text(3,5,'▾ still working · 3 sessions','purple');const rows=[['codex','리뷰 세션','2m'],['codex','설계 검토','1h'],['claude','tower','5m'],['codex','daily report','1h'],['kiro','운영 점검','2h']];rows.forEach((r,i)=>{const y=7+i*2;if(i===0)g.fill(1,y,86,1,'sel');g.text(2,y,i===0?'▶':' ');g.text(4,y,'○ idle',i===0?'sel':'dim');g.text(13,y,r[0],r[0]==='codex'?'blue':'purple');g.text(22,y,'업무 계정','dim');g.text(36,y,r[2],'dim');g.text(42,y,r[1],i===0?'sel':'');g.text(67,y,'01a1…','dim');});g.text(3,20,'이미 실행 중인 창 재연결 → 기존 방식 유지','dim');quota(g);g.line(27,'Enter 열기 · n 새 세션 · h handoff · v multi-select · / search');g.line(28,'이번 실행: '+route(s)+' · 세션별 선택창 없음');
+}
+function quota(g){g.line(23,'7 sessions · working dir (working2) · 예시 사용량','dim');g.text(1,24,'codex','blue');g.text(10,24,'업무 계정 weekly','purple');g.text(31,24,'▰▰▱▱▱▱  32.0%','green');g.text(52,24,'resets 10-22 15:14','dim');g.text(10,25,'보조 계정 weekly','purple');g.text(31,25,'▰▱▱▱▱▱  24.0%','green');g.text(1,26,'claude','purple');g.text(10,26,'wk','purple');g.text(31,26,'▰▰▰▰▰▰  97.0%','red');}
+function session(g,s){
+  g.box(0,2,COLS,21,s.entry==='new'?'새 Codex 세션  1/1':'리뷰 세션  1/1',s.phase==='error'?'red':'blue');g.text(3,4,'›_ OpenAI Codex','strong');g.text(3,5,'working2 · permissions: 기존 설정','dim');g.text(3,7,s.entry==='new'?'새 세션 · 시작 방식 자동 적용':'기존 세션 · 시작 방식 자동 적용','dim');if(s.current)g.text(3,9,'› '+s.current,'',81);if(s.notice)g.text(3,21,s.notice,'gold',81);
+  const lines={input:['입력 대기',s.runMode==='jev'?'새 입력마다 Jev 판단':'원래 CLI 설정 그대로','dim'],judging:['Jev 판단 중','실행 미전송 · 모델 + effort 선택','gold'],requested:['모델 + effort 요청 수락','턴 시작 대기 · 실행 중 아님','blue'],running:['Working · 실행 중',s.runMode==='jev'?'선택 모델 / medium 요청 (예시)':'현재 모델 / 현재 effort · CLI 설정','gold'],completed:['작업 완료 (시안)',s.runMode==='jev'?'다음 입력도 같은 창에서 새 Jev 판단':'다음 입력도 원래 CLI 그대로','green'],error:['Jev 판단 실패 · 실행 미전송','입력 보존 · 자동 우회 / 재전송 없음','red'],interrupted:['사용자 중단 (시안)','같은 입력창 유지 · 자동 재실행 없음','gold']};const [title,detail,color]=lines[s.phase];g.text(3,12,'• '+title,color,81);g.text(5,14,detail,'dim',79);g.text(3,18,'› '+s.draft+'_','',81);g.text(3,20,s.runMode==='jev'?'Jev 사용 · 모델 + effort 자동':'Jev 미사용 · 모델 + effort는 CLI 설정',color,81);quota(g);g.line(27,'ctrl-g trace · ctrl-x list · tab pane · ctrl-z zoom · ctrl-q close');g.line(28,'UI 시안 · 실제 호출 없음 · Enter 제출 · 같은 입력창 유지');
+}
+function render(id){const s=states.get(id),g=new Grid();common(g,s);if(s.screen==='startup')startup(g,s);else if(s.screen==='consent')confirm(g,s);else if(s.screen==='blocked')blocked(g,s);else if(s.screen==='list')list(g,s);else if(s.screen==='session')session(g,s);else{g.text(4,9,'MindPlayer 시작 취소','dim');g.text(4,12,'세션 실행 / Jev 전송 없음','dim');}const el=frames.get(id);el.innerHTML=g.html();for(const name of ['screen','selected','runMode','phase','entry'])el.dataset[name]=s[name]??'';}
+function cancel(id,entry){const keep=[];for(const ticket of timers.get(id)||[]){if(entry===undefined||ticket.entry===entry)clearTimeout(ticket.timer);else keep.push(ticket);}if(keep.length)timers.set(id,keep);else timers.delete(id);}
+function later(s,delay,fn){const entry=s.entry;if(!timers.has(s.id))timers.set(s.id,[]);const ticket={entry,timer:setTimeout(()=>{if(states.get(s.id)!==s)return;const target=s.entry===entry?s:s.sessions[entry];if(target)fn(target);render(s.id);},delay)};timers.get(s.id).push(ticket);}
+function start(s){if(s.id===10&&!matching(s).includes(s.selected)){s.notice='일치하는 시작 방식 없음';return;}if(s.selected==='jev'){s.screen=s.ready==='ready'?'consent':'blocked';return;}s.runMode='native';s.screen='list';}
+function enterSession(s,entry){if(s.entry!==entry){if(s.entry)s.sessions[s.entry]=Object.fromEntries(['phase','draft','current','turns','notice'].map(field=>[field,s[field]]));if(s.sessions[entry])Object.assign(s,s.sessions[entry]);else{s.sessionCount++;Object.assign(s,{phase:'input',draft:'',current:'',turns:0,notice:''});}s.entry=entry;}s.screen='session';}
+function submit(s){const text=s.draft.trim();if(!text)return;if(['judging','requested','running'].includes(s.phase)){s.notice='실행 중 · 이 시안은 큐 동작을 생략합니다.';return;}cancel(s.id,s.entry);s.current=text;s.draft='';s.turns++;s.phase=s.runMode==='jev'?'judging':'running';if(s.runMode==='jev'){later(s,650,target=>target.phase='requested');later(s,1100,target=>target.phase='running');}later(s,s.runMode==='jev'?2000:1000,target=>target.phase='completed');}
+function key(s,e){
+  if(e.key==='Tab'&&!e.ctrlKey&&!e.altKey)return;
+  if(e.ctrlKey&&e.key.toLowerCase()==='x'&&['list','session'].includes(s.screen)){e.preventDefault();if(s.screen==='session')s.screen='list';else if(s.sessionCount)s.screen='session';render(s.id);return;}
+  if(e.key==='Escape'){e.preventDefault();if(s.screen==='startup')s.screen='quit';else if(['consent','blocked'].includes(s.screen)){s.screen='startup';s.notice='';}else if(s.screen==='session'&&['judging','requested','running'].includes(s.phase)){cancel(s.id,s.entry);s.phase='interrupted';}render(s.id);return;}
+  if(s.screen==='startup'){
+    if(s.id===10&&!e.ctrlKey&&!e.altKey&&!e.metaKey&&!e.isComposing&&(Array.from(e.key).length===1||e.key==='Backspace')){e.preventDefault();s.query=e.key==='Backspace'?Array.from(s.query).slice(0,-1).join(''):s.query.length<100?s.query+e.key:s.query;const found=matching(s);if(found.length&&!found.includes(s.selected))s.selected=found[0];s.notice='';}
+    else if(['ArrowUp','ArrowDown','ArrowLeft','ArrowRight'].includes(e.key)){e.preventDefault();const found=s.id===10?matching(s):['native','jev'];if(found.length)s.selected=found[(found.indexOf(s.selected)+1)%found.length];s.notice='';}
+    else if(s.id===6&&['1','2'].includes(e.key)){e.preventDefault();s.selected=e.key==='1'?'native':'jev';}
+    else if(e.key==='Enter'){e.preventDefault();start(s);}
+    else if(e.key==='q'){e.preventDefault();s.screen='quit';}
+  }else if(s.screen==='consent'){
+    if(e.key==='c'){e.preventDefault();s.consent=!s.consent;s.notice='';}
+    else if(e.key==='Enter'){e.preventDefault();if(!s.consent)s.notice='전송 동의 후 시작할 수 있습니다.';else if(s.ready!=='ready')s.screen='blocked';else{s.runMode='jev';s.screen='list';s.notice='';}}
+  }else if(s.screen==='list'){
+    if(e.key==='Enter'||e.key==='n'){e.preventDefault();enterSession(s,e.key==='n'?'new':'existing');}
+  }else if(s.screen==='session'){
+    if(e.key==='Enter'){e.preventDefault();submit(s);}
+    else if(e.key==='Backspace'){e.preventDefault();s.draft=Array.from(s.draft).slice(0,-1).join('');}
+    else if(!e.ctrlKey&&!e.altKey&&!e.metaKey&&!e.isComposing&&Array.from(e.key).length===1){e.preventDefault();if(s.draft.length<2000)s.draft+=e.key;}
+  }
+  render(s.id);
+}
+for(let id=1;id<=ideas.length;id++){
+  const [name,pattern]=ideas[id-1],article=document.createElement('article');article.className='idea';article.id='idea-'+id;article.dataset.idea=id;article.dataset.pattern=pattern;article.innerHTML='<div class="idea-head"><span class="num">'+String(id).padStart(2,'0')+'</span><h2>'+name+'</h2><span class="keys">'+(id===6?'1 / 2':id===10?'입력 검색':'방향키')+' · Enter 시작</span></div><div class="terminal-scroll"><div class="terminal" tabindex="0" role="application" aria-label="'+String(id).padStart(2,'0')+' '+name+' 시작 화면 키보드 시안"></div></div>';document.querySelector('#gallery').append(article);const el=article.querySelector('.terminal');frames.set(id,el);states.set(id,fresh(id));el.addEventListener('keydown',e=>key(states.get(id),e));el.addEventListener('click',()=>el.focus({preventScroll:true}));el.addEventListener('paste',e=>{e.preventDefault();const s=states.get(id),text=(e.clipboardData?.getData('text/plain')||'').replace(/[\r\n\x00-\x1f\x7f]/g,' ');if(s.screen==='session')s.draft=(s.draft+text).slice(0,2000);else if(s.screen==='startup'&&s.id===10){s.query=(s.query+text).slice(0,100);const found=matching(s);if(found.length&&!found.includes(s.selected))s.selected=found[0];}render(id);});const a=document.createElement('a');a.href='#idea-'+id;a.textContent=String(id).padStart(2,'0');document.querySelector('#index').append(a);render(id);
+}
+document.querySelector('#reset').addEventListener('click',e=>{e.preventDefault();for(const id of states.keys()){cancel(id);states.set(id,fresh(id));render(id);}document.querySelector('#gallery').scrollIntoView();});
+const journey=[['Jev 미사용 → 세션 목록',{screen:'list',runMode:'native'}],['Jev 사용 → 세션 목록',{screen:'list',runMode:'jev'}],['기존 세션 Enter → 바로 재개',{screen:'session',runMode:'jev',entry:'existing'}],['새 세션 n → 같은 방식으로 시작',{screen:'session',runMode:'jev',entry:'new'}],['프롬프트 제출 → 새 Jev 판단',{screen:'session',runMode:'jev',entry:'existing',phase:'judging',current:'이 PR 리뷰해줘'}],['완료 → 후속 입력도 같은 창',{screen:'session',runMode:'jev',entry:'existing',phase:'completed',current:'이 PR 리뷰해줘',draft:'이 테스트도 추가해줘'}]];
+for(const [title,options] of journey){const article=document.createElement('article');article.className='journey';article.innerHTML='<div class="idea-head"><h2>'+title+'</h2></div><div class="terminal-scroll"><div class="terminal" aria-label="'+title+' 화면"></div></div>';const g=new Grid(),s=fresh(1,options);common(g,s);if(s.screen==='list')list(g,s);else session(g,s);article.querySelector('.terminal').innerHTML=g.html();document.querySelector('#journey-grid').append(article);}
+// Synthetic UI fixture hooks only. No process launch, auth, model inference or saved settings.
+window.MindPlayerStartupGallery=Object.freeze({reset(id,options={}){if(!states.has(id))throw new Error('Unknown idea');cancel(id);states.set(id,fresh(id,options));render(id);},state(id){return JSON.parse(JSON.stringify(states.get(id)));},settle(id,phase){if(!['input','judging','requested','running','completed','error','interrupted'].includes(phase))throw new Error('Unknown fixture');const s=states.get(id);if(!s)throw new Error('Unknown idea');cancel(id,s.entry);s.phase=phase;render(id);},geometry:{columns:COLS,rows:ROWS},scope:'HTML UI prototype only; no Jev, CLI, credentials, persistence or installation'});
+</script>
+</body>
+</html>

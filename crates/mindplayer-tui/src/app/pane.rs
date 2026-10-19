@@ -247,6 +247,13 @@ impl App {
     }
 
     pub(crate) fn remove_pane(&mut self, sid: &str) {
+        if self.is_running(sid) {
+            // Ctrl-Q only hides a live PTY. Its login still owns this home
+            // until reap_pty observes exit and resumes any held launch.
+            self.account_auth.cancel_launch(sid);
+        } else {
+            self.account_auth.cancel(sid);
+        }
         // Per-pane HTML-candidate detection state must not outlive the pane; the
         // interval gate is global, so there's nothing pane-scoped to clear for it.
         self.html_candidates.remove(sid);
@@ -1129,7 +1136,9 @@ impl App {
                     self.pane_error.insert(id.clone(), text);
                 }
             }
-            self.ended.insert(id);
+            self.ended.insert(id.clone());
+            let succeeded = self.ptys.get(&id).is_some_and(|p| p.exited_successfully());
+            self.account_login_finished(&id, succeeded);
         }
         true
     }

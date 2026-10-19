@@ -58,6 +58,37 @@ test('explicit native prompt bypasses key/policy/judge and preserves exact nativ
   f.router.close();
 });
 
+test('OFF resume ignores malformed Jev policy; a later ON turn fails closed without submission', async t => {
+  const dir = mkdtempSync(join(tmpdir(), 'mindplayer-off-resume-'));
+  const path = join(dir, 'policy.json');
+  writeFileSync(path, '{invalid', { mode: 0o600 });
+  let policyReads = 0;
+  const f = harness({ requirePromptChoice: true,
+    policyReader: () => { policyReads++; return loadPolicy(path); } });
+  t.after(() => { f.router.close(); rmSync(dir, { recursive: true, force: true }); });
+  assert.doesNotThrow(() => f.lifecycle('thread/resume'));
+  assert.equal(policyReads, 0);
+  assert.ok(f.received.some(row => row.id === 1 && row.result?.thread?.id === 'main'));
+  const off = native(10);
+  off.params.mindplayerRoutingChoice = { mode: 'native', includeRecent: false };
+  f.router.client(off); await tick();
+  const expected = structuredClone(off); delete expected.params.mindplayerRoutingChoice;
+  assert.deepEqual(f.sent.at(-1), expected);
+  assert.equal(policyReads, 0);
+  assert.equal(f.calls(), 0);
+  assert.equal(f.sent.some(row => row.method === 'thread/turns/list'), false);
+  f.router.server({ id: 10, result: { turn: { id: 'off-turn' } } });
+  f.router.server({ method: 'turn/completed', params: { threadId: 'main', turn: { id: 'off-turn', status: 'completed' } } });
+  const on = native(11);
+  on.params.mindplayerRoutingChoice = { mode: 'jev', includeRecent: false };
+  f.router.client(on); await tick();
+  assert.equal(policyReads, 1);
+  assert.equal(f.calls(), 0);
+  assert.equal(f.sent.some(row => row.id === 11 && row.method === 'turn/start'), false);
+  assert.ok(f.received.some(row => row.id === 11 && row.error));
+  assert.ok(f.audit.some(row => row.event === 'route-failed' && row.reason === 'selector-error'));
+});
+
 test('retired preview RPC is rejected locally without preparing context, judging or forwarding', async t => {
   let policyReads = 0;
   const f = harness({ requirePromptChoice: true, policyReader: () => { policyReads++; return null; } });
@@ -531,10 +562,22 @@ test('no candidates fail closed; single/unknown switching evidence still gets a 
   assert.equal(f.sent.filter(e => e.method === 'turn/start').length, 0);
 });
 
-test('resume hydrates bounded same-thread user/final pairs once; internal RPC never escapes to native UI', async () => {
+test('resume defers empirical context until ON and hydrates same-thread user/final pairs only once', async t => {
   const loaded = deployment();
-  const f = harness({ catalog: fullCatalog, now: () => 100_000, policyReader: () => loaded });
+  let policyReads = 0;
+  const f = harness({ requirePromptChoice: true, catalog: fullCatalog, now: () => 100_000,
+    policyReader: () => { policyReads++; return loaded; } });
+  t.after(() => f.router.close());
   f.lifecycle('thread/resume');
+  assert.equal(policyReads, 0);
+  assert.equal(f.sent.some(e => e.method === 'thread/turns/list'), false);
+  const off = native(10);
+  off.params.mindplayerRoutingChoice = { mode: 'native', includeRecent: false };
+  assert.equal((await f.service.decide(off)).reason, 'prompt-native');
+  assert.equal(policyReads, 0);
+  const on = native(11);
+  on.params.mindplayerRoutingChoice = { mode: 'jev', includeRecent: false };
+  const decision = f.service.decide(on);
   const read = f.sent.find(e => e.method === 'thread/turns/list');
   assert.deepEqual(read.params, { threadId: 'main', limit: 4, sortDirection: 'desc', itemsView: 'full' });
   f.router.server({ id: read.id, result: { data: [{ itemsView: 'full', items: [
@@ -543,11 +586,13 @@ test('resume hydrates bounded same-thread user/final pairs once; internal RPC ne
     { type: 'commandExecution', output: 'tool-canary' },
     { type: 'agentMessage', phase: 'final_answer', text: 'nonce' },
   ] }], nextCursor: null } });
-  await tick();
+  await decision;
   assert.equal(f.received.some(e => e.id === read.id), false);
   assert.equal(f.service.threads.get('main').contextKnown, true);
   assert.ok(!JSON.stringify(f.service.threads.get('main').history).includes('canary'));
-  f.router.close();
+  await f.service.decide({ ...on, id: 12 });
+  assert.equal(f.sent.filter(e => e.method === 'thread/turns/list').length, 1);
+  assert.equal(f.calls(), 2);
 });
 
 test('excluded configurations are rejected before waiting or consuming a judgment', async () => {

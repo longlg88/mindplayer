@@ -4867,7 +4867,26 @@ mod shared_cache_gate {
 /// pane already running keeps the account it had.
 mod new_session_account_picker {
     use super::*;
-    use mindplayer_core::accounts::Account;
+    use mindplayer_core::accounts::{Account, LaunchEnv};
+
+    fn expected_codex_login_env(account: &Account) -> LaunchEnv {
+        let mut env = account.launch_env();
+        env.unset.extend(
+            [
+                "AI_GATEWAY_API_KEY",
+                "TYPESAFE_API_KEY",
+                "VERCEL_OIDC_TOKEN",
+                "MINDPLAYER_LOCAL_ROUTER_TOKEN",
+                "MINDPLAYER_ROUTER_AVAILABILITY",
+                "MINDPLAYER_ROUTER_STATUS",
+                "MINDPLAYER_CLAUDE_JEV_URL",
+                "MINDPLAYER_CLAUDE_JEV_TOKEN",
+                "MINDPLAYER_PER_PROMPT_CHOICE",
+            ]
+            .map(String::from),
+        );
+        env
+    }
 
     fn app_with(accounts: Vec<Account>) -> App {
         let mut app = isolated_app();
@@ -4921,7 +4940,7 @@ mod new_session_account_picker {
         assert!(fresh.slot_path().is_dir());
         assert_eq!(
             app.pending.as_ref().expect("a pane was queued").command.env,
-            fresh.launch_env()
+            expected_codex_login_env(fresh)
         );
         if present {
             assert_eq!(
@@ -5093,7 +5112,7 @@ mod new_session_account_picker {
         assert_eq!(pending.command.args, ["login"]);
         assert_eq!(
             pending.command.env,
-            fresh.launch_env(),
+            expected_codex_login_env(&fresh),
             "the login must be created in the new home"
         );
         assert!(app.status.contains("요청한 세션을 이어"));
@@ -5112,7 +5131,7 @@ mod new_session_account_picker {
             .iter()
             .find(|account| account.provider == Agent::Codex && !account.is_inherited())
             .unwrap();
-        assert_eq!(pending.command.env, fresh.launch_env());
+        assert_eq!(pending.command.env, expected_codex_login_env(fresh));
     }
 
     /// The reconciler can only adopt a session discovery finds, and a new home
@@ -5172,7 +5191,7 @@ mod new_session_account_picker {
             assert_eq!(std::fs::read_dir(&path).unwrap().count(), 0);
             assert_eq!(
                 app.pending.as_ref().unwrap().command.env,
-                fresh.launch_env()
+                expected_codex_login_env(fresh)
             );
             homes.push(path);
         }
@@ -5217,7 +5236,7 @@ mod new_session_account_picker {
         );
         assert_eq!(
             app.pending.as_ref().unwrap().command.env,
-            second.launch_env()
+            expected_codex_login_env(&second)
         );
     }
 

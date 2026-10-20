@@ -1194,12 +1194,13 @@ impl App {
         if self.panes.is_empty() {
             return self.active_pty().is_some_and(|p| p.take_dirty());
         }
-        self.panes
-            .iter()
-            .filter_map(|id| self.ptys.get(id))
+        let mut dirty = false;
+        for pty in self.panes.iter().filter_map(|id| self.ptys.get(id)) {
             // take_dirty also polls ownership; never starve a later pane just
             // because an earlier pane continuously produces output.
-            .fold(false, |dirty, pty| pty.take_dirty() || dirty)
+            dirty |= pty.take_dirty();
+        }
+        dirty
     }
 
     /// Forward encoded keystrokes to the focused pane's PTY.

@@ -6173,6 +6173,59 @@ fn embedded_router_late_ack_preserves_running_without_reroute() {
 }
 
 #[test]
+fn embedded_router_status_tracks_the_owned_thread_after_resume() {
+    let mut mp = Mp::launch_router_fixture(CodexFixture::LifecycleRouter);
+    mp.resume_router_fixture();
+    append_codex_task_event(&mp.codex_alfa_file, "task_started", "old-thread-turn");
+    mp.expect_foreground(WORKING_BORDER, STEP_TIMEOUT, "original thread is working");
+
+    // Inject only the already-validated protocol's ownership snapshot. The real
+    // binary must stop consuming the original file, then tail the current file
+    // without replaying its historical completion. No live login is involved.
+    let paths: Vec<_> = std::fs::read_dir(mp._tmp.join("home/.mindplayer/routing-status"))
+        .unwrap()
+        .map(|entry| entry.unwrap().path().join("status.json"))
+        .collect();
+    assert_eq!(paths.len(), 1);
+    let mut status: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&paths[0]).unwrap()).unwrap();
+    status["revision"] = serde_json::json!(status["revision"].as_u64().unwrap() + 1);
+    status["threadId"] = serde_json::json!("codex-brvo-0002");
+    status["requestId"] = serde_json::json!(1);
+    status["turnId"] = serde_json::json!("current-thread-turn");
+    status["stage"] = serde_json::json!("completed");
+    std::fs::write(&paths[0], serde_json::to_vec(&status).unwrap()).unwrap();
+    mp.expect_foreground(
+        COMPLETED_BORDER,
+        STEP_TIMEOUT,
+        "current thread completion supersedes the original thread's working reader",
+    );
+    // Allow the interval-gated reader to bind at EOF before appending a fresh
+    // automatic turn; its native lifecycle must beat the old router snapshot.
+    std::thread::sleep(Duration::from_millis(650));
+    append_codex_task_event(
+        &mp.codex_brvo_file,
+        "task_started",
+        "automatic-current-turn",
+    );
+    mp.expect_foreground(
+        WORKING_BORDER,
+        STEP_TIMEOUT,
+        "current rollout starts a new turn",
+    );
+    append_codex_task_event(
+        &mp.codex_brvo_file,
+        "task_complete",
+        "automatic-current-turn",
+    );
+    mp.expect_foreground(
+        COMPLETED_BORDER,
+        STEP_TIMEOUT,
+        "current rollout completes its own turn",
+    );
+}
+
+#[test]
 fn embedded_router_late_ack_preserves_completed_without_reroute() {
     let mut mp = Mp::launch_router_fixture(CodexFixture::LifecycleRouter);
     mp.resume_router_fixture();
@@ -6186,6 +6239,11 @@ fn embedded_router_late_ack_preserves_completed_without_reroute() {
     mp.wait_for_router_audit_event("start-acknowledged", "fixture-turn-A");
     mp.wait_for_router_status("gpt-6-luna", "completed", Some("fixture-turn-A"));
     mp.assert_router_rendered_lifecycle("gpt-6-luna", "low", "완료");
+    mp.expect_foreground(
+        COMPLETED_BORDER,
+        STEP_TIMEOUT,
+        "correlated router completion makes the pane green without rollout tail events",
+    );
     mp.assert_router_jev_turn_once("A");
     mp.assert_router_consecutive_totals(&["A"]);
 }

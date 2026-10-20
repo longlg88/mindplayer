@@ -144,7 +144,7 @@
       "threshold": 90,
       "verdict": "pass",
       "artifact": "/private/tmp/mindplayer-05516-installed-ui.tm9cqL/installed-text-cells.png",
-      "verdictFile": "/Users/eden.jang/Work/SendBird/working2/.omx/state/mindplayer-session-jev-toggle/ralph-progress.json",
+      "verdictFile": "$WORKSPACE/.omx/state/mindplayer-session-jev-toggle/ralph-progress.json",
       "note": "Actual installed outer app buffers, synthetic native child. Account visible split/zoom and ON/OFF distinct; not original ANSI theme, OS screenshot, pixel-fidelity or IME proof."
     },
     {

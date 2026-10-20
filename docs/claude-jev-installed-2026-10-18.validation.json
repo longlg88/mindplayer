@@ -132,7 +132,7 @@
       "note": "Exact installed executable; synthetic CLI/account fixtures; real PTY/new/resume/handoff/native bypass/account preservation/Ctrl-Q retention/quit cleanup;19 extracted assets match checkout byte-for-byte"
     },
     {
-      "command": "rg -n -i 'sendbird|delight' crates/mindplayer-core/src crates/mindplayer-tui/src tools/local-model-router -g '*.rs' -g '*.mjs' -g '!*.test.mjs'",
+      "command": "[redacted: private identifier audit command]",
       "exitCode": 1,
       "note": "Expected no matches: production account labels/company names not hardcoded"
     },

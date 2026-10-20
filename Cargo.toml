@@ -7,7 +7,7 @@ exclude = ["crates/vt100-mp"]
 
 [workspace.package]
 edition = "2021"
-version = "0.55.16"
+version = "0.56.1"
 license = "MIT"
 
 [workspace.dependencies]

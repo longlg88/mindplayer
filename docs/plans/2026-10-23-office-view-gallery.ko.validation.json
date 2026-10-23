@@ -1,6 +1,6 @@
 {
   "scope": "offline standalone HTML synthetic interactions, not native runtime proof",
-  "verifiedAt": "2026-10-23T10:28:17.607Z",
+  "verifiedAt": "2026-10-23T11:23:29.604Z",
   "html": "2026-10-23-office-view-gallery.ko.html",
   "test": "../tests/office-view-gallery.test.cjs",
   "result": "passed",
@@ -39,13 +39,13 @@
   "pageErrors": 0,
   "consoleErrors": 0,
   "providerCalls": 0,
-  "sourceSha256Before": "f21d8a41a6fd130fdfe109951d43fd793641275daf3de5007cb116703d9354f4",
-  "sourceSha256After": "f21d8a41a6fd130fdfe109951d43fd793641275daf3de5007cb116703d9354f4",
+  "sourceSha256Before": "2864c9839aef396a43888e917acb8812e31ace20e1f3ae24bdf238191e3e3815",
+  "sourceSha256After": "2864c9839aef396a43888e917acb8812e31ace20e1f3ae24bdf238191e3e3815",
   "cleanup": {
     "browser": true,
     "server": true
   },
-  "diagnosticReceipt": "<os-tmpdir>/mindplayer-office-qa-oPwATs/validation.json",
+  "diagnosticReceipt": "<os-tmpdir>/mindplayer-office-qa-5HcLuq/validation.json",
   "notVerified": [
     "A live MindPlayer state feed (the read-only 127.0.0.1 GET is a plan)",
     "Collecting the last tool for every session",

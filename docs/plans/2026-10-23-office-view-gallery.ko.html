@@ -4,8 +4,8 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="light">
-<meta name="description" content="MindPlayer가 여는 읽기 전용 브라우저 창에서 실행 중인 AI 세션을 쿼터뷰 사무실로 보여 주는 배경 시안 5개. 합성 데이터, 외부 전송 없음.">
-<title>MindPlayer · AI 사무실 / 배경 시안 5개</title>
+<meta name="description" content="MindPlayer가 여는 읽기 전용 브라우저 창에서 실행 중인 AI 세션을 AI 가족이 사는 저택으로 보여 주는 배치 시안 5개. 합성 데이터, 외부 전송 없음.">
+<title>MindPlayer · AI 저택 / 배치 시안 5개</title>
 <style>
 :root{--paper:#f5f4ef;--ink:#202724;--muted:#656d66;--rule:#d5d9cf;--accent:#a8481b}
 *{box-sizing:border-box}body{margin:0;background:var(--paper);color:var(--ink);font-family:-apple-system,BlinkMacSystemFont,"Apple SD Gothic Neo","Noto Sans KR",sans-serif}
@@ -59,12 +59,12 @@ table{width:100%;border-collapse:collapse;font-size:12.5px;line-height:1.6}th,td
 </head>
 <body>
 <main class="page">
-  <div class="eyebrow"><span>MINDPLAYER / UI STUDIES</span><span class="edition">배경 시안 5개 · 2026.10.23 · 앱 미적용 · 합성 데이터</span></div>
-  <h1>AI 세션들이 일하는 곳을 그립니다.</h1>
-  <p class="intro">MindPlayer가 연 <strong>읽기 전용 브라우저 창</strong>에 실행 중인 세션을 AI 캐릭터로 그립니다. <strong>시안 5개는 배경(세계관)만 다릅니다.</strong> 캐릭터, 상단 칩, 아래 대기열, 카드는 5개가 같습니다. 분위기는 합성체, 홀로그램, 의식 공간입니다. 캐릭터와 이름은 모두 MindPlayer 고유입니다.</p>
-  <div class="sheet-wrap"><div class="section-heading"><h3>캐릭터 시트: agent 4종 × 상태 6가지</h3><span>5개 시안 공통 · 마우스를 올리면 반응합니다</span></div>
+  <div class="eyebrow"><span>MINDPLAYER / UI STUDIES</span><span class="edition">배치 시안 5개 · 2026.10.23 · 앱 미적용 · 합성 데이터</span></div>
+  <h1>AI 가족이 사는 저택을 그립니다.</h1>
+  <p class="intro">MindPlayer가 연 <strong>읽기 전용 브라우저 창</strong>에 실행 중인 세션을 저택에 사는 AI 가족으로 그립니다. 저택은 "집이 무엇인지 알아내려는 컴퓨터"가 지은 집입니다. 난간이 중간에서 끊기고, 의자가 벽에 박히고, 액자에 레몬이 반복되고, 창밖은 바탕화면입니다. <strong>시안 5개는 집의 배치만 다릅니다.</strong> 캐릭터, 소품, 상태 규칙, 상단 칩, 대기열, 카드는 5개가 같습니다. 캐릭터와 이름은 모두 MindPlayer 고유입니다.</p>
+  <div class="sheet-wrap"><div class="section-heading"><h3>캐릭터 시트: AI 가족 4명 × 상태 6가지</h3><span>5개 시안 공통 · 마우스를 올리면 반응합니다</span></div>
     <div class="window"><canvas class="sheet" id="sheet" role="img" aria-label="agent 4종과 상태 6가지 캐릭터 시트"></canvas></div></div>
-  <nav class="tabs" role="tablist" aria-label="배경 시안 5개"></nav>
+  <nav class="tabs" role="tablist" aria-label="배치 시안 5개"></nav>
   <section aria-labelledby="scene-title">
     <div class="stage-top"><h2 id="scene-title"></h2><p id="scene-sub"></p></div>
     <dl class="delta"><div><dt>배치</dt><dd id="d-layout"></dd></div><div><dt>대표 소품</dt><dd id="d-props"></dd></div><div><dt>움직임</dt><dd id="d-motion"></dd></div></dl>
@@ -78,7 +78,7 @@ table{width:100%;border-collapse:collapse;font-size:12.5px;line-height:1.6}th,td
         <div class="tip" id="tip"></div>
       </div>
     </div>
-    <div class="trybar" id="keys"><span>체험</span><button type="button" id="b-next">N 다음 세션</button><button type="button" id="b-fit">0 전체 보기</button><button type="button" id="b-start">재생: 한 세션 일 시작</button><button type="button" id="b-end">재생: 한 세션 종료</button><button type="button" id="b-reset">초기화</button><span class="live" id="live">휠 확대 · 드래그 이동 · 더블클릭 전체 보기 · 캐릭터 클릭 = 카드</span></div>
+    <div class="trybar" id="keys"><span>체험</span><button type="button" id="b-next">N 다음 세션</button><button type="button" id="b-fit">0 전체 보기</button><button type="button" id="b-start">재생: 한 세션 일 시작</button><button type="button" id="b-end">재생: 한 세션 퇴근</button><button type="button" id="b-reset">초기화</button><span class="live" id="live">휠 확대 · 드래그 이동 · 더블클릭 전체 보기 · 캐릭터 클릭 = 카드</span></div>
     <p class="sr" id="sr" aria-live="polite"></p>
   </section>
   <section class="retained" aria-labelledby="data-title">
@@ -86,17 +86,17 @@ table{width:100%;border-collapse:collapse;font-size:12.5px;line-height:1.6}th,td
     <div class="table-scroll"><table>
       <thead><tr><th>화면 요소</th><th>보여 주는 것</th><th>출처와 상태</th></tr></thead>
       <tbody>
-        <tr><td>캐릭터</td><td>agent를 나타냅니다. codex는 Halo, claude는 Ember, kiro는 Prism, cursor는 Spark입니다.</td><td>MindPlayer agent 색(<code>ui.rs</code> agent_tag). claude와 kiro는 ANSI Magenta와 Cyan이어서 비슷한 hex를 씁니다. 디자인은 새로 그렸습니다.</td></tr>
+        <tr><td>캐릭터</td><td>캐릭터는 agent를 나타냅니다. 사람 모습의 AI 가족입니다. codex는 Halo(집사), claude는 Ember(사서), kiro는 Prism(기록 담당), cursor는 Spark(심부름꾼)입니다.</td><td>MindPlayer agent 색(<code>ui.rs</code> agent_tag). claude와 kiro는 ANSI Magenta와 Cyan이어서 비슷한 hex를 씁니다. 디자인은 새로 그렸습니다.</td></tr>
         <tr><td>머리 위 기호</td><td>세션 상태입니다. <code>! blocked</code>, <code>● working</code>, <code>✓ done</code>, <code>○ idle</code>을 씁니다.</td><td><code>SessionStatus</code>와 <code>pane_dot</code>의 기호와 색입니다. 제품에 있습니다.</td></tr>
-        <tr><td>콘솔 묶음과 바닥 색</td><td>세션의 category입니다.</td><td><code>state.category_of</code>와 category 팔레트입니다. 제품에 있습니다.</td></tr>
+        <tr><td>책상 묶음과 양탄자 색</td><td>책상 묶음은 세션의 category입니다.</td><td><code>state.category_of</code>와 category 팔레트입니다. 제품에 있습니다.</td></tr>
         <tr><td>명패</td><td>첫 프롬프트 제목입니다.</td><td><code>Session.title</code>입니다. 제품에 있습니다.</td></tr>
         <tr><td>경과 시간</td><td>마지막 프롬프트 뒤 시간입니다. 세션이 실행 중이고 agent가 kiro나 cursor이면 now입니다.</td><td><code>last_prompt_at</code>입니다. codex와 claude만 값이 있습니다.</td></tr>
-        <tr><td>쉬는 곳과 잠</td><td>idle이면 쉬는 곳에 앉습니다. idle이고 마지막 프롬프트 뒤 10분이 지났으면 잡니다.</td><td><strong>새 규칙.</strong> 제품에는 잠 규칙이 없습니다. kiro와 cursor는 자지 않습니다.</td></tr>
-        <tr><td>방 이동</td><td>일하는 중이면 마지막 도구에 따라 아카이브(읽기), 코어(명령), 통신(외부 도구)으로 갑니다.</td><td>claude와 kiro는 <code>convo_log</code>에 도구 이름(<code>[tool_use 이름]</code>)이 있습니다. codex는 도구 호출을 저장하지 않으므로 <strong>새 수집이 필요합니다.</strong></td></tr>
+        <tr><td>응접실과 다락</td><td>idle이면 응접실 안락의자에서 신문을 읽습니다. idle이고 마지막 프롬프트 뒤 10분이 지났으면 잡니다. 다락이 있는 배치에서는 다락 간이침대에서 잡니다.</td><td><strong>새 규칙.</strong> 제품에는 잠 규칙이 없습니다. kiro와 cursor는 자지 않습니다.</td></tr>
+        <tr><td>방 이동</td><td>일하는 중이면 마지막 도구에 따라 서재(읽기), 부엌(명령), 전화실(외부 도구)로 갑니다. 끝난 세션은 영화관에서 결과를 봅니다.</td><td>claude와 kiro는 <code>convo_log</code>에 도구 이름(<code>[tool_use 이름]</code>)이 있습니다. codex는 도구 호출을 저장하지 않으므로 <strong>새 수집이 필요합니다.</strong></td></tr>
         <tr><td>카드의 마지막 답변</td><td>그 세션의 마지막 답변입니다.</td><td><code>convo_log</code>의 turn(claude·codex·kiro). 이 값을 읽는 코드는 새로 필요합니다. cursor는 turn이 0개입니다.</td></tr>
-        <tr><td>handoff 끈</td><td>handoff로 이어진 세션이 끈으로 부모 곁에 뜹니다.</td><td><code>state.handoff_parent</code>입니다. 제품에 있습니다.</td></tr>
+        <tr><td>handoff 끈</td><td>handoff로 이어진 세션이 코드 비둘기가 되어 부모 곁에 뜹니다.</td><td><code>state.handoff_parent</code>입니다. 제품에 있습니다.</td></tr>
         <tr><td>대기열과 N</td><td>나를 기다리는 세션을 줄 세웁니다. ✓ done이 먼저, 그다음 ! blocked입니다. N을 누를 때마다 다음 세션으로 넘어갑니다.</td><td>목록의 <code>status_rank</code>에서 done이 blocked보다 앞입니다. 목록은 24시간 기준 그룹을 먼저 나누지만, 이 시안은 그룹을 쓰지 않습니다.</td></tr>
-        <tr><td>고래</td><td>MindPlayer 마스코트를 홀로그램으로 그립니다.</td><td><code>mascot.rs</code> 색</td></tr>
+        <tr><td>고래</td><td>MindPlayer 마스코트를 벽의 그림으로 겁니다.</td><td><code>mascot.rs</code> 색</td></tr>
       </tbody>
     </table></div>
   </section>
@@ -105,14 +105,14 @@ table{width:100%;border-collapse:collapse;font-size:12.5px;line-height:1.6}th,td
     <ul class="plain">
       <li>이 창은 읽기 전용입니다. 답장, 멈춤, 키 전송 버튼이 없습니다. 답장은 MindPlayer 목록에서 Enter로 pane에 들어가서 합니다.</li>
       <li>실시간 연결은 구현하지 않았습니다. 구현하면 MindPlayer가 127.0.0.1에서 읽기 전용 GET으로 상태를 줍니다. MindPlayer가 이 창을 엽니다. 쓰기 API는 없습니다.</li>
-      <li>공개 레포이므로 참고한 작품의 이름, 로고, 닮은 얼굴을 넣지 않습니다.</li>
+      <li>공개 레포이므로 참고한 작품의 이름, 로고, 닮은 얼굴을 넣지 않습니다. 가져온 것은 분위기뿐입니다: 따뜻한 옛 저택, 손으로 지은 AI 오류, 부서를 나눠 맡은 AI 가족, 다락의 격리.</li>
       <li>hook 설치, tmux <code>send-keys</code>, 경로를 내주는 파일 서버는 쓰지 않습니다.</li>
     </ul>
   </section>
   <section class="retained" aria-labelledby="open-title">
     <div class="section-heading"><h3 id="open-title">열린 결정</h3><span>HTML 승인은 구현 승인이 아닙니다</span></div>
     <ul class="plain">
-      <li>고를 배경을 정해야 합니다.</li>
+      <li>고를 배치를 정해야 합니다.</li>
       <li>codex 세션의 방 이동에 필요한 도구 기록 수집을 정해야 합니다.</li>
       <li>캐릭터 이름과 agent 매핑을 정해야 합니다.</li>
       <li>MindPlayer에서 이 창을 여는 키를 정해야 합니다.</li>
@@ -124,17 +124,21 @@ table{width:100%;border-collapse:collapse;font-size:12.5px;line-height:1.6}th,td
 <script>
 (() => {
 'use strict';
-// ---------- palette: MindPlayer status and agent colours (ui.rs) ----------
-const K = {waiting:'#ffb783', working:'#f0d478', completed:'#91d9ae', idle:'#8c94a2', ended:'#aeb7c6', accent:'#7ea2f7', ink:'#1b1e2e'};
+// ---------- palette: MindPlayer status and agent colours (ui.rs) on a warm mansion ----------
+const K = {waiting:'#ffb783', working:'#f0d478', completed:'#91d9ae', idle:'#8c94a2', ended:'#aeb7c6', accent:'#7ea2f7', ink:'#2b1d14'};
 const AG = {codex:{name:'codex', nick:'Halo', color:'#7ea2f7'}, claude:{name:'claude', nick:'Ember', color:'#c678dd'},
   kiro:{name:'kiro', nick:'Prism', color:'#56b6c2'}, cursor:{name:'cursor', nick:'Spark', color:'#f2aa4c'}};
 const ST = {working:{g:'●', label:'working', ko:'일하는 중', color:K.working}, blocked:{g:'!', label:'blocked', ko:'나를 기다림', color:K.waiting},
   done:{g:'✓', label:'done', ko:'끝남', color:K.completed}, idle:{g:'○', label:'idle', ko:'쉬는 중', color:K.idle}, ended:{g:'○', label:'ended', ko:'종료', color:K.ended}};
 const CATS = {pulse:{name:'pulse', color:'#b48ead'}, infra:{name:'인프라 변경', color:'#a3be8c'}, mp:{name:'mindplayer', color:'#88c0d0'},
   probe:{name:'조사', color:'#ebcb8b'}, cost:{name:'비용', color:'#d08770'}, none:{name:'uncategorized', color:'#8c94a2'}};
-const TOOL = {read:{room:'archive', label:'📖 파일 읽기'}, shell:{room:'core', label:'$ 명령 실행'}, mcp:{room:'comm', label:'☎ 외부 도구'}, edit:{room:null, label:'✎ 편집'}};
+const TOOL = {read:{room:'library', label:'📖 파일 읽기'}, shell:{room:'kitchen', label:'$ 명령 실행'}, mcp:{room:'phone', label:'☎ 외부 도구'}, edit:{room:null, label:'✎ 편집'}};
 const CS = 1.3;
 const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
+// house materials
+const H = {wood:'#5a3a22', woodL:'#7a5233', woodD:'#3e2715', parquetA:'#8a5e3a', parquetB:'#7a5030', wainscot:'#4a2f1c', wallGreen:'#2f4a3b', wallRed:'#5a2a2a', wallBlue:'#2b3b55',
+  gold:'#d9a84e', brass:'#c9a46a', amber:'#ffcf7a', cream:'#f3e9d2', paper:'#efe4c8', velvet:'#8a3a3a', mustard:'#d8a93a', leaf:'#5f9e5a', leafD:'#3f7a3c', sky:'#79b8ec', skyD:'#3f87c8', hill:'#5fae4a',
+  brick:'#8a4b3a', brickD:'#6d3a2c', glass:['#d94b4b', '#4fa36a', '#3f74c9', '#e8b63c'], lemon:'#f2d94a', orange:'#f29a3a', sunflower:'#f5c232', sunCenter:'#6a4420'};
 // ---------- synthetic sessions (24): [category, agent, status, tool, minutes since last prompt, title, last reply] ----------
 const RAW = [
  ['pulse','codex','working','edit',3,'배포 검증','v0.23.2 이미지 digest와 Argo sync 상태를 맞춰 보는 중입니다.'],
@@ -164,9 +168,12 @@ const RAW = [
 const LANES = [{parent:5, color:'#7ea2f7'}, {parent:11, color:'#c678dd'}, {parent:11, color:'#c678dd'}];
 const isAsleep = s => s.status === 'idle' && s.mins != null && s.mins >= 10;
 const when = s => s.mins == null ? 'now' : s.mins + 'm';
-// ---------- canvas helpers (world px; iso tile 64x32) ----------
-const TW = 64, TH = 32;
-const iso = (i, j, z = 0) => ({x:(i - j) * TW / 2, y:(i + j) * TH / 2 - z});
+// ---------- canvas helpers (iso tile 64x32; floors stack by a j stride so every tile stays unique) ----------
+const TW = 64, TH = 32, STRIDE = 100;
+let WALL_J0 = 0;
+let FLOOR_H = 0;
+const floorOf = j => Math.floor(j / STRIDE);
+const iso = (i, j, z = 0) => { const k = floorOf(j), jj = j - k * STRIDE; return {x:(i - jj) * TW / 2, y:(i + jj) * TH / 2 - z - k * FLOOR_H}; };
 function poly(g, pts, fill, stroke = K.ink, lw = 2.2) { g.beginPath(); g.moveTo(pts[0].x, pts[0].y); for (let k = 1; k < pts.length; k++) g.lineTo(pts[k].x, pts[k].y); g.closePath();
   if (fill) { g.fillStyle = fill; g.fill(); } if (stroke) { g.lineWidth = lw; g.strokeStyle = stroke; g.lineJoin = 'round'; g.stroke(); } }
 function shade(hex, f) { const n = parseInt(hex.slice(1), 16), r = n >> 16, gg = (n >> 8) & 255, b = n & 255, t = f < 0 ? 0 : 255, p = Math.abs(f);
@@ -185,386 +192,382 @@ function glow(g, x, y, r, color, a = .5) { const gr = g.createRadialGradient(x, 
 const FONT = '"Apple SD Gothic Neo","Noto Sans KR",-apple-system,sans-serif';
 function pill(g, x, y, text, o = {}) {
   g.font = `${o.weight || 800} ${o.size || 12}px ${FONT}`; const pad = o.padX ?? 9, w = g.measureText(text).width + pad * 2, h = (o.size || 12) + 10, x0 = o.align === 'left' ? x : x - w / 2;
-  rrect(g, x0, y - h / 2, w, h, h / 2, o.bg || '#f4f1e8', o.stroke ?? K.ink, o.lw ?? 2); g.fillStyle = o.fg || '#14161f'; g.textAlign = 'left'; g.textBaseline = 'middle'; g.fillText(text, x0 + pad, y + 1);
+  rrect(g, x0, y - h / 2, w, h, h / 2, o.bg || H.cream, o.stroke ?? K.ink, o.lw ?? 2); g.fillStyle = o.fg || '#14161f'; g.textAlign = 'left'; g.textBaseline = 'middle'; g.fillText(text, x0 + pad, y + 1);
   return {x0, y0:y - h / 2, w, h};
 }
 function trunc(text, maxW, g) { if (g.measureText(text).width <= maxW) return text; let s = text; while (s.length && g.measureText(s + '…').width > maxW) s = s.slice(0, -1); return s + '…'; }
 function star(g, x, y, r, fill, stroke) { g.beginPath(); for (let k = 0; k < 8; k++) { const a = k * Math.PI / 4, rr = k % 2 ? r * .42 : r; g.lineTo(x + Math.cos(a) * rr, y + Math.sin(a) * rr); } g.closePath(); g.fillStyle = fill; g.fill(); if (stroke) { g.lineWidth = 1.2; g.strokeStyle = stroke; g.stroke(); } }
-// ---------- the AI characters: original designs in MindPlayer agent colours ----------
-// pose: stand | walk | type | sit | sleep | hold | wave ; origin = feet centre
+// a wall panel on the back-left (wall 'L', along j) or back-right (wall 'R', along i) wall, spanning tiles a..b, from height z0 to z1; returns its corners and a clip
+function wallPanel(g, wall, a, b, z0, z1) { const P0 = wall === 'L' ? iso(0, a, z0) : iso(a, WALL_J0, z0), P1 = wall === 'L' ? iso(0, b, z0) : iso(b, WALL_J0, z0), h = z1 - z0;
+  return [{x:P0.x, y:P0.y - h}, {x:P1.x, y:P1.y - h}, {x:P1.x, y:P1.y}, {x:P0.x, y:P0.y}]; }
+function clipPoly(g, pts) { g.beginPath(); pts.forEach((q, k) => k ? g.lineTo(q.x, q.y) : g.moveTo(q.x, q.y)); g.closePath(); g.clip(); }
+// ---------- the AI household: original human-shaped avatars in MindPlayer agent colours ----------
+// pose: stand | walk | type | sit | sleep | hold | wave | read ; origin = feet centre
+const LOOK = {
+  codex:{skin:'#f3dcc6', hair:'#cfd6e3', coat:'#3b4a78', shirt:'#f7f3ea', trousers:'#2b3350', tie:'#7ea2f7'},
+  claude:{skin:'#f6d9c4', hair:'#4a2b4e', coat:'#b26bd1', shirt:'#fbf1dc', trousers:'#5b3a67', tie:'#f2c35a'},
+  kiro:{skin:'#e9c9a4', hair:'#3b2a24', coat:'#3f9aa6', shirt:'#eef7f6', trousers:'#2f5c63', tie:'#bff4f8'},
+  cursor:{skin:'#f8dcc2', hair:'#8a4b26', coat:'#ef9a3c', shirt:'#fff5e6', trousers:'#7a4a2a', tie:'#ffe0b3'}};
+function blinkAt(t, seed) { return !reduce && (Math.floor(t * 10 + seed * 7) % 37) === 0; }
 function drawAI(g, agent, pose, t, o = {}) {
-  const c = AG[agent], s = o.scale || 1, blink = blinkAt(t, o.seed || 0), face = o.face || 'calm';
+  const L = LOOK[agent], s = o.scale || 1, blink = blinkAt(t, o.seed || 0), face = o.face || 'calm', seated = pose === 'sit' || pose === 'sleep' || pose === 'read' || (pose === 'hold' && o.seated) || (pose === 'type' && o.seated !== false);
   g.save(); g.translate(o.x || 0, o.y || 0); g.scale(s * (o.flip ? -1 : 1), s);
-  const bob = agent === 'kiro' ? Math.sin(t * 2.4 + (o.seed || 0)) * 2.2 : pose === 'walk' ? Math.abs(Math.sin(t * 9)) * -2 : 0;
-  const hop = o.hop ? -Math.max(0, Math.sin(t * 7 + (o.seed || 0))) * 7 : 0, jit = face === 'nervous' ? Math.sin(t * 60) * .8 : 0;
+  const bob = pose === 'walk' ? Math.abs(Math.sin(t * 9)) * -2 : 0, hop = o.hop ? -Math.max(0, Math.sin(t * 7 + (o.seed || 0))) * 7 : 0, jit = face === 'nervous' ? Math.sin(t * 60) * .8 : 0;
   ellipse(g, 0, 1, 13, 4.5, 'rgba(0,0,0,.28)', null);
   g.translate(jit, bob + hop);
-  if (agent === 'kiro') { drawKiro(g, pose, t, blink, face); g.restore(); return; }
   const step = pose === 'walk' ? Math.sin(t * 9) * 4 : 0;
-  if (agent === 'cursor') { ellipse(g, -6, -3, 4, 4, '#2c2f3e'); ellipse(g, 6, -3, 4, 4, '#2c2f3e'); }
-  else if (pose !== 'sit' && pose !== 'sleep') { rrect(g, -7 + step * .5, -10, 5, 10, 2.5, shade(c.color, -.35)); rrect(g, 2 - step * .5, -10, 5, 10, 2.5, shade(c.color, -.35)); }
-  g.rotate(pose === 'sleep' ? .32 : 0);
-  const bodyCol = agent === 'codex' ? '#2f3e6e' : agent === 'claude' ? c.color : '#ef9a3c';
-  rrect(g, -10, -26, 20, 17, 7, bodyCol);
-  if (agent === 'claude') ellipse(g, 0, -18, 3.4, 3.4, '#ffe1f7', K.ink, 1.4);
-  if (agent === 'codex') rrect(g, -4, -22, 8, 6, 2, '#7ea2f7', K.ink, 1.6);
-  if (agent === 'cursor') { ellipse(g, 0, -17, 3, 3, '#fff0a8', K.ink, 1.4); }
+  if (!seated) { rrect(g, -7 + step * .5, -12, 6, 12, 2.5, L.trousers); rrect(g, 1 - step * .5, -12, 6, 12, 2.5, L.trousers); rrect(g, -8 + step * .5, -2, 8, 4, 2, K.ink, null); rrect(g, 0 - step * .5, -2, 8, 4, 2, K.ink, null); }
+  else { rrect(g, -10, -14, 20, 8, 3, L.trousers); }
+  g.rotate(pose === 'sleep' ? .3 : 0);
+  // torso: shirt under an open coat or vest in the agent colour
+  rrect(g, -11, -30, 22, 20, 6, L.coat); rrect(g, -4, -30, 8, 13, 2, L.shirt, K.ink, 1.6);
+  g.beginPath(); g.moveTo(-2, -29); g.lineTo(0, -19); g.lineTo(2, -29); g.closePath(); g.fillStyle = L.tie; g.fill(); g.lineWidth = 1.4; g.strokeStyle = K.ink; g.stroke();
+  if (agent === 'codex') { g.strokeStyle = H.gold; g.lineWidth = 1.4; g.beginPath(); g.moveTo(-9, -21); g.quadraticCurveTo(-5, -15, 0, -18); g.stroke(); }
+  if (agent === 'kiro') { poly(g, [{x:7, y:-27}, {x:9.5, y:-24}, {x:7, y:-21}, {x:4.5, y:-24}], L.tie, K.ink, 1.3); }
+  if (agent === 'cursor') { g.fillStyle = H.gold; g.beginPath(); g.moveTo(7, -28); g.lineTo(4, -23); g.lineTo(6.5, -23); g.lineTo(4, -18); g.lineTo(9, -24); g.lineTo(6.5, -24); g.closePath(); g.fill(); }
+  // arms
   const armUp = pose === 'type' ? Math.sin(t * 22 + (o.seed || 0)) * 3 : 0, wave = pose === 'wave' ? Math.sin(t * 10) * 18 : 0;
-  g.save(); g.translate(-10, -22); g.rotate((pose === 'type' ? -.9 : pose === 'hold' ? -1.1 : .25) + armUp * .05); rrect(g, -3, 0, 6, 11, 3, bodyCol); g.restore();
-  g.save(); g.translate(10, -22); g.rotate((pose === 'wave' ? -2.3 + wave * .02 : pose === 'type' ? .9 : pose === 'hold' ? 1.1 : -.25) - armUp * .05); rrect(g, -3, 0, 6, 11, 3, bodyCol); g.restore();
-  if (pose === 'hold') { rrect(g, -9, -23, 18, 13, 3, '#f4fbf6'); g.strokeStyle = '#3aa66a'; g.lineWidth = 2.5; g.beginPath(); g.moveTo(-4, -17); g.lineTo(-1, -14); g.lineTo(5, -20); g.stroke(); }
-  const hy = -40;
-  if (agent === 'codex') {
-    ellipse(g, 0, hy, 16, 15, '#eef2fb'); rrect(g, -13, hy - 6, 26, 11, 5.5, '#26345f'); glow(g, 0, hy - 1, 16, '#7ea2f7', .35);
-    const ey = hy - 1;
-    if (pose === 'sleep' || blink) { g.strokeStyle = '#9fc0ff'; g.lineWidth = 2; g.beginPath(); g.moveTo(-8, ey); g.lineTo(-3, ey); g.moveTo(3, ey); g.lineTo(8, ey); g.stroke(); }
-    else if (face === 'sparkle') { star(g, -5.5, ey, 3.6, '#ffffff'); star(g, 5.5, ey, 3.6, '#ffffff'); }
-    else { ellipse(g, -5.5, ey, 2.6, face === 'surprised' ? 3.6 : 2.6, '#e9f1ff', null); ellipse(g, 5.5, ey, 2.6, face === 'surprised' ? 3.6 : 2.6, '#e9f1ff', null); }
-    g.strokeStyle = '#7ea2f7'; g.lineWidth = 2.6; g.beginPath(); g.ellipse(0, hy - 22 + Math.sin(t * 3) * 1.2, 11, 3.6, 0, 0, Math.PI * 2); g.stroke(); glow(g, 0, hy - 22, 14, '#7ea2f7', .4);
-  } else if (agent === 'claude') {
-    ellipse(g, 0, hy, 16, 15, '#f7dcf4'); ellipse(g, -15, hy + 1, 4, 6, c.color); ellipse(g, 15, hy + 1, 4, 6, c.color); rrect(g, -14, hy - 15, 28, 9, 5, c.color);
-    star(g, 10, hy - 12, 4.4, '#ffe27a', K.ink);
-    eyes(g, hy + 1, pose, blink, face); ellipse(g, -9, hy + 6, 3, 2, 'rgba(255,120,160,.55)', null); ellipse(g, 9, hy + 6, 3, 2, 'rgba(255,120,160,.55)', null); mouth(g, hy + 8, face, pose);
-  } else {
-    ellipse(g, 0, hy + 1, 16, 14, '#ffb35c'); ellipse(g, 0, hy - 3, 11, 6, 'rgba(255,255,255,.35)', null);
-    g.strokeStyle = K.ink; g.lineWidth = 2; g.beginPath(); g.moveTo(0, hy - 13); g.lineTo(0, hy - 22); g.stroke(); ellipse(g, 0, hy - 24, 4, 4, '#fff0a8'); glow(g, 0, hy - 24, 10, '#fff0a8', .5 + Math.sin(t * 6) * .2);
-    eyes(g, hy + 1, pose, blink, face); mouth(g, hy + 8, face, pose);
-  }
+  const la = pose === 'type' ? -.9 : pose === 'hold' || pose === 'read' ? -1.2 : .25, ra = pose === 'wave' ? -2.3 + wave * .02 : pose === 'type' ? .9 : pose === 'hold' || pose === 'read' ? 1.2 : -.25;
+  g.save(); g.translate(-11, -26); g.rotate(la + armUp * .05); rrect(g, -3, 0, 6, 12, 3, L.coat); ellipse(g, 0, 12, 3.2, 3.2, L.skin, K.ink, 1.4); g.restore();
+  g.save(); g.translate(11, -26); g.rotate(ra - armUp * .05); rrect(g, -3, 0, 6, 12, 3, L.coat); ellipse(g, 0, 12, 3.2, 3.2, L.skin, K.ink, 1.4); g.restore();
+  if (pose === 'hold') { rrect(g, -9, -27, 18, 13, 2, '#f4fbf6'); g.strokeStyle = '#3aa66a'; g.lineWidth = 2.5; g.beginPath(); g.moveTo(-4, -21); g.lineTo(-1, -18); g.lineTo(5, -24); g.stroke(); }
+  if (pose === 'read') { rrect(g, -12, -30, 24, 16, 1.5, H.paper); g.fillStyle = K.ink; g.font = `900 4.5px ${FONT}`; g.textAlign = 'center'; g.fillText('TODAY', 0, -25); g.fillStyle = '#9a8f7a'; for (let k = 0; k < 4; k++) g.fillRect(-9, -22 + k * 2.4, 18 - (k % 2) * 5, 1.2); }
+  // head
+  const hy = -44;
+  ellipse(g, 0, hy, 13, 13, L.skin);
+  if (agent === 'codex') { g.beginPath(); g.ellipse(0, hy - 6, 13, 8, 0, Math.PI, 0); g.fillStyle = L.hair; g.fill(); g.lineWidth = 2; g.strokeStyle = K.ink; g.stroke(); g.beginPath(); g.moveTo(-13, hy - 3); g.quadraticCurveTo(-2, hy - 16, 13, hy - 3); g.fillStyle = L.hair; g.fill(); g.stroke();
+    ellipse(g, 6.5, hy + 1, 4.2, 4.2, null, H.gold, 1.4); g.strokeStyle = H.gold; g.lineWidth = 1.2; g.beginPath(); g.moveTo(10, hy + 3); g.lineTo(13, hy + 10); g.stroke(); }
+  if (agent === 'claude') { g.beginPath(); g.moveTo(-14, hy + 4); g.quadraticCurveTo(-15, hy - 14, 0, hy - 14); g.quadraticCurveTo(15, hy - 14, 14, hy + 4); g.lineTo(11, hy + 4); g.quadraticCurveTo(10, hy - 7, 0, hy - 8); g.quadraticCurveTo(-10, hy - 7, -11, hy + 4); g.closePath(); g.fillStyle = L.hair; g.fill(); g.lineWidth = 2; g.strokeStyle = K.ink; g.stroke();
+    rrect(g, 9, hy - 9, 3, 10, 1, H.mustard, K.ink, 1.2); }
+  if (agent === 'kiro') { for (let k = 0; k < 7; k++) ellipse(g, -12 + k * 4, hy - 10 + Math.abs(k - 3) * 1.2, 4, 4, L.hair, K.ink, 1.6); ellipse(g, -5.5, hy + 1, 5, 5, 'rgba(255,255,255,.35)', K.ink, 1.6); ellipse(g, 5.5, hy + 1, 5, 5, 'rgba(255,255,255,.35)', K.ink, 1.6); g.strokeStyle = K.ink; g.lineWidth = 1.4; g.beginPath(); g.moveTo(-.5, hy + 1); g.lineTo(.5, hy + 1); g.stroke(); }
+  if (agent === 'cursor') { g.beginPath(); g.ellipse(0, hy - 6, 13, 8, 0, Math.PI, 0); g.fillStyle = L.coat; g.fill(); g.lineWidth = 2; g.strokeStyle = K.ink; g.stroke(); rrect(g, -4, hy - 14, 12, 4, 2, L.coat); for (const [dx, dy] of [[-7, 4], [-5, 6], [7, 4], [5, 6]]) ellipse(g, dx, hy + dy, 1, 1, '#d99a6a', null); }
+  // face
+  const ey = hy + 1;
+  if (pose === 'sleep' || blink) { g.strokeStyle = K.ink; g.lineWidth = 2; g.beginPath(); g.arc(-5, ey, 2.6, .2, Math.PI - .2); g.moveTo(7.6, ey); g.arc(5, ey, 2.6, .2, Math.PI - .2); g.stroke(); }
+  else if (face === 'sparkle') { star(g, -5, ey, 3.6, '#ffffff', K.ink); star(g, 5, ey, 3.6, '#ffffff', K.ink); }
+  else { const h = face === 'surprised' ? 4 : 2.8; ellipse(g, -5, ey, 2.4, h, K.ink, null); ellipse(g, 5, ey, 2.4, h, K.ink, null); ellipse(g, -4.2, ey - 1.2, .9, .9, '#fff', null); ellipse(g, 5.8, ey - 1.2, .9, .9, '#fff', null); }
+  ellipse(g, -8, hy + 6, 2.6, 1.6, 'rgba(255,120,140,.45)', null); ellipse(g, 8, hy + 6, 2.6, 1.6, 'rgba(255,120,140,.45)', null);
+  g.strokeStyle = K.ink; g.lineWidth = 1.7; g.beginPath();
+  if (face === 'surprised') ellipse(g, 0, hy + 8, 2, 2.4, '#7a2f3e', K.ink, 1.4);
+  else if (face === 'nervous') { g.moveTo(-3, hy + 8); g.lineTo(-1, hy + 6.5); g.lineTo(1, hy + 8); g.lineTo(3, hy + 6.5); g.stroke(); }
+  else if (pose === 'sleep') { g.moveTo(-2, hy + 8); g.lineTo(2, hy + 8); g.stroke(); }
+  else { g.arc(0, hy + 6, 3, .3, Math.PI - .3); g.stroke(); }
   g.restore();
 }
-function blinkAt(t, seed) { return !reduce && (Math.floor(t * 10 + seed * 7) % 37) === 0; }
-function eyes(g, y, pose, blink, face) {
-  if (pose === 'sleep' || blink) { g.strokeStyle = K.ink; g.lineWidth = 2; g.beginPath(); g.arc(-6, y, 3, .2, Math.PI - .2); g.moveTo(9, y); g.arc(6, y, 3, .2, Math.PI - .2); g.stroke(); return; }
-  if (face === 'sparkle') { star(g, -6, y, 4, '#ffffff', K.ink); star(g, 6, y, 4, '#ffffff', K.ink); return; }
-  const h = face === 'surprised' ? 4.6 : 3.6; ellipse(g, -6, y, 3, h, K.ink, null); ellipse(g, 6, y, 3, h, K.ink, null); ellipse(g, -5, y - 1.5, 1.1, 1.1, '#fff', null); ellipse(g, 7, y - 1.5, 1.1, 1.1, '#fff', null);
-}
-function mouth(g, y, face, pose) { g.strokeStyle = K.ink; g.lineWidth = 1.8; g.beginPath();
-  if (face === 'surprised') { ellipse(g, 0, y, 2.2, 2.6, '#7a2f3e', K.ink, 1.6); return; }
-  if (face === 'nervous') { g.moveTo(-3, y); g.lineTo(-1, y - 1.5); g.lineTo(1, y); g.lineTo(3, y - 1.5); g.stroke(); return; }
-  if (pose === 'sleep') { g.moveTo(-2, y); g.lineTo(2, y); g.stroke(); return; }
-  g.arc(0, y - 2, 3, .3, Math.PI - .3); g.stroke(); }
-function drawKiro(g, pose, t, blink, face) {
-  const y = -30, r = 15; for (let k = 0; k < 3; k++) { const a = t * 1.6 + k * 2.1, sx = Math.cos(a) * 21, sy = y + Math.sin(a) * 6 - 4; g.save(); g.translate(sx, sy); g.rotate(a); poly(g, [{x:0, y:-4}, {x:3, y:0}, {x:0, y:4}, {x:-3, y:0}], '#bff4f8', K.ink, 1.4); g.restore(); }
-  const top = {x:0, y:y - r - 4}, bot = {x:0, y:y + r + 2}, L = {x:-r, y}, R = {x:r, y}, M = {x:0, y:y + 3};
-  poly(g, [top, L, M], '#8fe3ec'); poly(g, [top, M, R], '#56b6c2'); poly(g, [L, bot, M], '#3b97a3'); poly(g, [M, bot, R], '#2c7f8a'); glow(g, 0, y, 26, '#56b6c2', .3);
-  if (pose === 'sleep' || blink) { g.strokeStyle = K.ink; g.lineWidth = 2.2; g.beginPath(); g.moveTo(-6, y); g.lineTo(6, y); g.stroke(); return; }
-  ellipse(g, 0, y - 1, 7, face === 'surprised' ? 8 : 6.5, '#ffffff'); ellipse(g, 0, y - .5, 3.4, 3.4, face === 'sparkle' ? '#ffd36b' : K.ink, null); ellipse(g, 1.2, y - 2, 1.1, 1.1, '#fff', null);
-}
-function drawMote(g, color, t, x, y, seed) { const b = Math.sin(t * 3 + seed) * 2.5; glow(g, x, y + b, 16, color, .55); ellipse(g, x, y + b, 8, 8, shade(color, .55), K.ink, 1.8); ellipse(g, x - 2.4, y + b - .5, 1.2, 1.8, K.ink, null); ellipse(g, x + 2.4, y + b - .5, 1.2, 1.8, K.ink, null); ellipse(g, x - 4.4, y + b + 2.4, 1.7, 1.1, 'rgba(255,120,160,.6)', null); }
 function bubble(g, x, y, st, t, extra) {
   const c = ST[st].color, b = Math.sin(t * 3) * 1.5;
   g.beginPath(); g.roundRect(x - 13, y - 13 + b, 26, 20, 9); g.moveTo(x - 4, y + 7 + b); g.lineTo(x, y + 12 + b); g.lineTo(x + 4, y + 7 + b); g.fillStyle = c; g.fill(); g.lineWidth = 2; g.strokeStyle = K.ink; g.stroke(); g.fillStyle = c; g.fillRect(x - 3, y + 5 + b, 6, 3);
   g.fillStyle = K.ink; g.font = `900 13px ${FONT}`; g.textAlign = 'center'; g.textBaseline = 'middle'; g.fillText(ST[st].g, x, y - 2 + b);
-  if (extra === 'typing') for (let k = 0; k < 3; k++) ellipse(g, x + 18 + k * 6, y - 2 + Math.sin(t * 8 + k) * 2, 1.8, 1.8, '#f4f1e8', null);
+  if (extra === 'typing') for (let k = 0; k < 3; k++) ellipse(g, x + 18 + k * 6, y - 2 + Math.sin(t * 8 + k) * 2, 1.8, 1.8, H.cream, null);
 }
-function zzz(g, x, y, t) { g.font = `900 13px ${FONT}`; g.textAlign = 'center'; for (let k = 0; k < 3; k++) { const p = (t * .45 + k / 3) % 1; g.globalAlpha = 1 - p; g.fillStyle = '#cfd6ff'; g.fillText('z', x + p * 14, y - p * 26); } g.globalAlpha = 1; }
+function zzz(g, x, y, t) { g.font = `900 13px ${FONT}`; g.textAlign = 'center'; for (let k = 0; k < 3; k++) { const p = (t * .45 + k / 3) % 1; g.globalAlpha = 1 - p; g.fillStyle = '#e9dcc0'; g.fillText('z', x + p * 14, y - p * 26); } g.globalAlpha = 1; }
 function heart(g, x, y, s, a) { g.save(); g.globalAlpha = Math.max(0, a); g.translate(x, y); g.scale(s, s); g.beginPath(); g.moveTo(0, 3); g.bezierCurveTo(-6, -2, -3, -7, 0, -3.5); g.bezierCurveTo(3, -7, 6, -2, 0, 3); g.fillStyle = '#ff7aa8'; g.fill(); g.lineWidth = 1.2; g.strokeStyle = K.ink; g.stroke(); g.restore(); }
 function sweat(g, x, y) { g.beginPath(); g.moveTo(x, y - 5); g.quadraticCurveTo(x + 4, y, x, y + 3); g.quadraticCurveTo(x - 4, y, x, y - 5); g.fillStyle = '#9fd6ff'; g.fill(); g.lineWidth = 1.4; g.strokeStyle = K.ink; g.stroke(); }
-// hover reactions: waiting sessions look forward, working sessions get tense, resting sessions startle
 function reaction(g, s, x, y, t, sc = 1) {
-  if (s.status === 'blocked' || s.status === 'done') { for (let k = 0; k < 2; k++) { const p = (t * 30 + k * 12) % 18; heart(g, x - 16 * sc + k * 32 * sc, y - 62 * sc - p, 1.3, 1 - p / 18); } }
-  else if (s.status === 'working') sweat(g, x + 19 * sc, y - 52 * sc);
-  else { g.font = `900 16px ${FONT}`; g.fillStyle = '#ffe27a'; g.textAlign = 'center'; g.strokeStyle = K.ink; g.lineWidth = 3; g.strokeText('!', x + 20 * sc, y - 60 * sc); g.fillText('!', x + 20 * sc, y - 60 * sc); }
+  if (s.status === 'blocked' || s.status === 'done') { for (let k = 0; k < 2; k++) { const p = (t * 30 + k * 12) % 18; heart(g, x - 16 * sc + k * 32 * sc, y - 66 * sc - p, 1.3, 1 - p / 18); } }
+  else if (s.status === 'working') sweat(g, x + 19 * sc, y - 56 * sc);
+  else { g.font = `900 16px ${FONT}`; g.fillStyle = '#ffe27a'; g.textAlign = 'center'; g.strokeStyle = K.ink; g.lineWidth = 3; g.strokeText('!', x + 20 * sc, y - 64 * sc); g.fillText('!', x + 20 * sc, y - 64 * sc); }
 }
-function whale(g, x, y, s, t, a = .55) {
-  g.save(); g.globalAlpha = a; g.translate(x, y + Math.sin(t * 1.3) * 4); g.scale(s, s);
-  g.beginPath(); g.moveTo(-60, 0); g.bezierCurveTo(-58, -30, 10, -40, 40, -14); g.bezierCurveTo(52, -6, 62, -22, 74, -30); g.bezierCurveTo(70, -14, 74, 0, 80, 8); g.bezierCurveTo(66, 4, 56, 2, 44, 8); g.bezierCurveTo(20, 26, -50, 26, -60, 0); g.closePath();
-  const gr = g.createLinearGradient(0, -40, 0, 26); gr.addColorStop(0, '#6fb3d9'); gr.addColorStop(.62, '#4a86ad'); gr.addColorStop(.63, '#eaf6fb'); gr.addColorStop(1, '#cfe9f5'); g.fillStyle = gr; g.fill(); g.lineWidth = 3; g.strokeStyle = 'rgba(160,220,255,.9)'; g.stroke();
-  ellipse(g, -38, -6, 3.4, 3.4, '#1c2b33', null); ellipse(g, -30, 2, 4.5, 3, 'rgba(246,166,192,.8)', null);
-  g.globalAlpha = a * .5; for (let k = -36; k < 28; k += 5) { g.fillStyle = 'rgba(200,240,255,.25)'; g.fillRect(-64, k, 150, 1.5); } g.restore();
-}
+// a code pigeon: the handoff tether's courier
+function pigeon(g, color, t, x, y, seed) { const b = Math.sin(t * 3 + seed) * 2.5, f = Math.sin(t * 14 + seed) * 5; g.save(); g.translate(x, y + b);
+  g.beginPath(); g.moveTo(-9, 0); g.quadraticCurveTo(-4, -6 - f, 2, -2); g.lineTo(-9, 0); g.fillStyle = shade(color, .5); g.fill(); g.lineWidth = 1.4; g.strokeStyle = K.ink; g.stroke();
+  ellipse(g, 0, 0, 8, 5, shade(color, .6), K.ink, 1.6); ellipse(g, 7, -3, 3.5, 3.5, shade(color, .6), K.ink, 1.6); g.beginPath(); g.moveTo(10, -3); g.lineTo(13, -2); g.lineTo(10, -1); g.closePath(); g.fillStyle = H.gold; g.fill(); ellipse(g, 8, -4, .9, .9, K.ink, null);
+  g.font = `900 5px ${FONT}`; g.fillStyle = K.ink; g.textAlign = 'center'; g.fillText('01', -1, 1.5); g.restore(); }
+// the MindPlayer whale as a framed painting, drawn in mascot.rs colours
+function whaleFrame(g, x, y, s) { g.save(); g.translate(x, y); g.scale(s, s); rrect(g, -42, -26, 84, 52, 3, H.gold, K.ink, 2); rrect(g, -36, -20, 72, 40, 1, '#eaf6fb', K.ink, 1.2);
+  g.beginPath(); g.moveTo(-28, 4); g.bezierCurveTo(-26, -12, 4, -16, 18, -5); g.bezierCurveTo(24, -1, 28, -8, 32, -12); g.bezierCurveTo(30, -5, 32, 2, 34, 6); g.bezierCurveTo(28, 4, 24, 3, 18, 6); g.bezierCurveTo(6, 14, -24, 14, -28, 4); g.closePath(); g.fillStyle = '#6fb3d9'; g.fill(); g.lineWidth = 1.4; g.strokeStyle = '#4a86ad'; g.stroke();
+  ellipse(g, -18, 1, 1.6, 1.6, '#1c2b33', null); ellipse(g, -14, 5, 2.2, 1.4, 'rgba(246,166,192,.8)', null); g.restore(); }
 function faceOf(s) { if (s.hover) return s.status === 'blocked' || s.status === 'done' ? 'sparkle' : s.status === 'working' ? 'nervous' : 'surprised'; return 'calm'; }
-function poseAtDesk(s) { return s.status === 'working' ? 'type' : s.status === 'done' ? 'hold' : isAsleep(s) ? 'sleep' : s.status === 'blocked' ? 'wave' : 'sit'; }
-// ---------- props ----------
+function poseAtDesk(s) { return s.status === 'working' ? 'type' : s.status === 'blocked' ? 'wave' : s.status === 'done' ? 'hold' : 'sit'; }
+// ---------- furniture and the hand-built "AI error" gags ----------
+function fruitFrame(g, x, y, w, h, kind, seed) { rrect(g, x, y, w, h, 2, H.gold, K.ink, 1.6); rrect(g, x + 3, y + 3, w - 6, h - 6, 1, '#efe2c4', K.ink, 1);
+  const cx = x + w / 2, cy = y + h / 2 + 1;
+  if (kind === 'lemon') { for (let k = 0; k < 2 + seed % 3; k++) ellipse(g, cx - 5 + k * 5 - (seed % 3) * 2, cy + (k % 2) * 3 - 1, 4, 3, H.lemon, K.ink, 1.1); }
+  else if (kind === 'orange') { for (let k = 0; k < 2 + seed % 2; k++) ellipse(g, cx - 4 + k * 5, cy + (k % 2) * 2 - 1, 3.6, 3.6, H.orange, K.ink, 1.1); }
+  else { for (let k = 0; k < 8; k++) { const a = k * Math.PI / 4; ellipse(g, cx + Math.cos(a) * 4.5, cy + Math.sin(a) * 4.5, 2.2, 1.4, H.sunflower, K.ink, .9); } ellipse(g, cx, cy, 2.6, 2.6, H.sunCenter, K.ink, 1); } }
 function deskStyle(sc) { return {top:sc.deskTop, left:sc.deskLeft, right:sc.deskRight}; }
 const PROPS = {
-  console(g, p, t, w) { // 2-tile station; its seated AI is drawn first so the station covers the lower body
+  desk(g, p, t, w) { // a 2-tile writing desk; the seated AI is drawn first so the desk covers the lower body
     const {i, j} = p, s = p.session, cat = CATS[s.cat], st = deskStyle(w.sc);
-    if (s.atDesk && !s.gone) { const q = iso(i + .62, j - .1, 0); drawAI(g, s.agent, poseAtDesk(s), t, {x:q.x, y:q.y + 6, seed:s.seed, face:faceOf(s), hop:s.status === 'blocked', scale:CS}); }
+    if (s.atDesk && !s.gone) { const q = iso(i + .62, j - .1, 0); drawAI(g, s.agent, poseAtDesk(s), t, {x:q.x, y:q.y + 6, seed:s.seed, face:faceOf(s), hop:s.status === 'blocked', scale:CS, seated:true}); }
     const pts = box(g, i, j, 2, 1, 18, 0, st.top, {left:st.left, right:st.right});
     g.save(); const o = iso(i + .12, j + 1, 15); g.transform(1, .5, 0, 1, o.x, o.y); const pw = TW - 10;
-    rrect(g, 0, 0, pw, 13, 6, s.gone ? '#3b3f4d' : shade(cat.color, .6), K.ink, 1.6); g.fillStyle = s.gone ? '#6b7080' : AG[s.agent].color; g.fillRect(4, 3, 3, 7);
-    g.fillStyle = s.gone ? '#9aa0ad' : '#14161f'; g.font = `800 9.5px ${FONT}`; g.textBaseline = 'middle'; g.textAlign = 'left'; g.fillText(trunc(s.title, pw - 14, g), 10, 7); g.restore();
-    const m0 = iso(i + 1.25, j + .2, 18), m1 = iso(i + 1.92, j + .2, 18), on = !s.gone && s.atDesk && s.status !== 'idle';
-    const hc = on ? (s.status === 'working' ? AG[s.agent].color : ST[s.status].color) : '#3b4258', H = 28, panel = [{x:m0.x, y:m0.y - H}, {x:m1.x, y:m1.y - H}, {x:m1.x, y:m1.y}, {x:m0.x, y:m0.y}];
-    poly(g, panel, rgba(hc, on ? .32 : .18), shade(hc, .2), 1.6);
-    if (on) { g.save(); g.beginPath(); panel.forEach((q, k) => k ? g.lineTo(q.x, q.y) : g.moveTo(q.x, q.y)); g.closePath(); g.clip(); g.strokeStyle = rgba(shade(hc, .5), .9); g.lineWidth = 1.4;
-      for (let k = 0; k < 5; k++) { const yy = (k * 6 + t * (s.status === 'working' ? 14 : 2)) % 30, len = 8 + ((k * 7 + s.seed * 3) % 12); g.beginPath(); g.moveTo(m0.x + 3, m0.y - H + yy + 2); g.lineTo(m0.x + 3 + len, m0.y - H + yy + 2 + len * .5); g.stroke(); }
-      g.restore(); glow(g, (m0.x + m1.x) / 2, m0.y - H / 2, 26, hc, .25); }
-    if (s.seed % 3 === 0) ellipse(g, pts.A.x + 20, pts.A.y + 12, 4.5, 2.6, '#e6ecf5', K.ink, 1.4);
-    if (s.seed % 4 === 1) { const q = iso(i + .35, j + .55, 18); rrect(g, q.x - 6, q.y - 5, 12, 6, 2, '#ffd36b', K.ink, 1.4); }
-    if (s.seed % 5 === 2) { const q = iso(i + .3, j + .3, 18); g.fillStyle = '#6fe0b8'; for (let k = 0; k < 3; k++) { g.beginPath(); g.ellipse(q.x - 3 + k * 3, q.y - 6, 2, 5, (k - 1) * .5, 0, Math.PI * 2); g.fill(); } rrect(g, q.x - 4, q.y - 3, 8, 5, 2, '#5a6386', K.ink, 1.2); }
+    rrect(g, 0, 0, pw, 13, 3, s.gone ? '#5a4a3a' : H.brass, K.ink, 1.6); g.fillStyle = s.gone ? '#8a7a6a' : AG[s.agent].color; g.fillRect(4, 3, 3, 7);
+    g.fillStyle = s.gone ? '#cbbfae' : '#2b1d14'; g.font = `800 9.5px ${FONT}`; g.textBaseline = 'middle'; g.textAlign = 'left'; g.fillText(trunc(s.title, pw - 14, g), 10, 7); g.restore();
+    // a banker's lamp on the left, a small terminal on the right whose screen carries the status colour
+    const lp = iso(i + .35, j + .3, 18); g.strokeStyle = K.ink; g.lineWidth = 2; g.beginPath(); g.moveTo(lp.x, lp.y); g.lineTo(lp.x, lp.y - 14); g.stroke(); rrect(g, lp.x - 9, lp.y - 20, 18, 7, 3, '#2f7a4f', K.ink, 1.6);
+    const on = !s.gone && s.atDesk && s.status !== 'idle'; if (on) glow(g, lp.x, lp.y - 12, 22, H.amber, .35);
+    const m0 = iso(i + 1.25, j + .2, 18), m1 = iso(i + 1.92, j + .2, 18), hc = on ? (s.status === 'working' ? AG[s.agent].color : ST[s.status].color) : '#3b3a44', Hm = 26;
+    const panel = [{x:m0.x, y:m0.y - Hm}, {x:m1.x, y:m1.y - Hm}, {x:m1.x, y:m1.y}, {x:m0.x, y:m0.y}]; poly(g, panel, '#2b2730', K.ink, 1.8); poly(g, [{x:m0.x + 2, y:m0.y - Hm + 3}, {x:m1.x - 2, y:m1.y - Hm + 2}, {x:m1.x - 2, y:m1.y - 3}, {x:m0.x + 2, y:m0.y - 2}], rgba(hc, on ? .55 : .2), null);
+    if (on) { g.save(); clipPoly(g, panel); g.strokeStyle = rgba(shade(hc, .6), .95); g.lineWidth = 1.4;
+      for (let k = 0; k < 5; k++) { const yy = (k * 6 + t * (s.status === 'working' ? 14 : 2)) % 28, len = 8 + ((k * 7 + s.seed * 3) % 12); g.beginPath(); g.moveTo(m0.x + 4, m0.y - Hm + yy + 3); g.lineTo(m0.x + 4 + len, m0.y - Hm + yy + 3 + len * .5); g.stroke(); } g.restore(); }
+    if (s.seed % 3 === 0) ellipse(g, pts.A.x + 22, pts.A.y + 13, 4.5, 2.6, H.cream, K.ink, 1.4);
+    if (s.seed % 4 === 1) { const q = iso(i + .8, j + .6, 18); rrect(g, q.x - 6, q.y - 5, 12, 6, 1, H.paper, K.ink, 1.3); }
+    if (s.seed % 5 === 2) { const q = iso(i + .9, j + .35, 18); rrect(g, q.x - 4, q.y - 3, 8, 5, 2, '#6a4a3a', K.ink, 1.2); for (let k = 0; k < 3; k++) ellipse(g, q.x - 3 + k * 3, q.y - 7, 1.8, 3.6, H.leaf, K.ink, 1); }
   },
-  spire(g, p, t) { box(g, p.i + .1, p.j + .1, .8, .8, 86, 0, '#2a3350', {left:'#222a43', right:'#1a2036'}); for (let k = 0; k < 7; k++) { const q = iso(p.i + .5, p.j + .9, 12 + k * 10), on = (Math.floor(t * 3 + k + p.i * 2) % 4) !== 0;
-      ellipse(g, q.x - 8, q.y + 4, 2, 2, on ? '#56f0b0' : '#204a3c', null); ellipse(g, q.x - 2, q.y + 7, 2, 2, (k + p.j) % 3 ? '#7ea2f7' : '#ffb783', null); } const top = iso(p.i + .5, p.j + .5, 86); glow(g, top.x, top.y, 22, '#56b6c2', .35); },
-  shelf(g, p, t, w) { const col = w.sc.shelfColor || '#3b2f52'; box(g, p.i + .1, p.j + .15, .8, .7, p.h || 70, 0, col); for (let r = 0; r < Math.floor((p.h || 70) / 17); r++) for (let k = 0; k < 3; k++) { const q = iso(p.i + .25 + k * .22, p.j + .85, 10 + r * 15);
-      const hue = (w.sc.cubeHues || ['#ffd36b', '#88c0d0', '#c678dd', '#91d9ae'])[(r + k + p.i) % 4]; g.globalAlpha = .55 + .45 * Math.sin(t * 2 + r + k + p.j); rrect(g, q.x - 5, q.y - 4, 9, 8, 2, hue, K.ink, 1.2); g.globalAlpha = 1; } },
-  dish(g, p, t) { box(g, p.i + .3, p.j + .3, .4, .4, 18, 0, '#4a5272'); const c = iso(p.i + .5, p.j + .5, 40); g.save(); g.translate(c.x, c.y); g.rotate(-.5 + Math.sin(t * .6 + p.i) * .15);
-      ellipse(g, 0, 0, 22, 13, '#e3e8f2'); ellipse(g, 0, 0, 14, 8, '#c4ccdd', K.ink, 1.4); g.strokeStyle = K.ink; g.lineWidth = 2; g.beginPath(); g.moveTo(0, 0); g.lineTo(-10, -16); g.stroke(); ellipse(g, -10, -17, 3, 3, '#ffb783'); g.restore();
-      for (let k = 0; k < 3; k++) { const r = (t * 30 + k * 14) % 42; g.globalAlpha = 1 - r / 42; g.strokeStyle = '#ffb783'; g.lineWidth = 2; g.beginPath(); g.arc(c.x - 10, c.y - 18, r, -2.4, -1.1); g.stroke(); } g.globalAlpha = 1; },
-  plant(g, p, t) { const b = iso(p.i + .5, p.j + .5, 0); rrect(g, b.x - 8, b.y - 14, 16, 14, 4, '#4a5272'); for (let k = 0; k < 5; k++) { const a = (k - 2) * .45 + Math.sin(t * 1.5 + k) * .06; g.save(); g.translate(b.x, b.y - 14); g.rotate(a);
-      g.beginPath(); g.ellipse(0, -14, 5, 14, 0, 0, Math.PI * 2); g.fillStyle = k % 2 ? '#47c79a' : '#6fe0b8'; g.fill(); g.lineWidth = 1.8; g.strokeStyle = K.ink; g.stroke(); g.restore(); } glow(g, b.x, b.y - 26, 22, '#6fe0b8', .25); },
-  crate(g, p) { box(g, p.i + .2, p.j + .2, .6, .6, 18, 0, p.color || '#5a6386'); const q = iso(p.i + .5, p.j + .8, 9); g.fillStyle = '#ffd36b'; g.fillRect(q.x - 5, q.y - 2, 10, 3); },
-  cubes(g, p, t) { const b = iso(p.i + .5, p.j + .5, 0); ellipse(g, b.x, b.y, 18, 8, 'rgba(255,211,107,.18)', 'rgba(255,211,107,.6)', 1.5);
-      for (let k = 0; k < 4; k++) { const z = 16 + k * 18 + Math.sin(t * 1.6 + k + p.i) * 4; const c = iso(p.i + .5, p.j + .5, z); g.save(); g.translate(c.x, c.y); g.rotate(Math.sin(t + k) * .3); rrect(g, -8, -8, 16, 16, 3, ['#ffd36b', '#88c0d0', '#c678dd', '#91d9ae'][(k + p.i) % 4], K.ink, 1.6); g.restore(); glow(g, c.x, c.y, 16, '#ffd36b', .2); } },
-  obelisk(g, p, t) { const top = 70 + (p.i % 2) * 18; box(g, p.i + .25, p.j + .25, .5, .5, top, 8 + Math.sin(t * 1.2 + p.i) * 4, '#5a4b8f', {left:'#463a73', right:'#372d5c'}); const c = iso(p.i + .5, p.j + .5, top + 18); glow(g, c.x, c.y, 26, '#c678dd', .45); },
-  reactor(g, p, t) { const c0 = iso(p.i + 1, p.j + 1, 0); ellipse(g, c0.x, c0.y, 46, 23, '#262c44'); const h = 110;
-      g.beginPath(); g.ellipse(c0.x, c0.y - h, 26, 13, 0, Math.PI, 0); g.lineTo(c0.x + 26, c0.y - 6); g.ellipse(c0.x, c0.y - 6, 26, 13, 0, 0, Math.PI); g.closePath(); const gr = g.createLinearGradient(c0.x - 26, 0, c0.x + 26, 0); gr.addColorStop(0, '#1a5a7a'); gr.addColorStop(.5, '#6fd8ff'); gr.addColorStop(1, '#1a5a7a');
-      g.fillStyle = gr; g.globalAlpha = .75 + .2 * Math.sin(t * 3); g.fill(); g.globalAlpha = 1; g.lineWidth = 2.4; g.strokeStyle = K.ink; g.stroke(); ellipse(g, c0.x, c0.y - h, 26, 13, '#bff1ff');
-      for (let k = 0; k < 4; k++) { const y = c0.y - 20 - ((t * 40 + k * 26) % 90); ellipse(g, c0.x, y, 22, 11, null, rgba('#bff1ff', .7), 2); } glow(g, c0.x, c0.y - h / 2, 90, '#6fd8ff', .25);
-      for (const dx of [-30, 30]) rrect(g, c0.x + dx - 4, c0.y - h - 8, 8, h + 4, 3, '#3a425f'); },
-  couch(g, p, t) { const s = p.session; box(g, p.i + .05, p.j + .1, .9, .8, 10, 0, '#4f5d8f'); box(g, p.i + .05, p.j + .1, .9, .2, 24, 0, '#5d6ca0');
-      if (s && !s.gone && !s.walking) { const q = iso(p.i + .5, p.j + .55, 8); drawAI(g, s.agent, isAsleep(s) ? 'sleep' : 'sit', t, {x:q.x, y:q.y, seed:s.seed, face:faceOf(s), scale:CS}); if (isAsleep(s)) zzz(g, q.x + 14, q.y - 66, t); } },
-  pad(g, p, t) { const c = iso(p.i + .5, p.j + .5, 0); ellipse(g, c.x, c.y, 26, 13, '#2c3352'); ellipse(g, c.x, c.y - 2, 20, 10, rgba('#7ea2f7', .5 + .3 * Math.sin(t * 4)), '#bcd2ff', 2);
-      g.save(); g.globalCompositeOperation = 'lighter'; const gr = g.createLinearGradient(0, c.y - 90, 0, c.y); gr.addColorStop(0, 'rgba(126,162,247,0)'); gr.addColorStop(1, 'rgba(126,162,247,.35)'); g.fillStyle = gr; g.fillRect(c.x - 20, c.y - 90, 40, 88); g.restore();
-      g.font = `900 10px ${FONT}`; g.fillStyle = '#dfe8ff'; g.textAlign = 'center'; g.fillText('EXIT', c.x, c.y + 3); },
-  stack(g, p, t, w) { PROPS.shelf(g, {...p, h:110}, t, w); },
-  monolith(g, p, t) { const c0 = iso(p.i + 1, p.j + 1, 0); ellipse(g, c0.x, c0.y, 44, 22, 'rgba(255,211,107,.18)', 'rgba(255,211,107,.7)', 2); glow(g, c0.x, c0.y - 60, 90, '#ffd36b', .28);
-      for (let k = 0; k < 9; k++) { const a = t * .6 + k * .7, r = 22 + (k % 3) * 9, z = 40 + (k % 4) * 22 + Math.sin(t * 1.3 + k) * 5, x = c0.x + Math.cos(a) * r, y = c0.y - z + Math.sin(a) * r * .5;
-        g.save(); g.translate(x, y); g.rotate(a); rrect(g, -7, -7, 14, 14, 3, ['#ffd36b', '#f2c48a', '#ffe9b0'][k % 3], K.ink, 1.6); g.restore(); }
-      rrect(g, c0.x - 14, c0.y - 120, 28, 46, 6, '#ffe9b0'); glow(g, c0.x, c0.y - 98, 40, '#fff1c8', .55); },
-  armchair(g, p, t) { const s = p.session; box(g, p.i + .1, p.j + .1, .8, .8, 12, 0, '#8a5a3a'); box(g, p.i + .1, p.j + .1, .8, .18, 30, 0, '#9b6a46'); box(g, p.i + .1, p.j + .1, .14, .8, 20, 0, '#9b6a46');
-      if (s && !s.gone && !s.walking) { const q = iso(p.i + .55, p.j + .55, 10); drawAI(g, s.agent, isAsleep(s) ? 'sleep' : 'sit', t, {x:q.x, y:q.y, seed:s.seed, face:faceOf(s), scale:CS}); if (isAsleep(s)) zzz(g, q.x + 14, q.y - 66, t); }
-      const l = iso(p.i + .85, p.j + .15, 0); g.strokeStyle = K.ink; g.lineWidth = 2; g.beginPath(); g.moveTo(l.x, l.y); g.lineTo(l.x, l.y - 52); g.stroke(); ellipse(g, l.x, l.y - 56, 9, 5, '#ffd36b'); glow(g, l.x, l.y - 50, 26, '#ffd36b', .35); },
-  tube(g, p, t) { const b = iso(p.i + .5, p.j + .5, 0); rrect(g, b.x - 9, b.y - 92, 18, 92, 9, 'rgba(255,233,176,.25)', K.ink, 2.2); for (let k = 0; k < 3; k++) { const y = b.y - ((t * 50 + k * 30) % 88); rrect(g, b.x - 5, y - 8, 10, 7, 2, '#ffd36b', K.ink, 1.2); } ellipse(g, b.x, b.y - 92, 9, 4, '#c9a46a'); },
-  column(g, p, t) { const c = iso(p.i + .5, p.j + .5, 0); ellipse(g, c.x, c.y, 24, 12, '#3a2c1c'); g.save(); g.globalCompositeOperation = 'lighter'; const gr = g.createLinearGradient(0, c.y - 160, 0, c.y); gr.addColorStop(0, 'rgba(255,233,176,0)'); gr.addColorStop(1, 'rgba(255,233,176,.55)'); g.fillStyle = gr; g.fillRect(c.x - 18, c.y - 160, 36, 158); g.restore();
-      for (let k = 0; k < 6; k++) { const y = c.y - ((t * 40 + k * 26) % 150); ellipse(g, c.x + Math.sin(k * 2 + t) * 10, y, 2, 2, '#fff1c8', null); } g.font = `900 10px ${FONT}`; g.fillStyle = '#fff1c8'; g.textAlign = 'center'; g.fillText('EXIT', c.x, c.y + 3); },
-  conveyor(g, p, t) { box(g, p.i, p.j + .15, p.w, .7, 14, 0, '#3a3f4f', {left:'#2b2f3c', right:'#22252f'}); g.save(); const a = iso(p.i, p.j + .15, 14), b = iso(p.i + p.w, p.j + .15, 14), c = iso(p.i + p.w, p.j + .85, 14), d = iso(p.i, p.j + .85, 14);
-      g.beginPath(); [a, b, c, d].forEach((q, k) => k ? g.lineTo(q.x, q.y) : g.moveTo(q.x, q.y)); g.closePath(); g.clip(); g.strokeStyle = 'rgba(255,255,255,.12)'; g.lineWidth = 3; for (let k = -2; k < p.w * 2 + 2; k++) { const u = k * .5 + (t * .6 % .5); const q0 = iso(p.i + u, p.j + .15, 14), q1 = iso(p.i + u, p.j + .85, 14); g.beginPath(); g.moveTo(q0.x, q0.y); g.lineTo(q1.x, q1.y); g.stroke(); } g.restore();
-      for (let k = 0; k < Math.floor(p.w / 3); k++) { const u = ((k * 3 + t * .6) % p.w); box(g, p.i + u, p.j + .3, .4, .4, 14, 14, ['#d08770', '#ebcb8b', '#88c0d0'][k % 3]); } },
-  arm(g, p, t) { const b = iso(p.i + .5, p.j + .5, 0); rrect(g, b.x - 10, b.y - 16, 20, 16, 4, '#5a6070'); const a1 = -1.1 + Math.sin(t * 1.4 + p.i) * .45, a2 = 1.4 + Math.sin(t * 2 + p.i) * .5;
-      g.save(); g.translate(b.x, b.y - 16); g.rotate(a1); rrect(g, -5, -46, 10, 46, 5, '#f2aa4c'); g.translate(0, -46); ellipse(g, 0, 0, 7, 7, '#c4ccdd'); g.rotate(a2); rrect(g, -4, -36, 8, 36, 4, '#f2aa4c'); g.translate(0, -36); rrect(g, -8, -6, 16, 8, 3, '#c4ccdd');
-      if (Math.sin(t * 6 + p.i) > .6) for (let k = 0; k < 5; k++) ellipse(g, Math.cos(k * 1.3 + t * 9) * 10, -8 + Math.sin(k * 2 + t * 7) * 6, 1.6, 1.6, '#ffd36b', null); g.restore(); },
-  furnace(g, p, t) { box(g, p.i + .1, p.j + .1, 1.8, 1.8, 54, 0, '#4b2d2d', {left:'#3b2323', right:'#2c1a1a'}); const m = iso(p.i + 1, p.j + 1.9, 24); rrect(g, m.x - 18, m.y - 14, 36, 22, 8, '#ff6b3d'); glow(g, m.x, m.y, 50, '#ff6b3d', .45 + .15 * Math.sin(t * 5));
-      const ch = iso(p.i + 1.4, p.j + .5, 54); rrect(g, ch.x - 8, ch.y - 40, 16, 40, 4, '#3b2323'); for (let k = 0; k < 3; k++) { const y = ch.y - 44 - ((t * 20 + k * 12) % 36); g.globalAlpha = .4 - ((t * 20 + k * 12) % 36) / 100; ellipse(g, ch.x + Math.sin(t + k) * 4, y, 7, 5, '#8a8f9e', null); g.globalAlpha = 1; } },
-  mast(g, p, t) { const b = iso(p.i + .5, p.j + .5, 0); g.strokeStyle = K.ink; g.lineWidth = 3; g.beginPath(); g.moveTo(b.x - 10, b.y); g.lineTo(b.x, b.y - 96); g.lineTo(b.x + 10, b.y); g.stroke(); g.lineWidth = 1.6; for (let k = 1; k < 6; k++) { g.beginPath(); g.moveTo(b.x - 10 + k * 1.6, b.y - k * 16); g.lineTo(b.x + 10 - k * 1.6, b.y - k * 16); g.stroke(); }
-      const on = Math.floor(t * 2) % 2; ellipse(g, b.x, b.y - 100, 5, 5, on ? '#ff5a5a' : '#6b2a2a'); if (on) glow(g, b.x, b.y - 100, 22, '#ff5a5a', .5); },
-  lift(g, p, t) { box(g, p.i, p.j, 1, 1, 6, 0, '#3a3f4f'); const z = 6 + (Math.sin(t * .8) * .5 + .5) * 30; box(g, p.i + .1, p.j + .1, .8, .8, 4, z, '#ebcb8b'); for (const [di, dj] of [[0, 0], [1, 0], [0, 1], [1, 1]]) { const q = iso(p.i + di, p.j + dj, 0); g.strokeStyle = '#5a6070'; g.lineWidth = 3; g.beginPath(); g.moveTo(q.x, q.y); g.lineTo(q.x, q.y - 70); g.stroke(); }
-      const c = iso(p.i + .5, p.j + .5, 0); g.font = `900 10px ${FONT}`; g.fillStyle = '#ffd36b'; g.textAlign = 'center'; g.fillText('EXIT', c.x, c.y + 14); },
-  bigcrystal(g, p, t) { const c = iso(p.i + .5, p.j + .5, 26 + Math.sin(t * 1.4 + p.i) * 5); poly(g, [{x:c.x, y:c.y - 30}, {x:c.x + 12, y:c.y}, {x:c.x, y:c.y + 14}, {x:c.x - 12, y:c.y}], rgba(p.color || '#c678dd', .8), K.ink, 2); glow(g, c.x, c.y, 34, p.color || '#c678dd', .35); },
+  bookcase(g, p, t) { box(g, p.i + .1, p.j + .15, .8, .7, p.h || 74, 0, H.woodL, {left:H.wood, right:H.woodD}); for (let r = 0; r < Math.floor((p.h || 74) / 16); r++) for (let k = 0; k < 4; k++) { const q = iso(p.i + .2 + k * .18, p.j + .85, 6 + r * 16);
+      const hue = ['#b5543a', '#3f6a8a', '#8a6a2a', '#5a7a4a', '#7a4a7a'][(r + k + p.i) % 5]; rrect(g, q.x - 3, q.y - 11, 6, 12, 1, hue, K.ink, 1.1); if ((r + k + p.i) % 3 === 0) { g.fillStyle = H.gold; g.fillRect(q.x - 1.5, q.y - 8, 3, 1.2); } } },
+  fireplace(g, p, t) { box(g, p.i, p.j + .1, 1, .8, 52, 0, '#7a6a5a', {left:'#5e4f41', right:'#4a3d32'}); const m = iso(p.i + .5, p.j + .9, 22); rrect(g, m.x - 14, m.y - 16, 28, 22, 3, '#1c1410', K.ink, 1.6);
+      for (let k = 0; k < 3; k++) { const f = Math.sin(t * 9 + k * 2) * 3; g.beginPath(); g.moveTo(m.x - 8 + k * 8, m.y + 4); g.quadraticCurveTo(m.x - 8 + k * 8 - 4, m.y - 6 - f, m.x - 8 + k * 8, m.y - 12 - f); g.quadraticCurveTo(m.x - 8 + k * 8 + 4, m.y - 6 - f, m.x - 8 + k * 8, m.y + 4); g.fillStyle = k % 2 ? '#ff9a3c' : '#ffd36b'; g.fill(); }
+      glow(g, m.x, m.y - 4, 44, '#ff9a3c', .35 + .1 * Math.sin(t * 7)); const top = iso(p.i + .5, p.j + .5, 52); rrect(g, top.x - 30, top.y - 4, 60, 6, 2, H.woodL, K.ink, 1.6); fruitFrame(g, top.x - 10, top.y - 30, 20, 22, 'sunflower', p.i); },
+  armchair(g, p, t) { const s = p.session; box(g, p.i + .1, p.j + .1, .8, .8, 12, 0, H.mustard, {left:shade(H.mustard, -.25), right:shade(H.mustard, -.4)}); box(g, p.i + .1, p.j + .1, .8, .2, 32, 0, H.mustard, {left:shade(H.mustard, -.25), right:shade(H.mustard, -.4)}); box(g, p.i + .1, p.j + .1, .14, .8, 20, 0, shade(H.mustard, -.1), {left:shade(H.mustard, -.25), right:shade(H.mustard, -.4)});
+      if (s && !s.gone && !s.walking) { const q = iso(p.i + .55, p.j + .55, 10); drawAI(g, s.agent, isAsleep(s) ? 'sleep' : 'read', t, {x:q.x, y:q.y, seed:s.seed, face:faceOf(s), scale:CS}); if (isAsleep(s)) zzz(g, q.x + 14, q.y - 70, t); }
+      const l = iso(p.i + .9, p.j + .1, 0); g.strokeStyle = K.ink; g.lineWidth = 2; g.beginPath(); g.moveTo(l.x, l.y); g.lineTo(l.x, l.y - 54); g.stroke(); rrect(g, l.x - 10, l.y - 66, 20, 12, 3, H.cream, K.ink, 1.6); glow(g, l.x, l.y - 52, 28, H.amber, .4); },
+  seats(g, p, t) { // a cinema row of two: done sessions watch their results, holding the check
+    const ss = p.sessions || []; for (let k = 0; k < 2; k++) { const s = ss[k]; box(g, p.i + k, p.j + .2, .9, .7, 10, 0, H.velvet, {left:shade(H.velvet, -.25), right:shade(H.velvet, -.4)}); box(g, p.i + k, p.j + .2, .9, .18, 30, 0, shade(H.velvet, .05), {left:shade(H.velvet, -.25), right:shade(H.velvet, -.4)});
+      if (s && !s.gone && !s.walking) { const q = iso(p.i + k + .5, p.j + .6, 9); drawAI(g, s.agent, 'hold', t, {x:q.x, y:q.y, seed:s.seed, face:faceOf(s), scale:CS, seated:true}); } } },
+  cot(g, p, t) { const s = p.session; box(g, p.i + .1, p.j + .15, .8, .7, 10, 0, '#cfc2a8', {left:'#a99a80', right:'#8a7d66'}); const q = iso(p.i + .5, p.j + .5, 10); rrect(g, q.x - 10, q.y - 6, 20, 6, 3, H.cream, K.ink, 1.4);
+      if (s && !s.gone && !s.walking) { drawAI(g, s.agent, 'sleep', t, {x:q.x, y:q.y + 2, seed:s.seed, face:faceOf(s), scale:CS * .92}); zzz(g, q.x + 14, q.y - 66, t); } },
+  stove(g, p, t) { box(g, p.i + .1, p.j + .1, .8, .8, 30, 0, '#d9d4c8', {left:'#b5b0a4', right:'#948f84'}); const top = iso(p.i + .5, p.j + .5, 30); for (const [dx, dy] of [[-8, -3], [6, -2], [-2, 5]]) ellipse(g, top.x + dx, top.y + dy, 5, 2.6, '#2b2b2b', K.ink, 1.2);
+      const pot = iso(p.i + .55, p.j + .35, 30); ellipse(g, pot.x, pot.y - 8, 7, 3.5, '#5a5a66', K.ink, 1.4); for (let k = 0; k < 3; k++) { const y = pot.y - 14 - ((t * 20 + k * 10) % 30); g.globalAlpha = .5 - ((t * 20 + k * 10) % 30) / 70; ellipse(g, pot.x + Math.sin(t + k) * 3, y, 4, 3, '#e8e8f0', null); g.globalAlpha = 1; } },
+  fridge(g, p, t) { box(g, p.i + .15, p.j + .15, .7, .7, 70, 0, '#e8e3d8', {left:'#c4bfb3', right:'#a39e93'}); const f = iso(p.i + .5, p.j + .85, 40); g.strokeStyle = K.ink; g.lineWidth = 1.6; g.beginPath(); g.moveTo(f.x - 10, f.y - 2); g.lineTo(f.x + 10, f.y - 8); g.stroke();
+      const n = iso(p.i + .5, p.j + .85, 52); rrect(g, n.x - 6, n.y - 6, 12, 10, 1, H.paper, K.ink, 1.1); g.strokeStyle = '#3f74c9'; g.lineWidth = 1.2; for (let r = 2; r <= 5; r += 1.5) { g.beginPath(); g.arc(n.x, n.y + 1, r, -2.4, -.75); g.stroke(); } ellipse(g, n.x, n.y + 1, .8, .8, '#3f74c9', null); },
+  phone(g, p, t) { box(g, p.i + .25, p.j + .25, .5, .5, 28, 0, H.woodL, {left:H.wood, right:H.woodD}); const c = iso(p.i + .5, p.j + .5, 28); rrect(g, c.x - 5, c.y - 22, 10, 22, 3, '#2b2b2b', K.ink, 1.6); ellipse(g, c.x, c.y - 24, 7, 3, '#2b2b2b', K.ink, 1.4); ellipse(g, c.x, c.y, 8, 3.5, '#2b2b2b', K.ink, 1.4);
+      g.strokeStyle = K.ink; g.lineWidth = 1.8; g.beginPath(); g.moveTo(c.x - 9, c.y - 14); g.quadraticCurveTo(c.x - 16, c.y - 4, c.x - 8, c.y + 4); g.stroke(); if (Math.sin(t * 6 + p.i) > .6) { for (let k = 1; k <= 2; k++) { g.strokeStyle = H.gold; g.lineWidth = 1.6; g.beginPath(); g.arc(c.x + 8, c.y - 24, 4 + k * 4, -1.3, .2); g.stroke(); } } },
+  clock(g, p, t) { box(g, p.i + .25, p.j + .25, .5, .5, 86, 0, H.woodD, {left:'#2e1c0f', right:'#22150b'}); const f = iso(p.i + .5, p.j + .75, 70); ellipse(g, f.x, f.y - 8, 10, 10, H.cream, K.ink, 1.6); g.strokeStyle = K.ink; g.lineWidth = 1.6; g.beginPath(); g.moveTo(f.x, f.y - 8); g.lineTo(f.x + Math.cos(t * .3) * 6, f.y - 8 + Math.sin(t * .3) * 6); g.moveTo(f.x, f.y - 8); g.lineTo(f.x, f.y - 15); g.stroke();
+      const pd = iso(p.i + .5, p.j + .75, 40); ellipse(g, pd.x + Math.sin(t * 2.5) * 5, pd.y - 10, 4, 4, H.gold, K.ink, 1.2); },
+  sunflower(g, p, t) { const b = iso(p.i + .5, p.j + .5, 0); rrect(g, b.x - 8, b.y - 14, 16, 14, 3, '#7a4a3a', K.ink, 1.8); for (let k = 0; k < 3; k++) { const x = b.x - 8 + k * 8, sway = Math.sin(t * 1.5 + k) * 2; g.strokeStyle = H.leafD; g.lineWidth = 2.4; g.beginPath(); g.moveTo(x, b.y - 14); g.quadraticCurveTo(x + sway, b.y - 34, x + sway, b.y - 44 - k * 6); g.stroke();
+      for (let a = 0; a < 8; a++) ellipse(g, x + sway + Math.cos(a * Math.PI / 4) * 6, b.y - 44 - k * 6 + Math.sin(a * Math.PI / 4) * 6, 3, 2, H.sunflower, K.ink, 1); ellipse(g, x + sway, b.y - 44 - k * 6, 3.4, 3.4, H.sunCenter, K.ink, 1.2); } },
+  chairInWall(g, p, t) { // the chair that the house rendered halfway into the wall
+    const b = iso(p.i + .5, p.j + .3, 0); g.save(); g.beginPath(); const c = iso(p.i, p.j, 0), d = iso(p.i + 1, p.j, 0); g.moveTo(c.x - 40, c.y - 120); g.lineTo(d.x + 40, d.y - 120); g.lineTo(d.x + 40, d.y + 60); g.lineTo(c.x - 40, c.y + 60); g.clip();
+    box(g, p.i + .3, p.j - .3, .5, .5, 12, 0, H.velvet, {left:shade(H.velvet, -.25), right:shade(H.velvet, -.4)}); box(g, p.i + .3, p.j - .3, .5, .12, 34, 0, H.velvet, {left:shade(H.velvet, -.25), right:shade(H.velvet, -.4)}); g.restore();
+    g.font = `900 9px ${FONT}`; g.fillStyle = H.cream; g.textAlign = 'center'; },
+  stairs(g, p, t) { // a staircase whose banister stops halfway, as the house's renderer forgot the rest
+    const n = 6; for (let k = 0; k < n; k++) box(g, p.i + k * .3, p.j + .1, .3, .8, 9, k * 9, H.woodL, {left:H.wood, right:H.woodD});
+    for (let k = 0; k < 3; k++) { const q = iso(p.i + k * .3 + .15, p.j + .1, k * 9 + 9); g.strokeStyle = K.ink; g.lineWidth = 2.4; g.beginPath(); g.moveTo(q.x, q.y); g.lineTo(q.x, q.y - 22); g.stroke(); ellipse(g, q.x, q.y - 24, 2.6, 2.6, H.gold, K.ink, 1.2); }
+    const a = iso(p.i + .15, p.j + .1, 9 + 24), b = iso(p.i + .75, p.j + .1, 27 + 24); g.strokeStyle = H.woodD; g.lineWidth = 3.5; g.beginPath(); g.moveTo(a.x, a.y); g.lineTo(b.x, b.y); g.stroke(); const e = iso(p.i + .8, p.j + .1, 27 + 24); g.lineWidth = 1.4; g.strokeStyle = K.ink; g.beginPath(); g.moveTo(e.x - 2, e.y - 3); g.lineTo(e.x + 2, e.y + 3); g.moveTo(e.x + 2, e.y - 3); g.lineTo(e.x - 2, e.y + 3); g.stroke(); },
+  elevator(g, p, t) { box(g, p.i + .05, p.j + .05, .9, .9, p.h || 96, 0, '#6b6f7a', {left:'#53575f', right:'#3f424a'}); const d = iso(p.i + .5, p.j + .95, 40); rrect(g, d.x - 14, d.y - 36, 28, 48, 2, '#2b2d33', K.ink, 1.6); g.strokeStyle = '#8a8f9a'; g.lineWidth = 1.4; g.beginPath(); g.moveTo(d.x, d.y - 36); g.lineTo(d.x, d.y + 12); g.stroke();
+      const on = Math.floor(t * 5) % 3 !== 0; const lamp = iso(p.i + .5, p.j + .95, 90); ellipse(g, lamp.x, lamp.y, 5, 3, on ? H.amber : '#5a4a2a', K.ink, 1.2); if (on) glow(g, lamp.x, lamp.y, 20, H.amber, .5); if (p.flash && Math.floor(t * 12) % 2) glow(g, d.x, d.y - 10, 40, '#ffffff', .6); },
+  frontDoor(g, p, t) { const c = iso(p.i + .5, p.j + .5, 0); ellipse(g, c.x, c.y + 2, 22, 11, '#7a4a3a', K.ink, 1.8); g.font = `900 10px ${FONT}`; g.fillStyle = H.cream; g.textAlign = 'center'; g.textBaseline = 'middle'; g.fillText('EXIT', c.x, c.y + 2); },
+  gate(g, p, t) { const c = iso(p.i + .5, p.j + .5, 0); for (const dx of [-16, 16]) { g.strokeStyle = K.ink; g.lineWidth = 2; g.fillStyle = H.cream; g.beginPath(); g.rect(c.x + dx - 3, c.y - 34, 6, 34); g.fill(); g.stroke(); } g.fillStyle = H.cream; g.strokeStyle = K.ink; g.lineWidth = 1.6; for (let k = -9; k <= 9; k += 6) { g.beginPath(); g.rect(c.x + k - 2, c.y - 26, 4, 24); g.fill(); g.stroke(); }
+      g.font = `900 9px ${FONT}`; g.fillStyle = H.cream; g.textAlign = 'center'; g.fillText('EXIT', c.x, c.y + 12); },
+  tree(g, p, t) { const b = iso(p.i + .5, p.j + .5, 0); g.strokeStyle = K.ink; g.lineWidth = 2; g.fillStyle = '#6a4a2a'; g.beginPath(); g.rect(b.x - 4, b.y - 40, 8, 40); g.fill(); g.stroke(); for (const [dx, dy, r] of [[0, -58, 22], [-14, -46, 16], [14, -48, 17]]) ellipse(g, b.x + dx + Math.sin(t + dx) * 1.5, b.y + dy, r, r * .85, dy < -50 ? H.leaf : H.leafD, K.ink, 2); },
+  fence(g, p, t) { const a = iso(p.i, p.j + .5, 0), b = iso(p.i + p.w, p.j + .5, 0); for (let k = 0; k <= p.w * 3; k++) { const u = k / (p.w * 3), x = a.x + (b.x - a.x) * u, y = a.y + (b.y - a.y) * u; g.fillStyle = H.cream; g.strokeStyle = K.ink; g.lineWidth = 1.4; g.beginPath(); g.rect(x - 2, y - 18, 4, 18); g.fill(); g.stroke(); } g.strokeStyle = H.cream; g.lineWidth = 3; g.beginPath(); g.moveTo(a.x, a.y - 12); g.lineTo(b.x, b.y - 12); g.stroke(); },
+  lawnchair(g, p, t) { const s = p.session; box(g, p.i + .1, p.j + .2, .8, .6, 8, 0, '#e8c97a', {left:'#c4a65e', right:'#a3894a'}); box(g, p.i + .1, p.j + .2, .8, .14, 28, 0, '#e8c97a', {left:'#c4a65e', right:'#a3894a'});
+      if (s && !s.gone && !s.walking) { const q = iso(p.i + .55, p.j + .6, 7); drawAI(g, s.agent, isAsleep(s) ? 'sleep' : 'read', t, {x:q.x, y:q.y, seed:s.seed, face:faceOf(s), scale:CS}); if (isAsleep(s)) zzz(g, q.x + 14, q.y - 70, t); } },
+  gazebo(g, p, t) { for (const [di, dj] of [[0, 0], [1, 0], [0, 1], [1, 1]]) { const q = iso(p.i + .1 + di * .8, p.j + .1 + dj * .8, 0); g.strokeStyle = K.ink; g.lineWidth = 2; g.fillStyle = H.cream; g.beginPath(); g.rect(q.x - 3, q.y - 60, 6, 60); g.fill(); g.stroke(); }
+      const r = iso(p.i + .5, p.j + .5, 60); poly(g, [{x:r.x - 40, y:r.y + 2}, {x:r.x, y:r.y - 26}, {x:r.x + 40, y:r.y + 2}, {x:r.x, y:r.y + 14}], '#9aa8c9', K.ink, 2); PROPS.phone(g, {i:p.i + .25, j:p.j + .25}, t); },
+  shed(g, p, t) { box(g, p.i + .05, p.j + .05, 1.9, 1.9, 44, 0, '#7a5a3a', {left:'#5e4530', right:'#4a3626'}); const r = iso(p.i + 1, p.j + 1, 44); poly(g, [{x:r.x - 64, y:r.y + 2}, {x:r.x, y:r.y - 30}, {x:r.x + 64, y:r.y + 2}, {x:r.x, y:r.y + 32}], '#8a4b3a', K.ink, 2);
+      const d = iso(p.i + 1, p.j + 1.95, 20); rrect(g, d.x - 10, d.y - 20, 20, 28, 2, '#3e2715', K.ink, 1.6); PROPS.stove(g, {i:p.i + 1.1, j:p.j + .1}, t); },
+  screenOut(g, p, t, w) { const a = iso(p.i, p.j + .5, 0), b = iso(p.i + p.w, p.j + .5, 0); for (const q of [a, b]) { g.strokeStyle = K.ink; g.lineWidth = 3; g.beginPath(); g.moveTo(q.x, q.y); g.lineTo(q.x, q.y - 70); g.stroke(); }
+      const pts = [{x:a.x, y:a.y - 70}, {x:b.x, y:b.y - 70}, {x:b.x, y:b.y - 18}, {x:a.x, y:a.y - 18}]; poly(g, pts, '#f4efe4', K.ink, 2); g.save(); clipPoly(g, pts); memoryReel(g, a.x, a.y - 70, b.x - a.x, 52, t); g.restore(); },
+  pigeonCoop(g, p, t) { box(g, p.i + .2, p.j + .2, .6, .6, 40, 0, H.woodL, {left:H.wood, right:H.woodD}); const r = iso(p.i + .5, p.j + .5, 40); poly(g, [{x:r.x - 24, y:r.y + 2}, {x:r.x, y:r.y - 16}, {x:r.x + 24, y:r.y + 2}], '#8a4b3a', K.ink, 1.8); const h = iso(p.i + .5, p.j + .8, 22); ellipse(g, h.x, h.y, 5, 5, '#1c1410', K.ink, 1.4); },
 };
-// waiting-room style seats; the seated AI is drawn between the back and the glass/front
-const PODS = {
-  pod(g, p, t) { const s = p.session, b = iso(p.i + .5, p.j + .5, 0); ellipse(g, b.x, b.y + 2, 24, 12, '#2b3350'); glow(g, b.x, b.y - 10, 30, '#91d9ae', .25); ellipse(g, b.x, b.y - 2, 20, 10, '#3d4a70', K.ink, 2);
-    if (s && !s.gone && !s.walking) drawAI(g, s.agent, isAsleep(s) ? 'sleep' : 'sit', t, {x:b.x, y:b.y + 2, seed:s.seed, face:faceOf(s), scale:CS * .92});
-    g.beginPath(); g.ellipse(b.x, b.y - 26, 24, 34, 0, Math.PI, 0); g.lineTo(b.x + 24, b.y - 2); g.ellipse(b.x, b.y - 2, 24, 10, 0, 0, Math.PI); g.closePath(); g.fillStyle = 'rgba(160,240,210,.14)'; g.fill(); g.lineWidth = 2; g.strokeStyle = 'rgba(170,255,220,.8)'; g.stroke();
-    if (s && isAsleep(s) && !s.walking && !s.gone) zzz(g, b.x + 12, b.y - 70, t); },
-  lotus(g, p, t) { const s = p.session, b = iso(p.i + .5, p.j + .5, 0); for (let k = 0; k < 6; k++) { const a = k * Math.PI / 3 + t * .2; g.save(); g.translate(b.x + Math.cos(a) * 14, b.y + Math.sin(a) * 7); g.rotate(a); g.beginPath(); g.ellipse(0, 0, 13, 6, 0, 0, Math.PI * 2); g.fillStyle = k % 2 ? '#f1b8ff' : '#d79cf0'; g.fill(); g.lineWidth = 1.6; g.strokeStyle = K.ink; g.stroke(); g.restore(); }
-    glow(g, b.x, b.y - 6, 34, '#f1b8ff', .3); if (s && !s.gone && !s.walking) { drawAI(g, s.agent, isAsleep(s) ? 'sleep' : 'sit', t, {x:b.x, y:b.y, seed:s.seed, face:faceOf(s), scale:CS * .92}); if (isAsleep(s)) zzz(g, b.x + 12, b.y - 70, t); } },
-  couch(g, p, t) { PROPS.couch(g, p, t); }, armchair(g, p, t) { PROPS.armchair(g, p, t); },
-  rack(g, p, t) { const s = p.session; box(g, p.i + .05, p.j + .05, .9, .9, 6, 0, '#3a3f4f'); for (const dx of [.12, .78]) box(g, p.i + dx, p.j + .1, .1, .1, 80, 0, '#5a6070');
-    if (s && !s.gone && !s.walking) { const q = iso(p.i + .5, p.j + .5, 6); drawAI(g, s.agent, isAsleep(s) ? 'sleep' : 'stand', t, {x:q.x, y:q.y, seed:s.seed, face:faceOf(s), scale:CS * .92}); if (isAsleep(s)) zzz(g, q.x + 12, q.y - 70, t); }
-    const top = iso(p.i + .5, p.j + .5, 82); rrect(g, top.x - 22, top.y - 6, 44, 10, 4, '#2b2f3c'); const lvl = s ? (isAsleep(s) ? .3 : .7) : 0; rrect(g, top.x - 18, top.y - 3, 36 * lvl, 4, 2, '#91d9ae', null); },
-};
-const PORTALS = {
-  portal(g, p, t) { const c = iso(p.i + .5, p.j + .5, 34); for (let k = 0; k < 4; k++) { g.beginPath(); g.ellipse(c.x, c.y, 18 - k * 3, 32 - k * 5, 0, 0, Math.PI * 2); g.strokeStyle = rgba(['#c678dd', '#7ea2f7', '#56b6c2', '#ffd36b'][k], .85); g.lineWidth = 3; g.setLineDash([10, 6]); g.lineDashOffset = -t * 30 * (k % 2 ? 1 : -1); g.stroke(); }
-    g.setLineDash([]); glow(g, c.x, c.y, 40, '#c678dd', .35); const b = iso(p.i + .5, p.j + .5, 0); ellipse(g, b.x, b.y, 22, 10, '#2b2f45'); g.font = `900 10px ${FONT}`; g.fillStyle = '#e8d8ff'; g.textAlign = 'center'; g.fillText('EXIT', b.x, b.y + 3); },
-  pad: PROPS.pad, column: PROPS.column, lift: PROPS.lift,
-};
+// cinema reel: a strip of "memory" frames sliding across a screen
+function memoryReel(g, x, y, w, h, t) { g.fillStyle = '#f4efe4'; g.fillRect(x, y, w, h); const fw = 34; for (let k = -1; k < w / fw + 2; k++) { const fx = x + ((k * fw - t * 18) % (w + fw * 2)) - fw; rrect(g, fx + 3, y + 8, fw - 6, h - 16, 2, ['#c9b48a', '#9fbfd9', '#d9a0a0', '#a9c9a0'][(k + 40) % 4], K.ink, 1.2); g.fillStyle = 'rgba(0,0,0,.25)'; g.fillRect(fx + 3, y + 2, fw - 6, 3); g.fillRect(fx + 3, y + h - 5, fw - 6, 3); }
+  g.fillStyle = 'rgba(255,240,200,.18)'; g.fillRect(x, y, w, h); }
+// wall dressing: wallpaper, wainscot, stained glass, an XP window, fruit frames, chandelier, cinema screen on the back wall
+function wallpaper(g, pts, base, t) { poly(g, pts, base, K.ink, 2.4); g.save(); clipPoly(g, pts); g.strokeStyle = 'rgba(255,230,180,.10)'; g.lineWidth = 1; const xs = pts.map(q => q.x), ys = pts.map(q => q.y), x0 = Math.min(...xs), x1 = Math.max(...xs), y0 = Math.min(...ys), y1 = Math.max(...ys);
+  for (let x = x0; x < x1; x += 22) for (let y = y0; y < y1; y += 22) { g.beginPath(); g.moveTo(x + 11, y); g.lineTo(x + 22, y + 11); g.lineTo(x + 11, y + 22); g.lineTo(x, y + 11); g.closePath(); g.stroke(); } g.restore(); }
+function wainscot(g, wall, a, b, h, floorZ = 0) { const pts = wallPanel(g, wall, a, b, floorZ, floorZ + h); poly(g, pts, H.wainscot, K.ink, 1.6); const top = wallPanel(g, wall, a, b, floorZ + h - 4, floorZ + h); poly(g, top, H.woodL, K.ink, 1.2); }
+function stainedGlass(g, wall, a, b, z0, z1, t) { const pts = wallPanel(g, wall, a, b, z0, z1); poly(g, pts, '#1c1a24', K.ink, 2); g.save(); clipPoly(g, pts); const xs = pts.map(q => q.x), ys = pts.map(q => q.y), x0 = Math.min(...xs), x1 = Math.max(...xs), y0 = Math.min(...ys), y1 = Math.max(...ys);
+  let n = 0; for (let x = x0 + 6; x < x1; x += 11) for (let y = y0 + 6; y < y1; y += 11) { ellipse(g, x, y, 4.2, 4.2, H.glass[(n++ + Math.floor(x / 11)) % 4], K.ink, .8); } g.globalCompositeOperation = 'lighter'; g.fillStyle = `rgba(255,220,160,${.08 + .05 * Math.sin(t)})`; g.fillRect(x0, y0, x1 - x0, y1 - y0); g.restore(); }
+function xpWindow(g, wall, a, b, z0, z1, t, mood) { const pts = wallPanel(g, wall, a, b, z0, z1); g.save(); clipPoly(g, pts); const xs = pts.map(q => q.x), ys = pts.map(q => q.y), x0 = Math.min(...xs), x1 = Math.max(...xs), y0 = Math.min(...ys), y1 = Math.max(...ys);
+  const sky = mood === 'dusk' ? ['#f2a65a', '#e46b8a'] : mood === 'night' ? ['#1b2a55', '#0c1430'] : [H.sky, '#bfe3ff']; const gr = g.createLinearGradient(0, y0, 0, y1); gr.addColorStop(0, sky[0]); gr.addColorStop(1, sky[1]); g.fillStyle = gr; g.fillRect(x0, y0, x1 - x0, y1 - y0);
+  g.fillStyle = mood === 'night' ? '#213a2a' : H.hill; g.beginPath(); g.moveTo(x0, y1); g.quadraticCurveTo(x0 + (x1 - x0) * .4, y0 + (y1 - y0) * .45, x1, y1 - (y1 - y0) * .25); g.lineTo(x1, y1); g.closePath(); g.fill();
+  for (let k = 0; k < 3; k++) { const cx = x0 + ((k * 90 + t * 8) % (x1 - x0 + 60)) - 30, cy = y0 + 12 + k * 9; g.fillStyle = 'rgba(255,255,255,.85)'; ellipse(g, cx, cy, 12, 5, 'rgba(255,255,255,.9)', null); ellipse(g, cx + 8, cy - 3, 8, 5, 'rgba(255,255,255,.9)', null); }
+  g.restore(); poly(g, pts, null, K.ink, 2.2); const mx = (pts[0].x + pts[1].x) / 2, my = (pts[0].y + pts[1].y) / 2; g.strokeStyle = K.ink; g.lineWidth = 2; g.beginPath(); g.moveTo(mx, my); g.lineTo((pts[3].x + pts[2].x) / 2, (pts[3].y + pts[2].y) / 2); g.stroke(); }
+function framesOnWall(g, wall, a, z, seed) { const q = wall === 'L' ? iso(0, a, z) : iso(a, WALL_J0, z); g.save(); g.translate(q.x, q.y); g.transform(1, wall === 'L' ? -.5 : .5, 0, 1, 0, 0); fruitFrame(g, -22, -14, 20, 24, ['lemon', 'orange', 'sunflower'][seed % 3], seed); fruitFrame(g, 2, -10, 18, 18, ['orange', 'sunflower', 'lemon'][seed % 3], seed + 1); g.restore(); }
+function chandelier(g, i, j, z, t) { const c = iso(i, j, z); g.strokeStyle = K.ink; g.lineWidth = 2; g.beginPath(); g.moveTo(c.x, c.y); g.lineTo(c.x, c.y + 22); g.stroke(); ellipse(g, c.x, c.y + 28, 26, 9, H.brass, K.ink, 2); for (let k = 0; k < 7; k++) { const a = k / 7 * Math.PI * 2, x = c.x + Math.cos(a) * 24, y = c.y + 28 + Math.sin(a) * 7; rrect(g, x - 2, y - 10, 4, 9, 1, H.cream, K.ink, 1); ellipse(g, x, y - 12, 2.5, 3.5, H.amber, null); } glow(g, c.x, c.y + 24, 70, H.amber, .28 + .04 * Math.sin(t * 5)); }
+function cinemaScreen(g, wall, a, b, z0, z1, t) { const pts = wallPanel(g, wall, a, b, z0, z1); poly(g, pts, '#f4efe4', K.ink, 2.4); g.save(); clipPoly(g, pts); const xs = pts.map(q => q.x), ys = pts.map(q => q.y); memoryReel(g, Math.min(...xs), Math.min(...ys), Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys), t); g.restore();
+  const m = wall === 'L' ? iso(0, (a + b) / 2, z1 + 8) : iso((a + b) / 2, WALL_J0, z1 + 8); g.font = `900 9px ${FONT}`; g.fillStyle = H.amber; g.textAlign = 'center'; g.fillText('MEMORY REEL', m.x, m.y); }
+function gatePosters(g, wall, a, z, t) { const q = wall === 'L' ? iso(0, a, z) : iso(a, WALL_J0, z); g.save(); g.translate(q.x, q.y); g.transform(1, wall === 'L' ? -.5 : .5, 0, 1, 0, 0); for (let k = 0; k < 3; k++) { rrect(g, -30 + k * 22, -16, 18, 26, 1, ['#2b3b55', '#5a2a2a', '#2f4a3b'][k], K.ink, 1.2); g.fillStyle = H.cream; g.font = `900 5px ${FONT}`; g.textAlign = 'center'; g.fillText(['BOOT', 'LEARN', 'RETURN'][k], -21 + k * 22, 0); } g.restore(); }
 // ---------- scene builders ----------
-function bank(w, cat, i0, j, list) { list.forEach((s, k) => { w.consoles.push({type:'console', i:i0 + k * 2, j, w:2, d:1, session:s}); s.desk = {i:i0 + k * 2, j}; }); }
-const P = (w, type, i, j, wd = 1, dd = 1, extra = {}) => w.props.push({type, i, j, w:wd, d:dd, ...extra});
-const seats = (w, type, coords) => coords.forEach(([i, j]) => w.pods.push({type, i, j, w:1, d:1, session:null}));
+function bank(w, cat, i0, j, list) { list.forEach((s, k) => { w.desks.push({type:'desk', i:i0 + k * 2, j, w:2, d:1, session:s}); s.desk = {i:i0 + k * 2, j}; }); }
+const P = (w, type, i, j, wd = 1, dd = 1, extra = {}) => { const p = {type, i, j, w:wd, d:dd, ...extra}; w.props.push(p); return p; };
+const seats = (w, type, coords) => coords.forEach(([i, j]) => w.seats.push({type, i, j, w:1, d:1, session:null}));
+const cinemaRows = (w, coords) => coords.forEach(([i, j]) => w.cinema.push({type:'seats', i, j, w:2, d:1, sessions:[]}));
 const room = (w, key, label, icon, anchor, spots) => { w.rooms[key] = {label, icon, anchor, spots}; };
 const zone = (w, cat, i0, i1, j0, j1) => w.zones.push({cat, i0, i1, j0, j1});
+const floor = (w, k, N, M, extra = {}) => w.floors.push({k, i0:0, i1:N, j0:k * STRIDE, j1:k * STRIDE + M, ...extra});
 const by = (ss, c) => ss.filter(s => s.cat === c);
-function wallsBasic(g, w, t, o) {
-  const H = w.wallH, L0 = iso(0, w.M), T0 = iso(0, 0), R0 = iso(w.N, 0);
-  poly(g, [L0, T0, {x:T0.x, y:T0.y - H}, {x:L0.x, y:L0.y - H}], o.left, K.ink, 2.4); poly(g, [T0, R0, {x:R0.x, y:R0.y - H}, {x:T0.x, y:T0.y - H}], o.right, K.ink, 2.4);
-  if (o.panels) { for (let k = 1; k < w.M; k += 2) { const a = iso(0, k), b = iso(0, k + 1); poly(g, [a, b, {x:b.x, y:b.y - H + 14}, {x:a.x, y:a.y - H + 14}], o.panels, o.panelLine, 1.2); }
-    for (let k = 1; k < w.N; k += 2) { const a = iso(k, 0), b = iso(k + 1, 0); poly(g, [a, b, {x:b.x, y:b.y - H + 14}, {x:a.x, y:a.y - H + 14}], o.panels, o.panelLine, 1.2); } }
-  g.strokeStyle = o.trim; g.lineWidth = 3; g.beginPath(); g.moveTo(L0.x, L0.y - H); g.lineTo(T0.x, T0.y - H); g.lineTo(R0.x, R0.y - H); g.stroke();
+const FJ = k => k * STRIDE;
+// shared wall dressing for an interior floor: wallpaper, wainscot, trims
+function interiorWalls(g, w, t, f, o) {
+  const z0 = 0, Hw = o.h, L0 = iso(f.i0, f.j1, z0), T0 = iso(f.i0, f.j0, z0), R0 = iso(f.i1, f.j0, z0);
+  wallpaper(g, [L0, T0, {x:T0.x, y:T0.y - Hw}, {x:L0.x, y:L0.y - Hw}], o.left, t); wallpaper(g, [T0, R0, {x:R0.x, y:R0.y - Hw}, {x:T0.x, y:T0.y - Hw}], o.right, t);
+  if (!o.noWainscot) { wainscot(g, 'L', f.j0, f.j1, 26, 0); wainscot(g, 'R', f.i0, f.i1, 26, 0); }
+  g.strokeStyle = H.gold; g.lineWidth = 3; g.beginPath(); g.moveTo(L0.x, L0.y - Hw); g.lineTo(T0.x, T0.y - Hw); g.lineTo(R0.x, R0.y - Hw); g.stroke();
 }
-function wallScreen(g, w, wall, a, b, z0, z1, color, t, kind) { // holo panel on a back wall, spanning tile a..b
-  const P0 = wall === 'L' ? iso(0, a, z0) : iso(a, 0, z0), P1 = wall === 'L' ? iso(0, b, z0) : iso(b, 0, z0), h = z1 - z0;
-  const pts = [{x:P0.x, y:P0.y - h}, {x:P1.x, y:P1.y - h}, {x:P1.x, y:P1.y}, {x:P0.x, y:P0.y}]; poly(g, pts, rgba(color, .16), rgba(color, .8), 2);
-  g.save(); g.beginPath(); pts.forEach((q, k) => k ? g.lineTo(q.x, q.y) : g.moveTo(q.x, q.y)); g.closePath(); g.clip();
-  const n = 9, dx = (P1.x - P0.x) / n, dy = (P1.y - P0.y) / n;
-  if (kind === 'bars') for (let k = 0; k < n; k++) { const v = .3 + .6 * Math.abs(Math.sin(k * 1.7 + t * .8)); g.fillStyle = rgba(color, .7); g.beginPath(); const x = P0.x + dx * (k + .2), y = P0.y + dy * (k + .2) - 4; g.moveTo(x, y); g.lineTo(x + dx * .6, y + dy * .6); g.lineTo(x + dx * .6, y + dy * .6 - h * v * .8); g.lineTo(x, y - h * v * .8); g.closePath(); g.fill(); }
-  else { g.strokeStyle = rgba(color, .9); g.lineWidth = 2; g.beginPath(); for (let k = 0; k <= 40; k++) { const u = k / 40, x = P0.x + (P1.x - P0.x) * u, y = P0.y + (P1.y - P0.y) * u - h * (.5 + .3 * Math.sin(u * 12 + t * 2)); k ? g.lineTo(x, y) : g.moveTo(x, y); } g.stroke(); }
-  g.restore();
-}
-function floorStrip(g, a, b, color, t) { g.save(); g.globalCompositeOperation = 'lighter'; const p = iso(a[0], a[1]), q = iso(b[0], b[1]); g.strokeStyle = rgba(color, .35); g.lineWidth = 3; g.setLineDash([14, 10]); g.lineDashOffset = -t * 40; g.beginPath(); g.moveTo(p.x, p.y); g.lineTo(q.x, q.y); g.stroke(); g.setLineDash([]); g.restore(); }
-function stars(g, w, h, t, seed, n = 140) { for (let k = 0; k < n; k++) { const x = ((k * 7919 + seed) % 1000) / 1000 * w, y = ((k * 104729 + seed * 3) % 1000) / 1000 * h, a = .3 + .7 * Math.abs(Math.sin(t * (.5 + k % 5 * .3) + k)); g.fillStyle = `rgba(230,236,255,${a * .8})`; g.fillRect(x, y, k % 9 ? 1.4 : 2.4, k % 9 ? 1.4 : 2.4); } }
+function slab(g, f) { const A = iso(f.i0, f.j1, 0), B = iso(f.i1, f.j1, 0), C = iso(f.i1, f.j0, 0), d = 14; poly(g, [A, B, {x:B.x, y:B.y + d}, {x:A.x, y:A.y + d}], H.woodD, K.ink, 2); poly(g, [B, C, {x:C.x, y:C.y + d}, {x:B.x, y:B.y + d}], '#2a1a0e', K.ink, 2); }
+function parquet(w, i, j) { const jj = j % STRIDE; return ((i + jj) % 2 ? H.parquetA : H.parquetB); }
+function warmBackground(g, W, Hh, t, top = '#1c120a', bottom = '#2c1c10') { const gr = g.createLinearGradient(0, 0, 0, Hh); gr.addColorStop(0, top); gr.addColorStop(1, bottom); g.fillStyle = gr; g.fillRect(0, 0, W, Hh); glow(g, W * .5, Hh * .45, W * .5, H.amber, .07); }
+function glitchEdge(g, pts, t) { g.save(); g.globalCompositeOperation = 'lighter'; for (let k = 0; k < pts.length; k++) { const a = pts[k], b = pts[(k + 1) % pts.length]; for (let u = 0; u < 1; u += .08) { if (Math.sin(t * 7 + u * 40 + k) < .55) continue; const x = a.x + (b.x - a.x) * u, y = a.y + (b.y - a.y) * u; g.fillStyle = rgba(H.gold, .7); g.fillRect(x - 3, y - 1, 6, 2); } } g.restore(); }
 const SCENES = [
- {id:'lab', n:'01', name:'합성 연구소', sub:'유리벽 연구소, category마다 콘솔 줄', N:22, M:17, wallH:110, deskTop:'#3a4670', deskLeft:'#2d375b', deskRight:'#232b49',
-  layout:'뒷벽을 따라 아카이브·코어·통신 어레이를 둡니다. 가운데에 category별 콘솔 줄을 둡니다. 앞쪽에 충전 베이와 EXIT 포털을 둡니다.',
-  props:'홀로 모니터가 달린 2칸 콘솔, 기억 큐브 서가, 서버 첨탑, 통신 접시, 유리 충전 포드, 포털.',
-  motion:'모니터 글자가 흐르고 첨탑 LED가 깜박입니다. 바닥 유도등이 흐르고 스캔 빛이 바닥을 쓸고 지나갑니다.',
+ {id:'plan', n:'01', name:'응접실 층', sub:'한 층에 방을 모두 펼친 도면', N:24, M:18, wallH:120, floorH:0, deskTop:'#8a5e3a', deskLeft:'#6d4a2c', deskRight:'#563a22', mood:'day',
+  layout:'한 층에 모든 방을 펼칩니다. 왼쪽 벽은 서재와 벽난로, 뒤쪽 벽은 영화관과 부엌, 오른쪽 모서리는 전화실입니다. 앞쪽 오른편 응접실에 안락의자를 둡니다. 왼쪽 벽 끝에 현관(EXIT)을 둡니다.',
+  props:'책장 벽, 벽난로, 노란 안락의자, 영화관 스크린과 벨벳 좌석, 촛대 전화, 할아버지 시계, 샹들리에, 색유리와 XP 창문.',
+  motion:'벽난로가 타고 샹들리에가 흔들립니다. 스크린에 기억 필름이 흐릅니다. 엘리베이터 램프가 깜박이고 난간은 중간에서 끊깁니다.',
   build(w, ss) {
-    bank(w, 'pulse', 3, 5, by(ss, 'pulse')); bank(w, 'mp', 14, 5, by(ss, 'mp')); bank(w, 'infra', 3, 9, by(ss, 'infra')); bank(w, 'probe', 3, 13, by(ss, 'probe')); bank(w, 'cost', 12, 13, by(ss, 'cost')); bank(w, 'none', 18, 13, by(ss, 'none'));
-    for (let k = 1; k <= 5; k++) P(w, 'shelf', k, 0); for (let k = 9; k <= 13; k++) P(w, 'spire', k, 0); P(w, 'dish', 21, 1); P(w, 'dish', 21, 3);
-    for (const [i, j] of [[0, 3], [7, 0], [16, 0], [0, 11], [21, 9], [0, 7]]) P(w, 'plant', i, j); P(w, 'crate', 19, 0); P(w, 'crate', 20, 0, 1, 1, {color:'#6b5a86'});
-    seats(w, 'pod', [[13, 16], [15, 16], [17, 16], [19, 16], [21, 16]]); w.portal = {type:'portal', i:0, j:15, w:1, d:1};
-    room(w, 'archive', '아카이브', '📖', [3, 0, 120], [[1, 3], [3, 3], [5, 3], [2, 1], [4, 1]]); room(w, 'core', '코어', '$', [11, 0, 130], [[9, 3], [11, 3], [13, 3], [10, 1], [12, 1]]);
-    room(w, 'comm', '통신 어레이', '☎', [21.5, 2.5, 92], [[17, 2], [19, 2], [20, 3], [18, 3]]); room(w, 'bay', '충전 베이', '⚡', [17, 16.5, 80], null); room(w, 'exit', 'EXIT 포털', '🌀', [0.5, 15.5, 96], null);
-    zone(w, 'pulse', 2, 13, 4, 6); zone(w, 'mp', 13, 22, 4, 6); zone(w, 'infra', 2, 15, 8, 10); zone(w, 'probe', 2, 11, 12, 14); zone(w, 'cost', 11, 18, 12, 14); zone(w, 'none', 17, 22, 12, 14);
+    floor(w, 0, 24, 18, {lift:null});
+    bank(w, 'pulse', 3, 5, by(ss, 'pulse')); bank(w, 'mp', 14, 5, by(ss, 'mp')); bank(w, 'infra', 3, 9, by(ss, 'infra')); bank(w, 'probe', 15, 9, by(ss, 'probe')); bank(w, 'cost', 3, 13, by(ss, 'cost')); bank(w, 'none', 10, 13, by(ss, 'none'));
+    for (const j of [1, 2, 3, 4, 5]) P(w, 'bookcase', 0, j); P(w, 'fireplace', 0, 8); P(w, 'stairs', 0, 12, 2, 1); P(w, 'elevator', 1, 0); P(w, 'clock', 12, 0); P(w, 'chairInWall', 11, 0); P(w, 'stove', 14, 0); P(w, 'fridge', 15, 0); P(w, 'phone', 23, 1);
+    P(w, 'sunflower', 2, 17); P(w, 'sunflower', 23, 8); P(w, 'sunflower', 17, 0);
+    cinemaRows(w, [[5, 1], [8, 1]]); seats(w, 'armchair', [[20, 14], [22, 14], [20, 16], [22, 16], [23, 12]]); w.exit = P(w, 'frontDoor', 0, 17);
+    room(w, 'library', '서재', '📖', [0.5, 3, 130], [[1, 1], [1, 3], [1, 5], [2, 2], [2, 4]]); room(w, 'kitchen', '부엌', '$', [15.5, 0.5, 130], [[14, 1], [16, 1], [18, 1], [12, 1]]);
+    room(w, 'phone', '전화실', '☎', [23.5, 1.5, 100], [[22, 1], [22, 3], [23, 3], [21, 2]]); room(w, 'cinema', '영화관', '🎞', [7, 0.5, 130], null); room(w, 'lounge', '응접실', '🛋', [22, 13, 90], null); room(w, 'exit', '현관', '🚪', [0.5, 17.5, 100], null);
+    zone(w, 'pulse', 2, 13, 4, 6); zone(w, 'mp', 13, 22, 4, 6); zone(w, 'infra', 2, 15, 8, 10); zone(w, 'probe', 14, 23, 8, 10); zone(w, 'cost', 2, 9, 12, 14); zone(w, 'none', 9, 14, 12, 14);
   },
-  background(g, W, H, t) { const gr = g.createLinearGradient(0, 0, 0, H); gr.addColorStop(0, '#0b1020'); gr.addColorStop(1, '#151d34'); g.fillStyle = gr; g.fillRect(0, 0, W, H);
-    g.strokeStyle = 'rgba(126,162,247,.06)'; g.lineWidth = 1; for (let x = -H; x < W; x += 46) { g.beginPath(); g.moveTo(x, 0); g.lineTo(x + H * 1.2, H); g.stroke(); g.beginPath(); g.moveTo(x + H * 1.2, 0); g.lineTo(x, H); g.stroke(); } },
-  floor: (w, i, j) => (i + j) % 2 ? '#1e2740' : '#212b46',
-  walls(g, w, t) { wallsBasic(g, w, t, {left:'#1b2440', right:'#18203a', panels:'rgba(126,162,247,.07)', panelLine:'rgba(126,162,247,.25)', trim:'#56b6c2'});
-    wallScreen(g, w, 'L', 4, 7, 36, 92, '#88c0d0', t, 'line'); wallScreen(g, w, 'L', 9, 12, 36, 92, '#a3be8c', t, 'bars'); wallScreen(g, w, 'R', 15, 19, 30, 96, '#ffb783', t, 'bars');
-    g.save(); g.globalCompositeOperation = 'lighter'; for (let k = 0; k < w.N; k += 3) { const a = iso(k, 0, w.wallH - 8), b = iso(k + 2, 0, w.wallH - 8); g.strokeStyle = rgba('#56b6c2', .35 + .25 * Math.sin(t * 2 + k)); g.lineWidth = 3; g.beginPath(); g.moveTo(a.x, a.y); g.lineTo(b.x, b.y); g.stroke(); } g.restore(); },
-  decor(g, w, t) { floorStrip(g, [1, 7.5], [21, 7.5], '#56b6c2', t); floorStrip(g, [1, 11.5], [21, 11.5], '#56b6c2', t); floorStrip(g, [1, 15], [12, 15], '#c678dd', t);
-    const p = (t * .08) % 1, i = p * (w.N + 6) - 3; g.save(); g.globalCompositeOperation = 'lighter'; for (let j = 0; j < w.M; j++) poly(g, [iso(i, j), iso(i + .6, j), iso(i + .6, j + 1), iso(i, j + 1)], 'rgba(86,182,194,.06)', null); g.restore();
-    const wp = iso(w.N * .66, -2, w.wallH + 46); whale(g, wp.x, wp.y, .9, t, .4); },
+  background(g, W, Hh, t) { warmBackground(g, W, Hh, t); },
+  floor: parquet,
+  walls(g, w, t, f) { interiorWalls(g, w, t, f, {h:120, left:H.wallGreen, right:H.wallRed}); stainedGlass(g, 'L', 6, 8, 60, 110, t); xpWindow(g, 'L', 9, 11, 50, 108, t, 'day'); xpWindow(g, 'R', 18, 22, 50, 108, t, 'day'); cinemaScreen(g, 'R', 3, 11, 44, 110, t); gatePosters(g, 'R', 1.5, 80, t);
+    framesOnWall(g, 'L', 14, 76, 1); framesOnWall(g, 'L', 16, 70, 4); framesOnWall(g, 'R', 13, 74, 2); whaleFrame(g, iso(0, 12.6, 88).x, iso(0, 12.6, 88).y, .55); chandelier(g, 12, 9, 112, t); },
  },
- {id:'mind', n:'02', name:'의식의 섬', sub:'우주 공허에 뜬 섬, category마다 섬 하나', N:26, M:22, wallH:0, deskTop:'#4a3f7a', deskLeft:'#3a3163', deskRight:'#2d264f', shelfColor:'#4a3f7a',
-  layout:'벽이 없습니다. category마다 떠 있는 섬 하나에 콘솔을 둡니다. 섬 사이는 빛의 다리로 잇습니다. 아카이브·코어·통신은 뒤쪽의 작은 섬입니다.',
-  props:'떠 있는 큐브 탑, 보라 오벨리스크, 연꽃 쉼터, 떠도는 수정, 섬 아래 바위와 빛나는 테두리.',
-  motion:'오벨리스크가 떠오르고 큐브가 맴돕니다. 다리의 빛이 흐르고 별이 깜박입니다. 고래 홀로그램이 공허를 헤엄칩니다.',
+ {id:'cutaway', n:'02', name:'단면 3층', sub:'앞을 잘라낸 인형의 집, 다락이 있다', N:22, M:7, wallH:92, floorH:424, deskTop:'#8a5e3a', deskLeft:'#6d4a2c', deskRight:'#563a22', mood:'day',
+  layout:'1층은 서재, 영화관, 부엌, 전화실, 응접실, 현관입니다. 2층은 책상 층입니다. 다락은 비용과 미분류 책상, 그리고 잠자는 세션의 간이침대입니다. 층 사이는 엘리베이터로 오갑니다.',
+  props:'층마다 다른 벽지, 다락의 벽돌 벽과 비둘기장, 깜박이는 엘리베이터, 끊긴 난간, 벽에 박힌 의자.',
+  motion:'엘리베이터 램프가 깜박이고 층을 옮길 때 번쩍입니다. 스크린에 기억 필름이 흐릅니다. 다락에서 비둘기가 날아갑니다.',
   build(w, ss) {
-    const isl = (i0, i1, j0, j1, cat) => { w.islands.push({i0, i1, j0, j1, cat}); for (let i = i0; i < i1; i++) for (let j = j0; j < j1; j++) w.walk.add(i + ',' + j); };
-    const brg = cells => cells.forEach(([i, j]) => { w.bridges.push([i, j]); w.walk.add(i + ',' + j); });
-    isl(0, 6, 0, 4, 'archive'); isl(9, 15, 0, 4, 'core'); isl(18, 25, 0, 5, 'comm'); isl(1, 13, 6, 10, 'pulse'); isl(15, 25, 6, 10, 'mp'); isl(1, 15, 12, 16, 'infra'); isl(17, 26, 12, 16, 'probe'); isl(1, 9, 18, 22, 'cost'); isl(11, 17, 18, 22, 'none'); isl(19, 26, 18, 22, 'lounge');
-    brg([[3, 4], [3, 5], [11, 4], [11, 5], [15, 2], [16, 2], [17, 2], [21, 5], [13, 8], [14, 8], [5, 10], [5, 11], [20, 10], [20, 11], [15, 14], [16, 14], [4, 16], [4, 17], [12, 16], [12, 17], [22, 16], [22, 17], [17, 20], [18, 20]]);
-    bank(w, 'pulse', 2, 8, by(ss, 'pulse')); bank(w, 'mp', 16, 8, by(ss, 'mp')); bank(w, 'infra', 2, 14, by(ss, 'infra')); bank(w, 'probe', 17, 14, by(ss, 'probe')); bank(w, 'cost', 2, 20, by(ss, 'cost')); bank(w, 'none', 11, 20, by(ss, 'none'));
-    for (let k = 1; k <= 4; k++) P(w, 'cubes', k, 0); for (let k = 10; k <= 13; k++) P(w, 'obelisk', k, 0); P(w, 'dish', 23, 0); P(w, 'dish', 24, 2);
-    P(w, 'bigcrystal', 0, 9, 1, 1, {color:'#c678dd'}); P(w, 'bigcrystal', 12, 6, 1, 1, {color:'#56b6c2'}); P(w, 'bigcrystal', 25, 13, 1, 1, {color:'#ffd36b'}); P(w, 'plant', 8, 21); P(w, 'plant', 14, 12);
-    seats(w, 'lotus', [[20, 21], [22, 21], [24, 21], [25, 19], [21, 19]]); w.portal = {type:'portal', i:16, j:19, w:1, d:1};
-    room(w, 'archive', '아카이브 섬', '📖', [3, 0, 100], [[1, 3], [3, 3], [5, 3], [2, 1], [4, 2]]); room(w, 'core', '오벨리스크 섬', '$', [12, 0, 120], [[9, 3], [11, 3], [13, 3], [10, 1], [12, 2]]);
-    room(w, 'comm', '신호 섬', '☎', [22, 1, 80], [[19, 2], [21, 2], [20, 4], [22, 4]]); room(w, 'bay', '연꽃 쉼터', '🪷', [22.5, 20, 70], null); room(w, 'exit', '포털', '🌀', [16.5, 19.5, 90], null);
-    zone(w, 'pulse', 1, 13, 6, 10); zone(w, 'mp', 15, 25, 6, 10); zone(w, 'infra', 1, 15, 12, 16); zone(w, 'probe', 17, 26, 12, 16); zone(w, 'cost', 1, 9, 18, 22); zone(w, 'none', 11, 17, 18, 22);
+    floor(w, 0, 22, 7, {lift:[20, 6]}); floor(w, 1, 22, 7, {lift:[20, FJ(1) + 6]}); floor(w, 2, 22, 6, {lift:[20, FJ(2) + 5]});
+    for (const j of [1, 2, 3, 4]) P(w, 'bookcase', 0, j); P(w, 'stairs', 0, 5, 2, 1); P(w, 'clock', 9, 0); P(w, 'stove', 11, 0); P(w, 'fridge', 12, 0); P(w, 'phone', 16, 0); P(w, 'sunflower', 21, 0); P(w, 'elevator', 21, 6, 1, 1, {h:424});
+    cinemaRows(w, [[3, 1], [6, 1]]); seats(w, 'armchair', [[13, 5], [15, 5], [17, 5], [19, 3], [19, 5]]); w.exit = P(w, 'frontDoor', 0, 6);
+    bank(w, 'pulse', 1, FJ(1) + 2, by(ss, 'pulse')); bank(w, 'mp', 12, FJ(1) + 2, by(ss, 'mp')); bank(w, 'infra', 1, FJ(1) + 5, by(ss, 'infra')); bank(w, 'probe', 13, FJ(1) + 5, by(ss, 'probe'));
+    P(w, 'chairInWall', 10, FJ(1)); P(w, 'elevator', 21, FJ(1) + 6, 1, 1, {h:424});
+    bank(w, 'cost', 1, FJ(2) + 2, by(ss, 'cost')); bank(w, 'none', 8, FJ(2) + 2, by(ss, 'none')); for (const [i, j] of [[13, 4], [15, 4], [17, 4], [13, 1], [15, 1]]) w.seats.push({type:'cot', i, j:FJ(2) + j, w:1, d:1, session:null});
+    P(w, 'pigeonCoop', 19, FJ(2) + 1); P(w, 'elevator', 21, FJ(2) + 5);
+    room(w, 'library', '서재', '📖', [0.5, 2.5, 100], [[1, 1], [1, 3], [5, 3], [2, 2]]); room(w, 'kitchen', '부엌', '$', [11.5, 0.5, 100], [[10, 1], [12, 1], [14, 1], [9, 2]]);
+    room(w, 'phone', '전화실', '☎', [16.5, 0.5, 100], [[16, 1], [18, 1], [20, 2], [16, 3]]); room(w, 'cinema', '영화관', '🎞', [5, 0.5, 100], null); room(w, 'lounge', '응접실', '🛋', [16, 6.5, 70], null);
+    room(w, 'attic', '다락', '🕊', [15, FJ(2) + .5, 100], null); room(w, 'exit', '현관', '🚪', [0.5, 6.5, 80], null);
+    zone(w, 'pulse', 0, 11, FJ(1) + 1, FJ(1) + 3); zone(w, 'mp', 11, 20, FJ(1) + 1, FJ(1) + 3); zone(w, 'infra', 0, 13, FJ(1) + 4, FJ(1) + 6); zone(w, 'probe', 12, 21, FJ(1) + 4, FJ(1) + 6); zone(w, 'cost', 0, 7, FJ(2) + 1, FJ(2) + 3); zone(w, 'none', 7, 12, FJ(2) + 1, FJ(2) + 3);
   },
-  background(g, W, H, t) { const gr = g.createLinearGradient(0, 0, W, H); gr.addColorStop(0, '#120a2a'); gr.addColorStop(.5, '#1d1440'); gr.addColorStop(1, '#0a1a2e'); g.fillStyle = gr; g.fillRect(0, 0, W, H);
-    glow(g, W * .25, H * .3, W * .3, '#c678dd', .18); glow(g, W * .8, H * .7, W * .3, '#56b6c2', .16); stars(g, W, H, t, 17, 220);
-    for (let k = 0; k < 9; k++) { const x = ((k * 211 + t * 8 * (k % 3 + 1)) % (W + 80)) - 40, y = (k * 97) % H; g.save(); g.translate(x, y); g.rotate(t * .3 + k); poly(g, [{x:0, y:-6}, {x:4, y:0}, {x:0, y:6}, {x:-4, y:0}], 'rgba(200,180,255,.35)', null); g.restore(); } },
-  floor(w, i, j) { const isl = w.islands.find(r => i >= r.i0 && i < r.i1 && j >= r.j0 && j < r.j1); if (!isl) return null; const base = (i + j) % 2 ? '#2b2547' : '#30294f';
-    return isl.cat === 'archive' ? mix('#ffd36b', base, .14) : isl.cat === 'core' ? mix('#c678dd', base, .16) : isl.cat === 'comm' ? mix('#ffb783', base, .14) : isl.cat === 'lounge' ? mix('#f1b8ff', base, .18) : mix(CATS[isl.cat].color, base, .22); },
-  under(g, w, t) { for (const r of w.islands) { const A = iso(r.i0, r.j1), B = iso(r.i1, r.j1), C = iso(r.i1, r.j0); const d = 46;
-      poly(g, [A, B, {x:B.x, y:B.y + d}, {x:(A.x + B.x) / 2, y:(A.y + B.y) / 2 + d * 1.6}, {x:A.x, y:A.y + d * .6}], '#2a2142', K.ink, 2.2);
-      poly(g, [B, C, {x:C.x, y:C.y + d * .6}, {x:(B.x + C.x) / 2, y:(B.y + C.y) / 2 + d * 1.5}, {x:B.x, y:B.y + d}], '#1f1934', K.ink, 2.2);
-      const col = r.cat === 'archive' ? '#ffd36b' : r.cat === 'core' ? '#c678dd' : r.cat === 'comm' ? '#ffb783' : r.cat === 'lounge' ? '#f1b8ff' : CATS[r.cat].color;
-      g.save(); g.globalCompositeOperation = 'lighter'; g.strokeStyle = rgba(col, .55 + .2 * Math.sin(t * 2 + r.i0)); g.lineWidth = 3; g.beginPath(); g.moveTo(iso(r.i0, r.j0).x, iso(r.i0, r.j0).y); g.lineTo(C.x, C.y); g.lineTo(B.x, B.y); g.lineTo(A.x, A.y); g.closePath(); g.stroke(); g.restore(); } },
-  decor(g, w, t) { g.save(); g.globalCompositeOperation = 'lighter'; for (const [i, j] of w.bridges) { const pts = [iso(i + .2, j + .2), iso(i + .8, j + .2), iso(i + .8, j + .8), iso(i + .2, j + .8)]; poly(g, pts, `rgba(159,216,255,${.18 + .12 * Math.sin(t * 3 + i + j)})`, 'rgba(159,216,255,.6)', 1.5); } g.restore();
-    const wx = ((t * 18) % 1600) - 600, wp = iso(w.N * .2, w.M + 3, 0); whale(g, wp.x + wx, wp.y + 60, 1.2, t, .32); },
-  walls() {},
+  background(g, W, Hh, t) { warmBackground(g, W, Hh, t, '#120c08', '#2a1a10'); },
+  floor: (w, i, j) => floorOf(j) === 2 ? ((i + j) % 2 ? '#6a5a44' : '#5e5040') : parquet(w, i, j),
+  walls(g, w, t, f) { if (f.k === 2) { const L0 = iso(f.i0, f.j1), T0 = iso(f.i0, f.j0), R0 = iso(f.i1, f.j0), Hw = 80; poly(g, [L0, T0, {x:T0.x, y:T0.y - Hw}, {x:L0.x, y:L0.y - Hw}], H.brick, K.ink, 2.4); poly(g, [T0, R0, {x:R0.x, y:R0.y - Hw}, {x:T0.x, y:T0.y - Hw}], H.brickD, K.ink, 2.4);
+      g.strokeStyle = 'rgba(0,0,0,.25)'; g.lineWidth = 1; for (let z = 10; z < Hw; z += 12) { const a = iso(f.i0, f.j1, z), b = iso(f.i0, f.j0, z), c = iso(f.i1, f.j0, z); g.beginPath(); g.moveTo(a.x, a.y); g.lineTo(b.x, b.y); g.lineTo(c.x, c.y); g.stroke(); }
+      xpWindow(g, 'R', 3, 5, 30, 68, t, 'dusk'); xpWindow(g, 'R', 9, 11, 30, 68, t, 'dusk'); return; }
+    if (f.k === 1) { interiorWalls(g, w, t, f, {h:92, left:H.wallBlue, right:'#4a3a5a'}); xpWindow(g, 'L', f.j0 + 1, f.j0 + 4, 36, 84, t, 'day'); xpWindow(g, 'R', 4, 8, 36, 84, t, 'day'); framesOnWall(g, 'R', 15, 60, 3); chandelier(g, 11, f.j0 + 3.5, 86, t); return; }
+    interiorWalls(g, w, t, f, {h:92, left:H.wallGreen, right:H.wallRed}); cinemaScreen(g, 'R', 2, 8, 34, 84, t); stainedGlass(g, 'R', 18, 20, 40, 84, t); framesOnWall(g, 'L', 5.5, 62, 2); whaleFrame(g, iso(0, 0.8, 66).x, iso(0, 0.8, 66).y, .5); chandelier(g, 11, 3.5, 86, t); },
  },
- {id:'orbit', n:'03', name:'궤도 정거장', sub:'큰 창 너머 행성, 갑판 위 콘솔', N:26, M:14, wallH:140, deskTop:'#46506e', deskLeft:'#363e59', deskRight:'#2a3047',
-  layout:'뒷벽 전체가 우주를 보는 창입니다. 창 앞에 관측 소파와 반응로를 둡니다. 갑판 위에 category별 콘솔 줄을 둡니다. 앞쪽 왼편 텔레포트 패드가 EXIT입니다.',
-  props:'링 행성이 보이는 통창, 빛나는 반응로 기둥, 관측 소파, 데이터 뱅크, 안테나 접시, 텔레포트 패드.',
-  motion:'행성 띠가 돌고 별이 흐릅니다. 작은 우주선이 창 밖을 지나갑니다. 반응로 링이 올라가고 갑판 유도등이 흐릅니다.',
+ {id:'yard', n:'03', name:'앞마당', sub:'불가능하게 파란 하늘 아래 잔디밭', N:24, M:16, wallH:0, floorH:0, deskTop:'#c9a46a', deskLeft:'#a3864f', deskRight:'#86703f', mood:'day',
+  layout:'뒤쪽에 흰 빅토리아 저택이 서 있고, 그 앞 잔디에 책상을 둡니다. 현관 옆 포치가 서재, 오른쪽 헛간이 부엌, 정자가 전화실입니다. 앞쪽에 야외 스크린과 잔디 의자를 둡니다. 울타리 문이 EXIT입니다.',
+  props:'둥근 탑이 있는 흰 저택, 흰 울타리, 나무, 정자, 헛간, 야외 스크린, 해바라기 화분, 가장자리의 금빛 글리치.',
+  motion:'구름이 흐르고 나무가 흔들립니다. 저택 가장자리가 금빛으로 깨집니다. 스크린에 기억 필름이 흐릅니다.',
   build(w, ss) {
-    bank(w, 'pulse', 3, 5, by(ss, 'pulse')); bank(w, 'mp', 14, 5, by(ss, 'mp')); bank(w, 'infra', 3, 9, by(ss, 'infra')); bank(w, 'probe', 16, 9, by(ss, 'probe')); bank(w, 'cost', 3, 12, by(ss, 'cost')); bank(w, 'none', 11, 12, by(ss, 'none'));
-    P(w, 'reactor', 11, 1, 2, 2); for (const j of [1, 2, 3]) P(w, 'shelf', 0, j); P(w, 'dish', 25, 5); P(w, 'dish', 25, 8); P(w, 'plant', 25, 12); P(w, 'plant', 9, 1); P(w, 'crate', 24, 12); P(w, 'crate', 15, 12, 1, 1, {color:'#6b5a86'});
-    seats(w, 'couch', [[16, 1], [18, 1], [20, 1], [22, 1], [24, 1]]); w.portal = {type:'pad', i:0, j:12, w:1, d:1};
-    room(w, 'archive', '데이터 뱅크', '📖', [0.5, 2, 96], [[3, 1], [2, 2], [1, 3], [1, 1]]); room(w, 'core', '반응로', '$', [12, 2, 150], [[10, 3], [13, 3], [14, 1], [10, 1]]);
-    room(w, 'comm', '안테나', '☎', [25.5, 6.5, 80], [[24, 4], [24, 6], [23, 7], [23, 3]]); room(w, 'bay', '관측 소파', '🛋', [20, 1, 70], null); room(w, 'exit', '텔레포트', '✦', [0.5, 12.5, 100], null);
-    zone(w, 'pulse', 2, 13, 4, 6); zone(w, 'mp', 13, 22, 4, 6); zone(w, 'infra', 2, 15, 8, 10); zone(w, 'probe', 15, 24, 8, 10); zone(w, 'cost', 2, 9, 11, 13); zone(w, 'none', 10, 15, 11, 13);
+    floor(w, 0, 24, 16, {lift:null}); w.house = {i0:1, i1:13, j0:0, j1:4}; for (let i = 1; i < 13; i++) for (let j = 0; j < 4; j++) w.extraBlocked.push(i + ',' + j);
+    bank(w, 'pulse', 2, 6, by(ss, 'pulse')); bank(w, 'mp', 13, 6, by(ss, 'mp')); bank(w, 'infra', 2, 9, by(ss, 'infra')); bank(w, 'probe', 14, 9, by(ss, 'probe')); bank(w, 'cost', 2, 12, by(ss, 'cost')); bank(w, 'none', 9, 12, by(ss, 'none'));
+    for (const i of [14, 15, 16]) P(w, 'bookcase', i, 0, 1, 1, {h:58}); P(w, 'shed', 20, 0, 2, 2); P(w, 'gazebo', 21, 12); P(w, 'screenOut', 8, 15, 4, 1); P(w, 'tree', 0, 0); P(w, 'tree', 23, 4); P(w, 'tree', 0, 8); P(w, 'tree', 23, 8); P(w, 'sunflower', 14, 4); P(w, 'sunflower', 0, 12);
+    P(w, 'fence', 1, 15, 5, 1); P(w, 'fence', 14, 15, 9, 1); P(w, 'fence', 17, 0, 3, 1);
+    cinemaRows(w, [[8, 13], [10, 13]]); seats(w, 'lawnchair', [[2, 14], [4, 14], [6, 14], [13, 14], [15, 14]]); w.exit = P(w, 'gate', 0, 15);
+    room(w, 'library', '포치 서재', '📖', [15, 0.5, 86], [[14, 1], [14, 3], [13, 4], [16, 1]]); room(w, 'kitchen', '헛간 작업대', '$', [21, 0.5, 96], [[20, 2], [22, 2], [19, 3], [22, 1]]);
+    room(w, 'phone', '정자 전화', '☎', [21.5, 12.5, 100], [[20, 12], [22, 12], [20, 14], [22, 14]]); room(w, 'cinema', '야외 영화관', '🎞', [10, 15.5, 86], null); room(w, 'lounge', '잔디 의자', '🛋', [3, 14.5, 56], null); room(w, 'exit', '울타리 문', '🚪', [0.5, 15.5, 60], null);
+    zone(w, 'pulse', 1, 12, 5, 7); zone(w, 'mp', 12, 21, 5, 7); zone(w, 'infra', 1, 14, 8, 10); zone(w, 'probe', 13, 22, 8, 10); zone(w, 'cost', 1, 8, 11, 13); zone(w, 'none', 8, 13, 11, 13);
   },
-  background(g, W, H, t) { g.fillStyle = '#070912'; g.fillRect(0, 0, W, H); stars(g, W, H, t * .3, 5, 160); },
-  floor: (w, i, j) => (i + j) % 2 ? '#2a3046' : '#2e344c',
-  walls(g, w, t) { const H = w.wallH, L0 = iso(0, w.M), T0 = iso(0, 0), R0 = iso(w.N, 0);
-    poly(g, [L0, T0, {x:T0.x, y:T0.y - H}, {x:L0.x, y:L0.y - H}], '#3a4260', K.ink, 2.4); for (let k = 1; k < w.M; k++) { const a = iso(0, k); g.strokeStyle = 'rgba(0,0,0,.35)'; g.lineWidth = 1.5; g.beginPath(); g.moveTo(a.x, a.y); g.lineTo(a.x, a.y - H); g.stroke(); }
-    const win = [{x:T0.x, y:T0.y - H}, {x:R0.x, y:R0.y - H}, {x:R0.x, y:R0.y - 8}, {x:T0.x, y:T0.y - 8}]; g.save(); g.beginPath(); win.forEach((q, k) => k ? g.lineTo(q.x, q.y) : g.moveTo(q.x, q.y)); g.closePath(); g.clip();
-    const gr = g.createLinearGradient(T0.x, T0.y - H, R0.x, R0.y); gr.addColorStop(0, '#0a0f2a'); gr.addColorStop(1, '#141a3f'); g.fillStyle = gr; g.fillRect(T0.x - 10, T0.y - H - 300, R0.x - T0.x + 20, H + 600);
-    for (let k = 0; k < 120; k++) { const x = T0.x + ((k * 7919 + t * 12 * (1 + k % 3)) % (R0.x - T0.x)), y = T0.y - H - 200 + ((k * 104729) % 600); g.fillStyle = `rgba(230,236,255,${.4 + .5 * Math.abs(Math.sin(t + k))})`; g.fillRect(x, y, 1.6, 1.6); }
-    const pc = {x:T0.x + (R0.x - T0.x) * .62, y:T0.y - H * .1 + (R0.y - T0.y) * .62 - 60}; const pg = g.createRadialGradient(pc.x - 30, pc.y - 30, 10, pc.x, pc.y, 120); pg.addColorStop(0, '#f2c48a'); pg.addColorStop(.6, '#c66f5a'); pg.addColorStop(1, '#5a2a4a');
-    ellipse(g, pc.x, pc.y, 110, 110, pg, K.ink, 3); g.save(); g.beginPath(); g.ellipse(pc.x, pc.y, 108, 108, 0, 0, Math.PI * 2); g.clip(); for (let k = 0; k < 6; k++) { g.fillStyle = `rgba(255,230,190,${.18})`; g.fillRect(pc.x - 120, pc.y - 90 + k * 30 + Math.sin(t * .3 + k) * 6, 240, 9); } g.restore();
-    g.strokeStyle = 'rgba(255,220,180,.8)'; g.lineWidth = 5; g.beginPath(); g.ellipse(pc.x, pc.y, 190, 40, -.25, Math.PI * .95, Math.PI * 2.05); g.stroke(); ellipse(g, pc.x - 210, pc.y - 120, 22, 22, '#9aa9c9', K.ink, 2);
-    const sx = T0.x + ((t * 60) % (R0.x - T0.x + 200)) - 100, sy = T0.y - H * .55 + (sx - T0.x) * .5; g.save(); g.translate(sx, sy); g.rotate(.46); rrect(g, -14, -5, 28, 10, 5, '#d9dfef', K.ink, 1.6); ellipse(g, -18, 0, 5, 3, '#ffb783', null); g.restore();
-    whale(g, T0.x + (R0.x - T0.x) * .25 + Math.sin(t * .2) * 40, T0.y - H * .62 + (R0.x - T0.x) * .12, 1.1, t, .5);
-    g.restore(); poly(g, win, null, K.ink, 3); for (let k = 1; k < w.N; k += 3) { const a = iso(k, 0); g.strokeStyle = '#3a4260'; g.lineWidth = 7; g.beginPath(); g.moveTo(a.x, a.y - 8); g.lineTo(a.x, a.y - H); g.stroke(); }
-    g.strokeStyle = '#3a4260'; g.lineWidth = 9; g.beginPath(); g.moveTo(T0.x, T0.y - H); g.lineTo(R0.x, R0.y - H); g.stroke(); },
-  decor(g, w, t) { floorStrip(g, [1, 7.5], [25, 7.5], '#7ea2f7', t); floorStrip(g, [1, 10.7], [25, 10.7], '#7ea2f7', t); },
+  background(g, W, Hh, t) { const gr = g.createLinearGradient(0, 0, 0, Hh); gr.addColorStop(0, '#5aa7ea'); gr.addColorStop(1, '#bfe3ff'); g.fillStyle = gr; g.fillRect(0, 0, W, Hh);
+    for (let k = 0; k < 6; k++) { const cx = ((k * 310 + t * 12) % (W + 240)) - 120, cy = 40 + (k % 3) * 70; for (const [dx, dy, r] of [[0, 0, 34], [30, -10, 26], [-28, -6, 22], [56, 2, 18]]) ellipse(g, cx + dx, cy + dy, r, r * .6, 'rgba(255,255,255,.92)', null); } },
+  floor: (w, i, j) => (i + j) % 2 ? '#7cbf5a' : '#73b553',
+  walls(g, w, t, f) { const h = w.house, base = 0, Hh = 150, A = iso(h.i0, h.j1, base), B = iso(h.i1, h.j1, base), C = iso(h.i1, h.j0, base), D = iso(h.i0, h.j0, base);
+    poly(g, [A, B, {x:B.x, y:B.y - Hh}, {x:A.x, y:A.y - Hh}], '#eef0f4', K.ink, 2.4); poly(g, [B, C, {x:C.x, y:C.y - Hh}, {x:B.x, y:B.y - Hh}], '#d5d9e2', K.ink, 2.4);
+    const roofL = [{x:A.x, y:A.y - Hh}, {x:B.x, y:B.y - Hh}, {x:(B.x + C.x) / 2 + 10, y:(B.y + C.y) / 2 - Hh - 50}, {x:(A.x + D.x) / 2 + 10, y:(A.y + D.y) / 2 - Hh - 50}]; poly(g, roofL, '#7a5a6a', K.ink, 2.2);
+    poly(g, [{x:B.x, y:B.y - Hh}, {x:C.x, y:C.y - Hh}, {x:(C.x + D.x) / 2 + 10, y:(C.y + D.y) / 2 - Hh - 50}, roofL[2]], '#5e4452', K.ink, 2.2);
+    for (let k = 0; k < 5; k++) { const u = .12 + k * .18, x = A.x + (B.x - A.x) * u, y = A.y + (B.y - A.y) * u; for (const zz of [40, 96]) { const pts = [{x:x - 9, y:y - zz - 30 + 4.5}, {x:x + 9, y:y - zz - 30 - 4.5}, {x:x + 9, y:y - zz + 4.5 - 4.5}, {x:x - 9, y:y - zz + 4.5 + 4.5}]; poly(g, pts, zz === 96 && k === 2 ? '#1b2a55' : '#9ec9f0', K.ink, 1.6); if (zz === 96 && k === 2) { ellipse(g, x, y - zz - 14, 4, 3, H.amber, null); } } }
+    const dx = A.x + (B.x - A.x) * .5, dy = A.y + (B.y - A.y) * .5; rrect(g, dx - 12, dy - 48, 24, 48, 3, '#4a2f1c', K.ink, 2); ellipse(g, dx, dy - 56, 12, 6, '#eef0f4', K.ink, 1.6);
+    const tx = D.x + (C.x - D.x) * .22, ty = D.y + (C.y - D.y) * .22 - Hh; rrect(g, tx - 22, ty - 70, 44, 90, 6, '#e5e8ee', K.ink, 2.2); poly(g, [{x:tx - 28, y:ty - 70}, {x:tx, y:ty - 120}, {x:tx + 28, y:ty - 70}], '#6a4e5e', K.ink, 2.2); rrect(g, tx - 7, ty - 52, 14, 18, 2, '#9ec9f0', K.ink, 1.4);
+    glitchEdge(g, [A, B, {x:B.x, y:B.y - Hh}, {x:A.x, y:A.y - Hh}], t); glitchEdge(g, [B, C, {x:C.x, y:C.y - Hh}, {x:B.x, y:B.y - Hh}], t);
+  },
  },
- {id:'archive', n:'04', name:'기억 아카이브', sub:'금빛 서고, 가운데 기억의 모노리스', N:22, M:18, wallH:150, deskTop:'#7a5a38', deskLeft:'#634829', deskRight:'#4e381f', shelfColor:'#5a4128', cubeHues:['#ffd36b', '#f2c48a', '#ffe9b0', '#e8a96a'],
-  layout:'두 벽이 모두 큐브 서가입니다. 뒤쪽에 높은 서가 열과 기억 모노리스를 둡니다. 앞쪽에 독서 의자와 빛기둥 EXIT를 둡니다.',
-  props:'벽 가득한 기억 큐브, 높은 서가 열, 떠도는 큐브의 모노리스, 메시지 튜브, 스탠드가 있는 독서 의자.',
-  motion:'큐브가 모노리스 둘레를 돕니다. 튜브로 메시지가 오릅니다. 금빛 먼지가 떠다니고 일하는 콘솔에서 글자가 떠오릅니다.',
+ {id:'hall', n:'04', name:'큰 홀', sub:'샹들리에 두 개가 걸린 한 칸의 홀', N:26, M:16, wallH:150, floorH:0, deskTop:'#6d4a2c', deskLeft:'#563a22', deskRight:'#3e2715', mood:'dusk',
+  layout:'방을 나누지 않고 큰 홀 하나에 둡니다. 책상은 가운데 양탄자를 둘러쌉니다. 서재와 전화실은 왼쪽 벽에, 영화관은 뒤쪽 벽 전체에, 부엌은 오른쪽 모서리에 둡니다. 계단 두 개가 양쪽 벽에서 올라가다 끊깁니다.',
+  props:'샹들리에 두 개, 벽 전체 스크린, 색유리 세 장, 끊긴 계단 두 개, 할아버지 시계, 벽난로, 해 질 녘 XP 창문.',
+  motion:'샹들리에 불빛이 흔들리고 스크린 필름이 흐릅니다. 창밖이 노을빛입니다. 벽난로가 탑니다.',
   build(w, ss) {
-    bank(w, 'pulse', 2, 6, by(ss, 'pulse')); bank(w, 'mp', 13, 6, by(ss, 'mp')); bank(w, 'infra', 2, 10, by(ss, 'infra')); bank(w, 'probe', 14, 10, by(ss, 'probe')); bank(w, 'cost', 2, 14, by(ss, 'cost')); bank(w, 'none', 9, 14, by(ss, 'none'));
-    for (let k = 1; k <= 7; k++) P(w, 'stack', k, 1); P(w, 'monolith', 12, 1, 2, 2); P(w, 'tube', 20, 1); P(w, 'tube', 21, 3); P(w, 'plant', 0, 9); P(w, 'plant', 21, 13); P(w, 'crate', 9, 1, 1, 1, {color:'#7a5a38'});
-    seats(w, 'armchair', [[14, 16], [16, 16], [18, 16], [20, 16], [21, 15]]); w.portal = {type:'column', i:0, j:16, w:1, d:1};
-    room(w, 'archive', '서가', '📖', [4, 1, 140], [[1, 3], [3, 3], [5, 3], [7, 3], [2, 4]]); room(w, 'core', '모노리스', '$', [13, 2, 160], [[11, 3], [14, 3], [15, 1], [11, 1]]);
-    room(w, 'comm', '메시지 튜브', '☎', [21, 2.5, 120], [[19, 2], [18, 4], [20, 4], [17, 2]]); room(w, 'bay', '독서 의자', '📚', [17, 16.5, 80], null); room(w, 'exit', '빛기둥', '✦', [0.5, 16.5, 170], null);
-    zone(w, 'pulse', 1, 12, 5, 7); zone(w, 'mp', 12, 21, 5, 7); zone(w, 'infra', 1, 14, 9, 11); zone(w, 'probe', 13, 22, 9, 11); zone(w, 'cost', 1, 8, 13, 15); zone(w, 'none', 8, 13, 13, 15);
+    floor(w, 0, 26, 16, {lift:null});
+    bank(w, 'pulse', 2, 5, by(ss, 'pulse')); bank(w, 'mp', 14, 5, by(ss, 'mp')); bank(w, 'infra', 2, 12, by(ss, 'infra')); bank(w, 'probe', 15, 12, by(ss, 'probe')); bank(w, 'cost', 2, 8, by(ss, 'cost').slice(0, 3)); bank(w, 'none', 20, 8, by(ss, 'none'));
+    for (const j of [2, 3, 4, 5]) P(w, 'bookcase', 0, j, 1, 1, {h:96}); P(w, 'phone', 0, 9); P(w, 'fireplace', 0, 12); P(w, 'stairs', 0, 14, 2, 1); P(w, 'stairs', 22, 0, 2, 1); P(w, 'clock', 20, 0); P(w, 'stove', 24, 0); P(w, 'fridge', 25, 1); P(w, 'chairInWall', 17, 0); P(w, 'elevator', 25, 14);
+    P(w, 'sunflower', 12, 0); P(w, 'sunflower', 25, 7); cinemaRows(w, [[4, 1], [8, 1], [12, 1]]); seats(w, 'armchair', [[9, 9], [11, 9], [13, 9], [15, 9], [12, 10]]); w.exit = P(w, 'frontDoor', 0, 15);
+    room(w, 'library', '서재', '📖', [0.5, 3.5, 160], [[1, 2], [1, 4], [3, 2], [1, 6]]); room(w, 'kitchen', '부엌', '$', [24.5, 0.5, 130], [[23, 1], [21, 1], [19, 1], [24, 3]]);
+    room(w, 'phone', '전화실', '☎', [0.5, 9.5, 120], [[1, 8], [1, 10], [1, 12], [2, 9]]); room(w, 'cinema', '영화관', '🎞', [9, 0.5, 160], null); room(w, 'lounge', '가운데 양탄자', '🛋', [12, 9.5, 70], null); room(w, 'exit', '현관', '🚪', [0.5, 15.5, 100], null);
+    zone(w, 'pulse', 1, 12, 4, 6); zone(w, 'mp', 13, 22, 4, 6); zone(w, 'cost', 1, 8, 7, 9); zone(w, 'none', 19, 24, 7, 9); zone(w, 'infra', 1, 14, 11, 13); zone(w, 'probe', 14, 23, 11, 13);
   },
-  background(g, W, H, t) { const gr = g.createLinearGradient(0, 0, 0, H); gr.addColorStop(0, '#1a120a'); gr.addColorStop(1, '#2a1d10'); g.fillStyle = gr; g.fillRect(0, 0, W, H); glow(g, W * .5, H * .4, W * .45, '#ffd36b', .1); },
-  floor: (w, i, j) => (i + j) % 2 ? '#2b2219' : '#31271c',
-  walls(g, w, t) { wallsBasic(g, w, t, {left:'#3a2a19', right:'#33251a', trim:'#ffd36b'});
-    const H = w.wallH; for (const wall of ['L', 'R']) { const n = wall === 'L' ? w.M : w.N; for (let k = 0; k < n; k++) for (let r = 0; r < 7; r++) { const q = wall === 'L' ? iso(0, k + .5, 14 + r * 18) : iso(k + .5, 0, 14 + r * 18);
-      const lit = .35 + .65 * Math.max(0, Math.sin(t * .7 + k * 1.3 + r * 2.1)); g.globalAlpha = lit; rrect(g, q.x - 9, q.y - 7, 18, 13, 3, ['#ffd36b', '#f2c48a', '#ffe9b0', '#e8a96a'][(k + r) % 4], K.ink, 1.2); g.globalAlpha = 1; } } },
-  decor(g, w, t) { const wp = iso(w.N * .6, -1, w.wallH + 40); whale(g, wp.x, wp.y, .9, t, .35); for (let k = 0; k < 40; k++) { const i = (k * 37 % 220) / 10, j = (k * 53 % 180) / 10, z = ((t * 10 + k * 13) % 160); const q = iso(i, j, z); g.fillStyle = `rgba(255,225,150,${.6 - z / 300})`; g.fillRect(q.x, q.y, 2, 2); } },
-  over(g, w, t) { for (const c of w.consoles) { const s = c.session; if (s.gone || !s.atDesk || s.status !== 'working') continue; for (let k = 0; k < 3; k++) { const p = (t * .5 + k / 3 + s.seed * .1) % 1, q = iso(c.i + 1.5, c.j + .2, 50 + p * 70);
-      g.globalAlpha = 1 - p; g.font = `800 10px ${FONT}`; g.fillStyle = '#ffe9b0'; g.textAlign = 'center'; g.fillText(['ア', '∑', '{ }', '01', 'λ', '§'][(k + s.seed) % 6], q.x + Math.sin(p * 6 + k) * 6, q.y); } g.globalAlpha = 1; } },
+  background(g, W, Hh, t) { warmBackground(g, W, Hh, t, '#17100a', '#30200f'); },
+  floor: (w, i, j) => (i >= 8 && i < 18 && j >= 8 && j < 11) ? ((i + j) % 2 ? '#8a3a3a' : '#7a3232') : parquet(w, i, j),
+  walls(g, w, t, f) { interiorWalls(g, w, t, f, {h:150, left:H.wallRed, right:H.wallBlue}); cinemaScreen(g, 'R', 2, 16, 48, 136, t); gatePosters(g, 'R', 18.5, 100, t); stainedGlass(g, 'L', 6, 7.5, 70, 140, t); xpWindow(g, 'L', 10, 13, 60, 138, t, 'dusk'); framesOnWall(g, 'L', 1, 100, 5); whaleFrame(g, iso(0, 8.5, 120).x, iso(0, 8.5, 120).y, .6); chandelier(g, 8, 8, 142, t); chandelier(g, 18, 8, 142, t); },
  },
- {id:'foundry', n:'05', name:'자가 조립 공장', sub:'붉은 경고등 공장, 컨베이어와 로봇 팔', N:24, M:18, wallH:110, deskTop:'#4a4f5c', deskLeft:'#3a3e49', deskRight:'#2b2e37', shelfColor:'#3a3e49', cubeHues:['#ff6b3d', '#ffd36b', '#d08770', '#ebcb8b'],
-  layout:'뒷벽 앞을 컨베이어가 지나고 로봇 팔이 그 위에서 일합니다. 가운데 category별 조립대 줄을 둡니다. 앞쪽에 충전 랙, 용광로, 화물 리프트 EXIT를 둡니다.',
-  props:'상자가 흐르는 컨베이어, 주황 로봇 팔, 부품 랙, 용광로와 굴뚝, 신호 마스트, 충전 랙, 화물 리프트.',
-  motion:'컨베이어 상자가 흐르고 로봇 팔이 용접하며 불꽃이 튑니다. 붉은 경광등이 돌고 용광로가 숨쉬듯 빛납니다.',
+ {id:'tower', n:'05', name:'기억의 탑', sub:'층마다 부서 하나, 꼭대기는 다락', N:14, M:5, wallH:84, floorH:264, deskTop:'#7a5233', deskLeft:'#5e3e26', deskRight:'#48301d', mood:'night',
+  layout:'좁고 높은 탑입니다. 1층은 로비(서재, 전화실, 응접실, 현관)입니다. 2층은 pulse와 mindplayer, 3층은 인프라와 조사, 4층은 비용과 미분류와 부엌과 영화관입니다. 다락은 간이침대와 비둘기장입니다.',
+  props:'층마다 다른 벽지, 밤의 XP 창문, 층을 잇는 엘리베이터, 다락 벽돌과 비둘기장, 층계참의 끊긴 난간.',
+  motion:'엘리베이터가 층 사이를 오르고 창밖 밤하늘에 별이 깜박입니다. 다락에서 비둘기가 날아갑니다.',
   build(w, ss) {
-    bank(w, 'pulse', 2, 5, by(ss, 'pulse')); bank(w, 'mp', 13, 5, by(ss, 'mp')); bank(w, 'infra', 2, 9, by(ss, 'infra')); bank(w, 'probe', 15, 9, by(ss, 'probe')); bank(w, 'cost', 2, 13, by(ss, 'cost')); bank(w, 'none', 9, 13, by(ss, 'none'));
-    P(w, 'conveyor', 0, 1, 24, 1); for (const i of [4, 11, 18]) P(w, 'arm', i, 0); for (const j of [4, 5, 6]) P(w, 'shelf', 0, j); P(w, 'furnace', 21, 13, 2, 2); P(w, 'mast', 23, 4); P(w, 'crate', 23, 0, 1, 1, {color:'#d08770'}); P(w, 'crate', 22, 17, 1, 1, {color:'#ebcb8b'});
-    seats(w, 'rack', [[13, 16], [15, 16], [17, 16], [19, 16], [21, 17]]); w.portal = {type:'lift', i:0, j:16, w:1, d:1};
-    room(w, 'archive', '부품 랙', '📖', [0.5, 5, 96], [[1, 4], [1, 6], [2, 3], [1, 8]]); room(w, 'core', '용광로', '$', [22, 14, 110], [[20, 13], [23, 12], [21, 16], [20, 15]]);
-    room(w, 'comm', '신호 마스트', '☎', [23.5, 4.5, 140], [[22, 3], [22, 5], [23, 6], [21, 3]]); room(w, 'bay', '충전 랙', '⚡', [17, 16.5, 120], null); room(w, 'exit', '화물 리프트', '⬆', [0.5, 16.5, 110], null);
-    zone(w, 'pulse', 1, 12, 4, 6); zone(w, 'mp', 12, 21, 4, 6); zone(w, 'infra', 1, 14, 8, 10); zone(w, 'probe', 14, 23, 8, 10); zone(w, 'cost', 1, 8, 12, 14); zone(w, 'none', 8, 13, 12, 14);
+    for (let k = 0; k < 5; k++) floor(w, k, 14, 5, {lift:[12, FJ(k) + 4]});
+    for (const j of [1, 2, 3]) P(w, 'bookcase', 0, j); P(w, 'phone', 8, 0); P(w, 'clock', 10, 0); P(w, 'sunflower', 13, 0); seats(w, 'armchair', [[2, 4], [4, 4], [6, 4], [8, 4], [10, 4]]); w.exit = P(w, 'frontDoor', 0, 4); P(w, 'elevator', 13, 4, 1, 1, {h:264});
+    bank(w, 'pulse', 1, FJ(1) + 1, by(ss, 'pulse')); bank(w, 'mp', 1, FJ(1) + 4, by(ss, 'mp')); P(w, 'elevator', 13, FJ(1) + 4, 1, 1, {h:264}); P(w, 'stairs', 11, FJ(1), 2, 1);
+    bank(w, 'infra', 1, FJ(2) + 1, by(ss, 'infra')); bank(w, 'probe', 1, FJ(2) + 4, by(ss, 'probe')); P(w, 'elevator', 13, FJ(2) + 4, 1, 1, {h:264}); P(w, 'chairInWall', 13, FJ(2));
+    bank(w, 'cost', 1, FJ(3) + 1, by(ss, 'cost')); bank(w, 'none', 8, FJ(3) + 1, by(ss, 'none')); P(w, 'stove', 12, FJ(3)); P(w, 'fridge', 13, FJ(3)); cinemaRows(w, [[1, FJ(3) + 4], [4, FJ(3) + 4]]); P(w, 'elevator', 13, FJ(3) + 4, 1, 1, {h:264});
+    for (const [i, j] of [[1, 1], [3, 1], [5, 1], [1, 3], [3, 3]]) w.seats.push({type:'cot', i, j:FJ(4) + j, w:1, d:1, session:null}); P(w, 'pigeonCoop', 9, FJ(4) + 1); P(w, 'elevator', 13, FJ(4) + 4, 1, 1, {h:120});
+    room(w, 'library', '서재', '📖', [0.5, 2, 92], [[1, 1], [1, 3], [3, 1], [2, 2]]); room(w, 'kitchen', '부엌', '$', [12.5, FJ(3) + .5, 92], [[12, FJ(3) + 2], [10, FJ(3) + 2], [8, FJ(3) + 2], [13, FJ(3) + 2]]);
+    room(w, 'phone', '전화실', '☎', [8.5, 0.5, 92], [[7, 1], [9, 1], [11, 1], [8, 2]]); room(w, 'cinema', '영화관', '🎞', [3, FJ(3) + 4.5, 60], null); room(w, 'lounge', '로비 응접실', '🛋', [6, 4.5, 60], null); room(w, 'attic', '다락', '🕊', [6, FJ(4) + .5, 92], null); room(w, 'exit', '현관', '🚪', [0.5, 4.5, 70], null);
+    zone(w, 'pulse', 0, 11, FJ(1), FJ(1) + 2); zone(w, 'mp', 0, 9, FJ(1) + 3, FJ(1) + 5); zone(w, 'infra', 0, 13, FJ(2), FJ(2) + 2); zone(w, 'probe', 0, 9, FJ(2) + 3, FJ(2) + 5); zone(w, 'cost', 0, 7, FJ(3), FJ(3) + 2); zone(w, 'none', 7, 12, FJ(3), FJ(3) + 2);
   },
-  background(g, W, H, t) { const gr = g.createLinearGradient(0, 0, 0, H); gr.addColorStop(0, '#120809'); gr.addColorStop(1, '#22100f'); g.fillStyle = gr; g.fillRect(0, 0, W, H); glow(g, W * .5, H * .1, W * .5, '#ff3d3d', .08 + .04 * Math.sin(t * 2)); },
-  floor: (w, i, j) => (i + j) % 2 ? '#26262c' : '#2b2b32',
-  walls(g, w, t) { wallsBasic(g, w, t, {left:'#33343d', right:'#2c2d35', panels:'rgba(255,255,255,.03)', panelLine:'rgba(255,255,255,.08)', trim:'#ff5a5a'});
-    for (const wall of ['L', 'R']) { const n = wall === 'L' ? w.M : w.N; for (let k = 0; k < n; k++) { const a = wall === 'L' ? iso(0, k, 4) : iso(k, 0, 4), b = wall === 'L' ? iso(0, k + 1, 4) : iso(k + 1, 0, 4);
-      poly(g, [a, b, {x:b.x, y:b.y - 12}, {x:a.x, y:a.y - 12}], k % 2 ? '#ffd36b' : '#1b1b20', null); } }
-    for (const [wall, k] of [['L', 5], ['L', 12], ['R', 8], ['R', 17]]) { const q = wall === 'L' ? iso(0, k, 92) : iso(k, 0, 92); ellipse(g, q.x, q.y, 7, 7, '#ff5a5a'); g.save(); g.globalCompositeOperation = 'lighter'; const a = t * 4 + k;
-      g.fillStyle = 'rgba(255,90,90,.18)'; g.beginPath(); g.moveTo(q.x, q.y); g.arc(q.x, q.y, 120, a, a + .5); g.closePath(); g.fill(); g.restore(); } },
-  decor(g, w, t) { floorStrip(g, [1, 3], [23, 3], '#ffd36b', t); floorStrip(g, [1, 15.5], [12, 15.5], '#ff5a5a', t); const wp = iso(w.N * .62, -1, w.wallH + 40); whale(g, wp.x, wp.y, .9, t, .35); },
+  background(g, W, Hh, t) { const gr = g.createLinearGradient(0, 0, 0, Hh); gr.addColorStop(0, '#070a18'); gr.addColorStop(1, '#1a1428'); g.fillStyle = gr; g.fillRect(0, 0, W, Hh); for (let k = 0; k < 120; k++) { const x = ((k * 7919) % 1000) / 1000 * W, y = ((k * 104729) % 1000) / 1000 * Hh, a = .3 + .7 * Math.abs(Math.sin(t * (.5 + k % 5 * .3) + k)); g.fillStyle = `rgba(230,236,255,${a * .8})`; g.fillRect(x, y, k % 9 ? 1.4 : 2.4, k % 9 ? 1.4 : 2.4); } },
+  floor: (w, i, j) => floorOf(j) === 4 ? ((i + j) % 2 ? '#6a5a44' : '#5e5040') : parquet(w, i, j),
+  walls(g, w, t, f) { const pal = [[H.wallGreen, H.wallRed], [H.wallBlue, '#4a3a5a'], [H.wallRed, H.wallGreen], ['#4a3a5a', H.wallBlue]][f.k] || [H.brick, H.brickD];
+    if (f.k === 4) { const L0 = iso(f.i0, f.j1), T0 = iso(f.i0, f.j0), R0 = iso(f.i1, f.j0), Hw = 70; poly(g, [L0, T0, {x:T0.x, y:T0.y - Hw}, {x:L0.x, y:L0.y - Hw}], H.brick, K.ink, 2.4); poly(g, [T0, R0, {x:R0.x, y:R0.y - Hw}, {x:T0.x, y:T0.y - Hw}], H.brickD, K.ink, 2.4);
+      poly(g, [{x:L0.x, y:L0.y - Hw}, {x:T0.x, y:T0.y - Hw - 40}, {x:R0.x, y:R0.y - Hw}, {x:T0.x, y:T0.y - Hw}], '#4a3240', K.ink, 2.2); xpWindow(g, 'R', 5, 7, 24, 58, t, 'night'); return; }
+    interiorWalls(g, w, t, f, {h:84, left:pal[0], right:pal[1]}); xpWindow(g, 'L', f.j0 + 3, f.j0 + 4.6, 34, 76, t, 'night'); if (f.k === 3) cinemaScreen(g, 'L', f.j0 + .4, f.j0 + 2.6, 30, 76, t); else framesOnWall(g, 'R', 4, 56, f.k + 1); if (f.k === 0) whaleFrame(g, iso(5, 0, 60).x, iso(5, 0, 60).y, .5); chandelier(g, 7, f.j0 + 2.5, 80, t); },
  }];
 // ---------- simulation ----------
 let sceneIdx = 0, sessions = [], world = null, last = 0, T = 0, selected = null, cam = {x:0, y:0, z:1}, camTarget = null;
 function makeSessions() { return RAW.map((r, k) => ({k, cat:r[0], agent:r[1], status:r[2], tool:r[3], mins:r[4], title:r[5], reply:r[6], seed:k * 7 % 11, id:((0x1a2b3c4d + k * 0x9e3779b1) >>> 0).toString(16).padStart(8, '0'),
   usage:r[1] === 'kiro' ? `ctx ${30 + k % 50}%` : r[1] === 'cursor' ? `~${8 + k}k tok` : `${40 + k * 9}k tok`, account:r[1] === 'codex' ? (k % 2 ? 'codex work' : 'codex side') : r[1] === 'claude' ? 'claude main' : '—',
-  pos:null, path:[], walking:false, atDesk:false, gone:false, hover:false, pod:null, place:null})); }
-const walkable = (w, i, j) => i >= 0 && j >= 0 && i < w.N && j < w.M && (!w.walk || w.walk.has(i + ',' + j)) && !w.blocked.has(i + ',' + j);
+  pos:null, path:[], legs:[], walking:false, atDesk:false, gone:false, hover:false, pod:null, place:null})); }
+const inFloor = (w, i, j) => w.floors.some(f => i >= f.i0 && i < f.i1 && j >= f.j0 && j < f.j1);
+const walkable = (w, i, j) => inFloor(w, i, j) && !w.blocked.has(i + ',' + j);
 function buildWorld() {
-  const sc = SCENES[sceneIdx]; sessions = makeSessions();
-  const w = {sc, N:sc.N, M:sc.M, wallH:sc.wallH, consoles:[], props:[], pods:[], rooms:{}, zones:[], islands:[], bridges:[], walk:sc.id === 'mind' ? new Set() : null};
-  sc.build(w, sessions);
-  w.blocked = new Set(); for (const o of [...w.consoles, ...w.props, ...w.pods, w.portal]) for (let i = Math.floor(o.i); i < Math.ceil(o.i + o.w); i++) for (let j = Math.floor(o.j); j < Math.ceil(o.j + o.d); j++) w.blocked.add(i + ',' + j);
-  const p = w.portal, near = [[p.i, p.j - 1], [p.i + 1, p.j], [p.i, p.j + 1], [p.i - 1, p.j]].find(([i, j]) => walkable(w, i, j)); w.exitStep = near ? {i:near[0] + .5, j:near[1] + .5} : {i:p.i + .5, j:p.j + .5};
-  let podK = 0; const roomUse = {archive:0, core:0, comm:0};
+  const sc = SCENES[sceneIdx]; sessions = makeSessions(); FLOOR_H = sc.floorH;
+  const w = {sc, floors:[], desks:[], props:[], seats:[], cinema:[], rooms:{}, zones:[], extraBlocked:[], flash:null};
+  sc.build(w, sessions); w.N = sc.N;
+  w.blocked = new Set(w.extraBlocked); for (const o of [...w.desks, ...w.props, ...w.seats, ...w.cinema]) for (let i = Math.floor(o.i); i < Math.ceil(o.i + o.w); i++) for (let j = Math.floor(o.j); j < Math.ceil(o.j + o.d); j++) w.blocked.add(i + ',' + j);
+  const e = w.exit, near = [[e.i, e.j - 1], [e.i + 1, e.j], [e.i, e.j + 1], [e.i - 1, e.j]].find(([i, j]) => walkable(w, i, j)); w.exitStep = near ? {i:near[0] + .5, j:near[1] + .5} : {i:e.i + .5, j:e.j + .5};
+  let seatK = 0, cotK = 0, rowK = 0; const roomUse = {library:0, kitchen:0, phone:0}; const cots = w.seats.filter(p => p.type === 'cot'), chairs = w.seats.filter(p => p.type !== 'cot');
   for (const s of sessions) {
-    if (s.status === 'idle' && w.pods[podK]) { const pod = w.pods[podK++]; pod.session = s; s.pod = pod; s.pos = {i:pod.i + .5, j:pod.j + .5}; s.place = 'pod'; continue; }
+    if (s.status === 'idle') { const pool = isAsleep(s) && cots.length ? cots : chairs; const k = pool === cots ? cotK++ : seatK++; const pod = pool[k % pool.length]; if (!pod.session) { pod.session = s; s.pod = pod; s.pos = {i:pod.i + .5, j:pod.j + .5}; s.place = pool === cots ? 'attic' : 'lounge'; continue; } }
+    if (s.status === 'done' && w.cinema.length) { const row = w.cinema[Math.floor(rowK / 2) % w.cinema.length], k = rowK % 2; rowK++; if (!row.sessions[k]) { row.sessions[k] = s; s.pod = row; s.seatK = k; s.pos = {i:row.i + k + .5, j:row.j + .5}; s.place = 'cinema'; continue; } }
     const r = s.status === 'working' && s.tool && TOOL[s.tool].room && w.rooms[TOOL[s.tool].room];
     if (r && r.spots) { const sp = r.spots[roomUse[TOOL[s.tool].room]++ % r.spots.length]; s.pos = {i:sp[0] + .5, j:sp[1] + .5}; s.place = TOOL[s.tool].room; continue; }
     s.pos = {i:s.desk.i + .62, j:s.desk.j - .1}; s.place = 'desk'; s.atDesk = true;
   }
   w.lanes = LANES.map((l, k) => ({...l, seed:k * 3})); world = w; fit(true);
 }
-// layout contract: every seat aisle, room spot and the exit step is walkable, and every working AI can reach its desk
+// layout contract: every seat aisle, room spot, lift step and the exit step is walkable; every AI away from its desk can reach it (via the lift if needed), and desks can reach the exit
+function reach(w, from, to) { const fa = floorOf(from.j), fb = floorOf(to.j); if (fa === fb) return bfs(w, from, to).reached; const A = w.floors[fa], B = w.floors[fb]; if (!A.lift || !B.lift) return false;
+  return bfs(w, from, {i:A.lift[0], j:A.lift[1]}).reached && bfs(w, {i:B.lift[0], j:B.lift[1]}, to).reached; }
 function validateWorld() { const w = world, bad = [];
-  for (const c of w.consoles) for (const di of [0, 1]) if (!walkable(w, c.i + di, c.j - 1)) bad.push(`seat aisle ${c.session.title} (${c.i + di},${c.j - 1})`);
+  for (const c of w.desks) for (const di of [0, 1]) if (!walkable(w, c.i + di, c.j - 1)) bad.push(`seat aisle ${c.session.title} (${c.i + di},${c.j - 1})`);
   for (const [k, r] of Object.entries(w.rooms)) for (const [i, j] of r.spots || []) if (!walkable(w, i, j)) bad.push(`room ${k} spot (${i},${j})`);
+  for (const f of w.floors) if (f.lift && !walkable(w, f.lift[0], f.lift[1])) bad.push(`lift step floor ${f.k}`);
   if (!walkable(w, Math.floor(w.exitStep.i), Math.floor(w.exitStep.j))) bad.push('exit step');
   const free = sessions.filter(s => !s.atDesk && !s.pod && !s.gone).map(s => ({s, p:screenOf(s)}));
   for (let a = 0; a < free.length; a++) for (let b = a + 1; b < free.length; b++) if (Math.abs(free[a].p.x - free[b].p.x) < 44 && Math.abs(free[a].p.y - free[b].p.y) < 90) bad.push(`crowd ${free[a].s.title} / ${free[b].s.title}`);
-  for (const s of sessions) { if (s.atDesk) continue; const from = {i:Math.floor(s.pos.i), j:Math.floor(s.pos.j)}, to = {i:s.desk.i, j:s.desk.j - 1}; if (!bfs(w, from, to).reached) bad.push(`no path ${s.title}`); }
-  const ex = bfs(w, {i:sessions[2].desk.i, j:sessions[2].desk.j - 1}, {i:Math.floor(w.exitStep.i), j:Math.floor(w.exitStep.j)}); if (!ex.reached) bad.push('no path to exit');
+  for (const s of sessions) { if (s.atDesk) continue; if (!reach(w, {i:Math.floor(s.pos.i), j:Math.floor(s.pos.j)}, {i:s.desk.i, j:s.desk.j - 1})) bad.push(`no path ${s.title}`); }
+  for (const c of w.desks) if (!reach(w, {i:c.i, j:c.j - 1}, {i:Math.floor(w.exitStep.i), j:Math.floor(w.exitStep.j)})) { bad.push(`no exit from ${c.session.title}`); break; }
   return bad; }
 function bfs(w, from, to) { const key = (i, j) => i + ',' + j, prev = new Map([[key(from.i, from.j), null]]), q = [from]; let reached = from.i === to.i && from.j === to.j;
   while (q.length && !reached) { const c = q.shift(); for (const [di, dj] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) { const n = {i:c.i + di, j:c.j + dj}, k = key(n.i, n.j);
       if (prev.has(k) || !walkable(w, n.i, n.j)) continue; prev.set(k, c); if (n.i === to.i && n.j === to.j) { reached = true; break; } q.push(n); } }
   const out = []; if (!reached) { out.reached = false; return out; } let c = to; while (c && !(c.i === from.i && c.j === from.j)) { out.unshift(c); c = prev.get(key(c.i, c.j)); } out.reached = true; return out; }
-function walkTo(s, target, then) { const from = {i:Math.floor(s.pos.i), j:Math.floor(s.pos.j)}, goal = {i:Math.floor(target.i), j:Math.floor(target.j)};
-  s.path = bfs(world, from, goal).map(n => ({i:n.i + .5, j:n.j + .5})); s.path.push({...target}); s.walking = true; s.atDesk = false; if (s.pod) { s.pod.session = null; s.pod = null; } s.place = 'walk'; s.then = then; }
-function step(dt) { for (const s of sessions) { if (!s.walking) continue; const n = s.path[0]; if (!n) { s.walking = false; s.then && s.then(); continue; } const di = n.i - s.pos.i, dj = n.j - s.pos.j, d = Math.hypot(di, dj), sp = 2.6 * dt;
+function leaveSeat(s) { if (s.pod) { if (s.pod.sessions) s.pod.sessions[s.seatK] = null; else s.pod.session = null; s.pod = null; } }
+function walkTo(s, target, then) { const from = {i:Math.floor(s.pos.i), j:Math.floor(s.pos.j)}, fa = floorOf(from.j), fb = floorOf(target.j); s.legs = [];
+  if (fa !== fb) { const A = world.floors[fa], B = world.floors[fb]; s.legs.push({to:{i:A.lift[0] + .5, j:A.lift[1] + .5}}, {jump:{i:B.lift[0] + .5, j:B.lift[1] + .5}, k:fb}); }
+  s.legs.push({to:{...target}}); s.walking = true; s.atDesk = false; leaveSeat(s); s.place = 'walk'; s.then = then; nextLeg(s); }
+function nextLeg(s) { const leg = s.legs.shift(); if (!leg) { s.walking = false; s.path = []; s.then && s.then(); return; }
+  if (leg.jump) { s.pos = {...leg.jump}; world.flash = {k:leg.k, until:T + .6}; return nextLeg(s); }
+  const from = {i:Math.floor(s.pos.i), j:Math.floor(s.pos.j)}, goal = {i:Math.floor(leg.to.i), j:Math.floor(leg.to.j)}; s.path = bfs(world, from, goal).map(n => ({i:n.i + .5, j:n.j + .5})); s.path.push({...leg.to}); }
+function step(dt) { for (const s of sessions) { if (!s.walking) continue; const n = s.path[0]; if (!n) { nextLeg(s); continue; } const di = n.i - s.pos.i, dj = n.j - s.pos.j, d = Math.hypot(di, dj), sp = 2.6 * dt;
     s.dir = (di - dj) < -.01 ? -1 : (di - dj) > .01 ? 1 : s.dir || 1; if (d <= sp) { s.pos = {...n}; s.path.shift(); } else { s.pos.i += di / d * sp; s.pos.j += dj / d * sp; } } }
 // ---------- render ----------
 const canvas = document.getElementById('scene'), stage = document.getElementById('stage'), ctx = canvas.getContext('2d');
-let W = 0, H = 0, DPR = 1;
-function resize() { const r = stage.getBoundingClientRect(); DPR = Math.min(2, window.devicePixelRatio || 1); W = r.width; H = r.height; canvas.width = W * DPR; canvas.height = H * DPR; canvas.style.width = W + 'px'; canvas.style.height = H + 'px'; fit(true); }
-function bounds() { const w = world, top = w.wallH ? w.wallH + 10 : 60, pts = [iso(0, w.M), iso(0, 0, top), iso(w.N, 0, top), iso(w.N, w.M)]; return {x0:Math.min(...pts.map(p => p.x)) - 20, x1:Math.max(...pts.map(p => p.x)) + 20, y0:Math.min(...pts.map(p => p.y)) - 10, y1:Math.max(...pts.map(p => p.y)) + (w.walk ? 70 : 20)}; }
-function fit(now) { if (!world || !W) return; const b = bounds(), avail = H - 104, z = Math.min(W / (b.x1 - b.x0), avail / (b.y1 - b.y0)); const t = {z, x:W / 2 - (b.x0 + b.x1) / 2 * z, y:54 + avail / 2 - (b.y0 + b.y1) / 2 * z}; if (now) { cam = t; camTarget = null; } else camTarget = t; }
-function focusOn(s) { const p = screenOf(s), z = Math.max(cam.z, 1.6); camTarget = {z, x:W * .36 - p.x * z, y:H * .58 - (p.y - 30) * z}; }
-function objects() {
-  const w = world, list = [], add = (o, draw) => list.push({i0:o.i, i1:o.i + (o.w || .4), j0:o.j, j1:o.j + (o.d || .4), draw});
-  for (const c of w.consoles) add(c, () => PROPS.console(ctx, c, T, w));
-  for (const p of w.props) add(p, () => PROPS[p.type](ctx, p, T, w));
-  for (const p of w.pods) add(p, () => PODS[p.type](ctx, p, T));
-  add(w.portal, () => PORTALS[w.portal.type](ctx, w.portal, T));
-  for (const s of sessions) { if (s.gone || s.atDesk || (s.pod && !s.walking)) continue; add({i:s.pos.i - .2, j:s.pos.j - .2, w:.4, d:.4}, () => drawFree(s)); }
-  // painter order: A first when it lies wholly behind B on one axis; otherwise the shallower centre first
+let W = 0, Hc = 0, DPR = 1;
+function resize() { const r = stage.getBoundingClientRect(); DPR = Math.min(2, window.devicePixelRatio || 1); W = r.width; Hc = r.height; canvas.width = W * DPR; canvas.height = Hc * DPR; canvas.style.width = W + 'px'; canvas.style.height = Hc + 'px'; fit(true); }
+function bounds() { const w = world, pts = []; for (const f of w.floors) { const top = (w.sc.wallH || 60) + (f.k === w.floors.length - 1 ? 60 : 10); pts.push(iso(f.i0, f.j1), iso(f.i0, f.j0, top), iso(f.i1, f.j0, top), iso(f.i1, f.j1)); } if (w.house) pts.push(iso(w.house.i0, w.house.j0, 290));
+  return {x0:Math.min(...pts.map(p => p.x)) - 20, x1:Math.max(...pts.map(p => p.x)) + 20, y0:Math.min(...pts.map(p => p.y)) - 10, y1:Math.max(...pts.map(p => p.y)) + 24}; }
+function fit(now) { if (!world || !W) return; const b = bounds(), avail = Hc - 104, z = Math.min(W / (b.x1 - b.x0), avail / (b.y1 - b.y0)); const t = {z, x:W / 2 - (b.x0 + b.x1) / 2 * z, y:54 + avail / 2 - (b.y0 + b.y1) / 2 * z}; if (now) { cam = t; camTarget = null; } else camTarget = t; }
+function focusOn(s) { const p = screenOf(s), z = Math.max(cam.z, 1.6); camTarget = {z, x:W * .36 - p.x * z, y:Hc * .58 - (p.y - 30) * z}; }
+function objectsOn(f) {
+  const w = world, list = [], onF = o => o.j >= f.j0 && o.j < f.j1, add = (o, draw) => list.push({i0:o.i, i1:o.i + (o.w || .4), j0:o.j, j1:o.j + (o.d || .4), draw});
+  for (const c of w.desks) if (onF(c)) add(c, () => PROPS.desk(ctx, c, T, w));
+  for (const p of w.props) if (onF(p)) add(p, () => PROPS[p.type](ctx, {...p, flash:w.flash && w.flash.k === f.k && T < w.flash.until}, T, w));
+  for (const p of w.seats) if (onF(p)) add(p, () => PROPS[p.type](ctx, p, T));
+  for (const p of w.cinema) if (onF(p)) add(p, () => PROPS.seats(ctx, p, T));
+  for (const s of sessions) { if (s.gone || s.atDesk || (s.pod && !s.walking) || floorOf(s.pos.j) !== f.k) continue; add({i:s.pos.i - .2, j:s.pos.j - .2, w:.4, d:.4}, () => drawFree(s)); }
   const n = list.length, behind = (a, b) => a.i1 <= b.i0 + 1e-6 || a.j1 <= b.j0 + 1e-6, depth = o => (o.i0 + o.i1 + o.j0 + o.j1) / 2, indeg = new Array(n).fill(0), adj = Array.from({length:n}, () => []);
   for (let a = 0; a < n; a++) for (let b = a + 1; b < n; b++) { const A = list[a], B = list[b]; if (A.i1 + A.j1 < B.i0 + B.j0 - 6 || B.i1 + B.j1 < A.i0 + A.j0 - 6) continue; if (A.i1 - A.j0 < B.i0 - B.j1 || B.i1 - B.j0 < A.i0 - A.j1) continue;
     const ab = behind(A, B), ba = behind(B, A), first = ab && !ba ? a : ba && !ab ? b : depth(A) <= depth(B) ? a : b; adj[first].push(first === a ? b : a); indeg[first === a ? b : a]++; }
@@ -573,27 +576,28 @@ function objects() {
   if (out.length < n) for (const o of list) if (!out.includes(o)) out.push(o);
   return out;
 }
-function drawFree(s) { const p = iso(s.pos.i, s.pos.j, 0), pose = s.walking ? 'walk' : s.status === 'blocked' ? 'wave' : 'type'; drawAI(ctx, s.agent, pose, T, {x:p.x, y:p.y, seed:s.seed, face:faceOf(s), flip:s.walking && s.dir < 0, scale:CS}); }
-function screenOf(s) { if (s.atDesk) { const q = iso(s.desk.i + .62, s.desk.j - .1, 0); return {x:q.x, y:q.y + 6}; } if (s.pod && !s.walking) { const q = iso(s.pod.i + .5, s.pod.j + .5, s.pod.type === 'couch' || s.pod.type === 'armchair' ? 8 : 0); return {x:q.x, y:q.y + 2}; } return iso(s.pos.i, s.pos.j, 0); }
+function drawFree(s) { const p = iso(s.pos.i, s.pos.j, 0), pose = s.walking ? 'walk' : s.status === 'blocked' ? 'wave' : 'type'; drawAI(ctx, s.agent, pose, T, {x:p.x, y:p.y, seed:s.seed, face:faceOf(s), flip:s.walking && s.dir < 0, scale:CS, seated:false}); }
+function screenOf(s) { if (s.atDesk) { const q = iso(s.desk.i + .62, s.desk.j - .1, 0); return {x:q.x, y:q.y + 6}; }
+  if (s.pod && !s.walking) { const p = s.pod; if (p.sessions) { const q = iso(p.i + s.seatK + .5, p.j + .6, 9); return q; } const z = p.type === 'cot' ? 12 : p.type === 'lawnchair' ? 7 : 10; const q = iso(p.i + .55, p.j + .55, z); return q; } return iso(s.pos.i, s.pos.j, 0); }
 function render() {
-  const w = world, sc = w.sc; ctx.setTransform(DPR, 0, 0, DPR, 0, 0); sc.background(ctx, W, H, T);
+  const w = world, sc = w.sc; ctx.setTransform(DPR, 0, 0, DPR, 0, 0); sc.background(ctx, W, Hc, T);
   ctx.setTransform(cam.z * DPR, 0, 0, cam.z * DPR, cam.x * DPR, cam.y * DPR);
-  sc.under && sc.under(ctx, w, T); sc.walls(ctx, w, T);
-  for (let j = 0; j < w.M; j++) for (let i = 0; i < w.N; i++) { if (w.walk && w.bridges.some(([a, b]) => a === i && b === j)) continue; const f = sc.floor(w, i, j); if (f) poly(ctx, [iso(i, j), iso(i + 1, j), iso(i + 1, j + 1), iso(i, j + 1)], f, 'rgba(160,180,255,.08)', 1); }
-  for (const z of w.zones) { const c = CATS[z.cat].color; poly(ctx, [iso(z.i0, z.j0), iso(z.i1, z.j0), iso(z.i1, z.j1), iso(z.i0, z.j1)], rgba(c, .12), rgba(c, .65), 2); }
-  sc.decor && sc.decor(ctx, w, T);
-  for (const l of w.lanes) { const p = sessions[l.parent]; if (!p || p.gone) { l.screen = null; continue; } const a = screenOf(p), mx = a.x + 40 + Math.sin(T * 1.2 + l.seed) * 6 + l.seed * 6, my = a.y - 58 - l.seed * 5;
-    ctx.setLineDash([3, 4]); ctx.strokeStyle = rgba(l.color, .85); ctx.lineWidth = 1.8; ctx.beginPath(); ctx.moveTo(a.x + 10, a.y - 36); ctx.quadraticCurveTo(a.x + 34, a.y - 24, mx, my); ctx.stroke(); ctx.setLineDash([]); l.screen = {x:mx, y:my}; }
-  for (const o of objects()) o.draw();
-  for (const l of w.lanes) if (l.screen) drawMote(ctx, l.color, T, l.screen.x, l.screen.y, l.seed);
-  sc.over && sc.over(ctx, w, T);
-  for (const s of sessions) { if (s.gone || s.walking) continue; const p = screenOf(s), top = p.y - (s.agent === 'kiro' ? 66 : 76) * CS;
-    if (s.status === 'idle') { if (!isAsleep(s) && s.place !== 'pod') bubble(ctx, p.x, top, 'idle', T); } else bubble(ctx, p.x, top, s.status, T + s.seed, s.status === 'working' ? 'typing' : null);
+  for (const f of w.floors) {
+    WALL_J0 = f.j0; if (f.k > 0) slab(ctx, f); sc.walls(ctx, w, T, f);
+    for (let j = f.j0; j < f.j1; j++) for (let i = f.i0; i < f.i1; i++) { if (w.house && i >= w.house.i0 && i < w.house.i1 && j >= w.house.j0 && j < w.house.j1) continue; poly(ctx, [iso(i, j), iso(i + 1, j), iso(i + 1, j + 1), iso(i, j + 1)], sc.floor(w, i, j), 'rgba(0,0,0,.12)', 1); }
+    for (const z of w.zones) { if (z.j0 < f.j0 || z.j0 >= f.j1) continue; const c = CATS[z.cat].color; poly(ctx, [iso(z.i0, z.j0), iso(z.i1, z.j0), iso(z.i1, z.j1), iso(z.i0, z.j1)], rgba(c, .22), rgba(c, .75), 2); }
+    for (const o of objectsOn(f)) o.draw();
+  }
+  for (const l of w.lanes) { const p = sessions[l.parent]; if (!p || p.gone) { l.screen = null; continue; } const a = screenOf(p), mx = a.x + 40 + Math.sin(T * 1.2 + l.seed) * 6 + l.seed * 6, my = a.y - 62 - l.seed * 5;
+    ctx.setLineDash([3, 4]); ctx.strokeStyle = rgba(l.color, .85); ctx.lineWidth = 1.8; ctx.beginPath(); ctx.moveTo(a.x + 10, a.y - 40); ctx.quadraticCurveTo(a.x + 34, a.y - 28, mx, my); ctx.stroke(); ctx.setLineDash([]); l.screen = {x:mx, y:my}; pigeon(ctx, l.color, T, mx, my, l.seed); }
+  for (const s of sessions) { if (s.gone || s.walking) continue; const p = screenOf(s), top = p.y - 80 * CS;
+    if (s.status === 'idle') { if (!isAsleep(s) && s.place !== 'lounge') bubble(ctx, p.x, top, 'idle', T); } else bubble(ctx, p.x, top, s.status, T + s.seed, s.status === 'working' ? 'typing' : null);
     if (s.hover) reaction(ctx, s, p.x, p.y, T, CS);
-    if (s.hover && s.status === 'working' && s.tool) pill(ctx, p.x, top - 28, `${TOOL[s.tool].label}`, {size:11, bg:'#14161f', fg:'#f4f1e8', stroke:'#f4f1e8'}); }
-  if (selected && !selected.gone) { const p = screenOf(selected), cy = p.y - 34 * CS; ctx.save(); ctx.strokeStyle = '#f4f1e8'; ctx.lineWidth = 2.6; ctx.setLineDash([7, 5]); ctx.lineDashOffset = -T * 20; ctx.beginPath(); ctx.ellipse(p.x, cy, 30 * CS, 40 * CS, 0, 0, Math.PI * 2); ctx.stroke(); ctx.restore(); glow(ctx, p.x, cy, 50 * CS, '#f4f1e8', .12); }
-  for (const r of Object.values(w.rooms)) { const p = iso(r.anchor[0], r.anchor[1], r.anchor[2]); pill(ctx, p.x, p.y, `${r.icon} ${r.label}`, {size:14, bg:'#f4f1e8'}); }
+    if (s.hover && s.status === 'working' && s.tool) pill(ctx, p.x, top - 28, `${TOOL[s.tool].label}`, {size:11, bg:'#14161f', fg:H.cream, stroke:H.cream}); }
+  if (selected && !selected.gone) { const p = screenOf(selected), cy = p.y - 36 * CS; ctx.save(); ctx.strokeStyle = H.cream; ctx.lineWidth = 2.6; ctx.setLineDash([7, 5]); ctx.lineDashOffset = -T * 20; ctx.beginPath(); ctx.ellipse(p.x, cy, 30 * CS, 42 * CS, 0, 0, Math.PI * 2); ctx.stroke(); ctx.restore(); glow(ctx, p.x, cy, 50 * CS, H.cream, .12); }
+  for (const r of Object.values(w.rooms)) { const p = iso(r.anchor[0], r.anchor[1], r.anchor[2]); pill(ctx, p.x, p.y, `${r.icon} ${r.label}`, {size:14, bg:H.cream}); }
   for (const z of w.zones) { const p = iso(z.i0, (z.j0 + z.j1) / 2, 0); pill(ctx, p.x - 6, p.y, CATS[z.cat].name, {size:12, bg:shade(CATS[z.cat].color, .55), align:'left', padX:8}); }
+  for (const f of w.floors) if (w.floors.length > 1) { const p = iso(f.i1, f.j1 - .5, 8); pill(ctx, p.x + 8, p.y, f.k === w.floors.length - 1 ? '다락' : `${f.k + 1}층`, {size:11, bg:'#14161f', fg:H.cream, stroke:H.cream, align:'left', padX:7}); }
 }
 // ---------- HUD ----------
 const hud = document.getElementById('hud'), queueEl = document.getElementById('queue'), card = document.getElementById('card'), tip = document.getElementById('tip'), live = document.getElementById('live');
@@ -605,7 +609,7 @@ function updateHud() { const ls = sessions.filter(s => !s.gone), c = st => ls.fi
   const q = rollup(), nx = nextSession();
   queueEl.innerHTML = (nx ? `<span class="q next"><span class="k">N</span>다음 ▶ ${esc(nx.title)} · ${ST[nx.status].g} ${when(nx)}</span>` : '') + q.filter(s => s !== nx).slice(0, 6).map(s => `<span class="q" style="color:${ST[s.status].color};border-color:${ST[s.status].color}">${ST[s.status].g} ${esc(s.title)} · ${when(s)}</span>`).join('');
   const sr = document.getElementById('sr'), text = ls.map(s => `${s.title} ${ST[s.status].ko}`).join(', '); if (sr.textContent !== text) sr.textContent = text; }
-function placeName(s) { if (s.walking) return '이동 중'; if (s.atDesk) return '자기 콘솔'; if (s.pod) return world.rooms.bay.label; return (world.rooms[s.place] || {}).label || s.place; }
+function placeName(s) { if (s.walking) return '이동 중'; if (s.atDesk) return '자기 책상'; return (world.rooms[s.place] || {}).label || s.place; }
 function openCard(s) { selected = s; const st = ST[s.status], ag = AG[s.agent], reply = s.agent === 'cursor' ? null : s.reply;
   card.innerHTML = `<button class="x" type="button" aria-label="닫기">✕</button><h3>${esc(s.title)}</h3>
    <div class="meta"><span class="badge" style="background:${st.color}">${st.g} ${st.label}</span><b style="color:${ag.color}">▌${ag.name}</b> · ${esc(CATS[s.cat].name)} · ${when(s)}${s.tool && s.status === 'working' ? ' · ' + TOOL[s.tool].label : ''}</div>
@@ -618,7 +622,7 @@ function closeCard() { card.classList.remove('open'); selected = null; if (world
 // ---------- input ----------
 let drag = null;
 const toWorld = (mx, my) => ({x:(mx - cam.x) / cam.z, y:(my - cam.y) / cam.z});
-function pick(mx, my) { const p = toWorld(mx, my); let best = null, bd = 1e9; for (const s of sessions) { if (s.gone) continue; const q = screenOf(s), dx = p.x - q.x, dy = p.y - (q.y - 34 * CS); if (Math.abs(dx) < 22 * CS && Math.abs(dy) < 40 * CS) { const d = dx * dx + dy * dy; if (d < bd) { bd = d; best = s; } } } return best; }
+function pick(mx, my) { const p = toWorld(mx, my); let best = null, bd = 1e9; for (const s of sessions) { if (s.gone) continue; const q = screenOf(s), dx = p.x - q.x, dy = p.y - (q.y - 36 * CS); if (Math.abs(dx) < 22 * CS && Math.abs(dy) < 42 * CS) { const d = dx * dx + dy * dy; if (d < bd) { bd = d; best = s; } } } return best; }
 canvas.addEventListener('pointerdown', e => { drag = {x:e.clientX, y:e.clientY, cx:cam.x, cy:cam.y, moved:false}; canvas.setPointerCapture(e.pointerId); });
 canvas.addEventListener('pointermove', e => { const r = canvas.getBoundingClientRect(), mx = e.clientX - r.left, my = e.clientY - r.top;
   if (drag) { const dx = e.clientX - drag.x, dy = e.clientY - drag.y; if (Math.abs(dx) + Math.abs(dy) > 4) { drag.moved = true; canvas.classList.add('dragging'); camTarget = null; cam.x = drag.cx + dx; cam.y = drag.cy + dy; } return; }
@@ -628,7 +632,7 @@ canvas.addEventListener('pointermove', e => { const r = canvas.getBoundingClient
 canvas.addEventListener('pointerup', e => { canvas.classList.remove('dragging'); if (drag && !drag.moved) { const r = canvas.getBoundingClientRect(), s = pick(e.clientX - r.left, e.clientY - r.top); if (s) openCard(s); else closeCard(); } drag = null; });
 canvas.addEventListener('pointercancel', () => { drag = null; canvas.classList.remove('dragging'); });
 canvas.addEventListener('pointerleave', () => { tip.style.display = 'none'; for (const s of sessions) s.hover = false; });
-canvas.addEventListener('wheel', e => { e.preventDefault(); const r = canvas.getBoundingClientRect(), mx = e.clientX - r.left, my = e.clientY - r.top, z = Math.max(.35, Math.min(3.2, cam.z * Math.exp(-e.deltaY * .0015)));
+canvas.addEventListener('wheel', e => { e.preventDefault(); const r = canvas.getBoundingClientRect(), mx = e.clientX - r.left, my = e.clientY - r.top, z = Math.max(.3, Math.min(3.2, cam.z * Math.exp(-e.deltaY * .0015)));
   cam.x = mx - (mx - cam.x) * z / cam.z; cam.y = my - (my - cam.y) * z / cam.z; cam.z = z; camTarget = null; }, {passive:false});
 canvas.addEventListener('dblclick', () => { closeCard(); fit(false); });
 stage.addEventListener('keydown', e => { if (e.metaKey || e.ctrlKey || e.altKey) return; const k = /^Key[A-Z]$/.test(e.code) ? e.code.slice(3).toLowerCase() : /^Digit\d$/.test(e.code) ? e.code.slice(5) : e.key;
@@ -637,26 +641,26 @@ document.getElementById('b-next').onclick = () => { const s = nextSession(); if 
 document.getElementById('b-fit').onclick = () => { closeCard(); fit(false); };
 document.getElementById('b-reset').onclick = () => { closeCard(); buildWorld(); updateHud(); live.textContent = '초기화했습니다.'; };
 document.getElementById('b-start').onclick = () => { const s = sessions.find(x => x.status === 'idle' && x.pod && !x.walking); if (!s) { live.textContent = '쉬는 세션이 없습니다.'; return; }
-  s.status = 'working'; s.tool = 'edit'; s.mins = s.mins == null ? null : 0; walkTo(s, {i:s.desk.i + .62, j:s.desk.j - .1}, () => { s.atDesk = true; s.place = 'desk'; }); updateHud(); live.textContent = `"${s.title}" 쉬는 중 → 일하는 중: ${world.rooms.bay.label}에서 자기 콘솔로 갑니다.`; };
+  const from = placeName(s); s.status = 'working'; s.tool = 'edit'; s.mins = s.mins == null ? null : 0; walkTo(s, {i:s.desk.i + .62, j:s.desk.j - .1}, () => { s.atDesk = true; s.place = 'desk'; }); updateHud(); live.textContent = `"${s.title}" 쉬는 중 → 일하는 중: ${from}에서 자기 책상으로 갑니다.`; };
 document.getElementById('b-end').onclick = () => { const s = sessions.find(x => x.status === 'done' && !x.gone); if (!s) { live.textContent = '끝난 세션이 없습니다.'; return; }
-  s.status = 'ended'; s.atDesk = false; const pt = world.portal; walkTo(s, {...world.exitStep}, () => { s.path = [{i:pt.i + .5, j:pt.j + .5}]; s.walking = true; s.then = () => { s.gone = true; updateHud(); }; }); updateHud(); live.textContent = `"${s.title}" 끝남 → 종료: ${world.rooms.exit.label}로 나갑니다.`; };
+  s.status = 'ended'; s.atDesk = false; const e = world.exit; walkTo(s, {...world.exitStep}, () => { s.path = [{i:e.i + .5, j:e.j + .5}]; s.legs = []; s.walking = true; s.then = () => { s.gone = true; updateHud(); }; }); updateHud(); live.textContent = `"${s.title}" 끝남 → 종료: ${world.rooms.exit.label}으로 나갑니다.`; };
 // ---------- character sheet ----------
 const sheet = document.getElementById('sheet'), sg = sheet.getContext('2d'); let sheetHover = -1;
-const SHEET = [['working', 'type', '● 일하는 중'], ['blocked', 'wave', '! 나를 기다림'], ['done', 'hold', '✓ 끝남'], ['idle', 'sit', '○ 쉬는 중'], ['asleep', 'sleep', '○ 잠듦 · 마지막 프롬프트 10분+'], ['walk', 'walk', '이동 · 종료하면 EXIT로']];
+const SHEET = [['working', 'type', '● 일하는 중'], ['blocked', 'wave', '! 나를 기다림'], ['done', 'hold', '✓ 끝남 · 영화관'], ['idle', 'read', '○ 쉬는 중 · 신문'], ['asleep', 'sleep', '○ 잠듦 · 마지막 프롬프트 10분+'], ['walk', 'walk', '이동 · 종료하면 현관으로']];
 const SHEET_TOP = 34;
 function sheetGeom() { const w = sheet.clientWidth, h = Math.max(440, Math.round(w * .38)), cols = SHEET.length + 1; return {w, h, cw:w / cols, rh:(h - SHEET_TOP) / 4}; }
 function drawSheet() { const {w, h, cw, rh} = sheetGeom(); if (sheet.width !== Math.round(w * DPR) || sheet.height !== Math.round(h * DPR)) { sheet.width = Math.round(w * DPR); sheet.height = Math.round(h * DPR); sheet.style.height = h + 'px'; }
-  sg.setTransform(DPR, 0, 0, DPR, 0, 0); const gr = sg.createLinearGradient(0, 0, 0, h); gr.addColorStop(0, '#101528'); gr.addColorStop(1, '#1a2240'); sg.fillStyle = gr; sg.fillRect(0, 0, w, h);
-  const narrow = w < 760; sg.font = `800 ${narrow ? 9 : 12}px ${FONT}`; sg.textAlign = 'center'; sg.textBaseline = 'middle'; sg.fillStyle = '#aab0bd'; SHEET.forEach((s, k) => sg.fillText(narrow ? s[2].split(' · ')[0] : s[2], cw * (k + 1.5), 18));
-  const agents = ['codex', 'claude', 'kiro', 'cursor'], sc = Math.min(1.15, rh / 96);
+  sg.setTransform(DPR, 0, 0, DPR, 0, 0); const gr = sg.createLinearGradient(0, 0, 0, h); gr.addColorStop(0, '#2a1a10'); gr.addColorStop(1, '#3a2616'); sg.fillStyle = gr; sg.fillRect(0, 0, w, h);
+  const narrow = w < 760; sg.font = `800 ${narrow ? 9 : 12}px ${FONT}`; sg.textAlign = 'center'; sg.textBaseline = 'middle'; sg.fillStyle = '#d9c9ad'; SHEET.forEach((s, k) => sg.fillText(narrow ? s[2].split(' · ')[0] : s[2], cw * (k + 1.5), 18));
+  const agents = ['codex', 'claude', 'kiro', 'cursor'], sc = Math.min(1.15, rh / 100);
   agents.forEach((a, r) => { const feet = SHEET_TOP + rh * (r + 1) - 12; sg.textAlign = 'left'; sg.fillStyle = AG[a].color; sg.font = `900 ${narrow ? 10 : 14}px ${FONT}`; if (narrow) { sg.fillText(`▌${AG[a].nick}`, 4, feet - rh * .38); sg.fillText(a, 6, feet - rh * .38 + 13); } else sg.fillText(`▌${AG[a].nick} · ${a}`, 14, feet - rh * .38);
     SHEET.forEach((s, k) => { const cx = cw * (k + 1.5), hov = r * 10 + k === sheetHover, fake = {status:s[0] === 'asleep' ? 'idle' : s[0] === 'walk' ? 'working' : s[0], hover:hov, mins:s[0] === 'asleep' ? 20 : 2};
-      ellipse(sg, cx, feet, 30, 9, 'rgba(126,162,247,.10)', 'rgba(126,162,247,.25)', 1);
-      drawAI(sg, a, s[1], T, {x:cx, y:feet, scale:sc, seed:r * 3 + k, face:faceOf(fake), hop:s[0] === 'blocked'});
-      const top = feet - (a === 'kiro' ? 66 : 76) * sc;
+      ellipse(sg, cx, feet, 30, 9, 'rgba(255,207,122,.10)', 'rgba(255,207,122,.3)', 1);
+      drawAI(sg, a, s[1], T, {x:cx, y:feet, scale:sc, seed:r * 3 + k, face:faceOf(fake), hop:s[0] === 'blocked', seated:s[1] === 'hold' || s[1] === 'type'});
+      const top = feet - 80 * sc;
       if (s[0] === 'asleep') zzz(sg, cx + 12, top + 6, T); else if (s[0] !== 'walk') bubble(sg, cx, top, fake.status, T + k, s[0] === 'working' ? 'typing' : null);
       if (hov) reaction(sg, fake, cx, feet, T, sc); }); });
-  drawMote(sg, '#7ea2f7', T, 22, h - 22, 1); sg.textAlign = 'left'; sg.fillStyle = '#aab0bd'; sg.font = `800 12px ${FONT}`; sg.fillText('handoff 끈: 부모 세션 곁에 뜹니다', 38, h - 22); }
+  pigeon(sg, '#7ea2f7', T, 26, h - 22, 1); sg.textAlign = 'left'; sg.fillStyle = '#d9c9ad'; sg.font = `800 12px ${FONT}`; sg.fillText('handoff 끈: 코드 비둘기가 부모 세션 곁에 뜹니다', 44, h - 22); }
 sheet.addEventListener('pointermove', e => { const r = sheet.getBoundingClientRect(), {cw, rh} = sheetGeom(), c = Math.floor((e.clientX - r.left) / cw) - 1, rr = Math.floor((e.clientY - r.top - SHEET_TOP) / rh); sheetHover = c >= 0 && rr >= 0 && rr < 4 ? rr * 10 + c : -1; });
 sheet.addEventListener('pointerleave', () => { sheetHover = -1; });
 // ---------- tabs ----------
@@ -671,14 +675,12 @@ tabs.addEventListener('keydown', e => { if (e.key !== 'ArrowRight' && e.key !== 
 let paused = false;
 function easeCam() { if (!camTarget) return; const a = .12; cam.x += (camTarget.x - cam.x) * a; cam.y += (camTarget.y - cam.y) * a; cam.z += (camTarget.z - cam.z) * a;
   if (reduce || (Math.abs(camTarget.z - cam.z) < .001 && Math.abs(camTarget.x - cam.x) < .5 && Math.abs(camTarget.y - cam.y) < .5)) { cam = {...camTarget}; camTarget = null; } }
-function frame(ts) { const dt = Math.min(.05, (ts - (last || ts)) / 1000); last = ts;
-  if (!paused) { T += reduce ? 0 : dt; step(reduce ? 1 : dt); easeCam(); }
-  render(); drawSheet(); requestAnimationFrame(frame); }
+function frame(ts) { const dt = Math.min(.05, (ts - (last || ts)) / 1000); last = ts; if (!paused) { T += reduce ? 0 : dt; step(reduce ? 1 : dt); easeCam(); } render(); drawSheet(); requestAnimationFrame(frame); }
 window.addEventListener('resize', resize);
 window.__office2 = {get sessions() { return sessions; }, get world() { return world; }, get cam() { return cam; }, selectScene, validateWorld, pause:v => { paused = v; },
   advance:sec => { for (let k = 0; k < sec * 30; k++) { T += 1 / 30; step(1 / 30); } }, settle:() => { if (camTarget) { cam = {...camTarget}; camTarget = null; } }, SCENES, openCard, closeCard, nextSession, rollup,
   blinkAt, fitTarget:() => { const keep = camTarget; fit(false); const t = camTarget; camTarget = keep; return t; }, setCam:c => { cam = {...c}; camTarget = null; }, easeFrames:n => { for (let k = 0; k < n; k++) easeCam(); },
-  stagePoint:s => { const p = screenOf(s); return {x:p.x * cam.z + cam.x, y:(p.y - 34 * CS) * cam.z + cam.y}; }};
+  stagePoint:s => { const p = screenOf(s); return {x:p.x * cam.z + cam.x, y:(p.y - 36 * CS) * cam.z + cam.y}; }};
 selectScene(0); resize(); requestAnimationFrame(frame);
 })();
 </script>

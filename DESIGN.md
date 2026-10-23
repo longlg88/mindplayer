@@ -1,26 +1,36 @@
 # Design
 
-## 세션 사무실 보기 5안 — 2026-10-23 / 비교 기록, 미승인
+## 세션 사무실 보기 시안 5개 — 2026-10-23 / 비교 기록, 미승인
 
-산출물은 [사무실 보기 HTML 5안](docs/plans/2026-10-23-office-view-gallery.ko.html)이다.
+산출물은 [사무실 보기 HTML 시안](docs/plans/2026-10-23-office-view-gallery.ko.html)이다.
 검증 결과는 [검증 기록](docs/plans/2026-10-23-office-view-gallery.ko.validation.json)에 둔다.
 실제 TUI, 데스크톱 앱, 버전, 설치본, 사용자 세션과 계정은 수정하지 않는다.
 
 - 요청: 실행 중인 세션을 쿼터뷰 사무실로 보여 준다. 팀원의 tmux 사무실은 참고만 한다.
-  팀원 방식의 hooks 설치, `send-keys` 원격 입력, 로컬 HTTP 서버는 쓰지 않는다.
-- 결정 축은 사무실을 놓는 자리 하나다. 01 목록 아래 빈 자리(hero 대체), 02 목록 옆 칸,
-  03 전용 화면(`o`), 04 실행 화면 아래 띠, 05 자리 비움 화면을 비교한다.
-  캐릭터, 상태 표시, 색은 5안이 같다. 01 추천은 제품 기본값 승인이 아니다.
-- 데이터: category, agent, `SessionStatus`, `title`, `last_prompt_at`만 쓴다.
-  마지막 도구, 도구 횟수, context %, 부모 세션은 모든 세션에 대해 없으므로 그리지 않는다.
-- 그리기: half-block 셀(셀 하나에 색 두 개), `walker.rs` 6종의 원본 sprite,
-  `mascot.rs` 고래, `pane_dot`의 기호와 색을 재사용한다. 새 의존성은 없다.
-  Visual language의 "no decorative art" 원칙과 충돌하므로 구현 전에 예외 승인이 필요하다.
+- 팀원 방식에서 쓰지 않는 것:
+  - hook 설치. MindPlayer는 hook 값이 있으면 그 값을 쓰고, 없으면 PTY 출력을 분류한다.
+    hook은 사용자가 `--install-agent-hooks --apply`를 실행할 때만 쓴다. 이 시안은 설치를 더하지 않는다.
+  - tmux `send-keys` 원격 입력과 로컬 HTTP 서버.
+- 결정 축은 사무실을 놓는 자리 하나다. 비교하는 값은 아래 5개다.
+  - 01 목록 아래 빈 자리(hero 대체).
+  - 02 목록 옆 칸.
+  - 03 전용 화면(`o`).
+  - 04 실행 화면 아래 띠.
+  - 05 자리 비움 화면.
+- 캐릭터, 상태 표시, 색은 시안 5개가 같다. 01 추천은 제품 기본값 승인이 아니다.
+- 데이터는 category, agent, `SessionStatus`, `title`, `last_prompt_at`만 쓴다.
+  `last_prompt_at`은 codex와 claude만 있다. 실행 중인 kiro와 cursor의 시간은 목록처럼 now로 보인다.
+- 그리지 않는 것: 도구별 방, 도구 횟수, context %, 부모 연결, 압축 횟수.
+  도구 기록은 Trace를 켠 pane 하나만 읽는다. `context_pct`는 kiro만 있다.
+- 잠자기 규칙: idle이고 마지막 프롬프트 뒤 10분이 지났으면 잔다. kiro와 cursor는 자지 않는다.
+- 그리기: half-block 셀(셀 하나에 색 두 개)로만 그린다. `walker.rs` 6종의 원본 픽셀과
+  `mascot.rs` 첫 번째 표정(원본의 절반 크기), `pane_dot`의 기호와 색을 재사용한다. 새 의존성은 없다.
+- Visual language의 "no decorative art" 원칙과 충돌한다. 구현 전에 예외 승인이 필요하다.
 - 동작: 열기는 기존 Enter다. 답장은 그 pane의 네이티브 입력으로 한다.
-  03의 `o`와 05의 5분은 시안용 값이며 승인된 키나 시간이 아니다.
-- 검증: `docs/tests/office-view-gallery.test.cjs`가 5안의 겹침, 상태 기호, 전환,
-  키보드, 화면 폭, 외부 요청을 확인한다. HTML 검증은 실제 TUI 렌더 증거가 아니다.
-- 미결정: 고를 안과 조합, 키와 시간, agent별 캐릭터 매핑, 책상 12개 초과 배치.
+  03의 `o`와 05의 5분은 시안용 값이다. 승인된 키나 시간이 아니다.
+- 검증: `docs/tests/office-view-gallery.test.cjs`가 겹침, 세션별 상태 기호, 전환, 키보드,
+  화면 폭, 외부 요청, sprite 원본 일치를 확인한다. HTML 검증은 실제 TUI 렌더 증거가 아니다.
+- 미결정: 고를 안과 조합, 키와 시간, agent별 캐릭터 매핑, 책상 7개를 넘을 때의 배치.
 
 ## 세션별 F6 유지 토글 · 계정 표시 — 2026-10-19 / 최신 승인
 

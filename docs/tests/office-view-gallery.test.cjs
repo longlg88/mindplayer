@@ -58,7 +58,7 @@ async function main() {
       await office(() => window.__office2.pause(true));
       assert.equal(await office(() => window.__office2.blinkAt(0, 0)), motion !== 'reduce', 'eyes never close when motion is reduced');
       const choose = async k => { await office(k => { window.__office2.selectScene(k); window.__office2.settle(); }, k); await page.waitForTimeout(120); };
-      const sim = () => office(() => window.__office2.sessions.map(s => ({ title: s.title, status: s.status, agent: s.agent, place: s.place, tool: s.tool, gone: s.gone, walking: s.walking, pod: !!s.pod, hover: s.hover })));
+      const sim = () => office(() => window.__office2.sessions.map(s => ({ title: s.title, status: s.status, agent: s.agent, place: s.place, tool: s.tool, gone: s.gone, walking: s.walking, pod: !!s.pod, hover: s.hover, wild: window.__office2.isWild(s) })));
       const press = async (key, code) => { await page.locator('#stage').focus(); if (code) await page.locator('#stage').dispatchEvent('keydown', { key, code, bubbles: true }); else await page.keyboard.press(key); result.keyboardEvents++; };
 
       if (motion === 'no-preference') {
@@ -83,12 +83,12 @@ async function main() {
 
         const rows = await page.locator('#baseinfo .bi-row').count(); assert.equal(rows, 24, 'base info lists every live companion');
         const states = await sim(), rowText = await page.locator('#baseinfo .bi-row').allTextContents();
-        states.forEach((s, k) => { assert.ok(rowText[k].includes(s.title), `row ${k} names ${s.title}`); const want = s.status === 'working' ? /일하는 중 \(/ : s.status === 'blocked' ? /지시를 기다립니다/ : s.status === 'done' ? /납품 완료/ : s.pod ? /짚 침대에서 자는 중/ : /먹이통에서 쉬는 중/; assert.match(rowText[k], want, `row ${k} sentence for ${s.status}`); });
+        states.forEach((s, k) => { assert.ok(rowText[k].includes(s.title), `row ${k} names ${s.title}`); const want = s.wild ? /야생 · category 없음/ : s.status === 'working' ? /일하는 중 \(/ : s.status === 'blocked' ? /지시를 기다립니다/ : s.status === 'done' ? /납품 완료/ : s.pod ? /짚 침대에서 자는 중/ : /먹이통에서 쉬는 중/; assert.match(rowText[k], want, `row ${k} sentence for ${s.status}`); });
         await page.locator('#baseinfo .bi-row').nth(1).click(); assert.equal(await page.locator('#card.open').count(), 1); assert.match(await page.locator('#card h3').textContent(), new RegExp(states[1].title));
         await office(() => window.__office2.closeCard());
         assert.ok(states.filter(s => s.agent === 'cursor').every(s => s.tool === null), 'cursor sessions carry no tool');
-        for (const s of states.filter(x => x.status === 'working')) assert.equal(s.place, s.tool ? {read:'field', shell:'quarry', mcp:'depot', edit:'bench'}[s.tool] : 'bench', `${s.title} stands at the station of its last tool`);
-        const zones = await office(() => window.__office2.sessions.filter(s => !s.pod).map(s => ({ title: s.title, place: s.place, zone: (window.__office2.world.rooms[s.place] || {}).zone, floor: window.__office2.world.rooms[s.place] && window.__office2.world.rooms[s.place].zone && window.__office2.world.rooms[s.place].zone.floor, at: (() => { const z = window.__office2.world.rooms[s.place].zone; return s.pos.i >= z.i0 && s.pos.i < z.i0 + z.w && s.pos.j >= z.j0 && s.pos.j < z.j0 + z.d; })() })));
+        for (const s of states.filter(x => x.status === 'working' && !x.wild)) assert.equal(s.place, s.tool ? {read:'field', shell:'quarry', mcp:'depot', edit:'bench'}[s.tool] : 'bench', `${s.title} stands at the station of its last tool`);
+        const zones = await office(() => window.__office2.sessions.filter(s => !s.pod && !window.__office2.isWild(s)).map(s => ({ title: s.title, place: s.place, zone: (window.__office2.world.rooms[s.place] || {}).zone, floor: window.__office2.world.rooms[s.place] && window.__office2.world.rooms[s.place].zone && window.__office2.world.rooms[s.place].zone.floor, at: (() => { const z = window.__office2.world.rooms[s.place].zone; return s.pos.i >= z.i0 && s.pos.i < z.i0 + z.w && s.pos.j >= z.j0 && s.pos.j < z.j0 + z.d; })() })));
         for (const z of zones) assert.ok(z.at, `${z.title} stands inside the ${z.place} zone`);
         assert.equal(new Set(zones.map(z => z.floor)).size >= 5, true, 'stations stand on distinct floors');
         const parents = states.map((s, k) => [k, s]).filter(([, s]) => s.title);
@@ -154,10 +154,27 @@ async function main() {
         assert.ok(!mdOut.includes('<script>') && mdOut.includes('&lt;script&gt;') && mdOut.includes('<b>b</b>') && mdOut.includes('<code>c</code>') && mdOut.includes('href="https://example.test/a"') && mdOut.includes('<ul><li>a<ul><li>b</li></ul></li></ul>') && mdOut.includes('<pre>q&lt;y</pre>') && mdOut.includes('<th>h</th>') && mdOut.includes('class="choices"'), `markdown renders escaped text, bold, code, links, nested lists, fences, tables and choice lines: ${mdOut}`);
         await office(() => window.__office2.openCard(window.__office2.sessions.find(s => s.title === '히스토리 정리'))); assert.equal(await page.locator('#card .reply table').count(), 1, 'a reply with a markdown table renders a table in the card'); await office(() => window.__office2.closeCard());
         await press('?'); assert.equal(await page.locator('#help.open').count(), 1, '? opens the shortcut help'); await press('Escape'); assert.equal(await page.locator('#help.open').count(), 0, 'Esc closes the help first');
+        // wild sessions, capture and release
+        const wild0 = await office(() => window.__office2.sessions.filter(s => window.__office2.isWild(s)).map(s => ({ title: s.title, outside: !window.__office2.inPlateau(Math.floor(s.pos.i), Math.floor(s.pos.j)), land: window.__office2.landOutside(window.__office2.world, Math.floor(s.pos.i), Math.floor(s.pos.j)) })));
+        assert.equal(wild0.length, 2, 'two uncategorized sessions start wild'); assert.ok(wild0.every(w => w.outside && w.land), 'wild sessions stand on land outside the palisade');
+        assert.ok((await page.locator('#baseinfo .bi-row').allTextContents()).filter(t => t.includes('야생')).length === 2, 'the list says 야생 for both');
+        await office(() => window.__office2.advance(8)); assert.deepEqual(await office(() => window.__office2.validateWorld()), [], 'wandering keeps wild sessions on land');
+        await page.locator('#b-catch').click(); await page.waitForTimeout(motion === 'reduce' ? 400 : 3400); await office(() => window.__office2.advance(40));
+        const caught = await office(() => { const s = window.__office2.sessions.find(x => x.title === '구독 정리'); return { cat: s.cat, inside: window.__office2.inPlateau(Math.floor(s.pos.i), Math.floor(s.pos.j)), place: s.place, walking: s.walking, capture: !!s.capture }; });
+        assert.ok(caught.cat !== 'none' && caught.inside && caught.place === 'wait' && !caught.walking && !caught.capture, `the captured session is inside at its station ${JSON.stringify(caught)}`);
+        assert.deepEqual(await office(() => window.__office2.validateWorld()), [], 'layout valid after the capture');
+        await page.locator('#b-release').click(); await office(() => window.__office2.advance(60));
+        const released = await office(() => window.__office2.sessions.filter(s => window.__office2.isWild(s)).map(s => ({ title: s.title, outside: !window.__office2.inPlateau(Math.floor(s.pos.i), Math.floor(s.pos.j)) })));
+        assert.equal(released.length, 2, 'release makes one captured session wild again'); assert.ok(released.every(w => w.outside), 'released sessions stand outside');
+        assert.deepEqual(await office(() => window.__office2.validateWorld()), [], 'layout valid after the release');
+        await press('d'); assert.equal(await page.locator('#dex.open').count(), 1, 'D opens the dex'); assert.equal(await page.locator('#dex .cell').count(), 16, 'the dex has 16 species cells');
+        const known = await page.locator('#dex .cell:not(.unknown)').count(); assert.match(await page.locator('#b-dex').textContent(), new RegExp(`${known}/16`), 'the dex chip count matches the panel'); await press('Escape'); assert.equal(await page.locator('#dex.open').count(), 0);
+        result.passed.push('two uncategorized sessions roam outside; assigning a category captures one into the base and clearing it releases one; the 16-cell dex opens with D and its chip count matches');
         result.passed.push('today\'s terrain is marked; context/rank/age/farewell thresholds hold; the markdown renderer escapes first; ? toggles the help overlay');
         await page.locator('#stage').focus(); await page.keyboard.press('Tab');
-        assert.equal(await page.evaluate(() => document.activeElement.className.includes('bi-row')), true, 'Tab moves focus from the stage into the base info list');
-        result.passed.push('Tab moves focus from the stage into the first base info row');
+        assert.equal(await page.evaluate(() => document.activeElement.id), 'b-dex', 'Tab moves focus from the stage to its first control, the dex chip');
+        await page.keyboard.press('Tab'); assert.equal(await page.evaluate(() => document.activeElement.className.includes('bi-row')), true, 'the next Tab reaches the base info list');
+        result.passed.push('Tab moves focus from the stage to the dex chip, then into the base info list');
       }
 
       for (let k = 0; k < 5; k++) {
@@ -178,7 +195,7 @@ async function main() {
         assert.ok(lv.status === 'ended' && lv.place === 'terminal' && !lv.gone, `scene ${k + 1}: "${leaver}" stands by the terminal as an ended session`);
         assert.equal(await page.locator('#card.open').count(), 1, `scene ${k + 1}: the card of the ended companion stays open`);
         assert.match(await page.locator('#card .badge').textContent(), /ended/, `scene ${k + 1}: the open card now shows ended`);
-        assert.ok(!after.some(s => s.walking), `scene ${k + 1}: nobody is stuck walking`);
+        assert.ok(!after.some(s => s.walking && !s.wild), `scene ${k + 1}: nobody is stuck walking (wild sessions roam by design)`);
         assert.deepEqual(await office(() => window.__office2.validateWorld()), [], `scene ${k + 1}: layout still valid after transitions`);
         assert.equal(await page.locator('#baseinfo .bi-row').count(), 24, `scene ${k + 1}: base info keeps the ended companion`);
         assert.match((await page.locator('#baseinfo .bi-row').allTextContents()).find(t => t.includes(leaver)), /종료됨/, `scene ${k + 1}: the list sentence says ended`);
@@ -188,9 +205,12 @@ async function main() {
           for (let n = 0; n < 4; n++) { await page.locator('#b-start').click(); await office(() => window.__office2.advance(30)); }
           const crowd = await office(() => window.__office2.validateWorld()); assert.deepEqual(crowd, [], 'starters beyond the listed spots take clear tiles without crowding');
           const benchers = await office(() => window.__office2.sessions.filter(s => s.status === 'working' && s.place === 'bench').map(s => { const w = window.__office2.world, z = w.rooms.bench.zone, i = Math.floor(s.pos.i), j = Math.floor(s.pos.j), inZone = i >= z.i0 && i < z.i0 + z.w && j >= z.j0 && j < z.j0 + z.d; const foreign = !inZone && Object.values(w.rooms).some(r => r.zone && r.zone !== z && i >= r.zone.i0 && i < r.zone.i0 + r.zone.w && j >= r.zone.j0 && j < r.zone.j0 + r.zone.d); return { title: s.title, inZone, foreign }; }));
-          assert.ok(benchers.length >= 8, `eight companions work at benches after the overflow (${benchers.length})`);
+          assert.ok(benchers.length >= 7, `seven companions work at benches after the overflow, two more than the listed spots (${benchers.length})`);
           assert.ok(benchers.every(b => !b.foreign), 'no bench worker stands inside another station\'s zone');
-          assert.ok(benchers.some(b => !b.inZone), 'the overflow actually used an aisle tile');
+          assert.ok(benchers.length > await office(() => window.__office2.world.rooms.bench.spots.length), 'more bench workers than listed spots, so extra tiles were used');
+          const spill = await office(() => { const o = window.__office2, w = o.world, z = w.rooms.bench.zone, added = []; for (let i = z.i0; i < z.i0 + z.w; i++) for (let j = z.j0; j < z.j0 + z.d; j++) { const k = i + ',' + j; if (!w.blocked.has(k)) { w.blocked.add(k); added.push(k); } }
+            const sp = o.freeSpot(w, w.rooms.bench); for (const k of added) w.blocked.delete(k); return sp ? { zone: o.zoneAt(sp[0], sp[1]) ? o.zoneAt(sp[0], sp[1]).key : null, inside: o.inPlateau(sp[0], sp[1]) } : null; });
+          assert.ok(spill && spill.zone === null && spill.inside, `with the bench zone full, freeSpot spills into an aisle tile, never another zone (${JSON.stringify(spill)})`);
           const order2 = await office(() => window.__office2.rollup().map(s => s.status)); assert.ok(order2.includes('ended') && order2.indexOf('blocked') > order2.lastIndexOf('ended'), 'with an ended session present, ended still ranks before blocked');
           result.passed.push('overflow control: repeated starts beyond the five listed bench spots keep the layout contract, spill only into aisles, and the queue keeps ended before blocked');
         }

@@ -5,7 +5,10 @@
 //! session stays automatic — see `App::account_for`.
 
 use super::*;
-use mindplayer_core::accounts::{save_accounts, Account, AccountError, Role, MULTI_ACCOUNT_AGENTS};
+use mindplayer_core::accounts::{
+    accounts_from_saved, merge_accounts, read_saved_accounts, save_accounts, Account, AccountError,
+    Role, Slot, MULTI_ACCOUNT_AGENTS,
+};
 
 /// Marks a pane that is signing an account in rather than running a session.
 pub(crate) const LOGIN_PREFIX: &str = "login:";
@@ -217,8 +220,138 @@ impl App {
     }
 
     pub(crate) fn persist_accounts(&mut self) {
-        if let Err(e) = save_accounts(&limits_home_for_app(), &self.accounts) {
+        if let Err(e) = self.save_accounts_merged() {
             self.set_error(format!("could not save accounts: {e}"));
+        }
+    }
+
+    /// Save the list with this MindPlayer's edits laid onto whatever another one saved since this one last read it.
+    pub(crate) fn save_accounts_merged(&mut self) -> std::io::Result<()> {
+        if let Some(theirs) = read_saved_accounts(&self.accounts_home) {
+            if theirs != accounts_from_saved(self.accounts_base.clone()) {
+                let merged = merge_accounts(&self.accounts_base, &self.accounts, &theirs);
+                self.adopt_accounts(merged);
+            }
+        }
+        save_accounts(&self.accounts_home, &self.accounts)?;
+        // The base is the list exactly as written, so the file's own normalising never reads as an edit here.
+        self.accounts_base = self.accounts.clone();
+        Ok(())
+    }
+
+    /// Pick up a save by another MindPlayer, so an account added, renamed or turned off there shows here too.
+    pub(crate) fn reload_accounts_if_changed(&mut self) -> bool {
+        // A name being typed points at a row by index, so the list waits until it is done.
+        if self
+            .accounts_panel
+            .as_ref()
+            .is_some_and(|panel| panel.naming.is_some())
+        {
+            return false;
+        }
+        let Some(fresh) = read_saved_accounts(&self.accounts_home) else {
+            return false;
+        };
+        if fresh == accounts_from_saved(self.accounts_base.clone()) {
+            return false;
+        }
+        let merged = merge_accounts(&self.accounts_base, &self.accounts, &fresh);
+        self.accounts_base = fresh;
+        self.adopt_accounts(merged)
+    }
+
+    /// Take `fresh` as the list, keeping the cursor on its row and carrying renames onto usage rows and panes; false when nothing changed.
+    fn adopt_accounts(&mut self, fresh: Vec<Account>) -> bool {
+        if fresh == self.accounts {
+            return false;
+        }
+        // A rename keeps the slot, so the same slot under another name is the same login renamed.
+        let renames: Vec<(Account, Account)> = self
+            .accounts
+            .iter()
+            .filter_map(|old| {
+                fresh
+                    .iter()
+                    .find(|new| {
+                        new.provider == old.provider && new.slot == old.slot && new.name != old.name
+                    })
+                    .map(|new| (old.clone(), new.clone()))
+            })
+            .collect();
+        self.keep_selection(|app| app.accounts = fresh);
+        if !renames.is_empty() {
+            self.relabel_usage_after_rename(&renames);
+            for (agent, name) in self.pane_accounts.values_mut() {
+                if let Some((_, new)) = renames
+                    .iter()
+                    .find(|(old, _)| old.provider == *agent && old.name == *name)
+                {
+                    name.clone_from(&new.name);
+                }
+            }
+        }
+        true
+    }
+
+    /// True when another account of this provider has `name`, here or in a save by another MindPlayer not read yet.
+    fn name_taken(&self, agent: Agent, name: &str, except: Option<&Slot>) -> bool {
+        let saved = read_saved_accounts(&self.accounts_home).unwrap_or_default();
+        self.accounts
+            .iter()
+            .chain(saved.iter())
+            .any(|a| a.provider == agent && a.name == name && Some(&a.slot) != except)
+    }
+
+    /// Run `change` on the list and leave the cursor on the same account or heading, since rows are found by index.
+    fn keep_selection(&mut self, change: impl FnOnce(&mut Self)) {
+        let held = self.accounts_panel.as_ref().and_then(|panel| {
+            match self.account_rows().get(panel.selected)? {
+                AccountRow::Header(agent) => Some((*agent, None)),
+                AccountRow::Entry(i) => self
+                    .accounts
+                    .get(*i)
+                    .map(|a| (a.provider, Some(a.slot.clone()))),
+            }
+        });
+        let renaming = match self.accounts_panel.as_ref().and_then(|panel| panel.naming) {
+            Some(NameFor::Rename(i)) => self.accounts.get(i).map(|a| (a.provider, a.slot.clone())),
+            _ => None,
+        };
+        change(self);
+        let renamed_at = renaming.as_ref().map(|(agent, slot)| {
+            self.accounts
+                .iter()
+                .position(|a| a.provider == *agent && &a.slot == slot)
+        });
+        let rows = self.account_rows();
+        let found = held.as_ref().and_then(|(agent, slot)| {
+            rows.iter().position(|row| match (row, slot) {
+                (AccountRow::Header(a), None) => a == agent,
+                (AccountRow::Entry(i), Some(slot)) => self
+                    .accounts
+                    .get(*i)
+                    .is_some_and(|account| account.provider == *agent && &account.slot == slot),
+                _ => false,
+            })
+        });
+        if let Some(panel) = self.accounts_panel.as_mut() {
+            // An erase waits on the account it was asked for; if that account is gone, the second x must not land on another.
+            if found.is_none() {
+                panel.confirm_remove = None;
+            }
+            // A name being typed for an account follows that account, and is dropped if it is gone.
+            match renamed_at {
+                Some(Some(i)) => panel.naming = Some(NameFor::Rename(i)),
+                Some(None) => {
+                    panel.naming = None;
+                    panel.new_name = None;
+                    panel.error = Some("that account was removed in another MindPlayer".into());
+                }
+                None => {}
+            }
+            panel.selected = found
+                .unwrap_or(panel.selected)
+                .min(rows.len().saturating_sub(1));
         }
     }
 
@@ -286,8 +419,9 @@ impl App {
                 };
             }
         }
-        self.persist_accounts();
+        // Saving can take in another MindPlayer's list, which moves indexes.
         let name = self.accounts[i].name.clone();
+        self.persist_accounts();
         self.status = format!("new {} sessions will use {name}", provider.as_str());
     }
 
@@ -379,7 +513,7 @@ impl App {
         if let Some(found) = self
             .accounts
             .iter_mut()
-            .find(|a| a.provider == account.provider && a.name == account.name)
+            .find(|a| a.provider == account.provider && a.slot == account.slot)
         {
             found.disabled = true;
         }
@@ -568,11 +702,7 @@ impl App {
                 return;
             }
         };
-        if self
-            .accounts
-            .iter()
-            .any(|a| a.provider == agent && a.name == account.name)
-        {
+        if self.name_taken(agent, &account.name, None) {
             self.set_error(AccountError::Duplicate(account.name).to_string());
             return;
         }
@@ -624,11 +754,7 @@ impl App {
             self.set_error(e.to_string());
             return;
         }
-        if self
-            .accounts
-            .iter()
-            .any(|a| a.provider == account.provider && a.name == name)
-        {
+        if self.name_taken(account.provider, name, Some(&account.slot)) {
             self.set_error(AccountError::Duplicate(name.to_string()).to_string());
             return;
         }
@@ -639,8 +765,16 @@ impl App {
 
         self.accounts[i].name = name.to_string();
         let renamed = self.accounts[i].clone();
-        self.relabel_usage_after_rename(&account, &renamed);
+        self.relabel_usage_after_rename(&[(account.clone(), renamed)]);
         self.persist_accounts();
+        // The save can take in a removal of this account by another MindPlayer, whose message then stands.
+        if !self
+            .accounts
+            .iter()
+            .any(|a| a.provider == account.provider && a.slot == account.slot)
+        {
+            return;
+        }
         self.accounts_cancel_add();
         self.clear_error();
         self.status = format!(
@@ -653,18 +787,25 @@ impl App {
     /// A usage worker captures account names before it starts. Drop that
     /// worker on rename so its old rows cannot land after the rename, and
     /// relabel readings already on screen until the forced replacement lands.
-    fn relabel_usage_after_rename(&mut self, old: &Account, renamed: &Account) {
-        let old_reference = format!("same login as {}", old.name);
-        let new_reference = format!("same login as {}", renamed.name);
+    fn relabel_usage_after_rename(&mut self, renames: &[(Account, Account)]) {
+        // One pass per row, so names that trade places are not renamed twice.
+        let renamed = |agent: Agent, name: &str| {
+            renames
+                .iter()
+                .find(|(old, _)| old.provider == agent && old.name == name)
+                .map(|(_, new)| new)
+        };
         let relabel = |rows: &mut Vec<mindplayer_core::limits::QuotaRow>| {
             for row in rows {
-                if row.agent == old.provider {
-                    if row.account == old.name {
-                        row.account.clone_from(&renamed.name);
-                    }
-                    if row.detail == old_reference {
-                        row.detail.clone_from(&new_reference);
-                    }
+                if let Some(new) = renamed(row.agent, &row.account) {
+                    row.account.clone_from(&new.name);
+                }
+                if let Some(new) = row
+                    .detail
+                    .strip_prefix("same login as ")
+                    .and_then(|name| renamed(row.agent, name))
+                {
+                    row.detail = format!("same login as {}", new.name);
                 }
             }
         };
@@ -683,14 +824,19 @@ impl App {
         self.limits_retry_at = None;
         self.limits_force_refresh = true;
 
-        let old_key = unusable_key(old);
-        let new_key = unusable_key(renamed);
-        if self.unusable_asked.remove(&old_key) {
-            self.unusable_asked.insert(new_key);
-        }
+        let asked = std::mem::take(&mut self.unusable_asked);
+        self.unusable_asked = asked
+            .into_iter()
+            .map(|key| {
+                renames
+                    .iter()
+                    .find(|(old, _)| unusable_key(old) == key)
+                    .map_or(key, |(_, new)| unusable_key(new))
+            })
+            .collect();
         for account in &mut self.unusable_waiting {
-            if account.provider == old.provider && account.name == old.name {
-                account.clone_from(renamed);
+            if let Some(new) = renamed(account.provider, &account.name) {
+                account.clone_from(new);
             }
         }
     }

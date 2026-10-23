@@ -340,13 +340,12 @@ impl App {
             changed = true;
             // Never apply a late result by index. A changed binding needs a
             // new check, not loss of another launch's command or handoff input.
+            // By slot, not name: another MindPlayer can rename the account while the check runs.
             let current = self
                 .accounts
                 .iter()
                 .find(|account| {
-                    account.provider == check.account.provider
-                        && account.name == check.account.name
-                        && account.slot == check.account.slot
+                    account.provider == check.account.provider && account.slot == check.account.slot
                 })
                 .cloned();
             let Some(current) = current.filter(|account| !account.disabled) else {
@@ -356,14 +355,9 @@ impl App {
                 );
                 continue;
             };
+            // An account changed during the check is checked again as it is now, whatever the check was for.
             if current != check.account {
-                match check.purpose {
-                    Purpose::Launch(pending) => {
-                        self.start_account_check(current, Purpose::Launch(pending))
-                    }
-                    Purpose::AfterLogin => self.start_account_check(current, Purpose::AfterLogin),
-                    _ => {}
-                }
+                self.start_account_check(current, check.purpose);
                 continue;
             }
             self.finish_account_check(check.account, check.purpose, reading, check.cwd);
@@ -429,7 +423,8 @@ impl App {
             .blocked
             .iter()
             .filter(|(_, (a, _))| {
-                a.provider == account.provider && a.name == account.name && a.slot == account.slot
+                // The slot, not the name: another MindPlayer can rename the account during the check.
+                a.provider == account.provider && a.slot == account.slot
             })
             .map(|(id, _)| id.clone())
             .collect();
@@ -519,11 +514,20 @@ impl App {
                             return;
                         };
                         self.accounts[index].set_identity_fingerprint(Some(expected));
-                        if let Err(error) = mindplayer_core::accounts::save_accounts(
-                            &limits_home_for_app(),
-                            &self.accounts,
-                        ) {
-                            self.accounts[index] = account.clone();
+                        // The save can take in another MindPlayer's list, so the account is found again by its slot.
+                        let saved = self.save_accounts_merged();
+                        let Some(index) = self
+                            .accounts
+                            .iter()
+                            .position(|a| a.provider == account.provider && a.slot == account.slot)
+                        else {
+                            self.status = format!("{} was removed during the check", account.name);
+                            return;
+                        };
+                        if let Err(error) = saved {
+                            self.accounts[index].set_identity_fingerprint(
+                                account.identity_fingerprint().map(str::to_string),
+                            );
                             self.show_account_identity(
                                 &account,
                                 format!("계정 저장 실패: {error}"),

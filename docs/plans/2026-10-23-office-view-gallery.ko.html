@@ -1,0 +1,511 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light">
+<meta name="description" content="MindPlayer의 실행 중인 세션을 쿼터뷰 사무실로 보여 주는 터미널 UI 5안. 사무실을 놓는 자리만 다르다. 앱 미적용, 합성 데이터, 외부 전송 없음.">
+<title>MindPlayer · 세션 사무실 / UI 5안</title>
+<style>
+:root{--paper:#f5f4ef;--ink:#202724;--muted:#656d66;--rule:#d5d9cf;--accent:#a8481b;--term:#252a33}
+*{box-sizing:border-box}body{margin:0;background:var(--paper);color:var(--ink);font-family:-apple-system,BlinkMacSystemFont,"Apple SD Gothic Neo","Noto Sans KR",sans-serif}
+button{font:inherit;color:inherit;cursor:pointer;touch-action:manipulation}button:focus-visible,.terminal:focus-visible,summary:focus-visible{outline:3px solid var(--accent);outline-offset:4px}
+.page{max-width:1540px;margin:auto;padding:25px 32px 38px}
+.eyebrow{display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;font:11px ui-monospace,Menlo,monospace;letter-spacing:1.3px;color:var(--muted)}.edition{color:var(--accent)}
+h1{font-size:29px;letter-spacing:-1px;line-height:1.35;margin:12px 0 7px;font-weight:700}
+.intro{margin:0;font-size:13px;color:var(--muted);line-height:1.7;max-width:880px}.intro strong{color:var(--ink);font-weight:600}
+.rule-line{display:flex;flex-wrap:wrap;gap:7px 16px;margin:10px 0 0;color:var(--accent);font:11px/1.8 ui-monospace,Menlo,monospace}.rule-line span{white-space:nowrap}
+.tabs{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));margin:23px 0 19px;border-block:1px solid var(--rule)}
+.tab{text-align:left;border:0;border-right:1px solid var(--rule);background:none;padding:12px 12px 13px;min-width:0}.tab:last-child{border-right:0}
+.tab .number{display:block;font:11px ui-monospace,Menlo,monospace;color:var(--muted);margin-bottom:7px}.tab .name{font-size:14px;font-weight:600}.tab .tag{float:right;font-size:10px;color:var(--accent)}
+.tab[aria-selected=true]{background:#eee5d9;box-shadow:inset 0 -3px 0 var(--accent)}.tab[aria-selected=true] .name,.tab[aria-selected=true] .number{color:var(--accent)}
+.stage-top{display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;margin-bottom:8px}.stage-top h2{font-size:17px;letter-spacing:-.4px;margin:0}.stage-top h2 span{color:var(--accent);font:13px ui-monospace,Menlo,monospace;margin-right:12px}
+.views{display:flex;gap:3px}.views button{font-size:11px;background:none;border:1px solid var(--rule);padding:5px 9px}.views button[aria-pressed=true]{border-color:var(--accent);background:#eee5d9;color:var(--accent)}
+.delta{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px 24px;margin:0 0 12px;font-size:12.5px;line-height:1.65}.delta div{display:flex;gap:10px}.delta dt{flex:none;color:var(--muted);width:56px}.delta dd{margin:0}
+.terminal-scroll{overflow-x:auto;background:var(--term);padding:12px}.terminal{width:max-content;margin:auto}.terminal canvas{display:block}
+.key-line{margin:8px 0 0;font:11px ui-monospace,Menlo,monospace;color:var(--muted)}
+.trybar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:14px;padding-top:12px;border-top:1px solid var(--rule);font-size:11px;color:var(--muted)}.trybar span{margin-right:4px}.trybar button{background:none;border:1px solid #b9bfb3;padding:5px 9px}.trybar button:hover{background:#eae9dd}.live-status{margin-left:auto;color:var(--accent);font:11px ui-monospace,Menlo,monospace}
+.retained{margin-top:26px;padding-top:15px;border-top:1px solid var(--rule)}.section-heading{display:flex;justify-content:space-between;gap:12px;align-items:baseline;flex-wrap:wrap;font-size:11px;color:var(--muted);margin:0 0 10px}.section-heading h3{font-size:13px;color:var(--ink);margin:0;font-weight:600}
+table{width:100%;border-collapse:collapse;font-size:12.5px;line-height:1.6}th,td{text-align:left;vertical-align:top;padding:7px 10px;border-top:1px solid var(--rule)}thead th{border-top:0;font-size:11px;color:var(--muted);font-weight:600}td:first-child{font-weight:600;white-space:nowrap}code{font:11.5px ui-monospace,Menlo,monospace;background:#eae9dd;padding:0 4px}
+.table-scroll{overflow-x:auto}.table-scroll table{min-width:640px}
+ul.plain{margin:0;padding-left:18px;font-size:12.5px;line-height:1.75}
+.sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+@media(max-width:900px){.page{padding:20px}.delta{grid-template-columns:1fr}.tab{padding:10px 8px}.tab .tag{float:none;display:block}}
+@media(max-width:640px){.page{padding:18px 14px 26px}h1{font-size:24px}.eyebrow{font-size:9px;letter-spacing:.6px}.tabs{grid-template-columns:1fr 1fr}.tab{border-bottom:1px solid var(--rule)}.tab:last-child{grid-column:1 / -1;border-bottom:0}.terminal-scroll{padding:8px}.live-status{margin-left:0;width:100%}}
+</style>
+</head>
+<body>
+<main class="page">
+  <div class="eyebrow"><span>MINDPLAYER / UI STUDIES</span><span class="edition">05안 · 2026.10.23 · 앱 미적용 · 합성 데이터</span></div>
+  <h1>실행 중인 세션을 사무실로 봅니다.</h1>
+  <p class="intro">세션 하나가 쿼터뷰 사무실의 캐릭터 하나입니다. <strong>5안은 사무실을 놓는 자리만 다릅니다.</strong> 캐릭터, 상태 표시, 색은 5안 모두 같습니다. 모든 그림은 셀 하나에 색 두 개인 half-block 문자로 그립니다. 그래서 지금 TUI가 그대로 그릴 수 있습니다.</p>
+  <div class="rule-line" aria-label="5안 공통 규칙"><span>책상 묶음 = category</span><span>캐릭터 = agent</span><span>자세 + 머리 위 기호 = 세션 상태</span><span>이름표 = 첫 프롬프트</span><span>Enter = 기존 열기</span></div>
+  <nav class="tabs" role="tablist" aria-label="UI 시안 5개"></nav>
+  <section aria-labelledby="idea-title">
+    <div class="stage-top"><h2 id="idea-title"></h2><div class="views" aria-label="화면 비교"><button type="button" data-view="proposed" aria-pressed="true">제안</button><button type="button" data-view="current" aria-pressed="false">현재 화면</button></div></div>
+    <dl class="delta"><div><dt>바뀌는 것</dt><dd id="d-change"></dd></div><div><dt>비용</dt><dd id="d-cost"></dd></div></dl>
+    <div class="terminal-scroll"><div class="terminal" id="terminal" tabindex="0" role="group" aria-label="조작 가능한 터미널 시안" aria-describedby="key-hint"><canvas id="screen" role="img" aria-label="MindPlayer 터미널 화면"></canvas></div></div>
+    <p class="key-line" id="key-hint"></p>
+    <div class="trybar"><span>브라우저 체험</span><button type="button" id="b-start">UI 여백 수정 → 일 시작</button><button type="button" id="b-end">운영 문서 정리 → 종료</button><button type="button" id="b-away" hidden>자리 비움 5분</button><button type="button" id="b-reset">초기화</button><span class="live-status" id="live" aria-live="polite"></span></div>
+    <p class="sr" id="sr" aria-live="polite"></p>
+  </section>
+
+  <section class="retained" aria-labelledby="common-title">
+    <div class="section-heading"><h3 id="common-title">5안 공통: 사무실의 모든 요소는 mindplayer에 이미 있는 값입니다</h3><span>새 데이터 수집 없음</span></div>
+    <div class="table-scroll"><table>
+      <thead><tr><th>사무실 요소</th><th>보여 주는 것</th><th>출처</th></tr></thead>
+      <tbody>
+        <tr><td>책상 묶음과 바닥 색</td><td>세션의 category. category가 없으면 회색 바닥입니다.</td><td><code>state.category_of</code>, <code>ui.rs</code> category 팔레트</td></tr>
+        <tr><td>캐릭터</td><td>agent. codex는 펭귄, claude는 문어, kiro는 슬라임, cursor는 병아리입니다. 매핑은 제안입니다.</td><td><code>walker.rs</code> 캐릭터 6종의 원본 픽셀</td></tr>
+        <tr><td>자세와 머리 위 기호</td><td><code>! blocked</code>는 제자리에서 뜁니다. <code>● working</code>은 앉아서 화면이 깜박입니다. <code>✓ done</code>은 앉아 있습니다. <code>○ idle</code>은 lounge에 갑니다. idle이 10분을 넘으면 잡니다. <code>○ ended</code>는 EXIT 문으로 나갑니다.</td><td><code>SessionStatus</code>, <code>pane_dot</code> 기호와 색</td></tr>
+        <tr><td>이름표</td><td>첫 프롬프트 제목의 앞 8칸. 앞의 색 막대는 agent 색입니다.</td><td><code>Session.title</code>, 목록의 <code>▌codex</code> 표기</td></tr>
+        <tr><td>경과 시간</td><td>마지막 프롬프트 뒤 경과 시간. 목록 시간 열과 같습니다.</td><td><code>last_prompt_at</code>, <code>relative_time</code></td></tr>
+        <tr><td>밖의 고래</td><td>MindPlayer 마스코트. 눈 깜박임과 위아래 흔들림을 그대로 씁니다.</td><td><code>mascot.rs</code></td></tr>
+        <tr><td>열기</td><td>Enter로 그 세션의 pane에 들어갑니다. 답장은 그 pane의 네이티브 입력으로 합니다.</td><td>기존 열기 경로. 입력 경로 변경 없음</td></tr>
+      </tbody>
+    </table></div>
+  </section>
+
+  <section class="retained" aria-labelledby="omit-title">
+    <div class="section-heading"><h3 id="omit-title">넣지 않은 것: 모든 세션에 대한 데이터가 없습니다</h3><span>미구현 데이터</span></div>
+    <ul class="plain">
+      <li>도구별 방 이동(자료실, 작업실, 통화 부스): 마지막 도구는 Trace가 선택한 세션 하나에서만 읽습니다.</li>
+      <li>도구 횟수로 정하는 직급과 왕관: 같은 이유로 모든 세션의 도구 횟수가 없습니다.</li>
+      <li>context가 찰수록 복잡해지는 머리: <code>context_pct</code>는 kiro만 기록합니다. codex와 claude는 값이 없습니다.</li>
+      <li>서브에이전트와 부모를 잇는 끈: <code>Session</code>에 부모 세션 id가 없습니다.</li>
+      <li>압축 횟수 상자: 압축을 세는 코드가 없습니다.</li>
+    </ul>
+  </section>
+
+  <section class="retained" aria-labelledby="diff-title">
+    <div class="section-heading"><h3 id="diff-title">참고한 팀원 방식과 다른 점</h3><span>참고만 했고 구조는 따르지 않습니다</span></div>
+    <div class="table-scroll"><table>
+      <thead><tr><th>항목</th><th>팀원 방식</th><th>이 시안</th></tr></thead>
+      <tbody>
+        <tr><td>상태 수집</td><td>Claude Code hooks를 <code>~/.claude/settings.json</code>에 설치합니다.</td><td>설치하지 않습니다. mindplayer가 PTY 출력으로 상태를 이미 분류합니다(<code>pty.rs</code>, <code>classify_live_session_status</code>).</td></tr>
+        <tr><td>답장</td><td>tmux <code>send-keys</code>로 다른 pane에 입력을 보냅니다.</td><td>원격 입력이 없습니다. Enter로 pane에 들어가서 직접 입력합니다.</td></tr>
+        <tr><td>화면</td><td>로컬 HTTP 서버와 브라우저 페이지를 씁니다.</td><td>서버가 없습니다. TUI 안에서 문자 셀로 그립니다.</td></tr>
+        <tr><td>대상</td><td>Claude Code 세션만 봅니다.</td><td>codex, claude, kiro, cursor 세션을 모두 봅니다.</td></tr>
+      </tbody>
+    </table></div>
+  </section>
+
+  <section class="retained" aria-labelledby="open-title">
+    <div class="section-heading"><h3 id="open-title">열린 결정</h3><span>HTML 승인은 구현 승인이 아닙니다</span></div>
+    <ul class="plain">
+      <li>고를 안. 두 안을 함께 쓸 수 있습니다(예: 01 + 03).</li>
+      <li>03의 <code>o</code> 키와 05의 5분은 시안용 값입니다. 승인된 키나 시간이 아닙니다.</li>
+      <li>agent별 캐릭터 매핑. 지금은 사용자가 고른 걷는 캐릭터 하나를 모든 화면에 씁니다.</li>
+      <li>세션이 책상 수보다 많을 때(12개 초과) 배치.</li>
+      <li>검증 범위: 브라우저에서 합성 상태로만 확인했습니다. 실제 TUI 렌더 속도와 작은 터미널은 확인하지 않았습니다.</li>
+    </ul>
+  </section>
+</main>
+<script>
+(() => {
+'use strict';
+const SPR = {"walkers":[{"id":"duck","name":"rubber duck","pal":{"body":"#ffd23f","dark":"#e5b420","ink":"#2a2320","light":"#fff8d0","accent":"#f5762b"},"frames":[["....AAAA....","..AAAAAAAA..","..AAAAAAAA..","..ACCAACCA..","..AEEEEEEA..","...AAAAAA...","...AAAAAA...","...E....E..."],["....AAAA....","..AAAAAAAA..","..AAAAAAAA..","..ACCAACCA..","..AEEEEEEA..","...AAAAAA...","...AAAAAA...","....E..E...."]],"sit":["....AAAA....","..AAAAAAAA..","..AAAAAAAA..","..ACCAACCA..","..AEEEEEEA..","...AAAAAA...",".AAAAAAAAAA.","..EE....EE.."],"sleep":["....AAAA....","..AAAAAAAA..","..AAAAAAAA..","..ACCAACCA..","..AEEEEEEA..","...AAAAAA...",".AAAAAAAAAA.",".BBBBBBBBBB."]},{"id":"bunny","name":"bunny","pal":{"body":"#f2eef0","dark":"#d8ccd4","ink":"#3a2e36","light":"#ffffff","accent":"#f5a8bc"},"frames":[["...AA..AA...","...AE..EA...","..AAAAAAAA..","..ACCAACCA..","..AAAEEAAA..","..AAAAAAAA..","...AAAAAA...","..AA....AA.."],["...AA..AA...","...AE..EA...","..AAAAAAAA..","..ACCAACCA..","..AAAEEAAA..","..AAAAAAAA..","...AAAAAA...","...AA..AA..."]],"sit":["...AA..AA...","...AE..EA...","..AAAAAAAA..","..ACCAACCA..","..AAAEEAAA..","..AAAAAAAA..",".AAAAAAAAAA.","..AA....AA.."],"sleep":["...AA..AA...","...AE..EA...","..AAAAAAAA..","..ACCAACCA..","..AAAEEAAA..","..AAAAAAAA..",".AAAAAAAAAA.",".BBBBBBBBBB."]},{"id":"chick","name":"chick","pal":{"body":"#ffd95e","dark":"#e0b030","ink":"#2a2320","light":"#fff6c8","accent":"#f08a30"},"frames":[["....AAAA....","..AAAAAAAA..","..AAAAAAAA..","..ACCAACCA..","..AAAEEAAA..","...AAAAAA...","....AAAA....","...E....E..."],["....AAAA....","..AAAAAAAA..","..AAAAAAAA..","..ACCAACCA..","..AAAEEAAA..","...AAAAAA...","....AAAA....","....E..E...."]],"sit":["....AAAA....","..AAAAAAAA..","..AAAAAAAA..","..ACCAACCA..","..AAAEEAAA..","...AAAAAA...","..AAAAAAAA..","...E....E..."],"sleep":["....AAAA....","..AAAAAAAA..","..AAAAAAAA..","..ACCAACCA..","..AAAEEAAA..","...AAAAAA...",".AAAAAAAAAA.",".BBBBBBBBBB."]},{"id":"slime","name":"slime","pal":{"body":"#6ed0a8","dark":"#3fa07c","ink":"#1c3830","light":"#2f5c4c","accent":"#38806a"},"frames":[["....AAAA....","...AAAAAA...","..AAAAAAAA..","..ACCAACCA..","..AAAEEAAA..",".AAAAAAAAAA.",".AAAAAAAAAA.","..DDDDDDDD.."],["............","....AAAA....","..AAAAAAAA..","..ACCAACCA..","..AAAEEAAA..",".AAAAAAAAAA.","AAAAAAAAAAAA",".DDDDDDDDDD."]],"sit":["....AAAA....","...AAAAAA...","..AAAAAAAA..","..ACCAACCA..","..AAAEEAAA..",".AAAAAAAAAA.","AAAAAAAAAAAA","..DDDDDDDD.."],"sleep":["....AAAA....","...AAAAAA...","..AAAAAAAA..","..ACCAACCA..","..AAAEEAAA..",".AAAAAAAAAA.","AAAAAAAAAAAA","DDDDDDDDDDDD"]},{"id":"penguin","name":"penguin","pal":{"body":"#3d4a63","dark":"#2a3448","ink":"#12181f","light":"#f2f5fa","accent":"#f0a03c"},"frames":[["...AAAAAA...","..AAAAAAAA..","..ADDDDDDA..","..DCCDDCCD..","..ADDEEDDA..","..ADDDDDDA..",".AADDDDDDAA.","...EE..EE..."],["...AAAAAA...","..AAAAAAAA..","..ADDDDDDA..","..DCCDDCCD..","..ADDEEDDA..","..ADDDDDDA..",".AADDDDDDAA.","..EE....EE.."]],"sit":["...AAAAAA...","..AAAAAAAA..","..ADDDDDDA..","..DCCDDCCD..","..ADDEEDDA..",".AADDDDDDAA.",".AADDDDDDAA.","..AAAAAAAA.."],"sleep":["...AAAAAA...","..AAAAAAAA..","..ADDDDDDA..","..DCCDDCCD..","..ADDEEDDA..","..ADDDDDDA..",".AADDDDDDAA.",".BBBBBBBBBB."]},{"id":"octopus","name":"octopus","pal":{"body":"#e084b0","dark":"#b85f8a","ink":"#3a2030","light":"#ffd0e4","accent":"#a03a68"},"frames":[["....AAAA....","..AAAAAAAA..","..AAAAAAAA..","..ACCAACCA..","..AAAEEAAA..",".AAAAAAAAAA.",".A.A.A.A.A.A","A...A...A..."],["....AAAA....","..AAAAAAAA..","..AAAAAAAA..","..ACCAACCA..","..AAAEEAAA..",".AAAAAAAAAA.","A.A.A.A.A.A.","...A...A...A"]],"sit":["....AAAA....","..AAAAAAAA..","..AAAAAAAA..","..ACCAACCA..","..AAAEEAAA..",".AAAAAAAAAA.",".AAAAAAAAAA.",".A.A.A.A.A.A"],"sleep":["....AAAA....","..AAAAAAAA..","..AAAAAAAA..","..ACCAACCA..","..AAAEEAAA..",".AAAAAAAAAA.","AAAAAAAAAAAA","A.A.A.A.A.A."]}],"whale":{"rows":[".......D....D...........",".........DDDDD..........","...........DD...........","...........DD...........","....AAAAAAAAAA..........","..FFFAAAAAAAAAAAAA......",".AAAACCAAAAAAAAAAABB....",".AEAAAAAAAAAAAAAAAABBB..",".DDDDDAAAAAAAAAAABBB....",".DDDDDDDDAAAAAAAAA......","..DDDDDDDDDAAAAA........","...DDDDDDDDDAA..........",".....DDDDDDD............"],"pal":{"A":"#6fb3d9","B":"#4a86ad","C":"#1c2b33","D":"#eaf6fb","E":"#f6a6c0","F":"#7fb2e0"}}};
+const CW = 8, CH = 16, COLS = 160, ROWS = 52, TICK_MS = 80;
+const K = {bg:'#252a33', fg:'#d4d8e1', accent:'#7ea2f7', dim:'#8c929e', category:'#b48ef0', waiting:'#ffb783', working:'#f0d478',
+  completed:'#91d9ae', ended:'#aeb7c6', uncat:'#8c94a2', selBg:'#303c60', idGreen:'#68b984', quota:'#7dbb84', zoom:'#eba046',
+  ground:'#3c4658', badgeInk:'#0f1116', labelBg:'#1d2129'};
+const AGENT = {codex:{tag:'codex ', color:'#7ea2f7', walker:'penguin'}, claude:{tag:'claude', color:'#c678dd', walker:'octopus'},
+  kiro:{tag:'kiro  ', color:'#56b6c2', walker:'slime'}, cursor:{tag:'cursor', color:'#f2aa4c', walker:'chick'}};
+const ST = {blocked:{glyph:'!', badge:'! blocked', color:K.waiting, bold:true}, working:{glyph:'●', badge:'● working', color:K.working, bold:true},
+  done:{glyph:'✓', badge:'✓ done   ', color:K.completed, bold:true}, idle:{glyph:'○', badge:'○ idle   ', color:K.uncat, bold:false},
+  ended:{glyph:'○', badge:'○ ended  ', color:K.ended, bold:false}};
+const CATS = {ops:{name:'운영 작업', color:'#b48ead', sync:false}, prod:{name:'제품 개발', color:'#a3be8c', sync:true}};
+const BASE = [
+  {sid:'s12', id:'019a2c4e', agent:'codex', cat:'ops', status:'blocked', mins:4, title:'API 오류 분석', usage:'182k', out:['› API 오류 원인을 찾아 줘', '• rg -n "timeout" src/api', 'Allow command?  1 yes  2 no']},
+  {sid:'s18', id:'7f31c0aa', agent:'claude', cat:'ops', status:'working', mins:2, title:'재현 테스트 작성', usage:'96k', out:['› 재현 테스트를 써 줘', '✶ Writing… (2m 10s · ↓ 3.1k tokens)']},
+  {sid:'s20', id:'c2e9d417', agent:'kiro', cat:'ops', status:'idle', mins:14, title:'로그 수집', usage:'41%', out:['› 로그를 모아 줘', '> 수집을 끝냈습니다.']},
+  {sid:'s24', id:'0b8d5e62', agent:'codex', cat:'prod', status:'working', mins:6, title:'배포 검증', usage:'240k', out:['› 배포를 검증해 줘', '• Running kubectl get pods (1m 02s)']},
+  {sid:'s31', id:'5ea0f9c3', agent:'claude', cat:'prod', status:'done', mins:1, title:'운영 문서 정리', usage:'71k', out:['› 운영 문서를 정리해 줘', '⏺ 정리를 끝냈습니다. 바뀐 파일 3개']},
+  {sid:'s33', id:'9d4417b0', agent:'cursor', cat:'prod', status:'idle', mins:3, title:'UI 여백 수정', usage:'12k', out:['› 여백을 고쳐 줘', '> 고쳤습니다.']},
+  {sid:'s42', id:'e61b2a90', agent:'codex', cat:null, status:'blocked', mins:9, title:'리팩터링 계획', usage:'133k', out:['› 리팩터링 계획을 세워 줘', 'Proceed with plan?  1 yes  2 no']}];
+const WALK = Object.fromEntries(SPR.walkers.map(w => [w.id, w]));
+const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+// ---- character cells: one cell = one glyph or two half-block pixels ----
+function wcw(ch) { const c = ch.codePointAt(0);
+  return (c >= 0x1100 && c <= 0x115f) || (c >= 0x2e80 && c <= 0xa4cf) || (c >= 0xac00 && c <= 0xd7a3) || (c >= 0xf900 && c <= 0xfaff) || (c >= 0xff00 && c <= 0xff60) ? 2 : 1; }
+const swidth = s => Array.from(s).reduce((n, ch) => n + wcw(ch), 0);
+const truncChars = (s, max) => { const a = Array.from(s); return a.length <= max ? s : a.slice(0, max - 1).join('') + '…'; };
+function truncCells(s, max) { let out = '', w = 0; for (const ch of s) { const cw = wcw(ch); if (w + cw > max) { while (swidth(out) > max - 1) out = Array.from(out).slice(0, -1).join(''); return out + '…'; } out += ch; w += cw; } return out; }
+class Term {
+  constructor(cols, rows) { this.cols = cols; this.rows = rows; this.px = new Array(cols * rows * 2).fill(null); this.cells = new Array(cols * rows).fill(null); }
+  pset(x, y, c) { x = Math.floor(x); y = Math.floor(y); if (x < 0 || y < 0 || x >= this.cols || y >= this.rows * 2) return; this.px[y * this.cols + x] = c; }
+  put(col, row, str, fg, bg, bold) { if (row < 0 || row >= this.rows) return col; for (const ch of str) { const w = wcw(ch); if (col + w > this.cols) break;
+      if (col >= 0) { this.cells[row * this.cols + col] = {ch, fg, bg, bold, w}; if (w === 2) this.cells[row * this.cols + col + 1] = {cont:true}; } col += w; } return col; }
+  fill(col, row, w, bg) { for (let c = col; c < col + w; c++) this.put(c, row, ' ', null, bg); }
+}
+const BLOCK = {'▀':[[0,0,1,.5]], '▄':[[0,.5,1,.5]], '▌':[[0,0,.5,1]], '▐':[[.5,0,.5,1]], '█':[[0,0,1,1]], '▘':[[0,0,.5,.5]], '▝':[[.5,0,.5,.5]], '▖':[[0,.5,.5,.5]], '▗':[[.5,.5,.5,.5]],
+  '▛':[[0,0,1,.5],[0,.5,.5,.5]], '▜':[[0,0,1,.5],[.5,.5,.5,.5]], '▙':[[0,0,.5,.5],[0,.5,1,.5]], '▟':[[.5,0,.5,.5],[0,.5,1,.5]]};
+const LINE = {'─':'lr', '│':'ud', '┌':'rd', '┐':'ld', '└':'ru', '┘':'lu'};
+function paint(term, canvas) {
+  const dpr = Math.max(1, Math.min(2, window.devicePixelRatio || 1));
+  if (canvas.width !== term.cols * CW * dpr) { canvas.width = term.cols * CW * dpr; canvas.height = term.rows * CH * dpr; canvas.style.width = term.cols * CW + 'px'; canvas.style.height = term.rows * CH + 'px'; }
+  const g = canvas.getContext('2d'); g.setTransform(dpr, 0, 0, dpr, 0, 0); g.textAlign = 'center'; g.textBaseline = 'alphabetic';
+  let font = '';
+  for (let r = 0; r < term.rows; r++) for (let c = 0; c < term.cols; c++) {
+    const cell = term.cells[r * term.cols + c], x = c * CW, y = r * CH;
+    if (cell && cell.cont) continue;
+    if (!cell) { const t = term.px[(2 * r) * term.cols + c], b = term.px[(2 * r + 1) * term.cols + c];
+      g.fillStyle = t || K.bg; g.fillRect(x, y, CW, CH / 2); g.fillStyle = b || K.bg; g.fillRect(x, y + CH / 2, CW, CH / 2); continue; }
+    g.fillStyle = cell.bg || K.bg; g.fillRect(x, y, CW * cell.w, CH);
+    if (cell.ch === ' ') continue;
+    g.fillStyle = cell.fg || K.fg;
+    if (BLOCK[cell.ch]) { for (const [a, b2, w, h] of BLOCK[cell.ch]) g.fillRect(x + a * CW, y + b2 * CH, w * CW, h * CH); continue; }
+    if (LINE[cell.ch]) { const m = LINE[cell.ch], mx = x + CW / 2 - .5, my = y + CH / 2 - .5;
+      if (m.includes('l')) g.fillRect(x, my, CW / 2 + .5, 1); if (m.includes('r')) g.fillRect(mx, my, CW / 2 + .5, 1);
+      if (m.includes('u')) g.fillRect(mx, y, 1, CH / 2 + .5); if (m.includes('d')) g.fillRect(mx, my, 1, CH / 2 + .5); continue; }
+    const f = (cell.bold ? '700 ' : '400 ') + (cell.w === 2 ? '15.5px' : '13px') + ' Menlo, "SF Mono", "Apple SD Gothic Neo", monospace'; if (f !== font) { g.font = f; font = f; }
+    g.fillText(cell.ch, x + CW * cell.w / 2, y + 12);
+  }
+}
+
+// ---- pixel helpers clipped to a rect (pixel units: x = column, y = half row) ----
+function pix(term, clip) {
+  const p = (x, y, c) => { x = Math.floor(x); y = Math.floor(y); if (x < clip.x || y < clip.y || x >= clip.x + clip.w || y >= clip.y + clip.h) return; term.pset(x, y, c); };
+  const half = k => k < 3 ? 2 * (k + 1) : 2 * (6 - k);
+  return { p,
+    rect(x, y, w, h, c) { for (let yy = y; yy < y + h; yy++) for (let xx = x; xx < x + w; xx++) p(xx, yy, c); },
+    diamond(X, Y, c) { for (let k = 0; k < 6; k++) for (let x = X - half(k); x < X + half(k); x++) p(x, Y + k, typeof c === 'function' ? c(x, Y + k) : c); },
+    outline(X, Y, c) { for (let k = 0; k < 6; k++) { p(X - half(k), Y + k, c); p(X + half(k) - 1, Y + k, c); } },
+    box(X, Y, h, top, left, right) {
+      for (let x = X - 6; x < X; x++) { const kmax = Math.floor(6 - (X - x) / 2), yb = Y - h + kmax; for (let y = yb + 1; y <= yb + h; y++) p(x, y, left); }
+      for (let x = X; x < X + 6; x++) { const kmax = Math.floor(6 - (x - X + 1) / 2), yb = Y - h + kmax; for (let y = yb + 1; y <= yb + h; y++) p(x, y, right); }
+      for (let k = 0; k < 6; k++) for (let x = X - half(k); x < X + half(k); x++) p(x, Y - h + k, top); },
+    sprite(rows, pal, x0, y0, mirror) { for (let r = 0; r < rows.length; r++) { const row = rows[r]; for (let c = 0; c < row.length; c++) {
+      const ch = row[mirror ? row.length - 1 - c : c]; if (ch !== '.' && pal[ch]) p(x0 + c, y0 + r, pal[ch]); } } } };
+}
+const walkerPal = w => ({A:w.pal.body, B:w.pal.dark, C:w.pal.ink, D:w.pal.light, E:w.pal.accent});
+const mix = (a, b, t) => { const h = s => [1, 3, 5].map(i => parseInt(s.slice(i, i + 2), 16)); const [x, y] = [h(a), h(b)];
+  return '#' + x.map((v, i) => Math.round(v * t + y[i] * (1 - t)).toString(16).padStart(2, '0')).join(''); };
+const OF = {floorA:'#363d4c', floorB:'#3a4252', wallL:'#465068', wallR:'#3e475c', wallTop:'#5d6880', deskTop:'#c8a97e', deskL:'#a68a63', deskR:'#8b7352',
+  off:'#2a2f3a', mon:'#4b5366', sofa:'#7487b8', sofaD:'#5d6d98', sofaR:'#53618a', pot:'#a0603c', leaf:'#6fbf73', leafD:'#4e9a56', machine:'#9aa0ab', machineD:'#767c88',
+  glass:'#8fb8d8', frame:'#c9ced8', mat:'#3f7a58', exit:'#4fbf74', rugIdle:'#4a4f5c', lounge:'#e8c98a'};
+
+// ---- office layouts (tile grid). Desk (i,j) seats its character on the chair tile (i-1,j-1). ----
+const LAYOUTS = {
+  full: {N:13, M:9, H:16, desks:{s12:[1,2], s18:[4,2], s20:[7,2], s24:[1,6], s31:[4,6], s33:[7,6], s42:[10,6]},
+    rugs:[{cat:'ops', i0:0, i1:8, j0:1, j1:2}, {cat:'prod', i0:0, i1:8, j0:5, j1:6}, {cat:null, i0:9, i1:11, j0:5, j1:6}, {cat:'lounge', i0:9, i1:12, j0:0, j1:3}],
+    furniture:[['plant',9,0], ['sofa',10,0], ['sofa',11,0], ['coffee',12,0], ['plant',12,8]],
+    lounge:{s33:[10,1,'sit'], s20:[12,2,'sleep'], default:[11,1,'sit']}, door:[0,8], windows:[[2,4],[5,7]], signs:{ops:[1, 5], prod:[5, 2]}, loungeSign:10, whale:'sky'},
+  hero: {N:9, M:6, H:16, desks:{s12:[1,2], s18:[3,2], s20:[5,2], s24:[1,5], s31:[3,5], s33:[5,5], s42:[7,2]},
+    rugs:[{cat:'ops', i0:0, i1:5, j0:1, j1:2}, {cat:null, i0:6, i1:8, j0:1, j1:2}, {cat:'prod', i0:0, i1:5, j0:4, j1:5}, {cat:'lounge', i0:6, i1:8, j0:3, j1:5}],
+    furniture:[['plant',8,0], ['sofa',7,3], ['sofa',8,3]], lounge:{s33:[7,4,'sit'], s20:[8,4,'sleep'], default:[6,4,'sit']}, door:[0,5], windows:[[2,4],[5,7]], signs:{ops:[1, 5], prod:[4, 2]}, loungeSign:null, whale:'left'},
+  side: {N:8, M:6, H:16, desks:{s12:[1,2], s18:[3,2], s20:[5,2], s24:[1,5], s31:[3,5], s33:[5,5], s42:[7,2]},
+    rugs:[{cat:'ops', i0:0, i1:5, j0:1, j1:2}, {cat:null, i0:6, i1:7, j0:1, j1:2}, {cat:'prod', i0:0, i1:5, j0:4, j1:5}, {cat:'lounge', i0:6, i1:7, j0:3, j1:5}],
+    furniture:[['sofa',7,3]], lounge:{s33:[6,4,'sit'], s20:[7,4,'sleep'], default:[6,4,'sit']}, door:[0,5], windows:[[2,4]], signs:{ops:[1, 5], prod:[4, 2]}, loungeSign:null, whale:'above'}};
+for (const L of Object.values(LAYOUTS)) { L.blocked = new Set(); for (const [i, j] of Object.values(L.desks)) L.blocked.add(i + ',' + j); for (const [, i, j] of L.furniture) L.blocked.add(i + ',' + j); }
+const chairOf = (L, sid) => { const [i, j] = L.desks[sid]; return {i:i - 1, j:j - 1}; };
+const loungeOf = (L, sid) => { const v = L.lounge[sid] || L.lounge.default; return {i:v[0], j:v[1], pose:v[2]}; };
+function bfs(L, from, to) {
+  const key = (i, j) => i + ',' + j, prev = new Map([[key(from.i, from.j), null]]), q = [from];
+  while (q.length) { const c = q.shift(); if (c.i === to.i && c.j === to.j) break;
+    for (const [di, dj] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) { const n = {i:c.i + di, j:c.j + dj}, k = key(n.i, n.j);
+      if (n.i < 0 || n.j < 0 || n.i >= L.N || n.j >= L.M || prev.has(k) || (L.blocked.has(k) && !(n.i === to.i && n.j === to.j))) continue; prev.set(k, c); q.push(n); } }
+  const path = []; let c = to; if (!prev.has(key(to.i, to.j))) return [to];
+  while (c && !(c.i === from.i && c.j === from.j)) { path.unshift(c); c = prev.get(key(c.i, c.j)); } return path;
+}
+
+// ---- simulation shared by every draft ----
+const sim = {tick:0, sessions:[], selected:0, office:true, saver:true, focus:0};
+function resetSim() {
+  sim.tick = 0; sim.selected = 0; sim.office = true; sim.saver = true; sim.focus = 0;
+  sim.sessions = BASE.map(b => ({...b, walking:false, gone:false, path:[], pos:null, stripX:null}));
+}
+const live = () => sim.sessions.filter(s => !s.gone);
+function homeTile(L, s) { if (s.status === 'idle') return loungeOf(L, s.sid); return chairOf(L, s.sid); }
+function placeAll(L) { for (const s of sim.sessions) { if (s.gone || s.walking) continue; const h = homeTile(L, s); s.pos = {i:h.i, j:h.j}; } }
+function startWalk(L, s, target) {
+  const from = {i:Math.round(s.pos.i), j:Math.round(s.pos.j)};
+  if (reduce) { s.pos = {i:target.i, j:target.j}; s.walking = false; if (s.status === 'ended') s.gone = true; return; }
+  s.path = bfs(L, from, target); s.walking = s.path.length > 0; if (!s.walking && s.status === 'ended') s.gone = true;
+}
+function stepWalkers(L) {
+  for (const s of sim.sessions) { if (!s.walking) continue; const n = s.path[0]; const di = n.i - s.pos.i, dj = n.j - s.pos.j, sp = .125;
+    s.dir = (Math.sign(di) - Math.sign(dj)) || s.dir || 1;
+    if (Math.abs(di) > 1e-6) s.pos.i += Math.sign(di) * Math.min(sp, Math.abs(di)); else if (Math.abs(dj) > 1e-6) s.pos.j += Math.sign(dj) * Math.min(sp, Math.abs(dj));
+    if (Math.abs(n.i - s.pos.i) < 1e-6 && Math.abs(n.j - s.pos.j) < 1e-6) { s.pos = {i:n.i, j:n.j}; s.path.shift(); if (!s.path.length) { s.walking = false; if (s.status === 'ended') s.gone = true; } } }
+}
+
+// ---- iso room ----
+function drawRoom(term, L, rect, opts) {
+  const g = pix(term, rect), W = 6 * (L.N + L.M), Hh = 3 * (L.N + L.M) + L.H;
+  const roomBottom = rect.y + rect.h - 2, roomTop = roomBottom - Hh, OX = Math.round(rect.x + (rect.w - W) / 2 + 6 * L.M), OY = roomTop + L.H;
+  const T = (i, j) => ({X:OX + (i - j) * 6, Y:OY + (i + j) * 3});
+  const out = {labels:[], sprites:[], bounds:{x0:OX - 6 * L.M, x1:OX + 6 * L.N, y0:roomTop, y1:roomBottom}, rect};
+  const tick = sim.tick;
+  // walls
+  for (let x = OX; x < OX + 6 * L.N; x++) { const ye = OY + Math.floor((x - OX) / 2); for (let y = ye - L.H; y <= ye; y++) g.p(x, y, y === ye - L.H ? OF.wallTop : OF.wallR); }
+  for (let x = OX - 6 * L.M; x < OX; x++) { const ye = OY + Math.floor((OX - 1 - x) / 2); for (let y = ye - L.H; y <= ye; y++) g.p(x, y, y === ye - L.H ? OF.wallTop : OF.wallL); }
+  for (const [a, b] of L.windows) for (let x = OX + 6 * a + 1; x < OX + 6 * b - 1; x++) { const ye = OY + Math.floor((x - OX) / 2);
+    for (let y = ye - L.H + 3; y <= ye - 4; y++) g.p(x, y, (y === ye - L.H + 3 || y === ye - 4 || (x - OX) % 6 === 0) ? OF.frame : OF.glass); }
+  // floor
+  const rugAt = (i, j) => L.rugs.find(r => i >= r.i0 && i <= r.i1 && j >= r.j0 && j <= r.j1);
+  for (let j = 0; j < L.M; j++) for (let i = 0; i < L.N; i++) { const t = T(i, j), r = rugAt(i, j), base = (i + j) % 2 ? OF.floorA : OF.floorB;
+    const isDoor = i === L.door[0] && j === L.door[1];
+    const c = isDoor ? OF.mat : !r ? base : r.cat === 'lounge' ? mix(OF.lounge, base, .28) : r.cat ? mix(CATS[r.cat].color, base, .34) : mix(OF.rugIdle, base, .7); g.diamond(t.X, t.Y, c); }
+  // objects with a 1x1 footprint, sorted back to front
+  const objs = [];
+  for (const [kind, i, j] of L.furniture) objs.push({key:i + j, draw:() => furniture(g, kind, T(i, j))});
+  sim.sessions.forEach((s, idx) => { const [i, j] = L.desks[s.sid]; objs.push({key:i + j, draw:() => desk(g, T(i, j), s, idx === opts.selected, tick, out)}); });
+  for (const s of sim.sessions) if (!s.gone && s.pos) objs.push({key:s.pos.i + s.pos.j + .1, draw:() => character(g, s, T, L, tick, out)});
+  objs.sort((a, b) => a.key - b.key).forEach(o => o.draw());
+  // whale outside the room
+  const wv = WHALE_FRAME(tick), wx = L.whale === 'sky' ? out.bounds.x0 + 3 : L.whale === 'left' ? rect.x + 5 : rect.x + 3;
+  const wy = L.whale === 'sky' ? rect.y + 2 : L.whale === 'left' ? roomBottom - 24 : roomTop - 17;
+  g.sprite(wv.rows, SPR.whale.pal, wx, wy + wv.bob, false);
+  // text layer: signs, labels, bubbles
+  const row = y => Math.floor(y / 2);
+  // a category sign hangs on the left wall, right end just behind the zone's back row
+  for (const [cat, [j0, gap]] of Object.entries(L.signs)) { const txt = CATS[cat].name, xr = OX - 6 * j0 - gap, ys = OY + Math.floor((OX - 1 - xr) / 2) - 8;
+    term.put(xr - swidth(txt), row(ys), txt, CATS[cat].color, OF.wallL, true); out.signs = (out.signs || []).concat([{col:xr - swidth(txt), row:row(ys), w:swidth(txt)}]); }
+  { const t = T(L.door[0], L.door[1]); term.put(t.X - 11, row(t.Y + 3), 'EXIT', OF.exit, null, true); }
+  if (L.loungeSign != null) { const t = T(L.loungeSign, 0); term.put(t.X - 3, row(t.Y - 9), 'lounge', OF.lounge, OF.wallR, false); }
+  for (const lb of out.labels) term.put(lb.col, lb.row, lb.text, lb.fg, lb.bg, lb.bold);
+  for (const b of out.bubbles || []) term.put(b.col, b.row, b.text, b.fg, b.bg, true);
+  return out;
+}
+function WHALE_FRAME(tick) { const rows = SPR.whale.rows.slice(); if (tick % 28 < 2) rows[5] = rows[5].slice(0, 6) + 'A' + rows[5].slice(7), rows[6] = rows[6].slice(0, 6) + 'A' + rows[6].slice(7);
+  return {rows, bob:Math.floor(tick / 7) % 2 ? 1 : 0}; }
+function furniture(g, kind, t) {
+  if (kind === 'plant') { g.rect(t.X - 2, t.Y, 4, 3, OF.pot); for (let dy = -4; dy <= 0; dy++) for (let dx = -3; dx <= 2; dx++) if (dx * dx + dy * dy * 1.6 <= 10) g.p(t.X + dx, t.Y - 1 + dy, dy > -2 ? OF.leafD : OF.leaf); }
+  else if (kind === 'sofa') { g.box(t.X, t.Y, 3, OF.sofa, OF.sofaD, OF.sofaR); for (let x = t.X - 4; x < t.X + 4; x++) g.p(x, t.Y - 4 + Math.abs(x - t.X + .5) / 2, OF.sofaD); }
+  else if (kind === 'coffee') { g.rect(t.X - 3, t.Y - 6, 6, 9, OF.machineD); g.rect(t.X - 3, t.Y - 6, 4, 9, OF.machine); g.p(t.X - 1, t.Y - 4, K.waiting); g.rect(t.X - 2, t.Y, 2, 2, '#f2efe8'); }
+}
+function desk(g, t, s, selected, tick, out) {
+  g.box(t.X, t.Y, 4, OF.deskTop, OF.deskL, OF.deskR);
+  if (selected) g.outline(t.X, t.Y - 4, K.accent);
+  const on = !s.gone && s.status !== 'idle' && s.status !== 'ended' && !(s.walking);
+  const scr = !on ? OF.off : s.status === 'working' ? (tick % 6 < 3 ? K.working : '#fff1b8') : ST[s.status].color;
+  g.rect(t.X + 3, t.Y - 5, 3, 3, scr); g.rect(t.X + 2, t.Y - 5, 1, 3, OF.mon); g.p(t.X + 4, t.Y - 2, OF.mon);
+  const ag = AGENT[s.agent], text = truncCells(s.title, 8), col = t.X - Math.floor((swidth(text) + 1) / 2), row = Math.floor((t.Y + 2) / 2);
+  const ended = s.status === 'ended';
+  out.labels.push({col, row, w:swidth(text) + 1, text:'▌', fg:ended ? K.ended : ag.color, bg:selected ? K.selBg : K.labelBg, bold:true, sid:s.sid});
+  out.labels.push({col:col + 1, row, w:0, text, fg:selected ? K.accent : ended ? K.ended : K.fg, bg:selected ? K.selBg : K.labelBg, bold:selected});
+}
+function character(g, s, T, L, tick, out) {
+  const t = T(s.pos.i, s.pos.j), w = WALK[AGENT[s.agent].walker], pal = walkerPal(w);
+  let rows, lift = 0, mirror = false, glyph = null;
+  const lounge = s.status === 'idle' && !s.walking, sleeping = lounge && s.mins >= 10 && loungeOf(L, s.sid).pose === 'sleep';
+  if (s.walking) { rows = w.frames[Math.floor(tick / 3) % 2]; mirror = (s.dir || 1) < 0; }
+  else if (s.status === 'blocked') { rows = w.frames[0]; lift = (tick % 8) < 4 ? 2 : 0; glyph = '!'; }
+  else if (s.status === 'working') { rows = w.sit; glyph = '●'; }
+  else if (s.status === 'done') { rows = w.sit; glyph = '✓'; }
+  else if (sleeping) { rows = w.sleep; lift = Math.floor(tick / 20) % 2 ? 0 : -1; }
+  else { rows = w.sit; glyph = '○'; }
+  const x0 = Math.round(t.X - 6), y0 = Math.round(t.Y + 4 - 8 - lift + (sleeping ? 1 : 0));
+  g.sprite(rows, pal, x0, y0, mirror);
+  out.sprites.push({sid:s.sid, x0, x1:x0 + 12, y0, y1:y0 + 8});
+  const st = ST[s.status], bubbles = out.bubbles || (out.bubbles = []);
+  const by = Math.floor((y0 - 2) / 2) - (s.status === 'blocked' ? 0 : 0);
+  if (glyph && !s.walking) bubbles.push({col:Math.round(t.X) - 2, row:by, text:' ' + glyph + ' ', fg:K.badgeInk, bg:st.color});
+  else if (sleeping) bubbles.push({col:Math.round(t.X) + 2, row:by, text:Math.floor(tick / 10) % 2 ? ' z ' : ' Z ', fg:K.fg, bg:'#3a4150'});
+}
+
+// ---- screens ----
+function border(term, c0, r0, w, h, color, title, titleColor) {
+  term.put(c0, r0, '┌', color); term.put(c0 + w - 1, r0, '┐', color); term.put(c0, r0 + h - 1, '└', color); term.put(c0 + w - 1, r0 + h - 1, '┘', color);
+  for (let c = c0 + 1; c < c0 + w - 1; c++) { term.put(c, r0, '─', color); term.put(c, r0 + h - 1, '─', color); }
+  for (let r = r0 + 1; r < r0 + h - 1; r++) { term.put(c0, r, '│', color); term.put(c0 + w - 1, r, '│', color); }
+  if (title) term.put(c0 + 1, r0, title, titleColor || color, null, false);
+}
+function listItems() {
+  const items = [{kind:'band'}];
+  for (const cat of ['ops', 'prod', null]) { items.push({kind:'cat', cat}); sim.sessions.forEach((s, idx) => { if (s.cat === cat) items.push({kind:'s', s, idx}); }); }
+  return items;
+}
+function drawList(term, c0, w, h, opts) {
+  const ls = sim.sessions;
+  border(term, c0, 0, w, h, opts.focused ? K.accent : K.dim, ` Sessions · recent first · active (${ls.length}) `);
+  const items = listItems(), inner = w - 2, maxTitle = Math.max(12, inner - 39 - (inner >= 56 ? 11 : 0));
+  let r = 1;
+  for (const it of items) {
+    const sel = it.kind === 's' && it.idx === opts.selected; const c = c0 + 1;
+    if (sel) term.fill(c, r, inner, K.selBg);
+    let x = term.put(c, r, sel ? '▶ ' : '  ', K.accent, sel ? K.selBg : null, true);
+    const bg = sel ? K.selBg : null, fgOr = f => sel ? K.accent : f;
+    if (it.kind === 'band') { x = term.put(x, r, '  ── ', K.dim); x = term.put(x, r, 'recent', K.accent, null, true); term.put(x, r, `  ${ls.length} sessions`, K.dim); }
+    else if (it.kind === 'cat') { if (it.cat) { const n = sim.sessions.filter(s => s.cat === it.cat).length; x = term.put(x, r, '  ▾ ', K.category); x = term.put(x, r, CATS[it.cat].name, K.category, null, true);
+        if (n !== 1) x = term.put(x, r, `  · ${n} sessions`, K.dim); term.put(x, r, CATS[it.cat].sync ? '  ⇄ auto' : '  ⇄ off', CATS[it.cat].sync ? '#5fbf6a' : K.dim); }
+      else { x = term.put(x, r, '  · ', K.category); term.put(x, r, 'uncategorized', K.dim); } }
+    else { const s = it.s, st = ST[s.status], ag = AGENT[s.agent];
+      x = term.put(x, r, '   ', null, bg); if (s.cat) x = term.put(x, r, '│ ', fgOr(K.category), bg);
+      x = term.put(x, r, st.badge + ' ', fgOr(st.color), bg, st.bold || sel); x = term.put(x, r, '▌', fgOr(ag.color), bg, true); x = term.put(x, r, ag.tag + ' ', fgOr(ag.color), bg, true);
+      x = term.put(x, r, (s.mins + 'm').padStart(4) + ' ', fgOr(K.dim), bg, sel); x = term.put(x, r, '  ', null, bg);
+      x = term.put(x, r, truncChars(s.title, maxTitle), fgOr(K.fg), bg, sel); if (inner >= 56) x = term.put(x, r, '  ' + s.id, fgOr(K.idGreen), bg, sel); term.put(x, r, '  ' + s.usage, fgOr(K.dim), bg, sel); }
+    r++;
+  }
+  return r; // first free row inside the panel
+}
+function drawLegend(term, c0, w, row) {
+  const parts = [['! blocked', K.waiting], ['   ● working', K.working], ['   ○ idle', K.uncat], ['   ✓ done', K.completed], ['   ○ ended', K.ended]];
+  let x = c0 + Math.floor((w - parts.reduce((n, [t]) => n + swidth(t), 0)) / 2); for (const [t, c] of parts) x = term.put(x, row, t, c);
+}
+function drawWalkerStrip(term, c0, w, row) {
+  const g = pix(term, {x:c0, y:row * 2, w, h:12}), duck = WALK.duck, span = w - 12, t = sim.tick % (span * 2), x = t < span ? t : span * 2 - t;
+  g.sprite(duck.frames[Math.floor(sim.tick / 3) % 2], walkerPal(duck), c0 + x, row * 2 + 2, t >= span);
+  for (let c = c0; c < c0 + w; c++) term.put(c, row + 5, '─', K.ground);
+}
+function heroCurrent(term, c0, w, top, bottom) {
+  const strip = bottom - 6; if (strip - 3 < top) return;
+  const tag = 'Run many Codex · Claude · Kiro · Cursor sessions like tabs'; term.put(c0 + Math.floor((w - swidth(tag)) / 2), strip - 3, tag, K.dim);
+  drawLegend(term, c0, w, strip - 2); drawWalkerStrip(term, c0, w, strip);
+}
+function drawFooter(term, keys) {
+  const q = [['codex work ', 2, '32%'], ['codex side ', 1, '24%'], ['claude main', 3, '46%']];
+  let x = 1; for (const [n, f, p] of q.slice(0, 2)) { x = term.put(x, ROWS - 3, '  ' + n + ' ', K.accent); x = term.put(x, ROWS - 3, '▰'.repeat(f), K.quota); x = term.put(x, ROWS - 3, '▱'.repeat(6 - f), K.dim); x = term.put(x, ROWS - 3, ' ' + p + '  weekly', K.dim); }
+  x = 1; { const [n, f, p] = q[2]; x = term.put(x, ROWS - 2, '  ' + n + ' ', '#c678dd'); x = term.put(x, ROWS - 2, '▰'.repeat(f), K.quota); x = term.put(x, ROWS - 2, '▱'.repeat(6 - f), K.dim); term.put(x, ROWS - 2, ' ' + p + '  weekly', K.dim); }
+  term.put(1, ROWS - 1, ' ' + keys, K.dim);
+}
+const LIST_KEYS = '↑↓ move · enter open · n new · t category · q quit';
+function listScreen(term, opts) {
+  const free = drawList(term, 0, COLS, ROWS - 3, {selected:sim.selected, focused:true});
+  if (opts.hero === 'walker') heroCurrent(term, 1, COLS - 2, free, ROWS - 4);
+  drawFooter(term, opts.keys || LIST_KEYS);
+}
+function counts() { const c = {blocked:0, working:0, done:0, idle:0}; for (const s of live()) if (c[s.status] != null) c[s.status]++; return c; }
+function officeTitle(prefix) { const c = counts(); return `${prefix} · ${live().filter(s => s.status !== 'ended').length} live · ! ${c.blocked} · ● ${c.working} · ✓ ${c.done} · ○ ${c.idle} `; }
+function infoLine(term, c0, row, w, s) {
+  if (!s) return; const st = ST[s.status], ag = AGENT[s.agent]; let x = term.put(c0, row, '▶ ', K.accent, null, true);
+  x = term.put(x, row, st.badge + ' ', st.color, null, st.bold); x = term.put(x, row, '▌', ag.color, null, true); x = term.put(x, row, ag.tag + ' ', ag.color, null, true);
+  x = term.put(x, row, (s.mins + 'm').padStart(4) + '   ', K.dim); x = term.put(x, row, s.title, K.fg, null, true); x = term.put(x, row, '  ' + s.id, K.idGreen); term.put(x, row, '  ' + s.usage, K.dim);
+}
+function rollup() { const rank = {done:0, ended:0, blocked:1, working:2, idle:3}; return live().filter(s => s.status === 'done' || s.status === 'blocked').sort((a, b) => rank[a.status] - rank[b.status] || a.mins - b.mins); }
+function livePanes(term, rows, focusIdx) {
+  const top = Math.floor(rows / 2), boxes = []; const tw = COLS / 4; for (let k = 0; k < 4; k++) boxes.push([Math.round(k * tw), 0, Math.round((k + 1) * tw) - Math.round(k * tw), top]);
+  const bw = [53, 53, 54]; let bx = 0; for (let k = 0; k < 3; k++) { boxes.push([bx, top, bw[k], rows - top]); bx += bw[k]; }
+  sim.sessions.forEach((s, k) => { const [c0, r0, w, h] = boxes[k], st = ST[s.status], color = s.status === 'idle' ? K.uncat : st.color, f = k === focusIdx;
+    const ch = f ? {tl:'▗', t:'▄', tr:'▖', l:'▐', r:'▌', bl:'▝', b:'▀', br:'▘'} : {tl:'▛', t:'▀', tr:'▜', l:'▌', r:'▐', bl:'▙', b:'▄', br:'▟'};
+    term.put(c0, r0, ch.tl, color); term.put(c0 + w - 1, r0, ch.tr, color); term.put(c0, r0 + h - 1, ch.bl, color); term.put(c0 + w - 1, r0 + h - 1, ch.br, color);
+    for (let c = c0 + 1; c < c0 + w - 1; c++) { term.put(c, r0, ch.t, color); term.put(c, r0 + h - 1, ch.b, color); }
+    for (let r = r0 + 1; r < r0 + h - 1; r++) { term.put(c0, r, ch.l, color); term.put(c0 + w - 1, r, ch.r, color); }
+    const ag = AGENT[s.agent]; let x = term.put(c0 + 2, r0, ' ' + st.glyph + ' ', color, null, true); x = term.put(x, r0, ag.tag.trim(), ag.color, null, true); term.put(x, r0, ' · ' + truncChars(s.title, w - 16) + ' ', K.fg);
+    s.out.forEach((line, n) => term.put(c0 + 2, r0 + 2 + n, truncChars(line, w - 4), n === 0 ? K.fg : K.dim));
+  });
+}
+function drawStrip(term, r0, rows, focusIdx) {
+  const y0 = r0 * 2, h = rows * 2, g = pix(term, {x:0, y:y0, w:COLS, h}), tick = sim.tick, labels = [], sprites = [], bubbles = [];
+  for (let x = 0; x < COLS; x++) for (let y = y0; y < y0 + 6; y++) g.p(x, y, y === y0 ? OF.wallTop : OF.wallR);
+  for (let k = 0; k < 6; k++) for (let x = 12 + k * 26; x < 22 + k * 26; x++) for (let y = y0 + 1; y < y0 + 5; y++) g.p(x, y, (y === y0 + 1 || y === y0 + 4) ? OF.frame : OF.glass);
+  const n = sim.sessions.length, cx = k => Math.round(COLS * (k + .5) / n), Y = y0 + 12;
+  for (let y = y0 + 6; y < y0 + h; y++) for (let x = 0; x < COLS; x++) { const k = Math.min(n - 1, Math.floor(x * n / COLS)), s = sim.sessions[k];
+    const base = (Math.floor((x + 2 * y) / 12) + Math.floor((x - 2 * y + 400) / 12)) % 2 ? OF.floorA : OF.floorB; g.p(x, y, s.cat ? mix(CATS[s.cat].color, base, .3) : mix(OF.rugIdle, base, .7)); }
+  sim.sessions.forEach((s, k) => { const X = cx(k), w = WALK[AGENT[s.agent].walker], pal = walkerPal(w), sel = k === focusIdx;
+    if (s.stripX == null) s.stripX = X;
+    const atDesk = Math.abs(s.stripX - X) < .5;
+    if (!atDesk && !s.gone) { g.sprite(w.frames[Math.floor(tick / 3) % 2], pal, Math.round(s.stripX) - 6, Y - 6, false); }
+    let rows2 = null, lift = 0, glyph = null; const sleeping = s.status === 'idle' && s.mins >= 10;
+    if (atDesk && !s.gone) { if (s.status === 'blocked') { rows2 = w.frames[0]; lift = tick % 8 < 4 ? 2 : 0; glyph = '!'; } else if (s.status === 'working') { rows2 = w.sit; glyph = '●'; }
+      else if (s.status === 'done') { rows2 = w.sit; glyph = '✓'; } else if (sleeping) { rows2 = w.sleep; } else if (s.status === 'idle') { rows2 = w.sit; glyph = '○'; } }
+    const sy = Y - 4 + 2 - 8 - lift + (sleeping ? 1 : 0);
+    if (rows2) { g.sprite(rows2, pal, X - 6, sy, false); sprites.push({sid:s.sid, x0:X - 6, x1:X + 6, y0:sy, y1:sy + 8}); }
+    g.box(X, Y, 4, OF.deskTop, OF.deskL, OF.deskR); if (sel) g.outline(X, Y - 4, K.accent);
+    const on = rows2 && s.status !== 'idle'; g.rect(X + 3, Y - 5, 3, 3, !on ? OF.off : s.status === 'working' ? (tick % 6 < 3 ? K.working : '#fff1b8') : ST[s.status].color); g.rect(X + 2, Y - 5, 1, 3, OF.mon);
+    const text = truncCells(s.title, 8), col = X - Math.floor((swidth(text) + 1) / 2), row = Math.floor((Y + 2) / 2), ended = s.status === 'ended';
+    labels.push({col, row, w:swidth(text) + 1, fg:ended ? K.ended : AGENT[s.agent].color, parts:[['▌', ended ? K.ended : AGENT[s.agent].color, true], [text, sel ? K.accent : ended ? K.ended : K.fg, sel]], bg:sel ? K.selBg : K.labelBg, sid:s.sid});
+    if (glyph) bubbles.push({col:X - 2, row:Math.floor((sy - 2) / 2), text:' ' + glyph + ' ', bg:ST[s.status].color});
+    else if (sleeping && atDesk) bubbles.push({col:X + 2, row:Math.floor((sy - 2) / 2), text:Math.floor(tick / 10) % 2 ? ' z ' : ' Z ', bg:'#3a4150', fg:K.fg});
+  });
+  for (const l of labels) { let x = l.col; for (const [t, fg, b] of l.parts) x = term.put(x, l.row, t, fg, l.bg, b); }
+  for (const b of bubbles) term.put(b.col, b.row, b.text, b.fg || K.badgeInk, b.bg, true);
+  return {labels, sprites, bubbles, rect:{x:0, y:y0, w:COLS, h}};
+}
+function stepStrip() { if (reduce) { for (const s of sim.sessions) { const X = Math.round(COLS * (sim.sessions.indexOf(s) + .5) / sim.sessions.length); if (s.status === 'ended') { s.gone = true; } s.stripX = X; } return; }
+  sim.sessions.forEach((s, k) => { const X = Math.round(COLS * (k + .5) / sim.sessions.length); if (s.stripX == null) s.stripX = X;
+    if (s.status === 'ended' && !s.gone) { s.stripX += .75; if (s.stripX > COLS + 8) s.gone = true; } }); }
+
+// ---- drafts ----
+const DRAFTS = [
+  {n:'01', name:'목록 아래 빈 자리', tag:'추천', title:'목록이 짧을 때 보이는 빈 자리를 사무실로.',
+    change:'목록 아래의 빈 자리(지금은 걷는 캐릭터와 상태 설명)에 사무실을 그립니다. 목록에서 고른 세션의 책상이 강조됩니다. 새 키는 없습니다.',
+    cost:'목록이 길어서 빈 자리가 모자라면 지금처럼 숨깁니다. 세션이 많은 날에는 보이지 않습니다.',
+    keys:'↑↓ 세션 선택 → 책상 강조 · Enter 열기(합성) · 새 키 없음', layout:'hero'},
+  {n:'02', name:'목록 옆 칸', title:'목록 오른쪽에 사무실 칸을 둡니다.',
+    change:'목록 화면을 74열 목록과 86열 사무실로 나눕니다. 두 칸은 같은 선택을 따라갑니다. 목록이 길어도 사무실이 보입니다.',
+    cost:'목록의 제목 폭이 줄어듭니다. 디렉터리 열은 보이지 않습니다.',
+    keys:'↑↓ 세션 선택 → 두 칸 함께 이동 · Enter 열기(합성) · 새 키 없음', layout:'side'},
+  {n:'03', name:'전용 화면', title:'키 하나로 사무실 화면을 열고 닫습니다.',
+    change:'목록에서 o를 누르면 전체 화면이 사무실로 바뀝니다. o 또는 Esc로 목록에 돌아옵니다. Trace(Ctrl-G)와 같은 열고 닫는 방식입니다.',
+    cost:'새 키가 하나 필요합니다(o는 시안용). 목록과 사무실을 동시에 볼 수 없습니다.',
+    keys:'←→↑↓ 책상 이동 · Enter 열기(합성) · o / Esc 목록 · 목록에서 o 사무실', layout:'full'},
+  {n:'04', name:'실행 화면 아래 띠', title:'4+3 실행 화면에 책상 띠를 붙입니다.',
+    change:'실행 화면의 pane 아래, 사용량 footer 위에 책상 띠를 둡니다. 책상 하나가 pane 하나이고 순서도 같습니다. idle 세션은 자기 자리에서 쉽니다.',
+    cost:'pane 높이가 12행 줄어듭니다. lounge와 EXIT 문이 없습니다.',
+    keys:'←→ 포커스 pane 이동(시안 조작) → 책상 강조 · 키 입력은 pane으로 갑니다', layout:'strip'},
+  {n:'05', name:'자리 비움 화면', title:'자리를 비우면 사무실을 보여 줍니다.',
+    change:'목록 화면에서 5분 동안 입력이 없으면 전체 화면이 사무실로 바뀝니다. 아무 키나 누르면 목록에 돌아옵니다. 그 키는 목록에 전달하지 않습니다.',
+    cost:'자리를 비웠을 때만 보입니다. 화면이 갑자기 바뀌면 놀랄 수 있습니다(5분은 시안용).',
+    keys:'아무 키: 목록으로 돌아감(키는 목록에 전달하지 않음) · 목록에서 "자리 비움 5분" 버튼으로 다시 시작', layout:'full'}];
+let draft = 0, view = 'proposed', lastFrame = null;
+const canvas = document.getElementById('screen'), terminal = document.getElementById('terminal'), liveEl = document.getElementById('live');
+function render() {
+  const term = new Term(COLS, ROWS), d = DRAFTS[draft], frame = {draft:d.n, view, labels:[], sprites:[], rooms:[]};
+  frame.bubbles = []; frame.signs = [];
+  const room = (L, rect, sel) => { const o = drawRoom(term, L, rect, {selected:sel}); frame.rooms.push(o); frame.labels.push(...o.labels.filter(l => l.w)); frame.sprites.push(...o.sprites);
+    frame.bubbles.push(...(o.bubbles || [])); frame.signs.push(...(o.signs || [])); };
+  if (view === 'current') { if (d.layout === 'strip') { livePanes(term, ROWS - 3, sim.focus); drawFooter(term, 'Ctrl-G Trace · Ctrl-X list · Ctrl-W panel · Ctrl-Z zoom'); } else listScreen(term, {hero:'walker'}); }
+  else if (d.n === '01') { const free = drawList(term, 0, COLS, ROWS - 3, {selected:sim.selected, focused:true}); drawLegend(term, 1, COLS - 2, free + 1); room(LAYOUTS.hero, {x:1, y:(free + 2) * 2, w:COLS - 2, h:(ROWS - 4 - free - 2) * 2}, sim.selected); drawFooter(term, LIST_KEYS); }
+  else if (d.n === '02') { drawList(term, 0, 74, ROWS - 3, {selected:sim.selected, focused:true}); border(term, 74, 0, 86, ROWS - 3, K.dim, officeTitle(' Office'), K.dim);
+    room(LAYOUTS.side, {x:75, y:4, w:84, h:(ROWS - 5) * 2 - 4}, sim.selected); drawFooter(term, LIST_KEYS); }
+  else if (d.n === '03') { if (sim.office) { border(term, 0, 0, COLS, ROWS - 3, K.accent, officeTitle(' Office'), K.accent); room(LAYOUTS.full, {x:1, y:2, w:COLS - 2, h:(ROWS - 7) * 2}, sim.selected); infoLine(term, 2, ROWS - 5, COLS - 4, sim.sessions[sim.selected]); drawFooter(term, '←→↑↓ desk · enter open · o list · esc list'); }
+    else listScreen(term, {hero:'walker', keys:LIST_KEYS + ' · o office'}); }
+  else if (d.n === '04') { livePanes(term, ROWS - 3 - 12, sim.focus); const o = drawStrip(term, ROWS - 3 - 12, 12, sim.focus); frame.labels.push(...o.labels); frame.sprites.push(...o.sprites); frame.bubbles.push(...o.bubbles); frame.rooms.push(o); drawFooter(term, 'Ctrl-G Trace · Ctrl-X list · Ctrl-W panel · Ctrl-Z zoom'); }
+  else if (d.n === '05') { if (sim.saver) { border(term, 0, 0, COLS, ROWS - 3, K.dim, officeTitle(' MindPlayer · away 5m'), K.dim); room(LAYOUTS.full, {x:1, y:2, w:COLS - 2, h:(ROWS - 7) * 2}, -1);
+      let x = term.put(2, ROWS - 5, 'waiting for you  ', K.dim); for (const s of rollup()) { x = term.put(x, ROWS - 5, ST[s.status].glyph + ' ', ST[s.status].color, null, true); x = term.put(x, ROWS - 5, truncCells(s.title, 12) + ' ' + s.mins + 'm   ', K.fg); }
+      drawFooter(term, 'any key · back to list'); }
+    else listScreen(term, {hero:'walker'}); }
+  paint(term, canvas); lastFrame = frame;
+  canvas.setAttribute('aria-label', `MindPlayer 터미널 · ${d.n} ${d.name} · ${view === 'current' ? '현재 화면' : '제안 화면'}`);
+}
+function srSummary() { document.getElementById('sr').textContent = live().map(s => `${s.title} ${ST[s.status].badge.trim()} ${s.mins}분`).join(', '); }
+function tickLoop() { sim.tick++; const d = DRAFTS[draft]; if (d.layout === 'strip') stepStrip(); else stepWalkers(LAYOUTS[d.layout]); render(); }
+let timer = null; function startLoop() { clearInterval(timer); if (!reduce) timer = setInterval(tickLoop, TICK_MS); }
+function selectDraft(k) {
+  draft = k; view = 'proposed'; resetSim(); const d = DRAFTS[k];
+  if (d.layout !== 'strip') placeAll(LAYOUTS[d.layout]);
+  document.querySelectorAll('.tab').forEach((b, i) => { b.setAttribute('aria-selected', String(i === k)); b.tabIndex = i === k ? 0 : -1; });
+  document.querySelectorAll('[data-view]').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.view === view)));
+  document.getElementById('idea-title').innerHTML = `<span>${d.n}</span>${d.title}`;
+  document.getElementById('d-change').textContent = d.change; document.getElementById('d-cost').textContent = d.cost; document.getElementById('key-hint').textContent = d.keys;
+  document.getElementById('b-away').hidden = d.n !== '05'; liveEl.textContent = '합성 상태 · 실제 세션 연결 없음'; srSummary(); render();
+}
+const tabs = document.querySelector('.tabs');
+DRAFTS.forEach((d, k) => { const b = document.createElement('button'); b.type = 'button'; b.className = 'tab'; b.setAttribute('role', 'tab'); b.dataset.k = k;
+  b.innerHTML = `<span class="number">${d.n}</span>${d.tag ? `<span class="tag">${d.tag}</span>` : ''}<span class="name">${d.name}</span>`; b.onclick = () => selectDraft(k); tabs.appendChild(b); });
+tabs.addEventListener('keydown', e => { if (e.key !== 'ArrowRight' && e.key !== 'ArrowLeft') return; e.preventDefault(); const k = (draft + (e.key === 'ArrowRight' ? 1 : DRAFTS.length - 1)) % DRAFTS.length; selectDraft(k); tabs.children[k].focus(); });
+document.querySelectorAll('[data-view]').forEach(b => b.onclick = () => { view = b.dataset.view; document.querySelectorAll('[data-view]').forEach(x => x.setAttribute('aria-pressed', String(x === b))); render(); });
+const deskOrder = L => sim.sessions.map((s, k) => ({k, i:L.desks[s.sid][0], j:L.desks[s.sid][1]})).sort((a, b) => a.j - b.j || a.i - b.i);
+function moveDesk(key) { const L = LAYOUTS.full, order = deskOrder(L), cur = order.findIndex(o => o.k === sim.selected), me = order[cur];
+  if (key === 'ArrowRight' || key === 'l') sim.selected = order[(cur + 1) % order.length].k;
+  else if (key === 'ArrowLeft' || key === 'h') sim.selected = order[(cur + order.length - 1) % order.length].k;
+  else { const want = key === 'ArrowDown' || key === 'j' ? 1 : -1, other = order.filter(o => Math.sign(o.j - me.j) === want); if (other.length) sim.selected = other.sort((a, b) => Math.abs(a.i - me.i) - Math.abs(b.i - me.i))[0].k; } }
+function listMove(dir) { const idx = listItems().filter(i => i.kind === 's').map(i => i.idx), p = idx.indexOf(sim.selected); sim.selected = idx[Math.max(0, Math.min(idx.length - 1, (p < 0 ? 0 : p) + dir))]; }
+function openSel(s) { liveEl.textContent = `합성: "${s.title}" pane을 엽니다. 실제 열기 없음`; }
+terminal.addEventListener('keydown', e => {
+  if (e.key === 'Tab' || e.metaKey || e.ctrlKey || e.altKey) return; const d = DRAFTS[draft]; let used = true;
+  if (view === 'current') used = false;
+  else if (d.n === '05' && sim.saver) { sim.saver = false; liveEl.textContent = '아무 키 → 목록으로 돌아옴. 키는 목록에 전달하지 않음'; }
+  else if (d.n === '03' && sim.office) { if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'h', 'j', 'k', 'l'].includes(e.key)) moveDesk(e.key); else if (e.key === 'Enter') openSel(sim.sessions[sim.selected]); else if (e.key === 'o' || e.key === 'Escape') { sim.office = false; liveEl.textContent = '목록으로 돌아옴'; } else used = false; }
+  else if (d.n === '04') { if (e.key === 'ArrowRight') sim.focus = (sim.focus + 1) % 7; else if (e.key === 'ArrowLeft') sim.focus = (sim.focus + 6) % 7; else used = false; }
+  else { if (e.key === 'ArrowDown' || e.key === 'j') listMove(1); else if (e.key === 'ArrowUp' || e.key === 'k') listMove(-1); else if (e.key === 'Enter') openSel(sim.sessions[sim.selected]);
+    else if (d.n === '03' && e.key === 'o') { sim.office = true; liveEl.textContent = 'o → 사무실 화면'; } else used = false; }
+  if (used) { e.preventDefault(); render(); }
+});
+function transition(sid, status) { const s = sim.sessions.find(x => x.sid === sid), d = DRAFTS[draft]; if (!s || s.gone) return; s.status = status;
+  if (d.layout === 'strip') { if (status === 'ended' && reduce) s.gone = true; render(); return; }
+  const L = LAYOUTS[d.layout]; if (d.n === '03') sim.office = true; if (d.n === '05') sim.saver = true; view = 'proposed'; document.querySelectorAll('[data-view]').forEach(x => x.setAttribute('aria-pressed', String(x.dataset.view === 'proposed')));
+  startWalk(L, s, status === 'ended' ? {i:L.door[0], j:L.door[1]} : chairOf(L, sid)); srSummary(); render(); }
+document.getElementById('b-start').onclick = () => { transition('s33', 'working'); liveEl.textContent = '"UI 여백 수정" idle → working: lounge에서 책상으로 걸어갑니다'; };
+document.getElementById('b-end').onclick = () => { transition('s31', 'ended'); liveEl.textContent = '"운영 문서 정리" done → ended: 문으로 나갑니다'; };
+document.getElementById('b-away').onclick = () => { sim.saver = true; render(); liveEl.textContent = '5분 동안 입력 없음 → 사무실 화면'; };
+document.getElementById('b-reset').onclick = () => selectDraft(draft);
+window.__office = {get frame() { return lastFrame; }, get sim() { return sim; }, selectDraft, tick:n => { for (let k = 0; k < n; k++) tickLoop(); }, DRAFTS, LAYOUTS, COLS, ROWS, reduce};
+selectDraft(0); startLoop();
+})();
+</script>
+</body>
+</html>

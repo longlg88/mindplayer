@@ -1,0 +1,63 @@
+{
+  "scope": "offline standalone HTML synthetic interactions, not native runtime proof",
+  "verifiedAt": "2026-10-23T08:54:55.482Z",
+  "html": "2026-10-23-office-view-gallery.ko.html",
+  "test": "../tests/office-view-gallery.test.cjs",
+  "result": "passed",
+  "passedContracts": 15,
+  "checked": [
+    "inline syntax, no network/storage APIs, no external URLs",
+    "five distinct proposals, each with a current-screen reconstruction and no office in it",
+    "every draft at 4 ticks: no text cell overlap, plates never cover a character, room stays in its area, glyphs match pane_dot statuses",
+    "01/02: list selection moves the highlighted desk plate",
+    "03: o opens and closes the office, Esc returns, arrows move desks, Enter is synthetic only",
+    "04: focused pane and desk move together, strip keeps 7 desks in pane order",
+    "05: any key leaves the away screen, the key is not passed on, away button returns",
+    "Tab exits the terminal surface",
+    "no-preference: idle → working walks to the chair, done → ended leaves by EXIT, in all five drafts",
+    "viewport 1440: no document overflow, fixed cell terminal scrolls inside its frame",
+    "viewport 1280: no document overflow, fixed cell terminal scrolls inside its frame",
+    "viewport 768: no document overflow, fixed cell terminal scrolls inside its frame",
+    "viewport 390: no document overflow, fixed cell terminal scrolls inside its frame",
+    "viewport 320: no document overflow, fixed cell terminal scrolls inside its frame",
+    "reduce: idle → working walks to the chair, done → ended leaves by EXIT, in all five drafts"
+  ],
+  "keyboardEvents": 10,
+  "proposals": 5,
+  "syntheticSessions": 7,
+  "motionModes": [
+    "no-preference",
+    "reduce"
+  ],
+  "viewportWidths": [
+    1440,
+    1280,
+    768,
+    390,
+    320
+  ],
+  "documentOverflow": 0,
+  "externalRequests": 0,
+  "pageErrors": 0,
+  "consoleErrors": 0,
+  "providerCalls": 0,
+  "sourceSha256Before": "9b42f399c409b9f2b6c20ad34fa718c288e91aec78278956386e057e9885a618",
+  "sourceSha256After": "9b42f399c409b9f2b6c20ad34fa718c288e91aec78278956386e057e9885a618",
+  "cleanup": {
+    "browser": true,
+    "server": true
+  },
+  "visualReview": {
+    "verdict": "pass",
+    "inspected": "Terminal crops of all five drafts at 1440px, 03 after the idle→working and done→ended transitions, and the 390px page. Seated characters are hidden behind their desks, desk plates and bubbles do not overlap, wall signs stay on the wall; not native TUI proof"
+  },
+  "spriteSource": "walker.rs ALL (6 characters) and mascot.rs variant 0, extracted verbatim at origin/main c835e17",
+  "diagnosticReceipt": "/var/folders/t8/nkh_jkgj0db5bs30rywyn4gr0000gq/T/mindplayer-office-qa-bx6GwA/validation.json",
+  "notVerified": [
+    "Real ratatui rendering and redraw cost",
+    "Small real terminals and fonts with different Hangul widths",
+    "Key collisions for the draft-only o key",
+    "Layout for more than 12 desks",
+    "Screen-reader behaviour"
+  ]
+}

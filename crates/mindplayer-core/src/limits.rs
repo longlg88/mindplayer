@@ -230,6 +230,9 @@ pub enum FailureKind {
     RateLimited,
     /// This login cannot report usage at all, so there is nothing to do.
     Unsupported,
+    /// The provider's CLI is not on this machine; older builds read the shared cache, so it is written under the name they know.
+    #[serde(rename(serialize = "unsupported"))]
+    NotInstalled,
     /// The provider answered in a shape this build does not understand.
     Unreadable,
     /// mindplayer itself failed.
@@ -1380,12 +1383,15 @@ fn strip_ansi(input: &str) -> String {
     out
 }
 
-/// A CLI that is not installed cannot report anything, which is not mindplayer's fault.
+/// A CLI that is not installed cannot report anything, which is not mindplayer's fault; only a provider's own CLI reads as not installed.
 fn spawn_error(label: &str, e: &std::io::Error) -> ProbeError {
-    let kind = if e.kind() == std::io::ErrorKind::NotFound {
-        FailureKind::Unsupported
-    } else {
-        FailureKind::Internal
+    let provider_cli = [Agent::Codex, Agent::Claude, Agent::Kiro, Agent::Cursor]
+        .iter()
+        .any(|agent| agent.program() == label);
+    let kind = match e.kind() {
+        std::io::ErrorKind::NotFound if provider_cli => FailureKind::NotInstalled,
+        std::io::ErrorKind::NotFound => FailureKind::Unsupported,
+        _ => FailureKind::Internal,
     };
     ProbeError::new(kind, format!("cannot start {label}: {e}"))
 }
@@ -1870,9 +1876,14 @@ fn run_codex_app_server(
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    let mut child = command
-        .spawn()
-        .map_err(|_| ProbeError::new(FailureKind::Temporary, "cannot start codex app-server"))?;
+    let mut child = command.spawn().map_err(|e| {
+        let kind = if e.kind() == std::io::ErrorKind::NotFound {
+            FailureKind::NotInstalled
+        } else {
+            FailureKind::Temporary
+        };
+        ProbeError::new(kind, "cannot start codex app-server")
+    })?;
     let cleanup = |child: &mut std::process::Child| {
         kill_codex_app_server(child);
         let _ = child.wait();
@@ -3042,6 +3053,30 @@ mod tests {
         .summary_lines();
         assert!(lines[3].contains("unlimited"), "{lines:?}");
         assert!(!lines[3].contains("0.0%"), "{lines:?}");
+    }
+
+    #[test]
+    fn only_a_missing_provider_cli_reads_as_not_installed() {
+        let missing = std::io::Error::from(std::io::ErrorKind::NotFound);
+        assert_eq!(
+            spawn_error("kiro-cli", &missing).kind,
+            FailureKind::NotInstalled
+        );
+        assert_eq!(
+            spawn_error("security(1)", &missing).kind,
+            FailureKind::Unsupported
+        );
+        assert_eq!(spawn_error("curl", &missing).kind, FailureKind::Unsupported);
+        let denied = std::io::Error::from(std::io::ErrorKind::PermissionDenied);
+        assert_eq!(spawn_error("kiro-cli", &denied).kind, FailureKind::Internal);
+    }
+
+    #[test]
+    fn not_installed_is_cached_under_a_name_older_builds_read() {
+        let written = serde_json::to_string(&FailureKind::NotInstalled).unwrap();
+        assert_eq!(written, "\"unsupported\"");
+        let read: FailureKind = serde_json::from_str(&written).unwrap();
+        assert_eq!(read, FailureKind::Unsupported);
     }
 
     #[cfg(target_os = "macos")]
@@ -4875,7 +4910,7 @@ done
             Duration::from_millis(100),
         )
         .unwrap_err();
-        assert_eq!(error.kind, FailureKind::Temporary);
+        assert_eq!(error.kind, FailureKind::NotInstalled);
         assert_eq!(error.detail, "cannot start codex app-server");
     }
 

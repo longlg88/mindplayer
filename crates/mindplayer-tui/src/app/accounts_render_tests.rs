@@ -610,3 +610,24 @@ fn a_failed_reading_says_what_to_do_and_the_accounts_screen_keeps_the_cause() {
         "the Accounts screen lost the cause:\n{screen}"
     );
 }
+
+/// A provider CLI that is not on the machine says so, with the way to stop asking for it.
+#[test]
+fn a_missing_cli_reads_as_not_installed_in_the_footer() {
+    use mindplayer_core::limits::{FailureKind, QuotaRow};
+    let mut app = app_on_main();
+    app.limits = Some(vec![QuotaRow {
+        label: "kiro".into(),
+        agent: Agent::Kiro,
+        account: "default".into(),
+        detail: "cannot start kiro-cli: No such file or directory (os error 2)".into(),
+        failure: Some(FailureKind::NotInstalled),
+        ..Default::default()
+    }]);
+    let screen = painted(&mut app, 160, 40);
+    assert!(
+        screen.contains("kiro-cli not installed · reinstall it, or press u then d to hide"),
+        "{screen}"
+    );
+    assert!(!screen.contains("usage not available"), "{screen}");
+}

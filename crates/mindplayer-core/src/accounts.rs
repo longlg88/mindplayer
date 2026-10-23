@@ -442,6 +442,79 @@ pub fn load_accounts(home: &Path) -> Vec<Account> {
         .ok()
         .and_then(|raw| serde_json::from_str(&raw).ok())
         .unwrap_or_default();
+    accounts_from_saved(saved)
+}
+
+/// The saved list as another MindPlayer left it, or `None` when there is no file or it does not parse, so a broken file is never read as an empty list.
+pub fn read_saved_accounts(home: &Path) -> Option<Vec<Account>> {
+    let raw = std::fs::read_to_string(accounts_path(home)).ok()?;
+    let saved: Vec<Account> = serde_json::from_str(&raw).ok()?;
+    Some(accounts_from_saved(saved))
+}
+
+/// Lay this MindPlayer's edits (`ours` against `base`, what it last read or wrote) onto a list another one saved since, matching by provider and slot.
+pub fn merge_accounts(base: &[Account], ours: &[Account], theirs: &[Account]) -> Vec<Account> {
+    // Both sides are compared as a reader sees them, so a second primary held only in memory is not a promotion.
+    let base = &accounts_from_saved(base.to_vec());
+    let ours = &accounts_from_saved(ours.to_vec());
+    let key = |a: &Account| (a.provider, a.slot.clone());
+    let mut out = theirs.to_vec();
+    for gone in base
+        .iter()
+        .filter(|b| !ours.iter().any(|a| key(a) == key(b)))
+    {
+        out.retain(|t| key(t) != key(gone));
+    }
+    for a in ours {
+        let Some(b) = base.iter().find(|b| key(b) == key(a)) else {
+            if !out.iter().any(|t| key(t) == key(a)) {
+                out.push(a.clone());
+            }
+            continue;
+        };
+        // An account the other side removed stays removed, since its login directory is already gone.
+        let Some(t) = out.iter_mut().find(|t| key(t) == key(a)) else {
+            continue;
+        };
+        // Every field is named here, so a new one cannot be left out of the merge without a build error.
+        let Account {
+            provider: _,
+            slot: _,
+            role: _,
+            name: _,
+            disabled: _,
+            codex_identity: _,
+            claude_identity: _,
+        } = a;
+        // Only the fields this side changed are laid on, so the other side's edits to the rest survive.
+        if a.name != b.name {
+            t.name.clone_from(&a.name);
+        }
+        if a.disabled != b.disabled {
+            t.disabled = a.disabled;
+        }
+        if a.codex_identity != b.codex_identity {
+            t.codex_identity.clone_from(&a.codex_identity);
+        }
+        if a.claude_identity != b.claude_identity {
+            t.claude_identity.clone_from(&a.claude_identity);
+        }
+        // A demotion here only ever comes with a promotion, so only the promotion is replayed.
+        if a.role == Role::Primary && b.role != Role::Primary {
+            for t in out.iter_mut().filter(|t| t.provider == a.provider) {
+                t.role = if key(t) == key(a) {
+                    Role::Primary
+                } else {
+                    Role::Fallback
+                };
+            }
+        }
+    }
+    accounts_from_saved(out)
+}
+
+/// The list as a reader sees a saved one: the inherited logins present, bad names dropped, one primary per provider.
+pub fn accounts_from_saved(saved: Vec<Account>) -> Vec<Account> {
     let mut out = Vec::new();
     for agent in MULTI_ACCOUNT_AGENTS {
         if !saved
@@ -614,7 +687,27 @@ pub fn save_accounts(home: &Path, accounts: &[Account]) -> std::io::Result<()> {
     }
     let body = serde_json::to_string_pretty(accounts)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-    std::fs::write(path, body)
+    // A symlinked file keeps its link: the replacement lands on the file the link points at.
+    let path = std::fs::canonicalize(&path).unwrap_or(path);
+    // Other MindPlayers re-read this file every few seconds, so it is replaced whole rather than rewritten in place.
+    let staged = path.with_extension(format!("json.tmp-{}", std::process::id()));
+    let written = (|| {
+        use std::io::Write;
+        let mut file = match crate::private::create_new_private(&staged) {
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                std::fs::remove_file(&staged)?;
+                crate::private::create_new_private(&staged)?
+            }
+            other => other?,
+        };
+        file.write_all(body.as_bytes())?;
+        file.sync_all()?;
+        std::fs::rename(&staged, &path)
+    })();
+    if written.is_err() {
+        let _ = std::fs::remove_file(&staged);
+    }
+    written
 }
 
 #[cfg(test)]
@@ -1556,5 +1649,199 @@ mod forget_login_tests {
         let home = home();
         let account = Account::isolated(&home, Agent::Codex, "never-made").unwrap();
         forget_login(&account, &home).unwrap();
+    }
+}
+
+/// Several MindPlayers share one accounts file, so a save keeps the others' edits and a reader never takes a broken file for an empty list.
+#[cfg(test)]
+mod shared_file_tests {
+    use super::*;
+
+    fn slot(home: &Path, name: &str) -> Account {
+        Account::isolated(home, Agent::Codex, name).unwrap()
+    }
+
+    fn names(accounts: &[Account]) -> Vec<&str> {
+        accounts.iter().map(|a| a.name.as_str()).collect()
+    }
+
+    #[test]
+    fn a_save_keeps_what_another_mindplayer_saved_since() {
+        let home = tempfile::tempdir().unwrap();
+        let base = accounts_from_saved(vec![slot(home.path(), "a"), slot(home.path(), "c")]);
+        // This one renames `a` and removes `c`; the other one adds `b` meanwhile.
+        let mut ours = base.clone();
+        ours.iter_mut().find(|x| x.name == "a").unwrap().name = "a-renamed".into();
+        ours.retain(|x| x.name != "c");
+        let mut theirs = base.clone();
+        theirs.push(slot(home.path(), "b"));
+
+        let merged = merge_accounts(&base, &ours, &theirs);
+        let merged = names(&merged);
+        assert!(merged.contains(&"a-renamed"), "{merged:?}");
+        assert!(
+            merged.contains(&"b"),
+            "the other MindPlayer's account was dropped: {merged:?}"
+        );
+        assert!(
+            !merged.contains(&"a") && !merged.contains(&"c"),
+            "{merged:?}"
+        );
+    }
+
+    #[test]
+    fn an_account_the_other_side_changed_keeps_that_change() {
+        let home = tempfile::tempdir().unwrap();
+        let base = accounts_from_saved(vec![slot(home.path(), "a"), slot(home.path(), "b")]);
+        let mut ours = base.clone();
+        ours.iter_mut().find(|x| x.name == "a").unwrap().disabled = true;
+        let mut theirs = base.clone();
+        theirs.iter_mut().find(|x| x.name == "b").unwrap().name = "b-renamed".into();
+
+        let merged = merge_accounts(&base, &ours, &theirs);
+        assert!(
+            merged.iter().any(|x| x.name == "a" && x.disabled),
+            "{merged:?}"
+        );
+        assert!(merged.iter().any(|x| x.name == "b-renamed"), "{merged:?}");
+        assert!(!merged.iter().any(|x| x.name == "b"), "{merged:?}");
+    }
+
+    #[test]
+    fn making_one_primary_here_wins_over_the_saved_primary() {
+        let home = tempfile::tempdir().unwrap();
+        let mut a = slot(home.path(), "a");
+        a.role = Role::Fallback;
+        let base = accounts_from_saved(vec![a]);
+        let mut ours = base.clone();
+        for account in ours.iter_mut().filter(|x| x.provider == Agent::Codex) {
+            account.role = if account.name == "a" {
+                Role::Primary
+            } else {
+                Role::Fallback
+            };
+        }
+        let merged = merge_accounts(&base, &ours, &base);
+        let primary: Vec<&str> = merged
+            .iter()
+            .filter(|x| x.provider == Agent::Codex && x.role == Role::Primary)
+            .map(|x| x.name.as_str())
+            .collect();
+        assert_eq!(primary, vec!["a"]);
+    }
+
+    fn codex_primaries(accounts: &[Account]) -> Vec<&str> {
+        accounts
+            .iter()
+            .filter(|x| x.provider == Agent::Codex && x.role == Role::Primary)
+            .map(|x| x.name.as_str())
+            .collect()
+    }
+
+    #[test]
+    fn fields_the_other_side_changed_survive_an_edit_here() {
+        let home = tempfile::tempdir().unwrap();
+        let base = accounts_from_saved(vec![slot(home.path(), "k")]);
+        let mut ours = base.clone();
+        ours.iter_mut().find(|x| x.name == "k").unwrap().disabled = true;
+        let mut theirs = base.clone();
+        let bound = theirs.iter_mut().find(|x| x.name == "k").unwrap();
+        bound.name = "k2".into();
+        bound.codex_identity = Some("codex-user-bound".into());
+
+        let merged = merge_accounts(&base, &ours, &theirs);
+        let k = merged
+            .iter()
+            .find(|x| x.slot == slot(home.path(), "k").slot)
+            .unwrap();
+        assert_eq!(k.name, "k2", "{merged:?}");
+        assert_eq!(k.codex_identity.as_deref(), Some("codex-user-bound"));
+        assert!(k.disabled);
+    }
+
+    #[test]
+    fn turning_off_the_old_primary_keeps_their_new_primary() {
+        let home = tempfile::tempdir().unwrap();
+        let mut y = slot(home.path(), "y");
+        y.role = Role::Fallback;
+        let base = accounts_from_saved(vec![y]);
+        let mut ours = base.clone();
+        ours.iter_mut()
+            .find(|x| x.name == DEFAULT_ACCOUNT && x.provider == Agent::Codex)
+            .unwrap()
+            .disabled = true;
+        let mut theirs = base.clone();
+        for x in theirs.iter_mut().filter(|x| x.provider == Agent::Codex) {
+            x.role = if x.name == "y" {
+                Role::Primary
+            } else {
+                Role::Fallback
+            };
+        }
+
+        let merged = merge_accounts(&base, &ours, &theirs);
+        assert_eq!(codex_primaries(&merged), vec!["y"], "{merged:?}");
+    }
+
+    #[test]
+    fn promoting_an_account_they_removed_leaves_their_primary() {
+        let home = tempfile::tempdir().unwrap();
+        let mut x = slot(home.path(), "x");
+        x.role = Role::Fallback;
+        let base = accounts_from_saved(vec![x]);
+        let mut ours = base.clone();
+        for a in ours.iter_mut().filter(|a| a.provider == Agent::Codex) {
+            a.role = if a.name == "x" {
+                Role::Primary
+            } else {
+                Role::Fallback
+            };
+        }
+        let theirs: Vec<Account> = base.iter().filter(|a| a.name != "x").cloned().collect();
+
+        let merged = merge_accounts(&base, &ours, &theirs);
+        assert_eq!(
+            codex_primaries(&merged),
+            vec![DEFAULT_ACCOUNT],
+            "{merged:?}"
+        );
+    }
+
+    #[test]
+    fn a_broken_file_is_not_read_as_an_empty_list() {
+        let home = tempfile::tempdir().unwrap();
+        assert_eq!(read_saved_accounts(home.path()), None);
+        std::fs::create_dir_all(home.path().join(".mindplayer")).unwrap();
+        std::fs::write(accounts_path(home.path()), "[{\"provider\":\"codex\",\"na").unwrap();
+        assert_eq!(read_saved_accounts(home.path()), None);
+    }
+
+    #[test]
+    fn a_save_replaces_the_file_whole_and_owner_only() {
+        let home = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(home.path().join(".mindplayer")).unwrap();
+        std::fs::write(accounts_path(home.path()), "[]").unwrap();
+        save_accounts(home.path(), &[slot(home.path(), "whole")]).unwrap();
+        let read = read_saved_accounts(home.path()).expect("a whole file reads");
+        assert!(read.iter().any(|a| a.name == "whole"));
+        assert_eq!(read, accounts_from_saved(vec![slot(home.path(), "whole")]));
+        let leftovers: Vec<_> = std::fs::read_dir(home.path().join(".mindplayer"))
+            .unwrap()
+            .flatten()
+            .filter(|e| e.file_name().to_string_lossy().contains(".tmp-"))
+            .collect();
+        assert!(
+            leftovers.is_empty(),
+            "the staged file was left behind: {leftovers:?}"
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(accounts_path(home.path()))
+                .unwrap()
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o777, 0o600);
+        }
     }
 }

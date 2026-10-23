@@ -925,3 +925,332 @@ mod unavailable_account_prompt {
         );
     }
 }
+
+/// Several MindPlayers share one accounts file: each picks up the others' saves and keeps them when it saves.
+mod shared_accounts_file {
+    use super::*;
+
+    /// Two MindPlayers on one accounts file, both as they start on a machine with no saved list.
+    fn pair() -> (App, App) {
+        let a = open();
+        let mut b = open();
+        b.accounts_home = a.accounts_home.clone();
+        (a, b)
+    }
+
+    fn spare(name: &str) -> Account {
+        Account::isolated(&limits_home_for_app(), Agent::Codex, name).unwrap()
+    }
+
+    fn saved(app: &App) -> Vec<Account> {
+        mindplayer_core::accounts::load_accounts(&app.accounts_home)
+    }
+
+    #[test]
+    fn a_save_here_is_not_taken_for_another_mindplayers() {
+        let (mut a, _) = pair();
+        a.accounts.push(spare("own-save"));
+        a.persist_accounts();
+        assert!(!a.reload_accounts_if_changed());
+        assert!(a.accounts.iter().any(|x| x.name == "own-save"));
+    }
+
+    #[test]
+    fn an_account_added_in_one_survives_an_edit_saved_by_the_other() {
+        let (mut a, mut b) = pair();
+        a.accounts.push(spare("added-there"));
+        a.persist_accounts();
+
+        // B has not re-read the file yet when it turns an account off.
+        select(&mut b, Agent::Claude);
+        b.accounts_toggle_disabled();
+
+        let file = saved(&b);
+        assert!(
+            file.iter().any(|x| x.name == "added-there"),
+            "the other MindPlayer's account was dropped: {file:?}"
+        );
+        assert!(
+            file.iter()
+                .any(|x| x.provider == Agent::Claude && x.disabled),
+            "{file:?}"
+        );
+        assert!(b.accounts.iter().any(|x| x.name == "added-there"));
+
+        assert!(a.reload_accounts_if_changed());
+        assert!(a
+            .accounts
+            .iter()
+            .any(|x| x.provider == Agent::Claude && x.disabled));
+        assert!(a.accounts.iter().any(|x| x.name == "added-there"));
+    }
+
+    #[test]
+    fn a_rename_in_one_relabels_the_others_panes_and_usage() {
+        let (mut a, mut b) = pair();
+        a.accounts.push(spare("before"));
+        a.persist_accounts();
+        assert!(b.reload_accounts_if_changed());
+        b.pane_accounts
+            .insert("pane".into(), (Agent::Codex, "before".into()));
+        b.limits = Some(vec![mindplayer_core::limits::QuotaRow {
+            label: "codex weekly".into(),
+            agent: Agent::Codex,
+            account: "before".into(),
+            used_percent: Some(5.0),
+            ..Default::default()
+        }]);
+
+        a.accounts
+            .iter_mut()
+            .find(|x| x.name == "before")
+            .unwrap()
+            .name = "after".into();
+        a.persist_accounts();
+
+        assert!(b.reload_accounts_if_changed());
+        assert!(b.accounts.iter().any(|x| x.name == "after"));
+        assert!(!b.accounts.iter().any(|x| x.name == "before"));
+        assert_eq!(b.pane_accounts["pane"], (Agent::Codex, "after".into()));
+        assert_eq!(b.limits.as_ref().unwrap()[0].account, "after");
+        assert!(
+            !b.reload_accounts_if_changed(),
+            "the same save was taken twice"
+        );
+    }
+
+    #[test]
+    fn the_cursor_stays_on_its_account_when_the_list_changes_underneath() {
+        let (mut a, mut b) = pair();
+        a.accounts.push(spare("goes-away"));
+        a.accounts.push(spare("keep-me"));
+        a.persist_accounts();
+        assert!(b.reload_accounts_if_changed());
+        let at = b
+            .account_rows()
+            .iter()
+            .position(|row| matches!(row, AccountRow::Entry(i) if b.accounts[*i].name == "keep-me"))
+            .unwrap();
+        b.accounts_panel.as_mut().unwrap().selected = at;
+
+        a.accounts.retain(|x| x.name != "goes-away");
+        a.persist_accounts();
+        assert!(b.reload_accounts_if_changed());
+
+        let i = b.selected_account().expect("the cursor left the accounts");
+        assert_eq!(b.accounts[i].name, "keep-me");
+    }
+
+    fn codex_primary(accounts: &[Account]) -> Vec<String> {
+        accounts
+            .iter()
+            .filter(|x| x.provider == Agent::Codex && x.role == Role::Primary)
+            .map(|x| x.name.clone())
+            .collect()
+    }
+
+    #[test]
+    fn a_new_account_does_not_take_primary_when_another_mindplayer_saves() {
+        let (mut a, mut b) = pair();
+        // A new account is made primary-shaped; the first primary of the provider stays the one in use.
+        a.accounts.push(spare("brand-new"));
+        a.persist_accounts();
+        assert_eq!(codex_primary(&saved(&a)), vec![DEFAULT_ACCOUNT]);
+
+        select(&mut b, Agent::Claude);
+        b.accounts_toggle_disabled();
+        a.reload_accounts_if_changed();
+
+        assert_eq!(
+            codex_primary(&a.accounts),
+            vec![DEFAULT_ACCOUNT],
+            "{:?}",
+            a.accounts
+        );
+        assert_eq!(codex_primary(&saved(&a)), vec![DEFAULT_ACCOUNT]);
+    }
+
+    #[test]
+    fn making_one_primary_after_a_removal_elsewhere_names_that_one() {
+        let (mut a, mut b) = pair();
+        a.accounts.push(spare("goes"));
+        a.accounts.push(spare("last"));
+        a.persist_accounts();
+        assert!(b.reload_accounts_if_changed());
+        b.accounts.retain(|x| x.name != "goes");
+        b.persist_accounts();
+
+        // A has not re-read the file when the newest account is made primary.
+        let at = a
+            .account_rows()
+            .iter()
+            .position(|row| matches!(row, AccountRow::Entry(i) if a.accounts[*i].name == "last"))
+            .unwrap();
+        a.accounts_panel.as_mut().unwrap().selected = at;
+        a.accounts_make_primary();
+
+        assert!(a.status.ends_with("will use last"), "{}", a.status);
+        assert_eq!(codex_primary(&saved(&a)), vec!["last".to_string()]);
+        assert!(!saved(&a).iter().any(|x| x.name == "goes"));
+    }
+
+    #[test]
+    fn a_rename_being_typed_follows_its_account_through_a_save() {
+        let (mut a, mut b) = pair();
+        a.accounts.push(spare("first"));
+        a.accounts.push(spare("second"));
+        a.persist_accounts();
+        assert!(b.reload_accounts_if_changed());
+        let second = a.accounts.iter().position(|x| x.name == "second").unwrap();
+        a.accounts_panel.as_mut().unwrap().naming =
+            Some(super::super::accounts_panel::NameFor::Rename(second));
+
+        b.accounts.retain(|x| x.name != "first");
+        b.persist_accounts();
+        // A save here, such as an identity bind landing, takes in the removal.
+        a.save_accounts_merged().unwrap();
+
+        let Some(super::super::accounts_panel::NameFor::Rename(i)) =
+            a.accounts_panel.as_ref().unwrap().naming
+        else {
+            panic!("the rename was dropped");
+        };
+        assert_eq!(a.accounts[i].name, "second");
+    }
+
+    #[test]
+    fn a_name_another_mindplayer_just_gave_out_is_refused_here() {
+        let (mut a, mut b) = pair();
+        a.accounts.push(spare("x"));
+        a.persist_accounts();
+        assert!(b.reload_accounts_if_changed());
+        b.accounts.iter_mut().find(|x| x.name == "x").unwrap().name = "taken".into();
+        b.persist_accounts();
+
+        a.accounts_start_add();
+        let panel = a.accounts_panel.as_mut().unwrap();
+        panel.naming = Some(super::super::accounts_panel::NameFor::NewAccount(
+            Agent::Codex,
+        ));
+        panel.new_name = Some("taken".into());
+        a.accounts_confirm_add();
+
+        let error = a.accounts_panel.as_ref().unwrap().error.clone();
+        assert!(
+            error.is_some_and(|e| e.contains("already exists")),
+            "{:?}",
+            a.accounts_panel
+        );
+        assert_eq!(
+            saved(&a).iter().filter(|x| x.name == "taken").count(),
+            1,
+            "two accounts share one name"
+        );
+    }
+
+    #[test]
+    fn a_bind_check_still_binds_after_another_mindplayer_renames_the_account() {
+        let (mut a, mut b) = pair();
+        a.accounts.push(spare("checking"));
+        a.persist_accounts();
+        assert!(b.reload_accounts_if_changed());
+        let at = a
+            .account_rows()
+            .iter()
+            .position(
+                |row| matches!(row, AccountRow::Entry(i) if a.accounts[*i].name == "checking"),
+            )
+            .unwrap();
+        a.accounts_panel.as_mut().unwrap().selected = at;
+        let account = a
+            .accounts
+            .iter()
+            .find(|x| x.name == "checking")
+            .unwrap()
+            .clone();
+        a.accounts_panel.as_mut().unwrap().confirm_identity = Some((
+            account.clone(),
+            "codex-user-renamed-meanwhile".into(),
+            std::env::temp_dir(),
+        ));
+        a.accounts_verify_identity();
+
+        // While the check runs, the other MindPlayer renames the account and A takes that in.
+        b.accounts
+            .iter_mut()
+            .find(|x| x.name == "checking")
+            .unwrap()
+            .name = "renamed".into();
+        b.persist_accounts();
+        assert!(a.reload_accounts_if_changed());
+
+        let live = || {
+            Ok(mindplayer_core::limits::CodexIdentity {
+                fingerprint: "codex-user-renamed-meanwhile".into(),
+                email: "person@example.test".into(),
+                workspace: "workspace-test".into(),
+            })
+        };
+        // The first answer was read for the account as it was, so the bind is checked once more.
+        a.complete_account_checks_for_test(live());
+        assert!(saved(&a).iter().all(|x| x.codex_identity.is_none()));
+        a.complete_account_checks_for_test(live());
+
+        let bound = saved(&a)
+            .into_iter()
+            .find(|x| x.slot == account.slot)
+            .expect("the account is still saved");
+        assert_eq!(bound.name, "renamed");
+        assert_eq!(
+            bound.codex_identity.as_deref(),
+            Some("codex-user-renamed-meanwhile"),
+            "{}",
+            a.status
+        );
+    }
+
+    #[test]
+    fn renaming_an_account_removed_elsewhere_says_so_instead_of_success() {
+        let (mut a, mut b) = pair();
+        a.accounts.push(spare("doomed"));
+        a.persist_accounts();
+        assert!(b.reload_accounts_if_changed());
+        let at = a
+            .account_rows()
+            .iter()
+            .position(|row| matches!(row, AccountRow::Entry(i) if a.accounts[*i].name == "doomed"))
+            .unwrap();
+        a.accounts_panel.as_mut().unwrap().selected = at;
+        a.accounts_start_rename();
+        a.accounts_panel.as_mut().unwrap().new_name = Some("kept".into());
+
+        b.accounts.retain(|x| x.name != "doomed");
+        b.persist_accounts();
+        a.accounts_confirm_add();
+
+        assert!(!a.status.contains("is now"), "{}", a.status);
+        let error = a.accounts_panel.as_ref().unwrap().error.clone();
+        assert!(
+            error.is_some_and(|e| e.contains("removed in another MindPlayer")),
+            "{:?}",
+            a.accounts_panel
+        );
+        assert!(!saved(&a)
+            .iter()
+            .any(|x| x.name == "kept" || x.name == "doomed"));
+    }
+
+    #[test]
+    fn a_name_being_typed_holds_the_list_until_it_is_done() {
+        let (mut a, mut b) = pair();
+        b.accounts_panel.as_mut().unwrap().naming = Some(
+            super::super::accounts_panel::NameFor::NewAccount(Agent::Codex),
+        );
+        a.accounts.push(spare("while-typing"));
+        a.persist_accounts();
+        assert!(!b.reload_accounts_if_changed());
+        b.accounts_panel.as_mut().unwrap().naming = None;
+        assert!(b.reload_accounts_if_changed());
+        assert!(b.accounts.iter().any(|x| x.name == "while-typing"));
+    }
+}

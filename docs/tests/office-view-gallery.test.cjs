@@ -91,6 +91,7 @@ async function main() {
 
         await office(() => window.__office2.openCard(window.__office2.sessions.find(s => s.agent === 'cursor')));
         assert.match(await page.locator('#card .reply').textContent(), /convo_log에 대화 turn이 없습니다/);
+        const srBefore = await page.locator('#sr').textContent(); await office(() => window.__office2.closeCard()); assert.equal(await page.locator('#sr').textContent(), srBefore, 'closing a card leaves the live region text unchanged');
         const kiroReply = await office(() => { const s = window.__office2.sessions.find(x => x.agent === 'kiro'); window.__office2.openCard(s); return s.reply; });
         assert.equal((await page.locator('#card .reply').textContent()).trim(), kiroReply.trim(), 'kiro card shows its own last reply');
         await office(() => window.__office2.closeCard());
@@ -106,7 +107,7 @@ async function main() {
         result.passed.push('hover marks the AI under the pointer and shows its tooltip');
 
         const target = await office(() => window.__office2.fitTarget());
-        await office(() => window.__office2.closeCard()); await office(c => window.__office2.setCam({...c, y:c.y + 200}), target); await press('0'); await office(() => window.__office2.pause(false)); await page.waitForTimeout(2500); await office(() => window.__office2.pause(true));
+        await office(() => window.__office2.closeCard()); await office(c => window.__office2.setCam({...c, y:c.y + 200}), target); await press('0'); await office(() => window.__office2.easeFrames(240));
         const cam = await office(() => window.__office2.cam);
         assert.ok(Math.abs(cam.x - target.x) < 1 && Math.abs(cam.y - target.y) < 1 && Math.abs(cam.z - target.z) < .01, `0 returns the camera on x, y and zoom ${JSON.stringify({cam, target})}`);
         result.passed.push('after a vertical pan, 0 brings the camera back on x, y and zoom');

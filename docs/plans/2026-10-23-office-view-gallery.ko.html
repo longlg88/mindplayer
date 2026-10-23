@@ -87,15 +87,15 @@ table{width:100%;border-collapse:collapse;font-size:12.5px;line-height:1.6}th,td
       <thead><tr><th>화면 요소</th><th>보여 주는 것</th><th>출처와 상태</th></tr></thead>
       <tbody>
         <tr><td>캐릭터</td><td>agent를 나타냅니다. codex는 Halo, claude는 Ember, kiro는 Prism, cursor는 Spark입니다.</td><td>MindPlayer agent 색(<code>ui.rs</code> agent_tag). claude와 kiro는 ANSI Magenta와 Cyan이어서 비슷한 hex를 씁니다. 디자인은 새로 그렸습니다.</td></tr>
-        <tr><td>머리 위 기호</td><td>세션 상태입니다. <code>! blocked</code>, <code>● working</code>, <code>✓ done</code>, <code>○ idle</code>을 씁니다.</td><td><code>SessionStatus</code>, <code>pane_dot</code>의 기호와 색. 있음</td></tr>
-        <tr><td>콘솔 묶음과 바닥 색</td><td>세션의 category입니다.</td><td><code>state.category_of</code>, category 팔레트. 있음</td></tr>
-        <tr><td>명패</td><td>첫 프롬프트 제목입니다.</td><td><code>Session.title</code>. 있음</td></tr>
-        <tr><td>경과 시간</td><td>마지막 프롬프트 뒤 시간입니다. 세션이 실행 중이고 agent가 kiro나 cursor이면 now입니다.</td><td><code>last_prompt_at</code>(codex·claude만). 있음</td></tr>
+        <tr><td>머리 위 기호</td><td>세션 상태입니다. <code>! blocked</code>, <code>● working</code>, <code>✓ done</code>, <code>○ idle</code>을 씁니다.</td><td><code>SessionStatus</code>와 <code>pane_dot</code>의 기호와 색입니다. 제품에 있습니다.</td></tr>
+        <tr><td>콘솔 묶음과 바닥 색</td><td>세션의 category입니다.</td><td><code>state.category_of</code>와 category 팔레트입니다. 제품에 있습니다.</td></tr>
+        <tr><td>명패</td><td>첫 프롬프트 제목입니다.</td><td><code>Session.title</code>입니다. 제품에 있습니다.</td></tr>
+        <tr><td>경과 시간</td><td>마지막 프롬프트 뒤 시간입니다. 세션이 실행 중이고 agent가 kiro나 cursor이면 now입니다.</td><td><code>last_prompt_at</code>입니다. codex와 claude만 값이 있습니다.</td></tr>
         <tr><td>쉬는 곳과 잠</td><td>idle이면 쉬는 곳에 앉습니다. idle이고 마지막 프롬프트 뒤 10분이 지났으면 잡니다.</td><td><strong>새 규칙.</strong> 제품에는 잠 규칙이 없습니다. kiro와 cursor는 자지 않습니다.</td></tr>
         <tr><td>방 이동</td><td>일하는 중이면 마지막 도구에 따라 아카이브(읽기), 코어(명령), 통신(외부 도구)으로 갑니다.</td><td>claude와 kiro는 <code>convo_log</code>에 도구 이름(<code>[tool_use 이름]</code>)이 있습니다. codex는 도구 호출을 저장하지 않으므로 <strong>새 수집이 필요합니다.</strong></td></tr>
         <tr><td>카드의 마지막 답변</td><td>그 세션의 마지막 답변입니다.</td><td><code>convo_log</code>의 turn(claude·codex·kiro). 이 값을 읽는 코드는 새로 필요합니다. cursor는 turn이 0개입니다.</td></tr>
-        <tr><td>handoff 끈</td><td>handoff로 이어진 세션이 끈으로 부모 곁에 뜹니다.</td><td><code>state.handoff_parent</code>. 있음</td></tr>
-        <tr><td>대기열과 N</td><td>나를 기다리는 세션을 줄 세웁니다. ✓ done이 먼저, 그다음 ! blocked입니다. N을 누를 때마다 다음 세션으로 넘어갑니다.</td><td>목록의 <code>status_rank</code>(ended·done 0, blocked 1). 있음</td></tr>
+        <tr><td>handoff 끈</td><td>handoff로 이어진 세션이 끈으로 부모 곁에 뜹니다.</td><td><code>state.handoff_parent</code>입니다. 제품에 있습니다.</td></tr>
+        <tr><td>대기열과 N</td><td>나를 기다리는 세션을 줄 세웁니다. ✓ done이 먼저, 그다음 ! blocked입니다. N을 누를 때마다 다음 세션으로 넘어갑니다.</td><td>목록의 <code>status_rank</code>에서 done이 blocked보다 앞입니다. 목록은 24시간 기준 그룹을 먼저 나누지만, 이 시안은 그룹을 쓰지 않습니다.</td></tr>
         <tr><td>고래</td><td>MindPlayer 마스코트를 홀로그램으로 그립니다.</td><td><code>mascot.rs</code> 색</td></tr>
       </tbody>
     </table></div>
@@ -604,14 +604,14 @@ function updateHud() { const ls = sessions.filter(s => !s.gone), c = st => ls.fi
   hud.innerHTML = `<span class="chip title">${sc.name}</span><span class="chip">세션<span class="n">${ls.length}</span></span><span class="chip" style="color:${K.working}">● 일하는 중<span class="n">${c('working')}</span></span><span class="chip" style="color:${K.waiting}">! 나를 기다림<span class="n">${c('blocked')}</span></span><span class="chip" style="color:${K.completed}">✓ 끝남<span class="n">${c('done')}</span></span><span class="chip" style="color:#c4cad6">○ 쉬는 중<span class="n">${c('idle')}</span></span><span class="chip">handoff<span class="n">${world.lanes.filter(l => !sessions[l.parent].gone).length}</span></span><span class="chip hint">휠 확대 · 드래그 · 더블클릭 = 전체</span>`;
   const q = rollup(), nx = nextSession();
   queueEl.innerHTML = (nx ? `<span class="q next"><span class="k">N</span>다음 ▶ ${esc(nx.title)} · ${ST[nx.status].g} ${when(nx)}</span>` : '') + q.filter(s => s !== nx).slice(0, 6).map(s => `<span class="q" style="color:${ST[s.status].color};border-color:${ST[s.status].color}">${ST[s.status].g} ${esc(s.title)} · ${when(s)}</span>`).join('');
-  document.getElementById('sr').textContent = ls.map(s => `${s.title} ${ST[s.status].ko}`).join(', '); }
+  const sr = document.getElementById('sr'), text = ls.map(s => `${s.title} ${ST[s.status].ko}`).join(', '); if (sr.textContent !== text) sr.textContent = text; }
 function placeName(s) { if (s.walking) return '이동 중'; if (s.atDesk) return '자기 콘솔'; if (s.pod) return world.rooms.bay.label; return (world.rooms[s.place] || {}).label || s.place; }
 function openCard(s) { selected = s; const st = ST[s.status], ag = AG[s.agent], reply = s.agent === 'cursor' ? null : s.reply;
   card.innerHTML = `<button class="x" type="button" aria-label="닫기">✕</button><h3>${esc(s.title)}</h3>
    <div class="meta"><span class="badge" style="background:${st.color}">${st.g} ${st.label}</span><b style="color:${ag.color}">▌${ag.name}</b> · ${esc(CATS[s.cat].name)} · ${when(s)}${s.tool && s.status === 'working' ? ' · ' + TOOL[s.tool].label : ''}</div>
    <div class="grid"><span>usage</span><span>${esc(s.usage)}</span><span>account</span><span>${esc(s.account)}</span><span>id</span><span>${esc(s.id)}</span><span>위치</span><span>${esc(placeName(s))}</span></div>
    <div class="reply">${reply ? esc(reply) : 'cursor 세션은 convo_log에 대화 turn이 없습니다.'}</div>
-   <div class="src">마지막 답변 · ${reply ? 'convo_log의 마지막 assistant turn (읽는 코드는 새로 필요)' : 'cursor는 turn 0개'}${s.tool ? (s.agent === 'codex' ? ' · codex 도구 기록은 새 수집 필요' : ' · 도구 이름은 convo_log에 있음') : ''}</div>
+   <div class="src">마지막 답변: ${reply ? 'convo_log의 마지막 assistant turn입니다. 읽는 코드가 새로 필요합니다.' : 'cursor는 turn이 0개입니다.'}${s.tool ? (s.agent === 'codex' ? ' codex 도구 기록은 새로 모아야 합니다.' : ' 도구 이름은 convo_log에 있습니다.') : ''}</div>
    <div class="hintline">이 창은 읽기 전용입니다. 답장은 MindPlayer 목록에서 이 세션을 고르고 <kbd>Enter</kbd>로 pane에 들어가서 합니다.</div>`;
   card.classList.add('open'); card.querySelector('.x').onclick = closeCard; focusOn(s); updateHud(); }
 function closeCard() { card.classList.remove('open'); selected = null; if (world) updateHud(); }
@@ -669,13 +669,15 @@ function selectScene(k) { sceneIdx = k; closeCard(); const sc = SCENES[k]; build
 SCENES.forEach((sc, k) => { const b = document.createElement('button'); b.type = 'button'; b.className = 'tab'; b.setAttribute('role', 'tab'); b.innerHTML = `<span class="number">${sc.n}</span><span class="name">${sc.name}</span><span class="sub">${sc.sub}</span>`; b.onclick = () => selectScene(k); tabs.appendChild(b); });
 tabs.addEventListener('keydown', e => { if (e.key !== 'ArrowRight' && e.key !== 'ArrowLeft') return; e.preventDefault(); const k = (sceneIdx + (e.key === 'ArrowRight' ? 1 : SCENES.length - 1)) % SCENES.length; selectScene(k); tabs.children[k].focus(); });
 let paused = false;
+function easeCam() { if (!camTarget) return; const a = .12; cam.x += (camTarget.x - cam.x) * a; cam.y += (camTarget.y - cam.y) * a; cam.z += (camTarget.z - cam.z) * a;
+  if (reduce || (Math.abs(camTarget.z - cam.z) < .001 && Math.abs(camTarget.x - cam.x) < .5 && Math.abs(camTarget.y - cam.y) < .5)) { cam = {...camTarget}; camTarget = null; } }
 function frame(ts) { const dt = Math.min(.05, (ts - (last || ts)) / 1000); last = ts;
-  if (!paused) { T += reduce ? 0 : dt; step(reduce ? 1 : dt); if (camTarget) { const a = .12; cam.x += (camTarget.x - cam.x) * a; cam.y += (camTarget.y - cam.y) * a; cam.z += (camTarget.z - cam.z) * a; if (reduce || (Math.abs(camTarget.z - cam.z) < .001 && Math.abs(camTarget.x - cam.x) < .5 && Math.abs(camTarget.y - cam.y) < .5)) { cam = {...camTarget}; camTarget = null; } } }
+  if (!paused) { T += reduce ? 0 : dt; step(reduce ? 1 : dt); easeCam(); }
   render(); drawSheet(); requestAnimationFrame(frame); }
 window.addEventListener('resize', resize);
 window.__office2 = {get sessions() { return sessions; }, get world() { return world; }, get cam() { return cam; }, selectScene, validateWorld, pause:v => { paused = v; },
   advance:sec => { for (let k = 0; k < sec * 30; k++) { T += 1 / 30; step(1 / 30); } }, settle:() => { if (camTarget) { cam = {...camTarget}; camTarget = null; } }, SCENES, openCard, closeCard, nextSession, rollup,
-  blinkAt, fitTarget:() => { const keep = camTarget; fit(false); const t = camTarget; camTarget = keep; return t; }, setCam:c => { cam = {...c}; camTarget = null; },
+  blinkAt, fitTarget:() => { const keep = camTarget; fit(false); const t = camTarget; camTarget = keep; return t; }, setCam:c => { cam = {...c}; camTarget = null; }, easeFrames:n => { for (let k = 0; k < n; k++) easeCam(); },
   stagePoint:s => { const p = screenOf(s); return {x:p.x * cam.z + cam.x, y:(p.y - 34 * CS) * cam.z + cam.y}; }};
 selectScene(0); resize(); requestAnimationFrame(frame);
 })();

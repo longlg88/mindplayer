@@ -34,6 +34,7 @@ pub(crate) const ROUTER_SERVICE_ENV: &[&str] = &[
     "MINDPLAYER_CLAUDE_JEV_URL",
     "MINDPLAYER_CLAUDE_JEV_TOKEN",
     "MINDPLAYER_PER_PROMPT_CHOICE",
+    "MINDPLAYER_JEV_DEFAULT",
 ];
 
 /// Which login an account reads.
@@ -671,6 +672,7 @@ mod claude_account_tests {
             "MINDPLAYER_CLAUDE_JEV_URL",
             "MINDPLAYER_CLAUDE_JEV_TOKEN",
             "MINDPLAYER_PER_PROMPT_CHOICE",
+            "MINDPLAYER_JEV_DEFAULT",
         ] {
             command.env(key, "synthetic-service-canary");
         }
@@ -715,6 +717,7 @@ mod claude_account_tests {
                     "MINDPLAYER_CLAUDE_JEV_URL",
                     "MINDPLAYER_CLAUDE_JEV_TOKEN",
                     "MINDPLAYER_PER_PROMPT_CHOICE",
+                    "MINDPLAYER_JEV_DEFAULT",
                 ] {
                     command.env(key, "synthetic-service-canary");
                 }
@@ -729,7 +732,7 @@ mod claude_account_tests {
                 let count = environment.matches("=synthetic-service-canary").count();
                 assert_eq!(
                     count,
-                    if provider == Agent::Codex { 9 } else { 0 },
+                    if provider == Agent::Codex { 10 } else { 0 },
                     "{provider:?} {:?} service environment",
                     account.slot
                 );

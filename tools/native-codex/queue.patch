@@ -2994,14 +2994,14 @@ index 5b8784a..944d4a8 100644
      pub(super) remote_images: Rect,
 diff --git a/codex-rs/tui/src/bottom_pane/chat_composer/mindplayer.rs b/codex-rs/tui/src/bottom_pane/chat_composer/mindplayer.rs
 new file mode 100644
-index 0000000..fb7c31b
+index 0000000..2f850a7
 --- /dev/null
 +++ b/codex-rs/tui/src/bottom_pane/chat_composer/mindplayer.rs
-@@ -0,0 +1,106 @@
+@@ -0,0 +1,126 @@
 +//! MindPlayer's opt-in, session-local F6 toggle. The current mode is copied to
 +//! each actual InputResult before queueing, never recovered from text or a
 +//! next-message flag. Editing and submission leave the toggle unchanged.
-+//! New composers start OFF; native controls and embedded editors remain native.
++//! New composers start at the router's default; native controls and embedded editors remain native.
 +
 +use super::*;
 +use codex_app_server_protocol::MindplayerRoutingChoice;
@@ -3011,6 +3011,8 @@ index 0000000..fb7c31b
 +pub(super) struct PromptRouting {
 +    pub(super) enabled: bool,
 +    pub(super) mode: MindplayerRoutingMode,
++    /// The mode a new session starts in: Jev only when MindPlayer's router loaded a key and set `MINDPLAYER_JEV_DEFAULT=jev`.
++    pub(super) default_mode: MindplayerRoutingMode,
 +}
 +
 +impl Default for PromptRouting {
@@ -3018,16 +3020,28 @@ index 0000000..fb7c31b
 +        Self {
 +            enabled: false,
 +            mode: MindplayerRoutingMode::Native,
++            default_mode: MindplayerRoutingMode::Native,
 +        }
++    }
++}
++
++/// Only the exact value `jev` turns the default on; anything else keeps the native model.
++pub(super) fn default_mode_from(value: Option<&str>) -> MindplayerRoutingMode {
++    match value {
++        Some("jev") => MindplayerRoutingMode::Jev,
++        _ => MindplayerRoutingMode::Native,
 +    }
 +}
 +
 +impl PromptRouting {
 +    pub(super) fn new(main_composer: bool) -> Self {
++        let default_mode =
++            default_mode_from(std::env::var("MINDPLAYER_JEV_DEFAULT").ok().as_deref());
 +        Self {
 +            enabled: main_composer
 +                && std::env::var("MINDPLAYER_PER_PROMPT_CHOICE").as_deref() == Ok("1"),
-+            ..Self::default()
++            mode: default_mode,
++            default_mode,
 +        }
 +    }
 +
@@ -3046,8 +3060,14 @@ index 0000000..fb7c31b
 +        self.reset_mindplayer_session_routing();
 +    }
 +
++    #[cfg(test)]
++    pub(crate) fn set_mindplayer_default_mode(&mut self, mode: MindplayerRoutingMode) {
++        self.mindplayer.default_mode = mode;
++        self.reset_mindplayer_session_routing();
++    }
++
 +    pub(crate) fn reset_mindplayer_session_routing(&mut self) {
-+        self.mindplayer.mode = MindplayerRoutingMode::Native;
++        self.mindplayer.mode = self.mindplayer.default_mode;
 +    }
 +
 +    pub(crate) fn mindplayer_session_routing(&self) -> Option<MindplayerRoutingMode> {
@@ -3237,7 +3257,7 @@ index 6ab2ea9..af653a6 100644
              text_elements: Vec::new()
          }
 diff --git a/codex-rs/tui/src/bottom_pane/chat_composer_enter_tests.rs b/codex-rs/tui/src/bottom_pane/chat_composer_enter_tests.rs
-index ea059b4..675073c 100644
+index ea059b4..c2585f5 100644
 --- a/codex-rs/tui/src/bottom_pane/chat_composer_enter_tests.rs
 +++ b/codex-rs/tui/src/bottom_pane/chat_composer_enter_tests.rs
 @@ -10,9 +10,238 @@ use pretty_assertions::assert_eq;
@@ -3495,6 +3515,67 @@ index ea059b4..675073c 100644
                          text: "x".to_owned(),
                          text_elements: Vec::new(),
                      },
+@@ -85,3 +316,60 @@ fn plain_enter_submits_expired_vim_insert_input() {
+         },
+     );
+ }
++
++#[test]
++fn mindplayer_session_default_jev_starts_on_and_f6_off_holds_until_a_new_session() {
++    use codex_app_server_protocol::MindplayerRoutingMode;
++    let (mut composer, _rx) = new_test_composer();
++    composer.set_mindplayer_prompt_choice_enabled(true);
++    composer.set_mindplayer_default_mode(MindplayerRoutingMode::Jev);
++    assert_eq!(
++        composer.mindplayer.choice().unwrap().mode,
++        MindplayerRoutingMode::Jev
++    );
++    assert!(
++        composer.mindplayer_lines()[0]
++            .to_string()
++            .contains("Jev ON")
++    );
++
++    composer.handle_key_event(KeyCode::F(6).into());
++    composer.set_text_content("follow-up".to_string(), vec![], vec![]);
++    assert!(matches!(
++        composer.handle_key_event(KeyCode::Enter.into()).0,
++        InputResult::Submitted {
++            mindplayer_routing_choice: Some(codex_app_server_protocol::MindplayerRoutingChoice {
++                mode: MindplayerRoutingMode::Native,
++                ..
++            }),
++            ..
++        }
++    ));
++    assert_eq!(
++        composer.mindplayer.choice().unwrap().mode,
++        MindplayerRoutingMode::Native
++    );
++
++    composer.reset_mindplayer_session_routing();
++    assert_eq!(
++        composer.mindplayer.choice().unwrap().mode,
++        MindplayerRoutingMode::Jev
++    );
++}
++
++#[test]
++fn mindplayer_session_default_only_exact_jev_turns_on() {
++    use super::mindplayer::default_mode_from as from;
++    use codex_app_server_protocol::MindplayerRoutingMode;
++    assert_eq!(from(Some("jev")), MindplayerRoutingMode::Jev);
++    for value in [
++        None,
++        Some(""),
++        Some("native"),
++        Some("1"),
++        Some("JEV"),
++        Some("jev "),
++    ] {
++        assert_eq!(from(value), MindplayerRoutingMode::Native, "{value:?}");
++    }
++}
 diff --git a/codex-rs/tui/src/bottom_pane/mcp_server_elicitation.rs b/codex-rs/tui/src/bottom_pane/mcp_server_elicitation.rs
 index 39488bc..e357a0e 100644
 --- a/codex-rs/tui/src/bottom_pane/mcp_server_elicitation.rs

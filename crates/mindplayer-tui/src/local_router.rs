@@ -80,6 +80,8 @@ const AVAILABILITY_ENV: &str = "MINDPLAYER_ROUTER_AVAILABILITY";
 const AVAILABILITY_MAX_AGE: chrono::Duration = chrono::Duration::seconds(60);
 const STATUS_ENV: &str = "MINDPLAYER_ROUTER_STATUS";
 const PER_PROMPT_ENV: &str = "MINDPLAYER_PER_PROMPT_CHOICE";
+/// Set by the router only when a Jev credential loaded; a value inherited from MindPlayer's own environment is dropped.
+const JEV_DEFAULT_ENV: &str = "MINDPLAYER_JEV_DEFAULT";
 const STATUS_MAX_BYTES: u64 = 4096;
 const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
 const ROUTING_ENV: &[&str] = &[
@@ -92,6 +94,7 @@ const ROUTING_ENV: &[&str] = &[
     AVAILABILITY_ENV,
     STATUS_ENV,
     PER_PROMPT_ENV,
+    JEV_DEFAULT_ENV,
 ];
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(10);
 const STARTUP_MAX_BYTES: usize = 256;
@@ -989,6 +992,7 @@ mod tests {
             "MINDPLAYER_CLAUDE_JEV_URL",
             "MINDPLAYER_CLAUDE_JEV_TOKEN",
             "MINDPLAYER_PER_PROMPT_CHOICE",
+            "MINDPLAYER_JEV_DEFAULT",
         ];
         for key in routing_keys.into_iter().chain(routing_keys) {
             command
@@ -1898,7 +1902,7 @@ mod status_tests {
     #[test]
     fn per_prompt_codex_new_resume_handoff_and_login_reach_the_owned_launcher() {
         const CHILD_HOME: &str = "MP_PER_PROMPT_BOUNDARY_TEST_HOME";
-        const SERVICE_KEYS: [&str; 9] = [
+        const SERVICE_KEYS: [&str; 10] = [
             "AI_GATEWAY_API_KEY",
             "TYPESAFE_API_KEY",
             "VERCEL_OIDC_TOKEN",
@@ -1908,6 +1912,7 @@ mod status_tests {
             "MINDPLAYER_CLAUDE_JEV_URL",
             "MINDPLAYER_CLAUDE_JEV_TOKEN",
             "MINDPLAYER_PER_PROMPT_CHOICE",
+            "MINDPLAYER_JEV_DEFAULT",
         ];
         if let Some(home) = std::env::var_os(CHILD_HOME) {
             let home = PathBuf::from(home);

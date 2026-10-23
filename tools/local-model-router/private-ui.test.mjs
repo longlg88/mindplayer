@@ -42,6 +42,7 @@ exec node --input-type=module -e '
     });
   } else {
     appendFileSync(calls, "private-ui\\n");
+    appendFileSync(process.env.HOME + "/ui-jev-default", (process.env.MINDPLAYER_JEV_DEFAULT ?? "unset") + "\\n");
     const ws = new WebSocket(args[args.indexOf("--remote") + 1], { headers: { Authorization: "Bearer " + process.env.MINDPLAYER_LOCAL_ROUTER_TOKEN } });
     ws.addEventListener("open", () => ws.send(JSON.stringify({ id: 1, method: "initialize", params: {} })));
     ws.addEventListener("message", () => { ws.close(); });
@@ -305,7 +306,8 @@ test('managed launch advertises the session F6 toggle without F7 or per-input re
   const f = fixture(t);
   const result = launch(f, true, { tty: true, extraEnv: { MINDPLAYER_PER_PROMPT_CHOICE: '1' } });
   assert.equal(result.status, 0);
-  assert.ok(result.stdout.split('\n').includes('세션별 Jev · F6 ON/OFF · Enter 전송'));
+  assert.ok(result.stdout.split('\n').includes('세션별 Jev · 새 세션 ON · F6 ON/OFF · Enter 전송'), result.stdout);
+  assert.equal(readFileSync(join(f.home, 'ui-jev-default'), 'utf8'), 'jev\n', 'a loaded key starts the session ON');
   assert.doesNotMatch(result.stdout, /F7|매 프롬프트|다시 선택/);
   assert.deepEqual(readFileSync(f.calls, 'utf8').trim().split('\n'), ['private-app-server', 'private-ui', 'private-app-server']);
 });
@@ -333,4 +335,13 @@ test('standalone UI, model probes and app-server use global Codex without any pr
 test('failure-reason mapping accepts only bounded codes and never arbitrary exception messages', () => {
   assert.equal(privateUiFailureReason({ code: SECRET, message: SECRET }), undefined);
   assert.equal(safeFailureReason({ code: 'ERR_PRIVATE_UI_HASH', message: SECRET }), '전용 Codex 파일 무결성 확인에 실패했습니다');
+});
+
+test('without a Jev key the managed session starts OFF and an inherited default never reaches the UI', t => {
+  const f = fixture(t);
+  for (const key of ['AI_GATEWAY_API_KEY', 'TYPESAFE_API_KEY', 'VERCEL_OIDC_TOKEN']) delete f.env[key];
+  const result = launch(f, true, { tty: true, extraEnv: { MINDPLAYER_PER_PROMPT_CHOICE: '1', MINDPLAYER_JEV_DEFAULT: 'jev' } });
+  assert.equal(result.status, 0, result.stderr);
+  assert.ok(result.stdout.split('\n').includes('세션별 Jev · 키 없음 · 새 세션 OFF · F6 ON/OFF · Enter 전송'), result.stdout);
+  assert.equal(readFileSync(join(f.home, 'ui-jev-default'), 'utf8'), 'unset\n');
 });

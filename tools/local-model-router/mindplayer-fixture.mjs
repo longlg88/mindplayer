@@ -11,7 +11,7 @@ const markerDir = process.env.MINDPLAYER_ROUTER_MARKER_DIR;
 // This is a synthetic composer for Rust/embedded-router smoke coverage. The
 // private Codex composer's real editing/queue protocol is verified separately.
 export function createPromptComposer({ send, render, params, idPrefix = `fixture-${process.pid}` }) {
-  let draft = '', mode = 'native';
+  let draft = '', mode = process.env.MINDPLAYER_JEV_DEFAULT === 'jev' ? 'jev' : 'native';
   let buffered = '', pasted = false, nextId = 100, submission = 1;
   const identity = () => `${idPrefix}-${submission}`;
   const payload = () => ({ ...params(), input: [{ type: 'text', text: draft }], clientUserMessageId: identity() });

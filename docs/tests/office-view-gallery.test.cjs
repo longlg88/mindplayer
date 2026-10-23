@@ -29,9 +29,10 @@ async function main() {
     // names of the referenced game and franchise, kept out of this public repo as sha256 prefixes of the lower-cased word
     const banned = new Set(['652ccbed27d3820b', '3da82e606d9fc4cd', 'a1a38b5bae5866d7', 'f010e37626b41704', '5a52204403899c2b', '90799fdcfdd3a1e3', '92726c47e1ed0ad5', 'e09ba57969cc21f0', '6518d70d64a1a20d', '874b24615791f65d',
       'ad9454ef8287c81f', '6d9a3440020a9e07', '5944ae849448011c', '9318b7d37aff5ca9', '38868dc905f4d6d6', '40722801a3b84d5c', '51fb5adcf0573798', '2e773265de9d3308', 'ae8a6466de8b6f77', '516c267ca186892b']);
-    const words = [...new Set((source.match(/[A-Za-z]+|[가-힣]+/g) || []).map(w => w.toLowerCase()))];
-    assert.deepEqual(words.filter(w => banned.has(hash(w).slice(0, 16))).map(w => `${w.length} chars`), [], 'no game or franchise names in the page');
-    result.passed.push('inline syntax, no network/storage APIs, no external URLs, no game or franchise names (hash-compared)');
+    const design = fs.readFileSync(path.join(repo, 'DESIGN.md'), 'utf8');
+    const words = [...new Set(((source + '\n' + design).match(/[A-Za-z]+|[가-힣]+/g) || []).map(w => w.toLowerCase()))];
+    assert.deepEqual(words.filter(w => banned.has(hash(w).slice(0, 16))).map(w => `${w.length} chars`), [], 'no game or franchise names in the page or DESIGN.md');
+    result.passed.push('inline syntax, no network/storage APIs, no external URLs, no game or franchise names in the page or DESIGN.md (hash-compared)');
     const { chromium } = require(process.env.MINDPLAYER_PLAYWRIGHT_MODULE || 'playwright');
     server = http.createServer((req, res) => {
       if (req.url === '/favicon.ico') { res.writeHead(204).end(); return; }
@@ -81,19 +82,28 @@ async function main() {
         result.passed.push('controls: the crowding check fails when two standing companions share a spot; the path check fails when the terminal step is fenced off');
 
         const rows = await page.locator('#baseinfo .bi-row').count(); assert.equal(rows, 24, 'base info lists every live companion');
-        const states = await sim();
-        for (const [status, text] of [['working', /열심히 일하는 중/], ['blocked', /지시를 기다립니다/], ['done', /납품 완료/]]) {
-          const k = states.findIndex(s => s.status === status); assert.match(await page.locator('#baseinfo .bi-row').nth(k).textContent(), text, `${status} row sentence`);
-        }
-        const sleeper = states.findIndex(s => s.pod); assert.match(await page.locator('#baseinfo .bi-row').nth(sleeper).textContent(), /짚 침대에서 자는 중/);
+        const states = await sim(), rowText = await page.locator('#baseinfo .bi-row').allTextContents();
+        states.forEach((s, k) => { assert.ok(rowText[k].includes(s.title), `row ${k} names ${s.title}`); const want = s.status === 'working' ? /일하는 중 \(/ : s.status === 'blocked' ? /지시를 기다립니다/ : s.status === 'done' ? /납품 완료/ : s.pod ? /짚 침대에서 자는 중/ : /먹이통에서 쉬는 중/; assert.match(rowText[k], want, `row ${k} sentence for ${s.status}`); });
         await page.locator('#baseinfo .bi-row').nth(1).click(); assert.equal(await page.locator('#card.open').count(), 1); assert.match(await page.locator('#card h3').textContent(), new RegExp(states[1].title));
         await office(() => window.__office2.closeCard());
         assert.ok(states.filter(s => s.agent === 'cursor').every(s => s.tool === null), 'cursor sessions carry no tool');
         for (const s of states.filter(x => x.status === 'working')) assert.equal(s.place, s.tool ? {read:'field', shell:'quarry', mcp:'depot', edit:'bench'}[s.tool] : 'bench', `${s.title} stands at the station of its last tool`);
-        result.passed.push('base info lists 24 companions with one status sentence each and opens the card; working companions stand at the station of their last tool; cursor has none');
+        const zones = await office(() => window.__office2.sessions.filter(s => !s.pod).map(s => ({ title: s.title, place: s.place, zone: (window.__office2.world.rooms[s.place] || {}).zone, floor: window.__office2.world.rooms[s.place] && window.__office2.world.rooms[s.place].zone && window.__office2.world.rooms[s.place].zone.floor, at: (() => { const z = window.__office2.world.rooms[s.place].zone; return s.pos.i >= z.i0 && s.pos.i < z.i0 + z.w && s.pos.j >= z.j0 && s.pos.j < z.j0 + z.d; })() })));
+        for (const z of zones) assert.ok(z.at, `${z.title} stands inside the ${z.place} zone`);
+        assert.equal(new Set(zones.map(z => z.floor)).size >= 5, true, 'stations stand on distinct floors');
+        const parents = states.map((s, k) => [k, s]).filter(([, s]) => s.title);
+        const handoff = await office(() => window.__office2.sessions.filter(s => s.parent != null).map(s => ({ title: s.title, parent: window.__office2.sessions[s.parent].title, agent: s.agent, parentAgent: window.__office2.sessions[s.parent].agent })));
+        assert.equal(handoff.length, 3); assert.ok(handoff.some(h => h.agent !== h.parentAgent), 'a handoff child may run on another agent than its parent');
+        for (const h of handoff) assert.ok(rowText.some(t => t.includes(h.title)), `handoff child ${h.title} is listed like any session`);
+        result.passed.push('base info lists 24 companions, each with its title and the sentence of its status, and opens the card; every standing companion is inside the zone of its station; working companions stand at the station of their last tool; cursor has none; 3 handoff children are ordinary listed sessions');
+        await office(() => window.__office2.openCard(window.__office2.sessions.find(s => s.title.includes('<v2>'))));
+        assert.ok((await page.locator('#card h3').textContent()).includes('<v2>') && await page.locator('#card h3 v2').count() === 0, 'session text is escaped in the card');
+        assert.ok(rowText.some(t => t.includes('<v2>')) && await page.locator('#baseinfo v2').count() === 0, 'session text is escaped in the list');
+        await office(() => window.__office2.closeCard());
+        result.passed.push('a title containing <v2> renders as text, not markup, in the card and the list');
 
         const order = await office(() => window.__office2.rollup().map(s => s.status));
-        assert.deepEqual(order, [...order].sort((a, b) => (a === 'done' ? 0 : 1) - (b === 'done' ? 0 : 1)));
+        assert.deepEqual(order, [...order].sort((a, b) => (a === 'blocked' ? 1 : 0) - (b === 'blocked' ? 1 : 0)), 'done and ended rank before blocked, like status_rank');
         const q = await office(() => window.__office2.rollup().map(s => s.title));
         const chip = async () => (await page.locator('.q.next').textContent()).includes(await office(() => window.__office2.nextSession().title));
         assert.ok(await chip(), 'queue chip shows the N target before any card is open');
@@ -106,15 +116,17 @@ async function main() {
         await press('ㅜ', 'KeyN'); assert.equal(await page.locator('#card.open').count(), 1, 'Korean layout ㅜ on the N key opens a card');
         assert.match(await page.locator('#card h3').textContent(), new RegExp(q[0]));
         await press('Escape');
-        result.passed.push('N walks the queue in status_rank order and the first chip always names the N target; the card is read-only; ㅜ works as N');
+        result.passed.push('N walks the queue in status_rank order (done and ended before blocked) and the first chip always names the N target; the card is read-only; ㅜ works as N');
 
         await office(() => window.__office2.openCard(window.__office2.sessions.find(s => s.agent === 'cursor')));
         assert.match(await page.locator('#card .reply').textContent(), /convo_log에 대화 turn이 없습니다/);
         const srBefore = await page.locator('#sr').textContent(); await office(() => window.__office2.closeCard()); assert.equal(await page.locator('#sr').textContent(), srBefore, 'closing a card leaves the live region text unchanged');
-        const kiroReply = await office(() => { const s = window.__office2.sessions.find(x => x.agent === 'kiro'); window.__office2.openCard(s); return s.reply; });
-        assert.equal((await page.locator('#card .reply').textContent()).trim(), kiroReply.trim(), 'kiro card shows its own last reply');
-        await office(() => window.__office2.closeCard());
-        result.passed.push('card shows convo_log replies for claude/codex/kiro and states that cursor has none');
+        for (const agent of ['codex', 'claude', 'kiro']) {
+          const reply = await office(a => { const s = window.__office2.sessions.find(x => x.agent === a); window.__office2.openCard(s); return s.reply; }, agent);
+          assert.equal((await page.locator('#card .reply').textContent()).trim(), reply.trim(), `${agent} card shows its own last reply`);
+          await office(() => window.__office2.closeCard());
+        }
+        result.passed.push('card shows the convo_log reply of a codex, a claude and a kiro session and states that cursor has none');
 
         await office(() => window.__office2.setCam(window.__office2.fitTarget()));
         const pt = await office(() => window.__office2.stagePoint(window.__office2.sessions.find(s => s.status === 'blocked' && !s.walking)));
@@ -123,7 +135,9 @@ async function main() {
         assert.ok((await sim()).some(s => s.hover && s.status === 'blocked'), 'hovering a waiting AI marks it');
         assert.equal(await page.locator('#tip').isVisible(), true);
         await page.mouse.move(box.x + 5, box.y + box.height - 5);
-        result.passed.push('hover marks the AI under the pointer and shows its tooltip');
+        await page.locator('#scene').dispatchEvent('pointerleave'); assert.equal(await page.locator('#tip').isVisible(), false, 'tooltip hides when the pointer leaves the scene');
+        assert.ok(!(await sim()).some(s => s.hover), 'no companion stays marked after the pointer leaves');
+        result.passed.push('hover marks the companion under the pointer and shows its tooltip; both clear when the pointer leaves');
 
         const target = await office(() => window.__office2.fitTarget());
         await office(() => window.__office2.closeCard()); await office(c => window.__office2.setCam({...c, y:c.y + 200}), target); await press('0'); await office(() => window.__office2.easeFrames(240));
@@ -132,8 +146,8 @@ async function main() {
         result.passed.push('after a vertical pan, 0 brings the camera back on x, y and zoom');
 
         await page.locator('#stage').focus(); await page.keyboard.press('Tab');
-        assert.notEqual(await page.evaluate(() => document.activeElement.id), 'stage');
-        result.passed.push('Tab leaves the stage');
+        assert.equal(await page.evaluate(() => document.activeElement.className.includes('bi-row')), true, 'Tab moves focus from the stage into the base info list');
+        result.passed.push('Tab moves focus from the stage into the first base info row');
       }
 
       for (let k = 0; k < 5; k++) {
@@ -143,20 +157,32 @@ async function main() {
         await office(s => window.__office2.openCard(window.__office2.sessions.find(x => x.title === s)), leaver);
         await page.locator('#b-start').click();
         await office(() => window.__office2.advance(30));
+        const mid = (await sim()).find(s => s.title === starter.title); assert.ok(mid.status === 'working' && mid.place === 'bench' && !mid.walking, `scene ${k + 1}: the starter has arrived before the end demo`);
+        assert.match((await page.locator('#baseinfo .bi-row').allTextContents()).find(t => t.includes(starter.title)), /일하는 중/, `scene ${k + 1}: the list sentence updates when the walk ends`);
         await page.locator('#b-end').click();
         await office(() => window.__office2.advance(30));
         const after = await sim();
         assert.equal(after.filter(s => s.status === 'idle').length, idleBefore - 1, `scene ${k + 1}: one companion stopped resting`);
         const st = after.find(s => s.title === starter.title), lv = after.find(s => s.title === leaver);
         assert.ok(st.status === 'working' && st.place === 'bench' && !st.pod && !st.walking, `scene ${k + 1}: "${starter.title}" walked from ${starter.pod ? 'its bed' : 'the feed box'} to a bench`);
-        assert.ok(lv.status === 'ended' && lv.gone, `scene ${k + 1}: "${leaver}" returned into the terminal`);
-        assert.equal(await page.locator('#card.open').count(), 0, `scene ${k + 1}: the card of the departed companion closed`);
+        assert.ok(lv.status === 'ended' && lv.place === 'terminal' && !lv.gone, `scene ${k + 1}: "${leaver}" stands by the terminal as an ended session`);
+        assert.equal(await page.locator('#card.open').count(), 1, `scene ${k + 1}: the card of the ended companion stays open`);
+        assert.match(await page.locator('#card .badge').textContent(), /ended/, `scene ${k + 1}: the open card now shows ended`);
         assert.ok(!after.some(s => s.walking), `scene ${k + 1}: nobody is stuck walking`);
         assert.deepEqual(await office(() => window.__office2.validateWorld()), [], `scene ${k + 1}: layout still valid after transitions`);
-        assert.equal(await page.locator('#baseinfo .bi-row').count(), 23, `scene ${k + 1}: base info drops the departed companion`);
+        assert.equal(await page.locator('#baseinfo .bi-row').count(), 24, `scene ${k + 1}: base info keeps the ended companion`);
+        assert.match((await page.locator('#baseinfo .bi-row').allTextContents()).find(t => t.includes(leaver)), /종료됨/, `scene ${k + 1}: the list sentence says ended`);
+        assert.ok((await office(() => window.__office2.rollup().map(s => s.title))).includes(leaver), `scene ${k + 1}: the ended session stays in the queue`);
+        await office(() => window.__office2.closeCard());
+        if (k === 0) { // overflow control: four more starters than listed bench spots still get clear tiles
+          for (let n = 0; n < 4; n++) { await page.locator('#b-start').click(); await office(() => window.__office2.advance(30)); }
+          const crowd = await office(() => window.__office2.validateWorld()); assert.deepEqual(crowd, [], 'starters beyond the listed spots take clear tiles in the bench zone');
+          assert.ok((await sim()).filter(s => s.status === 'working' && s.place === 'bench').length >= 7, 'at least seven companions work at benches after the overflow');
+          result.passed.push('overflow control: repeated starts beyond the five listed bench spots keep the layout contract');
+        }
         if (motion === 'no-preference' && k === 1) { const shot = path.join(artifacts, 'scene2-after-transitions.png'); await page.locator('#stage').screenshot({ path: shot }); result.screenshots.push(shot); }
       }
-      result.passed.push(`${motion}: in all five scenes a resting companion walks to a bench and a done companion returns into the terminal`);
+      result.passed.push(`${motion}: in all five scenes a resting companion walks to a bench and a done companion ends by the terminal, staying listed and queued`);
 
       if (motion === 'no-preference') for (const width of [1440, 1280, 768, 390]) {
         await page.setViewportSize({ width, height: 900 }); await page.waitForTimeout(150);
@@ -184,7 +210,8 @@ async function main() {
         sourceSha256Before: result.before, sourceSha256After: result.after, cleanup: result.cleanup,
         diagnosticReceipt: `<os-tmpdir>/${path.basename(artifacts)}/validation.json`,
         notVerified: ['A live MindPlayer state feed (the read-only 127.0.0.1 GET is a plan)', 'Collecting the last tool for every session (codex needs a parser extension)',
-          'Rendering cost with real session counts above 24', 'Screen-reader behaviour of the canvas scene', 'The key that opens this window from MindPlayer'] };
+          'Rendering cost with real session counts above 24', 'Screen-reader behaviour of the canvas scene', 'The key that opens this window from MindPlayer',
+          'The daily terrain seed on a day other than the test day', 'Copied design or UI text beyond the banned-name hash list (reviewed by eye only)'] };
       fs.writeFileSync(record, JSON.stringify(summary, null, 2) + '\n');
     }
     console.log(JSON.stringify({ result: result.result, passed: result.passed.length, failed: result.failed, keyboardEvents: result.keyboardEvents,

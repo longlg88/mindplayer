@@ -1,10 +1,10 @@
 {
   "scope": "offline standalone HTML synthetic interactions, not native runtime proof",
-  "verifiedAt": "2026-10-23T14:12:53.982Z",
+  "verifiedAt": "2026-10-23T14:41:32.359Z",
   "html": "2026-10-23-office-view-gallery.ko.html",
   "test": "../tests/office-view-gallery.test.cjs",
   "result": "passed",
-  "passedContracts": 18,
+  "passedContracts": 19,
   "checked": [
     "inline syntax, no network/storage APIs, no external URLs, no game or franchise names in the page or DESIGN.md (hash-compared)",
     "five distinct scenes; every station spot and the terminal step is walkable, everyone reaches a bench and the terminal, and no two standing companions share a screen box",
@@ -15,17 +15,18 @@
     "card shows the convo_log reply of a codex, a claude and a kiro session and states that cursor has none",
     "hover marks the companion under the pointer and shows its tooltip; both clear when the pointer leaves",
     "after a vertical pan, 0 brings the camera back on x, y and zoom",
+    "today's terrain is marked; context/rank/age/farewell thresholds hold; the markdown renderer escapes first; ? toggles the help overlay",
     "Tab moves focus from the stage into the first base info row",
-    "overflow control: repeated starts beyond the five listed bench spots keep the layout contract",
+    "overflow control: repeated starts beyond the five listed bench spots keep the layout contract, spill only into aisles, and the queue keeps ended before blocked",
     "no-preference: in all five scenes a resting companion walks to a bench and a done companion ends by the terminal, staying listed and queued",
     "viewport 1440: no document overflow, sheet and stage keep their size",
     "viewport 1280: no document overflow, sheet and stage keep their size",
     "viewport 768: no document overflow, sheet and stage keep their size",
     "viewport 390: no document overflow, sheet and stage keep their size",
-    "overflow control: repeated starts beyond the five listed bench spots keep the layout contract",
+    "overflow control: repeated starts beyond the five listed bench spots keep the layout contract, spill only into aisles, and the queue keeps ended before blocked",
     "reduce: in all five scenes a resting companion walks to a bench and a done companion ends by the terminal, staying listed and queued"
   ],
-  "keyboardEvents": 6,
+  "keyboardEvents": 8,
   "scenes": 5,
   "syntheticSessions": 24,
   "motionModes": [
@@ -43,13 +44,13 @@
   "pageErrors": 0,
   "consoleErrors": 0,
   "providerCalls": 0,
-  "sourceSha256Before": "f8c6c57d4a4a140ed1fabb75348f84f205f011f91bb3f98967b9026062ded0dd",
-  "sourceSha256After": "f8c6c57d4a4a140ed1fabb75348f84f205f011f91bb3f98967b9026062ded0dd",
+  "sourceSha256Before": "71299f3c740693ec26cb5d89075a298b9d8551aa64d74a35803d9f52bb829ada",
+  "sourceSha256After": "71299f3c740693ec26cb5d89075a298b9d8551aa64d74a35803d9f52bb829ada",
   "cleanup": {
     "browser": true,
     "server": true
   },
-  "diagnosticReceipt": "<os-tmpdir>/mindplayer-office-qa-MHZvcl/validation.json",
+  "diagnosticReceipt": "<os-tmpdir>/mindplayer-office-qa-BCqjSG/validation.json",
   "notVerified": [
     "A live MindPlayer state feed (the read-only 127.0.0.1 GET is a plan)",
     "Collecting the last tool for every session (codex needs a parser extension)",

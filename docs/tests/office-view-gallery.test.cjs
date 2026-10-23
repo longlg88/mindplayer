@@ -123,7 +123,8 @@ async function main() {
         const srBefore = await page.locator('#sr').textContent(); await office(() => window.__office2.closeCard()); assert.equal(await page.locator('#sr').textContent(), srBefore, 'closing a card leaves the live region text unchanged');
         for (const agent of ['codex', 'claude', 'kiro']) {
           const reply = await office(a => { const s = window.__office2.sessions.find(x => x.agent === a); window.__office2.openCard(s); return s.reply; }, agent);
-          assert.equal((await page.locator('#card .reply').textContent()).trim(), reply.trim(), `${agent} card shows its own last reply`);
+          const norm = s => s.replace(/[\s`*|]/g, ''); // the card renders markdown, so compare the text without whitespace and marks
+          assert.equal(norm(await page.locator('#card .reply').textContent()), norm(reply.replace(/^\|?-+\|.*$/gm, '')), `${agent} card shows its own last reply`);
           await office(() => window.__office2.closeCard());
         }
         result.passed.push('card shows the convo_log reply of a codex, a claude and a kiro session and states that cursor has none');
@@ -145,6 +146,15 @@ async function main() {
         assert.ok(Math.abs(cam.x - target.x) < 1 && Math.abs(cam.y - target.y) < 1 && Math.abs(cam.z - target.z) < .01, `0 returns the camera on x, y and zoom ${JSON.stringify({cam, target})}`);
         result.passed.push('after a vertical pan, 0 brings the camera back on x, y and zoom');
 
+        const today = await page.locator('.tab[aria-selected="true"] .name').textContent(); assert.match(today, /오늘/, 'the page opens on the day\'s terrain and marks that tab');
+        assert.match(await page.locator('#hud .chip.title').textContent(), /오늘/, 'the HUD title chip marks the day\'s terrain');
+        const fx = await office(() => [[49, 50, 65, 80, 90, null].map(window.__office2.ctxTier), [99, 100, 500, 2000, 5000, 10000].map(window.__office2.rankOf), [23, 24, 72, 168].map(window.__office2.ageOf), [{hours:9, tools:0}, {hours:0.5, tools:0}, {hours:3, tools:0}, {hours:2, tools:2000}].map(window.__office2.farewell)]);
+        assert.deepEqual(fx, [[0, 1, 2, 3, 4, 0], [0, 1, 2, 3, 4, 5], [0, 1, 2, 3], ['휴… 종료', '신나게 종료!', '수고했습니다', '휴… 종료']], 'context tiers, ranks, age marks and farewell lines follow the stated thresholds');
+        const mdOut = await office(() => window.__office2.md('<script>x</script> **b** `c` [l](https://example.test/a)\n\n- a\n  - b\n\n```\nq<y\n```\n\n| h |\n|---|\n| v |\n\n1 예   2 아니요'));
+        assert.ok(!mdOut.includes('<script>') && mdOut.includes('&lt;script&gt;') && mdOut.includes('<b>b</b>') && mdOut.includes('<code>c</code>') && mdOut.includes('href="https://example.test/a"') && mdOut.includes('<ul><li>a<ul><li>b</li></ul></li></ul>') && mdOut.includes('<pre>q&lt;y</pre>') && mdOut.includes('<th>h</th>') && mdOut.includes('class="choices"'), `markdown renders escaped text, bold, code, links, nested lists, fences, tables and choice lines: ${mdOut}`);
+        await office(() => window.__office2.openCard(window.__office2.sessions.find(s => s.title === '히스토리 정리'))); assert.equal(await page.locator('#card .reply table').count(), 1, 'a reply with a markdown table renders a table in the card'); await office(() => window.__office2.closeCard());
+        await press('?'); assert.equal(await page.locator('#help.open').count(), 1, '? opens the shortcut help'); await press('Escape'); assert.equal(await page.locator('#help.open').count(), 0, 'Esc closes the help first');
+        result.passed.push('today\'s terrain is marked; context/rank/age/farewell thresholds hold; the markdown renderer escapes first; ? toggles the help overlay');
         await page.locator('#stage').focus(); await page.keyboard.press('Tab');
         assert.equal(await page.evaluate(() => document.activeElement.className.includes('bi-row')), true, 'Tab moves focus from the stage into the base info list');
         result.passed.push('Tab moves focus from the stage into the first base info row');
@@ -174,11 +184,15 @@ async function main() {
         assert.match((await page.locator('#baseinfo .bi-row').allTextContents()).find(t => t.includes(leaver)), /종료됨/, `scene ${k + 1}: the list sentence says ended`);
         assert.ok((await office(() => window.__office2.rollup().map(s => s.title))).includes(leaver), `scene ${k + 1}: the ended session stays in the queue`);
         await office(() => window.__office2.closeCard());
-        if (k === 0) { // overflow control: four more starters than listed bench spots still get clear tiles
+        if (k === 0) { // overflow control: three more starters than listed bench spots, the last one must spill into an aisle
           for (let n = 0; n < 4; n++) { await page.locator('#b-start').click(); await office(() => window.__office2.advance(30)); }
-          const crowd = await office(() => window.__office2.validateWorld()); assert.deepEqual(crowd, [], 'starters beyond the listed spots take clear tiles in the bench zone');
-          assert.ok((await sim()).filter(s => s.status === 'working' && s.place === 'bench').length >= 7, 'at least seven companions work at benches after the overflow');
-          result.passed.push('overflow control: repeated starts beyond the five listed bench spots keep the layout contract');
+          const crowd = await office(() => window.__office2.validateWorld()); assert.deepEqual(crowd, [], 'starters beyond the listed spots take clear tiles without crowding');
+          const benchers = await office(() => window.__office2.sessions.filter(s => s.status === 'working' && s.place === 'bench').map(s => { const w = window.__office2.world, z = w.rooms.bench.zone, i = Math.floor(s.pos.i), j = Math.floor(s.pos.j), inZone = i >= z.i0 && i < z.i0 + z.w && j >= z.j0 && j < z.j0 + z.d; const foreign = !inZone && Object.values(w.rooms).some(r => r.zone && r.zone !== z && i >= r.zone.i0 && i < r.zone.i0 + r.zone.w && j >= r.zone.j0 && j < r.zone.j0 + r.zone.d); return { title: s.title, inZone, foreign }; }));
+          assert.ok(benchers.length >= 8, `eight companions work at benches after the overflow (${benchers.length})`);
+          assert.ok(benchers.every(b => !b.foreign), 'no bench worker stands inside another station\'s zone');
+          assert.ok(benchers.some(b => !b.inZone), 'the overflow actually used an aisle tile');
+          const order2 = await office(() => window.__office2.rollup().map(s => s.status)); assert.ok(order2.includes('ended') && order2.indexOf('blocked') > order2.lastIndexOf('ended'), 'with an ended session present, ended still ranks before blocked');
+          result.passed.push('overflow control: repeated starts beyond the five listed bench spots keep the layout contract, spill only into aisles, and the queue keeps ended before blocked');
         }
         if (motion === 'no-preference' && k === 1) { const shot = path.join(artifacts, 'scene2-after-transitions.png'); await page.locator('#stage').screenshot({ path: shot }); result.screenshots.push(shot); }
       }

@@ -62,8 +62,9 @@ OPTIONS:
                               never removes or reorders your existing hooks)
 
 On the first screen choose 'working dir' (this DIR) or 'global' (all sessions).
-After scanning, open a session directly. Codex starts OFF: F6 toggles Jev ON/OFF
-in the native input row for the same session. The mode remains for subsequent prompts;
+After scanning, open a session directly. Codex starts with Jev ON when a Jev key is
+configured, and OFF without one: F6 toggles Jev ON/OFF in the native input row for the
+same session. The mode remains for subsequent prompts;
 selection alone never submits. Enter submits using the current mode. Jev ON sends
 the bounded judgment context externally. OFF keeps the current native model and
 effort and makes no Jev call. Claude / Kiro / Cursor sessions keep their native
@@ -1545,10 +1546,11 @@ mod tests {
     }
 
     #[test]
-    fn session_jev_help_describes_persistent_off_default_without_f7() {
+    fn session_jev_help_describes_the_key_gated_default_without_f7() {
         assert!(HELP.contains("Codex"));
         assert!(HELP.contains("F6"));
-        assert!(HELP.contains("starts OFF"));
+        assert!(HELP.contains("starts with Jev ON when a Jev key is"));
+        assert!(HELP.contains("OFF without one"));
         assert!(HELP.contains("same session"));
         assert!(HELP.contains("subsequent prompts"));
         assert!(!HELP.contains("F7"));

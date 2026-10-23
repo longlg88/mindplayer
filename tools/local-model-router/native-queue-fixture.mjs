@@ -46,7 +46,7 @@ export function until(events, check, label, timeoutMs = 10000) {
 // The real proxy -> ModelRouter -> JevService consumers are exercised. Only
 // backend lifecycle replies and the final judge function are synthetic; neither
 // inference, authentication, nor an actual backend turn_context is established.
-export async function createNativeQueueFixture({ queue = true, perPrompt = false, goals = false, plan = false, decisionTimeoutMs = 5000, select = text => ({ model: MODEL, effort: text === 'B' ? 'high' : 'low' }) } = {}) {
+export async function createNativeQueueFixture({ queue = true, perPrompt = false, jevDefault = false, goals = false, plan = false, decisionTimeoutMs = 5000, select = text => ({ model: MODEL, effort: text === 'B' ? 'high' : 'low' }) } = {}) {
   if (perPrompt && (queue || !process.env.MINDPLAYER_NATIVE_CODEX)) {
     throw new Error('Managed session-toggle tests require queue=false and an explicit frozen MINDPLAYER_NATIVE_CODEX candidate');
   }
@@ -60,7 +60,8 @@ export async function createNativeQueueFixture({ queue = true, perPrompt = false
   const env = { PATH: `${dirname(process.execPath)}:/usr/bin:/bin`, HOME: home, CODEX_HOME: codexHome,
     TMPDIR: `${root}/tmp/`, XDG_CONFIG_HOME: join(home, '.config'), TERM: 'xterm-256color',
     LANG: 'en_US.UTF-8', LC_ALL: 'en_US.UTF-8', RUST_BACKTRACE: '0',
-    ...(perPrompt ? { MINDPLAYER_PER_PROMPT_CHOICE: '1' } : {}) };
+    ...(perPrompt ? { MINDPLAYER_PER_PROMPT_CHOICE: '1' } : {}),
+    ...(perPrompt && jevDefault ? { MINDPLAYER_JEV_DEFAULT: 'jev' } : {}) };
   const binary = process.env.MINDPLAYER_NATIVE_CODEX ?? '/opt/homebrew/bin/codex';
   let version, binarySha256, contract = null;
   try {

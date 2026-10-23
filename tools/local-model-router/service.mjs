@@ -11,7 +11,7 @@ import { snapshotFamilyRegistry, reviewFamilyRegistry } from './current-family.m
 export function childEnvironment(env) {
   const clean = { ...env };
   for (const name of ['AI_GATEWAY_API_KEY', 'TYPESAFE_API_KEY', 'VERCEL_OIDC_TOKEN', 'MINDPLAYER_ROUTER_AVAILABILITY', 'MINDPLAYER_ROUTER_STATUS',
-    'MINDPLAYER_CLAUDE_JEV_URL', 'MINDPLAYER_CLAUDE_JEV_TOKEN', 'MINDPLAYER_PER_PROMPT_CHOICE']) delete clean[name];
+    'MINDPLAYER_CLAUDE_JEV_URL', 'MINDPLAYER_CLAUDE_JEV_TOKEN', 'MINDPLAYER_PER_PROMPT_CHOICE', 'MINDPLAYER_JEV_DEFAULT']) delete clean[name];
   return clean;
 }
 

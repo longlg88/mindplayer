@@ -41,6 +41,11 @@ export function safeFailureReason(error) {
   return messages.get(error?.message) ?? '실행 설정 또는 Codex 연결 오류';
 }
 
+// A session starts with Jev on only when a key loaded; without one every Jev turn would be refused before sending.
+export function jevDefaultEnvironment(credential) {
+  return credential ? { MINDPLAYER_JEV_DEFAULT: 'jev' } : {};
+}
+
 async function main() {
   const rawArgs = process.argv.slice(2);
   const separator = rawArgs.indexOf('--');
@@ -136,7 +141,7 @@ async function main() {
         expectedThreadId: originalArgs[0] === 'resume' ? originalArgs[1] : values.resume ?? null }),
     } : {}), ...(plan ? { backendArgs: plan.backendArgs } : {}) });
     if (stopping) return;
-    console.log(perPromptChoice ? '세션별 Jev · F6 ON/OFF · Enter 전송'
+    console.log(perPromptChoice ? (credential ? '세션별 Jev · 새 세션 ON · F6 ON/OFF · Enter 전송' : '세션별 Jev · 키 없음 · 새 세션 OFF · F6 ON/OFF · Enter 전송')
       : integrated
       ? credential ? `Jev 매 새 턴 모델 선택 · ${credential.provider === 'typesafe' ? 'TypeSafe 직접 API' : 'Vercel Gateway'}`
         : 'Jev API 키 없음 · 새 턴은 실행하지 않습니다'
@@ -156,7 +161,7 @@ async function main() {
     if (resolveUiBinary({ integrated }) !== uiBinary) throw new Error('Private native install changed during startup');
     failureStage = 'Codex UI 실행';
     ui = spawn(uiBinary, args, { cwd, env: { ...env, MINDPLAYER_LOCAL_ROUTER_TOKEN: proxy.token,
-      ...(perPromptChoice ? { MINDPLAYER_PER_PROMPT_CHOICE: '1' } : {}) }, stdio: 'inherit' });
+      ...(perPromptChoice ? { MINDPLAYER_PER_PROMPT_CHOICE: '1', ...jevDefaultEnvironment(credential) } : {}) }, stdio: 'inherit' });
     const exitCode = await new Promise((resolve, reject) => {
       ui.once('error', reject);
       ui.once('exit', code => resolve(code ?? 1));

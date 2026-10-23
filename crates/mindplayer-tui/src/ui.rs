@@ -3287,7 +3287,7 @@ fn help_lines(codex_input_choice: bool) -> Vec<Line<'static>> {
     if codex_input_choice {
         lines.push(item(
             "F6 (Codex)",
-            "Jev ON/OFF · 세션 유지 · 기본 OFF · ON은 외부 전송 동의",
+            "Jev ON/OFF · 세션 유지 · 키가 있으면 기본 ON · ON은 외부 전송 동의",
         ));
     }
     lines
@@ -3972,7 +3972,7 @@ mod tests {
             if agent == Agent::Codex {
                 assert!(help.contains("ON/OFF"), "{help}");
                 assert!(help.contains("세션 유지"), "{help}");
-                assert!(help.contains("기본 OFF"), "{help}");
+                assert!(help.contains("키가 있으면 기본 ON"), "{help}");
             }
             if agent != Agent::Codex {
                 assert!(!help.contains("Jev"), "{help}");

@@ -26,8 +26,12 @@ async function main() {
     for (const m of source.matchAll(/<script>([\s\S]*?)<\/script>/g)) new vm.Script(m[1]);
     assert.doesNotMatch(source, /\b(?:fetch|XMLHttpRequest|WebSocket|localStorage|sessionStorage)\s*[.(]/);
     assert.doesNotMatch(source, /https?:\/\//);
-    assert.doesNotMatch(source, /Vision|Ultron|Marvel|WandaVision|비전퀘스트|울트론|마블|완다/i, 'no franchise names in the page');
-    result.passed.push('inline syntax, no network/storage APIs, no external URLs, no franchise names');
+    // names of the referenced game and franchise, kept out of this public repo as sha256 prefixes of the lower-cased word
+    const banned = new Set(['652ccbed27d3820b', '3da82e606d9fc4cd', 'a1a38b5bae5866d7', 'f010e37626b41704', '5a52204403899c2b', '90799fdcfdd3a1e3', '92726c47e1ed0ad5', 'e09ba57969cc21f0', '6518d70d64a1a20d', '874b24615791f65d',
+      'ad9454ef8287c81f', '6d9a3440020a9e07', '5944ae849448011c', '9318b7d37aff5ca9', '38868dc905f4d6d6', '40722801a3b84d5c', '51fb5adcf0573798', '2e773265de9d3308', 'ae8a6466de8b6f77', '516c267ca186892b']);
+    const words = [...new Set((source.match(/[A-Za-z]+|[가-힣]+/g) || []).map(w => w.toLowerCase()))];
+    assert.deepEqual(words.filter(w => banned.has(hash(w).slice(0, 16))).map(w => `${w.length} chars`), [], 'no game or franchise names in the page');
+    result.passed.push('inline syntax, no network/storage APIs, no external URLs, no game or franchise names (hash-compared)');
     const { chromium } = require(process.env.MINDPLAYER_PLAYWRIGHT_MODULE || 'playwright');
     server = http.createServer((req, res) => {
       if (req.url === '/favicon.ico') { res.writeHead(204).end(); return; }
@@ -53,7 +57,7 @@ async function main() {
       await office(() => window.__office2.pause(true));
       assert.equal(await office(() => window.__office2.blinkAt(0, 0)), motion !== 'reduce', 'eyes never close when motion is reduced');
       const choose = async k => { await office(k => { window.__office2.selectScene(k); window.__office2.settle(); }, k); await page.waitForTimeout(120); };
-      const sim = () => office(() => window.__office2.sessions.map(s => ({ title: s.title, status: s.status, agent: s.agent, atDesk: s.atDesk, gone: s.gone, walking: s.walking, pod: !!s.pod, hover: s.hover })));
+      const sim = () => office(() => window.__office2.sessions.map(s => ({ title: s.title, status: s.status, agent: s.agent, place: s.place, tool: s.tool, gone: s.gone, walking: s.walking, pod: !!s.pod, hover: s.hover })));
       const press = async (key, code) => { await page.locator('#stage').focus(); if (code) await page.locator('#stage').dispatchEvent('keydown', { key, code, bubbles: true }); else await page.keyboard.press(key); result.keyboardEvents++; };
 
       if (motion === 'no-preference') {
@@ -66,12 +70,27 @@ async function main() {
           frames.add(hash(await page.evaluate(() => document.getElementById('scene').toDataURL())));
           const shot = path.join(artifacts, `scene${k + 1}.png`); await page.locator('#stage').screenshot({ path: shot }); result.screenshots.push(shot);
         }
-        assert.equal(frames.size, 5); result.passed.push('five distinct scenes; every seat aisle, room spot, exit and desk path is walkable and no two standing AIs share a screen box');
+        assert.equal(frames.size, 5); result.passed.push('five distinct scenes; every station spot and the terminal step is walkable, everyone reaches a bench and the terminal, and no two standing companions share a screen box');
 
         await choose(0);
-        const control = await office(() => { const w = window.__office2, free = w.sessions.filter(s => !s.atDesk && !s.pod); const saved = {...free[1].pos}; free[1].pos = {...free[0].pos}; const bad = w.validateWorld(); free[1].pos = saved; return bad; });
-        assert.ok(control.some(b => b.startsWith('crowd')), 'crowding check reports two AIs placed on one spot');
-        result.passed.push('control: the crowding check fails when two standing AIs share a spot');
+        const control = await office(() => { const w = window.__office2, free = w.sessions.filter(s => !s.pod); const saved = {...free[1].pos}; free[1].pos = {...free[0].pos}; const bad = w.validateWorld(); free[1].pos = saved; return bad; });
+        assert.ok(control.some(b => b.startsWith('crowd')), 'crowding check reports two companions placed on one spot');
+        const fence = await office(() => { const w = window.__office2, k = Math.floor(w.world.exitStep.i) + ',' + Math.floor(w.world.exitStep.j); w.world.blocked.add(k); const bad = w.validateWorld(); w.world.blocked.delete(k); return bad; });
+        assert.ok(fence.includes('terminal step') && fence.some(b => b.startsWith('no path to terminal')), 'reachability check reports a fenced-off terminal');
+        assert.deepEqual(await office(() => window.__office2.validateWorld()), [], 'controls restore a valid layout');
+        result.passed.push('controls: the crowding check fails when two standing companions share a spot; the path check fails when the terminal step is fenced off');
+
+        const rows = await page.locator('#baseinfo .bi-row').count(); assert.equal(rows, 24, 'base info lists every live companion');
+        const states = await sim();
+        for (const [status, text] of [['working', /열심히 일하는 중/], ['blocked', /지시를 기다립니다/], ['done', /납품 완료/]]) {
+          const k = states.findIndex(s => s.status === status); assert.match(await page.locator('#baseinfo .bi-row').nth(k).textContent(), text, `${status} row sentence`);
+        }
+        const sleeper = states.findIndex(s => s.pod); assert.match(await page.locator('#baseinfo .bi-row').nth(sleeper).textContent(), /짚 침대에서 자는 중/);
+        await page.locator('#baseinfo .bi-row').nth(1).click(); assert.equal(await page.locator('#card.open').count(), 1); assert.match(await page.locator('#card h3').textContent(), new RegExp(states[1].title));
+        await office(() => window.__office2.closeCard());
+        assert.ok(states.filter(s => s.agent === 'cursor').every(s => s.tool === null), 'cursor sessions carry no tool');
+        for (const s of states.filter(x => x.status === 'working')) assert.equal(s.place, s.tool ? {read:'field', shell:'quarry', mcp:'depot', edit:'bench'}[s.tool] : 'bench', `${s.title} stands at the station of its last tool`);
+        result.passed.push('base info lists 24 companions with one status sentence each and opens the card; working companions stand at the station of their last tool; cursor has none');
 
         const order = await office(() => window.__office2.rollup().map(s => s.status));
         assert.deepEqual(order, [...order].sort((a, b) => (a === 'done' ? 0 : 1) - (b === 'done' ? 0 : 1)));
@@ -98,7 +117,7 @@ async function main() {
         result.passed.push('card shows convo_log replies for claude/codex/kiro and states that cursor has none');
 
         await office(() => window.__office2.setCam(window.__office2.fitTarget()));
-        const pt = await office(() => window.__office2.stagePoint(window.__office2.sessions.find(s => s.status === 'blocked' && s.atDesk)));
+        const pt = await office(() => window.__office2.stagePoint(window.__office2.sessions.find(s => s.status === 'blocked' && !s.walking)));
         await page.locator('#stage').scrollIntoViewIfNeeded(); const box = await page.locator('#scene').boundingBox();
         await page.mouse.move(box.x + pt.x, box.y + pt.y);
         assert.ok((await sim()).some(s => s.hover && s.status === 'blocked'), 'hovering a waiting AI marks it');
@@ -119,22 +138,25 @@ async function main() {
 
       for (let k = 0; k < 5; k++) {
         await choose(k);
-        const idleBefore = (await sim()).filter(s => s.status === 'idle' && s.pod).length;
-        const starter = (await sim()).find(s => s.status === 'idle' && s.pod && !s.walking).title, leaver = (await sim()).find(s => s.status === 'done' && !s.gone).title;
+        const idleBefore = (await sim()).filter(s => s.status === 'idle').length;
+        const starter = (await sim()).find(s => s.status === 'idle' && !s.walking && !s.gone), leaver = (await sim()).find(s => s.status === 'done' && !s.gone).title;
+        await office(s => window.__office2.openCard(window.__office2.sessions.find(x => x.title === s)), leaver);
         await page.locator('#b-start').click();
         await office(() => window.__office2.advance(30));
         await page.locator('#b-end').click();
         await office(() => window.__office2.advance(30));
         const after = await sim();
-        assert.equal(after.filter(s => s.status === 'idle' && s.pod).length, idleBefore - 1, `scene ${k + 1}: one AI left its seat`);
-        const st = after.find(s => s.title === starter), lv = after.find(s => s.title === leaver);
-        assert.ok(st.status === 'working' && st.atDesk && !st.walking, `scene ${k + 1}: "${starter}" walked from its seat to its console`);
-        assert.ok(lv.status === 'ended' && lv.gone, `scene ${k + 1}: "${leaver}" left through the exit`);
+        assert.equal(after.filter(s => s.status === 'idle').length, idleBefore - 1, `scene ${k + 1}: one companion stopped resting`);
+        const st = after.find(s => s.title === starter.title), lv = after.find(s => s.title === leaver);
+        assert.ok(st.status === 'working' && st.place === 'bench' && !st.pod && !st.walking, `scene ${k + 1}: "${starter.title}" walked from ${starter.pod ? 'its bed' : 'the feed box'} to a bench`);
+        assert.ok(lv.status === 'ended' && lv.gone, `scene ${k + 1}: "${leaver}" returned into the terminal`);
+        assert.equal(await page.locator('#card.open').count(), 0, `scene ${k + 1}: the card of the departed companion closed`);
         assert.ok(!after.some(s => s.walking), `scene ${k + 1}: nobody is stuck walking`);
         assert.deepEqual(await office(() => window.__office2.validateWorld()), [], `scene ${k + 1}: layout still valid after transitions`);
+        assert.equal(await page.locator('#baseinfo .bi-row').count(), 23, `scene ${k + 1}: base info drops the departed companion`);
         if (motion === 'no-preference' && k === 1) { const shot = path.join(artifacts, 'scene2-after-transitions.png'); await page.locator('#stage').screenshot({ path: shot }); result.screenshots.push(shot); }
       }
-      result.passed.push(`${motion}: in all five scenes an idle AI walks to its console and a done AI leaves through the exit`);
+      result.passed.push(`${motion}: in all five scenes a resting companion walks to a bench and a done companion returns into the terminal`);
 
       if (motion === 'no-preference') for (const width of [1440, 1280, 768, 390]) {
         await page.setViewportSize({ width, height: 900 }); await page.waitForTimeout(150);
@@ -161,7 +183,7 @@ async function main() {
         pageErrors: result.pageErrors, consoleErrors: result.consoleErrors, providerCalls: result.providerCalls,
         sourceSha256Before: result.before, sourceSha256After: result.after, cleanup: result.cleanup,
         diagnosticReceipt: `<os-tmpdir>/${path.basename(artifacts)}/validation.json`,
-        notVerified: ['A live MindPlayer state feed (the read-only 127.0.0.1 GET is a plan)', 'Collecting the last tool for every session',
+        notVerified: ['A live MindPlayer state feed (the read-only 127.0.0.1 GET is a plan)', 'Collecting the last tool for every session (codex needs a parser extension)',
           'Rendering cost with real session counts above 24', 'Screen-reader behaviour of the canvas scene', 'The key that opens this window from MindPlayer'] };
       fs.writeFileSync(record, JSON.stringify(summary, null, 2) + '\n');
     }

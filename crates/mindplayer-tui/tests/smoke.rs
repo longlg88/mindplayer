@@ -510,6 +510,8 @@ struct Mp {
     codex_marker_dir: PathBuf,
     router_marker_dir: PathBuf,
     jev_provider: String,
+    /// The router fixture was given a Jev key, so its sessions start with Jev ON.
+    jev_key: bool,
     _jev_credentials: Option<FixtureJevCredentials>,
     /// Absolute path to a real `.html` fixture the open-in-browser scenarios can
     /// type into the Ctrl-P popup / select from the picker. Only read by the
@@ -1157,6 +1159,7 @@ exit 0"#
             codex_marker_dir,
             router_marker_dir,
             jev_provider,
+            jev_key: actual_router && !matches!(fixture, CodexFixture::KeylessRouter),
             _jev_credentials: jev_credentials,
             #[cfg(target_os = "macos")]
             html_fixture,
@@ -2008,7 +2011,22 @@ exit 0"#
         self.expect("type to filter", STEP_TIMEOUT, "session search opened");
         self.send(b"alfa\r");
         self.expect(PANE_READY, STARTUP_TIMEOUT, "embedded router pane came up");
-        self.expect(PROMPT_NATIVE, STEP_TIMEOUT, "new session starts Jev OFF");
+        let keyed = self.jev_key;
+        self.expect(
+            if keyed { PROMPT_JEV } else { PROMPT_NATIVE },
+            STEP_TIMEOUT,
+            "a session starts ON only when a Jev key loaded",
+        );
+        assert!(self.router_rows("ui-requests.jsonl").is_empty());
+        // These scenarios begin from OFF, which one F6 reaches before any prompt is sent.
+        if keyed {
+            self.send(F6);
+            self.expect(
+                PROMPT_NATIVE,
+                STEP_TIMEOUT,
+                "F6 turns the default ON session OFF",
+            );
+        }
         assert!(!self.raw_output_contains("Jev 미선택"));
         assert!(!self.raw_output_contains("[F7]"));
         assert!(self.router_rows("ui-requests.jsonl").is_empty());
@@ -2590,7 +2608,6 @@ fn session_toggle_separate_panes_keep_independent_modes() {
     let mut mp = Mp::launch_actual_router_fixture();
     mp.resume_router_fixture();
     let first_pid = std::fs::read_to_string(mp.router_marker("ui.pid")).unwrap();
-    mp.choose_prompt(true);
     mp.send(b"\x18");
     mp.expect(
         "multi-select",
@@ -2602,16 +2619,16 @@ fn session_toggle_separate_panes_keep_independent_modes() {
         mp.wait_until(STEP_TIMEOUT, |screen| {
             screen.matches(PROMPT_JEV).count() == 1 && screen.matches(PROMPT_NATIVE).count() == 1
         }),
-        "second pane must start OFF independently: {}",
+        "second pane must start at the default ON without taking the first pane's OFF: {}",
         mp.screen()
     );
     let second_pid = std::fs::read_to_string(mp.router_marker("ui.pid")).unwrap();
     assert_ne!(first_pid, second_pid, "independent native child processes");
     mp.send(F6);
     assert!(
-        mp.wait_until(STEP_TIMEOUT, |screen| screen.matches(PROMPT_JEV).count()
+        mp.wait_until(STEP_TIMEOUT, |screen| screen.matches(PROMPT_NATIVE).count()
             == 2),
-        "enabling the focused pane must preserve the first pane: {}",
+        "disabling the focused pane must preserve the first pane: {}",
         mp.screen()
     );
     mp.send(F6);
@@ -2619,7 +2636,7 @@ fn session_toggle_separate_panes_keep_independent_modes() {
         mp.wait_until(STEP_TIMEOUT, |screen| {
             screen.matches(PROMPT_JEV).count() == 1 && screen.matches(PROMPT_NATIVE).count() == 1
         }),
-        "disabling the focused pane must leave the first pane ON: {}",
+        "enabling the focused pane must leave the first pane OFF: {}",
         mp.screen()
     );
     assert!(mp.router_rows("ui-requests.jsonl").is_empty());
@@ -6406,22 +6423,19 @@ fn new_resume_and_handoff_use_the_same_embedded_router_bundle() {
             _ => unreachable!(),
         }
         if entry == "handoff" {
-            // Native paste_and_submit includes Enter. Default OFF must preserve
-            // that original automatic native handoff without a Jev judgment.
+            // With a key the handoff's automatic first turn is a new session turn, so Jev judges it.
             mp.expect(
                 "submitted initial context to",
                 STEP_TIMEOUT,
                 "handoff context was pasted before the test turn",
             );
             mp.expect(
-                PROMPT_NATIVE,
+                PROMPT_JEV,
                 STEP_TIMEOUT,
-                "handoff starts OFF and retains its native submission behavior",
+                "handoff starts ON when a Jev key loaded",
             );
             let route = mp.wait_for_router_turn("bootstrap");
-            assert_eq!(route["model"], "gpt-6-luna");
-            assert_eq!(route["effort"], "low");
-            assert_eq!(route["routingChoicePresent"], false);
+            mp.assert_router_jev_turn_once("bootstrap");
             let sent = mp.router_rows("ui-requests.jsonl");
             assert_eq!(sent.len(), 1);
             let context = sent[0]["params"]["input"][0]["text"]
@@ -6431,31 +6445,23 @@ fn new_resume_and_handoff_use_the_same_embedded_router_bundle() {
             assert!(context.contains("handoff smoke answer"));
             assert_eq!(
                 sent[0]["params"]["mindplayerRoutingChoice"],
-                serde_json::json!({"mode": "native", "includeRecent": false})
+                serde_json::json!({"mode": "jev", "includeRecent": false})
             );
             assert_eq!(route["requestId"], sent[0]["id"]);
             assert_eq!(
                 route["clientUserMessageId"],
                 sent[0]["params"]["clientUserMessageId"]
             );
-            let mut expected = sent[0]["params"].clone();
-            expected
-                .as_object_mut()
-                .unwrap()
-                .remove("mindplayerRoutingChoice");
-            expected["mindplayerRequireNewTurn"] = serde_json::json!(true);
-            assert_eq!(route["params"], expected);
             mp.wait_for_router_audit_event("turn-completed", "fixture-turn-bootstrap");
             let composer = mp.router_json("composer-state.json");
             assert_eq!(composer["draft"], "");
-            assert_eq!(composer["mode"], "native");
-            assert!(mp.router_rows("jev.jsonl").is_empty());
+            assert_eq!(composer["mode"], "jev");
         } else {
             mp.expect(PANE_READY, STARTUP_TIMEOUT, "embedded router pane came up");
             mp.expect(
-                PROMPT_NATIVE,
+                PROMPT_JEV,
                 STEP_TIMEOUT,
-                "new and resumed sessions start OFF",
+                "new and resumed sessions start ON when a Jev key loaded",
             );
         }
         let metadata = mp.router_json("ui.json");

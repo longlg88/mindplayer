@@ -5048,6 +5048,7 @@ mod new_session_account_picker {
                 "MINDPLAYER_CLAUDE_JEV_URL",
                 "MINDPLAYER_CLAUDE_JEV_TOKEN",
                 "MINDPLAYER_PER_PROMPT_CHOICE",
+                "MINDPLAYER_JEV_DEFAULT",
             ]
             .map(String::from),
         );

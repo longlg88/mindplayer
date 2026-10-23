@@ -97,9 +97,9 @@ async function main() {
         await office(() => window.__office2.closeCard());
         result.passed.push('card shows convo_log replies for claude/codex/kiro and states that cursor has none');
 
-        await office(() => window.__office2.settle());
+        await office(() => window.__office2.setCam(window.__office2.fitTarget()));
         const pt = await office(() => window.__office2.stagePoint(window.__office2.sessions.find(s => s.status === 'blocked' && s.atDesk)));
-        const box = await page.locator('#scene').boundingBox();
+        await page.locator('#stage').scrollIntoViewIfNeeded(); const box = await page.locator('#scene').boundingBox();
         await page.mouse.move(box.x + pt.x, box.y + pt.y);
         assert.ok((await sim()).some(s => s.hover && s.status === 'blocked'), 'hovering a waiting AI marks it');
         assert.equal(await page.locator('#tip').isVisible(), true);

@@ -73,9 +73,10 @@ async function boot(t, config = {}) {
   assert.equal(f.env.MINDPLAYER_PER_PROMPT_CHOICE, '1', 'retain the internal per-message metadata guard');
   assert.ok(!f.args.some(arg => arg.startsWith('tui.keymap.')), 'use the real default native keymap');
   await f.wait(() => f.messages.some(message => message.method === 'thread/start'), 'native thread handshake');
-  await f.wait(() => f.projectedScreen().includes(MODEL) && f.projectedScreen().includes(labels.native), 'new session starts native OFF');
-  assertMode(f, 'native');
-  await f.captureStable('fresh-native-off');
+  const start = config.jevDefault ? 'jev' : 'native';
+  await f.wait(() => f.projectedScreen().includes(MODEL) && f.projectedScreen().includes(labels[start]), `new session starts ${start}`);
+  assertMode(f, start);
+  await f.captureStable(`fresh-${start}`);
   return f;
 }
 
@@ -630,4 +631,21 @@ test('managed approval Enter answers the matching server request without creatin
   assert.equal(f.calls.length, calls);
   f.resolveApproval(id); f.complete(0);
   await idle(f, 'jev');
+});
+
+test('with a key-gated Jev default a new session starts ON, judges the first prompt, and F6 OFF holds', options, async t => {
+  const f = await boot(t, { jevDefault: true });
+  await f.wait(() => f.projectedScreen().includes(labels.jev), 'session starts ON without F6');
+  assertMode(f, 'jev');
+  await draft(f, 'default jev prompt');
+  await submit(f, 0);
+  assertChoice(submissions(f)[0], 'jev');
+  assert.equal(f.calls.length, 1, 'the first prompt is judged without pressing F6');
+  f.complete(0); await idle(f, 'jev');
+  await choose(f, 'native');
+  await draft(f, 'after explicit off');
+  const second = await submit(f, 1);
+  assertNative(second, submissions(f)[1]);
+  assert.equal(f.calls.length, 1, 'an explicit OFF is not overridden by the default');
+  f.complete(1); await idle(f, 'native');
 });

@@ -18,7 +18,9 @@ upstream의 `turn/start` 자체도 active 턴을 steer할 수 있어 UI 사전 �
 
 `mindplayer-native-routing-v4`는 기존 큐·취소 계약에 세션별 유지 토글을 더한다.
 MindPlayer가 설정한 `MINDPLAYER_PER_PROMPT_CHOICE=1`에서만 입력줄의 F6 Jev/
-미사용 토글을 활성화한다. 새 세션은 OFF이고 ON/OFF는 다음 F6까지 유지된다.
+미사용 토글을 활성화한다. 새 세션과 같은 pane의 새 thread는 `MINDPLAYER_JEV_DEFAULT`가
+정확히 `jev`이면 ON, 그 밖에는 OFF로 시작한다. 이 값은 로컬 중계가 Jev 키를 읽었을 때만
+설정한다. F6로 고른 ON/OFF는 다음 F6까지 유지된다.
 전송 시 선택은 각 UserMessage에 결합되므로 이후 토글로 대기열을 다시 쓰지 않는다.
 F7 미리보기와 previewId 계약은 제거했다. 환경변수의 기존 이름은 입력별 메타데이터
 전달을 뜻하며 매번 선택을 강제한다는 뜻이 아니다. 선택 메타데이터는 로컬 중계가

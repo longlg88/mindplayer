@@ -26,7 +26,7 @@ async function main() {
     for (const m of source.matchAll(/<script>([\s\S]*?)<\/script>/g)) new vm.Script(m[1]);
     assert.doesNotMatch(source, /\b(?:fetch|XMLHttpRequest|WebSocket|localStorage|sessionStorage)\s*[.(]/);
     assert.doesNotMatch(source, /https?:\/\//);
-    assert.doesNotMatch(source, /Vision|Ultron|Marvel|비전 캐릭터|울트론/, 'no franchise names or characters in the page');
+    assert.doesNotMatch(source, /Vision|Ultron|Marvel|WandaVision|비전퀘스트|울트론|마블|완다/i, 'no franchise names in the page');
     result.passed.push('inline syntax, no network/storage APIs, no external URLs, no franchise names');
     const { chromium } = require(process.env.MINDPLAYER_PLAYWRIGHT_MODULE || 'playwright');
     server = http.createServer((req, res) => {
@@ -51,6 +51,7 @@ async function main() {
       await page.waitForTimeout(300);
       const office = (expr, arg) => page.evaluate(expr, arg);
       await office(() => window.__office2.pause(true));
+      assert.equal(await office(() => window.__office2.blinkAt(0, 0)), motion !== 'reduce', 'eyes never close when motion is reduced');
       const choose = async k => { await office(k => { window.__office2.selectScene(k); window.__office2.settle(); }, k); await page.waitForTimeout(120); };
       const sim = () => office(() => window.__office2.sessions.map(s => ({ title: s.title, status: s.status, agent: s.agent, atDesk: s.atDesk, gone: s.gone, walking: s.walking, pod: !!s.pod, hover: s.hover })));
       const press = async (key, code) => { await page.locator('#stage').focus(); if (code) await page.locator('#stage').dispatchEvent('keydown', { key, code, bubbles: true }); else await page.keyboard.press(key); result.keyboardEvents++; };
@@ -74,20 +75,24 @@ async function main() {
 
         const order = await office(() => window.__office2.rollup().map(s => s.status));
         assert.deepEqual(order, [...order].sort((a, b) => (a === 'done' ? 0 : 1) - (b === 'done' ? 0 : 1)));
-        const next = await office(() => window.__office2.nextSession().title);
-        await press('n'); assert.match(await page.locator('#card').textContent(), new RegExp(next));
-        assert.match(await page.locator('.q.next').textContent(), new RegExp(next));
+        const q = await office(() => window.__office2.rollup().map(s => s.title));
+        const chip = async () => (await page.locator('.q.next').textContent()).includes(await office(() => window.__office2.nextSession().title));
+        assert.ok(await chip(), 'queue chip shows the N target before any card is open');
+        await press('n'); assert.equal(await page.locator('#card.open').count(), 1); assert.match(await page.locator('#card h3').textContent(), new RegExp(q[0]));
+        assert.ok(await chip(), 'queue chip follows the N target after the first press');
+        await press('n'); assert.match(await page.locator('#card h3').textContent(), new RegExp(q[1]), 'second N moves to the next session');
         assert.equal(await page.locator('#card button').count(), 1, 'card has only a close button: no reply, stop or key buttons');
         assert.match(await page.locator('#card').textContent(), /읽기 전용/);
         await press('Escape'); assert.equal(await page.locator('#card.open').count(), 0);
-        await press('ㅜ', 'KeyN'); assert.match(await page.locator('#card').textContent(), new RegExp(next), 'Korean layout ㅜ on the N key opens the next card');
+        await press('ㅜ', 'KeyN'); assert.equal(await page.locator('#card.open').count(), 1, 'Korean layout ㅜ on the N key opens a card');
+        assert.match(await page.locator('#card h3').textContent(), new RegExp(q[0]));
         await press('Escape');
-        result.passed.push('N and the queue chip point at the same next session (done first, then blocked); the card is read-only; ㅜ works as N');
+        result.passed.push('N walks the queue in status_rank order and the first chip always names the N target; the card is read-only; ㅜ works as N');
 
         await office(() => window.__office2.openCard(window.__office2.sessions.find(s => s.agent === 'cursor')));
-        assert.match(await page.locator('#card').textContent(), /대화 기록을 모으지 않습니다/);
-        await office(() => window.__office2.openCard(window.__office2.sessions.find(s => s.agent === 'kiro')));
-        assert.match(await page.locator('#card').textContent(), /convo_log/);
+        assert.match(await page.locator('#card .reply').textContent(), /convo_log에 대화 turn이 없습니다/);
+        const kiroReply = await office(() => { const s = window.__office2.sessions.find(x => x.agent === 'kiro'); window.__office2.openCard(s); return s.reply; });
+        assert.equal((await page.locator('#card .reply').textContent()).trim(), kiroReply.trim(), 'kiro card shows its own last reply');
         await office(() => window.__office2.closeCard());
         result.passed.push('card shows convo_log replies for claude/codex/kiro and states that cursor has none');
 
@@ -100,6 +105,12 @@ async function main() {
         await page.mouse.move(box.x + 5, box.y + box.height - 5);
         result.passed.push('hover marks the AI under the pointer and shows its tooltip');
 
+        const target = await office(() => window.__office2.fitTarget());
+        await office(() => window.__office2.closeCard()); await office(c => window.__office2.setCam({...c, y:c.y + 200}), target); await press('0'); await office(() => window.__office2.pause(false)); await page.waitForTimeout(2500); await office(() => window.__office2.pause(true));
+        const cam = await office(() => window.__office2.cam);
+        assert.ok(Math.abs(cam.x - target.x) < 1 && Math.abs(cam.y - target.y) < 1 && Math.abs(cam.z - target.z) < .01, `0 returns the camera on x, y and zoom ${JSON.stringify({cam, target})}`);
+        result.passed.push('after a vertical pan, 0 brings the camera back on x, y and zoom');
+
         await page.locator('#stage').focus(); await page.keyboard.press('Tab');
         assert.notEqual(await page.evaluate(() => document.activeElement.id), 'stage');
         result.passed.push('Tab leaves the stage');
@@ -108,15 +119,16 @@ async function main() {
       for (let k = 0; k < 5; k++) {
         await choose(k);
         const idleBefore = (await sim()).filter(s => s.status === 'idle' && s.pod).length;
+        const starter = (await sim()).find(s => s.status === 'idle' && s.pod && !s.walking).title, leaver = (await sim()).find(s => s.status === 'done' && !s.gone).title;
         await page.locator('#b-start').click();
         await office(() => window.__office2.advance(30));
         await page.locator('#b-end').click();
         await office(() => window.__office2.advance(30));
         const after = await sim();
         assert.equal(after.filter(s => s.status === 'idle' && s.pod).length, idleBefore - 1, `scene ${k + 1}: one AI left its seat`);
-        const started = after.find(s => s.status === 'working' && !s.walking && s.atDesk && s.title === (after.find(x => x.status === 'working' && x.atDesk) || {}).title);
-        assert.ok(started, `scene ${k + 1}: an AI is working at a desk`);
-        assert.ok(after.some(s => s.status === 'ended' && s.gone), `scene ${k + 1}: the ended AI left through the exit`);
+        const st = after.find(s => s.title === starter), lv = after.find(s => s.title === leaver);
+        assert.ok(st.status === 'working' && st.atDesk && !st.walking, `scene ${k + 1}: "${starter}" walked from its seat to its console`);
+        assert.ok(lv.status === 'ended' && lv.gone, `scene ${k + 1}: "${leaver}" left through the exit`);
         assert.ok(!after.some(s => s.walking), `scene ${k + 1}: nobody is stuck walking`);
         assert.deepEqual(await office(() => window.__office2.validateWorld()), [], `scene ${k + 1}: layout still valid after transitions`);
         if (motion === 'no-preference' && k === 1) { const shot = path.join(artifacts, 'scene2-after-transitions.png'); await page.locator('#stage').screenshot({ path: shot }); result.screenshots.push(shot); }

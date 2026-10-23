@@ -26,7 +26,7 @@ h1{font-size:29px;letter-spacing:-1px;line-height:1.35;margin:12px 0 7px}
 .chrome .dots{display:flex;gap:6px}.chrome .dots i{width:11px;height:11px;border-radius:50%;display:block}
 .chrome .url{flex:1;background:#10131c;border-radius:6px;padding:4px 10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .stage{position:relative;height:760px;overflow:hidden;outline:none}
-.stage canvas{position:absolute;inset:0;display:block;cursor:grab}.stage canvas.dragging{cursor:grabbing}
+.stage canvas{position:absolute;inset:0;display:block;cursor:grab;touch-action:none}.stage canvas.dragging{cursor:grabbing}
 .hud-top{position:absolute;left:14px;top:12px;right:14px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;pointer-events:none}
 .chip{background:rgba(18,21,32,.88);border:2px solid #3a415c;border-radius:999px;padding:5px 13px;color:#e8ebf2;font-weight:800;font-size:14px;box-shadow:0 2px 0 #06070c;white-space:nowrap}
 .chip.title{font-size:17px;letter-spacing:-.3px;padding:5px 15px}.chip .n{margin-left:6px}
@@ -61,7 +61,7 @@ table{width:100%;border-collapse:collapse;font-size:12.5px;line-height:1.6}th,td
 <main class="page">
   <div class="eyebrow"><span>MINDPLAYER / UI STUDIES</span><span class="edition">배경 시안 5개 · 2026.10.23 · 앱 미적용 · 합성 데이터</span></div>
   <h1>AI 세션들이 일하는 곳을 그립니다.</h1>
-  <p class="intro">MindPlayer가 연 <strong>읽기 전용 브라우저 창</strong>에 실행 중인 세션을 AI 캐릭터로 그립니다. <strong>시안 5개는 배경(세계관)만 다릅니다.</strong> 캐릭터, 상단 칩, 아래 대기열, 카드는 5개가 같습니다. 분위기는 드라마 &lt;비전퀘스트&gt;의 합성체·홀로그램·의식 공간에서 가져왔습니다. 캐릭터와 이름은 모두 MindPlayer 고유입니다.</p>
+  <p class="intro">MindPlayer가 연 <strong>읽기 전용 브라우저 창</strong>에 실행 중인 세션을 AI 캐릭터로 그립니다. <strong>시안 5개는 배경(세계관)만 다릅니다.</strong> 캐릭터, 상단 칩, 아래 대기열, 카드는 5개가 같습니다. 분위기는 합성체, 홀로그램, 의식 공간입니다. 캐릭터와 이름은 모두 MindPlayer 고유입니다.</p>
   <div class="sheet-wrap"><div class="section-heading"><h3>캐릭터 시트: agent 4종 × 상태 6가지</h3><span>5개 시안 공통 · 마우스를 올리면 반응합니다</span></div>
     <div class="window"><canvas class="sheet" id="sheet" role="img" aria-label="agent 4종과 상태 6가지 캐릭터 시트"></canvas></div></div>
   <nav class="tabs" role="tablist" aria-label="배경 시안 5개"></nav>
@@ -78,7 +78,7 @@ table{width:100%;border-collapse:collapse;font-size:12.5px;line-height:1.6}th,td
         <div class="tip" id="tip"></div>
       </div>
     </div>
-    <div class="trybar" id="keys"><span>체험</span><button type="button" id="b-next">N 다음 세션</button><button type="button" id="b-fit">0 전체 보기</button><button type="button" id="b-start">한 세션 일 시작</button><button type="button" id="b-end">한 세션 종료</button><button type="button" id="b-reset">초기화</button><span class="live" id="live">휠 확대 · 드래그 이동 · 더블클릭 전체 보기 · 캐릭터 클릭 = 카드</span></div>
+    <div class="trybar" id="keys"><span>체험</span><button type="button" id="b-next">N 다음 세션</button><button type="button" id="b-fit">0 전체 보기</button><button type="button" id="b-start">재생: 한 세션 일 시작</button><button type="button" id="b-end">재생: 한 세션 종료</button><button type="button" id="b-reset">초기화</button><span class="live" id="live">휠 확대 · 드래그 이동 · 더블클릭 전체 보기 · 캐릭터 클릭 = 카드</span></div>
     <p class="sr" id="sr" aria-live="polite"></p>
   </section>
   <section class="retained" aria-labelledby="data-title">
@@ -86,16 +86,16 @@ table{width:100%;border-collapse:collapse;font-size:12.5px;line-height:1.6}th,td
     <div class="table-scroll"><table>
       <thead><tr><th>화면 요소</th><th>보여 주는 것</th><th>출처와 상태</th></tr></thead>
       <tbody>
-        <tr><td>캐릭터</td><td>agent를 나타냅니다. codex는 Halo, claude는 Ember, kiro는 Prism, cursor는 Spark입니다.</td><td>MindPlayer agent 색(<code>ui.rs</code> agent_tag). 디자인은 새로 그렸습니다.</td></tr>
+        <tr><td>캐릭터</td><td>agent를 나타냅니다. codex는 Halo, claude는 Ember, kiro는 Prism, cursor는 Spark입니다.</td><td>MindPlayer agent 색(<code>ui.rs</code> agent_tag). claude와 kiro는 ANSI Magenta와 Cyan이어서 비슷한 hex를 씁니다. 디자인은 새로 그렸습니다.</td></tr>
         <tr><td>머리 위 기호</td><td>세션 상태입니다. <code>! blocked</code>, <code>● working</code>, <code>✓ done</code>, <code>○ idle</code>을 씁니다.</td><td><code>SessionStatus</code>, <code>pane_dot</code>의 기호와 색. 있음</td></tr>
         <tr><td>콘솔 묶음과 바닥 색</td><td>세션의 category입니다.</td><td><code>state.category_of</code>, category 팔레트. 있음</td></tr>
         <tr><td>명패</td><td>첫 프롬프트 제목입니다.</td><td><code>Session.title</code>. 있음</td></tr>
-        <tr><td>경과 시간</td><td>마지막 프롬프트 뒤 시간입니다. kiro와 cursor는 now로 보입니다.</td><td><code>last_prompt_at</code>(codex·claude만). 있음</td></tr>
-        <tr><td>쉬는 곳과 잠</td><td>idle이면 쉬는 곳에 앉습니다. 마지막 프롬프트 뒤 10분이 지나면 잡니다.</td><td>상태와 <code>last_prompt_at</code>. kiro와 cursor는 자지 않습니다.</td></tr>
-        <tr><td>방 이동</td><td>일하는 중이면 마지막 도구에 따라 아카이브(읽기), 코어(명령), 통신(외부 도구)으로 갑니다.</td><td><strong>새 수집 필요.</strong> codex·claude transcript 끝부분에 도구 기록이 있습니다. 지금은 Trace를 켠 pane만 읽습니다.</td></tr>
-        <tr><td>카드의 마지막 답변</td><td>그 세션의 마지막 답변입니다.</td><td><code>convo_log</code>(claude·codex·kiro). cursor는 없습니다.</td></tr>
+        <tr><td>경과 시간</td><td>마지막 프롬프트 뒤 시간입니다. 세션이 실행 중이고 agent가 kiro나 cursor이면 now입니다.</td><td><code>last_prompt_at</code>(codex·claude만). 있음</td></tr>
+        <tr><td>쉬는 곳과 잠</td><td>idle이면 쉬는 곳에 앉습니다. idle이고 마지막 프롬프트 뒤 10분이 지났으면 잡니다.</td><td><strong>새 규칙.</strong> 제품에는 잠 규칙이 없습니다. kiro와 cursor는 자지 않습니다.</td></tr>
+        <tr><td>방 이동</td><td>일하는 중이면 마지막 도구에 따라 아카이브(읽기), 코어(명령), 통신(외부 도구)으로 갑니다.</td><td>claude와 kiro는 <code>convo_log</code>에 도구 이름(<code>[tool_use 이름]</code>)이 있습니다. codex는 도구 호출을 저장하지 않으므로 <strong>새 수집이 필요합니다.</strong></td></tr>
+        <tr><td>카드의 마지막 답변</td><td>그 세션의 마지막 답변입니다.</td><td><code>convo_log</code>의 turn(claude·codex·kiro). 이 값을 읽는 코드는 새로 필요합니다. cursor는 turn이 0개입니다.</td></tr>
         <tr><td>handoff 끈</td><td>handoff로 이어진 세션이 끈으로 부모 곁에 뜹니다.</td><td><code>state.handoff_parent</code>. 있음</td></tr>
-        <tr><td>대기열과 N</td><td>나를 기다리는 세션을 줄 세웁니다. ✓ done이 먼저, 그다음 ! blocked입니다.</td><td>목록의 rollup 순서. 있음</td></tr>
+        <tr><td>대기열과 N</td><td>나를 기다리는 세션을 줄 세웁니다. ✓ done이 먼저, 그다음 ! blocked입니다. N을 누를 때마다 다음 세션으로 넘어갑니다.</td><td>목록의 <code>status_rank</code>(ended·done 0, blocked 1). 있음</td></tr>
         <tr><td>고래</td><td>MindPlayer 마스코트를 홀로그램으로 그립니다.</td><td><code>mascot.rs</code> 색</td></tr>
       </tbody>
     </table></div>
@@ -104,8 +104,8 @@ table{width:100%;border-collapse:collapse;font-size:12.5px;line-height:1.6}th,td
     <div class="section-heading"><h3 id="bound-title">경계</h3><span>사용자 결정 2026-10-23</span></div>
     <ul class="plain">
       <li>이 창은 읽기 전용입니다. 답장, 멈춤, 키 전송 버튼이 없습니다. 답장은 MindPlayer 목록에서 Enter로 pane에 들어가서 합니다.</li>
-      <li>실시간 연결은 미구현 계획입니다. MindPlayer가 127.0.0.1에서 읽기 전용 GET으로 상태를 주고 브라우저 창을 엽니다. 쓰기 API는 없습니다.</li>
-      <li>분위기는 드라마 &lt;비전퀘스트&gt;에서 가져왔습니다. 공개 레포이므로 작품의 이름, 로고, 닮은 얼굴은 그리지 않습니다.</li>
+      <li>실시간 연결은 구현하지 않았습니다. 구현하면 MindPlayer가 127.0.0.1에서 읽기 전용 GET으로 상태를 줍니다. MindPlayer가 이 창을 엽니다. 쓰기 API는 없습니다.</li>
+      <li>공개 레포이므로 참고한 작품의 이름, 로고, 닮은 얼굴을 넣지 않습니다.</li>
       <li>hook 설치, tmux <code>send-keys</code>, 경로를 내주는 파일 서버는 쓰지 않습니다.</li>
     </ul>
   </section>
@@ -113,7 +113,7 @@ table{width:100%;border-collapse:collapse;font-size:12.5px;line-height:1.6}th,td
     <div class="section-heading"><h3 id="open-title">열린 결정</h3><span>HTML 승인은 구현 승인이 아닙니다</span></div>
     <ul class="plain">
       <li>고를 배경을 정해야 합니다.</li>
-      <li>방 이동을 위해 도구 기록을 새로 모을지 정해야 합니다.</li>
+      <li>codex 세션의 방 이동에 필요한 도구 기록 수집을 정해야 합니다.</li>
       <li>캐릭터 이름과 agent 매핑을 정해야 합니다.</li>
       <li>MindPlayer에서 이 창을 여는 키를 정해야 합니다.</li>
       <li>세션이 24개보다 많을 때의 배치를 정해야 합니다.</li>
@@ -134,6 +134,7 @@ const CATS = {pulse:{name:'pulse', color:'#b48ead'}, infra:{name:'인프라 변�
   probe:{name:'조사', color:'#ebcb8b'}, cost:{name:'비용', color:'#d08770'}, none:{name:'uncategorized', color:'#8c94a2'}};
 const TOOL = {read:{room:'archive', label:'📖 파일 읽기'}, shell:{room:'core', label:'$ 명령 실행'}, mcp:{room:'comm', label:'☎ 외부 도구'}, edit:{room:null, label:'✎ 편집'}};
 const CS = 1.3;
+const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
 // ---------- synthetic sessions (24): [category, agent, status, tool, minutes since last prompt, title, last reply] ----------
 const RAW = [
  ['pulse','codex','working','edit',3,'배포 검증','v0.23.2 이미지 digest와 Argo sync 상태를 맞춰 보는 중입니다.'],
@@ -192,7 +193,7 @@ function star(g, x, y, r, fill, stroke) { g.beginPath(); for (let k = 0; k < 8; 
 // ---------- the AI characters: original designs in MindPlayer agent colours ----------
 // pose: stand | walk | type | sit | sleep | hold | wave ; origin = feet centre
 function drawAI(g, agent, pose, t, o = {}) {
-  const c = AG[agent], s = o.scale || 1, blink = (Math.floor(t * 10 + (o.seed || 0) * 7) % 37) === 0, face = o.face || 'calm';
+  const c = AG[agent], s = o.scale || 1, blink = blinkAt(t, o.seed || 0), face = o.face || 'calm';
   g.save(); g.translate(o.x || 0, o.y || 0); g.scale(s * (o.flip ? -1 : 1), s);
   const bob = agent === 'kiro' ? Math.sin(t * 2.4 + (o.seed || 0)) * 2.2 : pose === 'walk' ? Math.abs(Math.sin(t * 9)) * -2 : 0;
   const hop = o.hop ? -Math.max(0, Math.sin(t * 7 + (o.seed || 0))) * 7 : 0, jit = face === 'nervous' ? Math.sin(t * 60) * .8 : 0;
@@ -205,7 +206,7 @@ function drawAI(g, agent, pose, t, o = {}) {
   g.rotate(pose === 'sleep' ? .32 : 0);
   const bodyCol = agent === 'codex' ? '#2f3e6e' : agent === 'claude' ? c.color : '#ef9a3c';
   rrect(g, -10, -26, 20, 17, 7, bodyCol);
-  if (agent === 'claude') { g.beginPath(); g.moveTo(-8, -25); g.lineTo(0, -19); g.lineTo(8, -25); g.lineWidth = 2.5; g.strokeStyle = '#ffd36b'; g.stroke(); }
+  if (agent === 'claude') ellipse(g, 0, -18, 3.4, 3.4, '#ffe1f7', K.ink, 1.4);
   if (agent === 'codex') rrect(g, -4, -22, 8, 6, 2, '#7ea2f7', K.ink, 1.6);
   if (agent === 'cursor') { ellipse(g, 0, -17, 3, 3, '#fff0a8', K.ink, 1.4); }
   const armUp = pose === 'type' ? Math.sin(t * 22 + (o.seed || 0)) * 3 : 0, wave = pose === 'wave' ? Math.sin(t * 10) * 18 : 0;
@@ -222,7 +223,7 @@ function drawAI(g, agent, pose, t, o = {}) {
     g.strokeStyle = '#7ea2f7'; g.lineWidth = 2.6; g.beginPath(); g.ellipse(0, hy - 22 + Math.sin(t * 3) * 1.2, 11, 3.6, 0, 0, Math.PI * 2); g.stroke(); glow(g, 0, hy - 22, 14, '#7ea2f7', .4);
   } else if (agent === 'claude') {
     ellipse(g, 0, hy, 16, 15, '#f7dcf4'); ellipse(g, -15, hy + 1, 4, 6, c.color); ellipse(g, 15, hy + 1, 4, 6, c.color); rrect(g, -14, hy - 15, 28, 9, 5, c.color);
-    const gy = hy - 9; g.beginPath(); g.moveTo(0, gy - 5); g.lineTo(4, gy); g.lineTo(0, gy + 4); g.lineTo(-4, gy); g.closePath(); g.fillStyle = '#ffd36b'; g.fill(); g.lineWidth = 1.8; g.strokeStyle = K.ink; g.stroke(); glow(g, 0, gy, 10, '#ffd36b', .55 + Math.sin(t * 4) * .15);
+    star(g, 10, hy - 12, 4.4, '#ffe27a', K.ink);
     eyes(g, hy + 1, pose, blink, face); ellipse(g, -9, hy + 6, 3, 2, 'rgba(255,120,160,.55)', null); ellipse(g, 9, hy + 6, 3, 2, 'rgba(255,120,160,.55)', null); mouth(g, hy + 8, face, pose);
   } else {
     ellipse(g, 0, hy + 1, 16, 14, '#ffb35c'); ellipse(g, 0, hy - 3, 11, 6, 'rgba(255,255,255,.35)', null);
@@ -231,6 +232,7 @@ function drawAI(g, agent, pose, t, o = {}) {
   }
   g.restore();
 }
+function blinkAt(t, seed) { return !reduce && (Math.floor(t * 10 + seed * 7) % 37) === 0; }
 function eyes(g, y, pose, blink, face) {
   if (pose === 'sleep' || blink) { g.strokeStyle = K.ink; g.lineWidth = 2; g.beginPath(); g.arc(-6, y, 3, .2, Math.PI - .2); g.moveTo(9, y); g.arc(6, y, 3, .2, Math.PI - .2); g.stroke(); return; }
   if (face === 'sparkle') { star(g, -6, y, 4, '#ffffff', K.ink); star(g, 6, y, 4, '#ffffff', K.ink); return; }
@@ -564,7 +566,7 @@ function objects() {
   for (const s of sessions) { if (s.gone || s.atDesk || (s.pod && !s.walking)) continue; add({i:s.pos.i - .2, j:s.pos.j - .2, w:.4, d:.4}, () => drawFree(s)); }
   // painter order: A first when it lies wholly behind B on one axis; otherwise the shallower centre first
   const n = list.length, behind = (a, b) => a.i1 <= b.i0 + 1e-6 || a.j1 <= b.j0 + 1e-6, depth = o => (o.i0 + o.i1 + o.j0 + o.j1) / 2, indeg = new Array(n).fill(0), adj = Array.from({length:n}, () => []);
-  for (let a = 0; a < n; a++) for (let b = a + 1; b < n; b++) { const A = list[a], B = list[b]; if (A.i1 + A.j1 < B.i0 + B.j0 - 6 || B.i1 + B.j1 < A.i0 + A.j0 - 6) continue; if (Math.abs((A.i0 - A.j0) - (B.i0 - B.j0)) > 7) continue;
+  for (let a = 0; a < n; a++) for (let b = a + 1; b < n; b++) { const A = list[a], B = list[b]; if (A.i1 + A.j1 < B.i0 + B.j0 - 6 || B.i1 + B.j1 < A.i0 + A.j0 - 6) continue; if (A.i1 - A.j0 < B.i0 - B.j1 || B.i1 - B.j0 < A.i0 - A.j1) continue;
     const ab = behind(A, B), ba = behind(B, A), first = ab && !ba ? a : ba && !ab ? b : depth(A) <= depth(B) ? a : b; adj[first].push(first === a ? b : a); indeg[first === a ? b : a]++; }
   const ready = []; for (let k = 0; k < n; k++) if (!indeg[k]) ready.push(k); const out = [];
   while (ready.length) { ready.sort((x, y) => depth(list[y]) - depth(list[x])); const k = ready.pop(); out.push(list[k]); for (const m of adj[k]) if (!--indeg[m]) ready.push(m); }
@@ -596,23 +598,23 @@ function render() {
 // ---------- HUD ----------
 const hud = document.getElementById('hud'), queueEl = document.getElementById('queue'), card = document.getElementById('card'), tip = document.getElementById('tip'), live = document.getElementById('live');
 function rollup() { const rank = {done:0, blocked:1}; return sessions.filter(s => !s.gone && (s.status === 'done' || s.status === 'blocked')).sort((a, b) => rank[a.status] - rank[b.status] || (a.mins ?? 0) - (b.mins ?? 0)); }
-const nextSession = () => rollup()[0] || null;
+function nextSession() { const q = rollup(); if (!q.length) return null; const k = selected ? q.indexOf(selected) : -1; return q[(k + 1) % q.length]; }
 const esc = s => s.replace(/[&<>"]/g, ch => ({'&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;'}[ch]));
 function updateHud() { const ls = sessions.filter(s => !s.gone), c = st => ls.filter(s => s.status === st).length, sc = world.sc;
   hud.innerHTML = `<span class="chip title">${sc.name}</span><span class="chip">세션<span class="n">${ls.length}</span></span><span class="chip" style="color:${K.working}">● 일하는 중<span class="n">${c('working')}</span></span><span class="chip" style="color:${K.waiting}">! 나를 기다림<span class="n">${c('blocked')}</span></span><span class="chip" style="color:${K.completed}">✓ 끝남<span class="n">${c('done')}</span></span><span class="chip" style="color:#c4cad6">○ 쉬는 중<span class="n">${c('idle')}</span></span><span class="chip">handoff<span class="n">${world.lanes.filter(l => !sessions[l.parent].gone).length}</span></span><span class="chip hint">휠 확대 · 드래그 · 더블클릭 = 전체</span>`;
-  const q = rollup(), nx = q[0];
-  queueEl.innerHTML = (nx ? `<span class="q next"><span class="k">N</span>다음 ▶ ${esc(nx.title)} · ${ST[nx.status].g} ${when(nx)}</span>` : '') + q.slice(1, 7).map(s => `<span class="q" style="color:${ST[s.status].color};border-color:${ST[s.status].color}">${ST[s.status].g} ${esc(s.title)} · ${when(s)}</span>`).join('');
+  const q = rollup(), nx = nextSession();
+  queueEl.innerHTML = (nx ? `<span class="q next"><span class="k">N</span>다음 ▶ ${esc(nx.title)} · ${ST[nx.status].g} ${when(nx)}</span>` : '') + q.filter(s => s !== nx).slice(0, 6).map(s => `<span class="q" style="color:${ST[s.status].color};border-color:${ST[s.status].color}">${ST[s.status].g} ${esc(s.title)} · ${when(s)}</span>`).join('');
   document.getElementById('sr').textContent = ls.map(s => `${s.title} ${ST[s.status].ko}`).join(', '); }
 function placeName(s) { if (s.walking) return '이동 중'; if (s.atDesk) return '자기 콘솔'; if (s.pod) return world.rooms.bay.label; return (world.rooms[s.place] || {}).label || s.place; }
 function openCard(s) { selected = s; const st = ST[s.status], ag = AG[s.agent], reply = s.agent === 'cursor' ? null : s.reply;
   card.innerHTML = `<button class="x" type="button" aria-label="닫기">✕</button><h3>${esc(s.title)}</h3>
-   <div class="meta"><span class="badge" style="background:${st.color}">${st.g} ${st.label}</span><b style="color:${ag.color}">▌${ag.name}</b> · ${CATS[s.cat].name} · ${when(s)}${s.tool && s.status === 'working' ? ' · ' + TOOL[s.tool].label : ''}</div>
-   <div class="grid"><span>usage</span><span>${s.usage}</span><span>account</span><span>${s.account}</span><span>id</span><span>${s.id}</span><span>위치</span><span>${placeName(s)}</span></div>
-   <div class="reply">${reply ? esc(reply) : '이 agent는 대화 기록을 모으지 않습니다.'}</div>
-   <div class="src">마지막 답변 · ${reply ? 'convo_log (claude·codex·kiro)' : 'cursor는 convo_log 대상이 아님'}${s.tool ? ' · 도구에 따른 방 이동은 새 수집 필요(codex·claude)' : ''}</div>
+   <div class="meta"><span class="badge" style="background:${st.color}">${st.g} ${st.label}</span><b style="color:${ag.color}">▌${ag.name}</b> · ${esc(CATS[s.cat].name)} · ${when(s)}${s.tool && s.status === 'working' ? ' · ' + TOOL[s.tool].label : ''}</div>
+   <div class="grid"><span>usage</span><span>${esc(s.usage)}</span><span>account</span><span>${esc(s.account)}</span><span>id</span><span>${esc(s.id)}</span><span>위치</span><span>${esc(placeName(s))}</span></div>
+   <div class="reply">${reply ? esc(reply) : 'cursor 세션은 convo_log에 대화 turn이 없습니다.'}</div>
+   <div class="src">마지막 답변 · ${reply ? 'convo_log의 마지막 assistant turn (읽는 코드는 새로 필요)' : 'cursor는 turn 0개'}${s.tool ? (s.agent === 'codex' ? ' · codex 도구 기록은 새 수집 필요' : ' · 도구 이름은 convo_log에 있음') : ''}</div>
    <div class="hintline">이 창은 읽기 전용입니다. 답장은 MindPlayer 목록에서 이 세션을 고르고 <kbd>Enter</kbd>로 pane에 들어가서 합니다.</div>`;
-  card.classList.add('open'); card.querySelector('.x').onclick = closeCard; focusOn(s); }
-function closeCard() { card.classList.remove('open'); selected = null; }
+  card.classList.add('open'); card.querySelector('.x').onclick = closeCard; focusOn(s); updateHud(); }
+function closeCard() { card.classList.remove('open'); selected = null; if (world) updateHud(); }
 // ---------- input ----------
 let drag = null;
 const toWorld = (mx, my) => ({x:(mx - cam.x) / cam.z, y:(my - cam.y) / cam.z});
@@ -621,9 +623,10 @@ canvas.addEventListener('pointerdown', e => { drag = {x:e.clientX, y:e.clientY, 
 canvas.addEventListener('pointermove', e => { const r = canvas.getBoundingClientRect(), mx = e.clientX - r.left, my = e.clientY - r.top;
   if (drag) { const dx = e.clientX - drag.x, dy = e.clientY - drag.y; if (Math.abs(dx) + Math.abs(dy) > 4) { drag.moved = true; canvas.classList.add('dragging'); camTarget = null; cam.x = drag.cx + dx; cam.y = drag.cy + dy; } return; }
   const s = pick(mx, my); for (const x of sessions) x.hover = x === s;
-  if (s) { tip.style.display = 'block'; tip.style.left = Math.min(W - 310, mx + 16) + 'px'; tip.style.top = Math.max(50, my - 90) + 'px'; tip.innerHTML = `<b>${esc(s.title)}</b><br><span class="s" style="color:${AG[s.agent].color}">▌${AG[s.agent].name}</span> · ${ST[s.status].g} ${ST[s.status].ko} · ${when(s)}<br>${placeName(s)} · 클릭하면 카드`; }
+  if (s) { tip.style.display = 'block'; tip.style.left = Math.min(W - 310, mx + 16) + 'px'; tip.style.top = Math.max(50, my - 90) + 'px'; tip.innerHTML = `<b>${esc(s.title)}</b><br><span class="s" style="color:${AG[s.agent].color}">▌${AG[s.agent].name}</span> · ${ST[s.status].g} ${ST[s.status].ko} · ${when(s)}<br>${esc(placeName(s))} · 클릭하면 카드`; }
   else tip.style.display = 'none'; });
 canvas.addEventListener('pointerup', e => { canvas.classList.remove('dragging'); if (drag && !drag.moved) { const r = canvas.getBoundingClientRect(), s = pick(e.clientX - r.left, e.clientY - r.top); if (s) openCard(s); else closeCard(); } drag = null; });
+canvas.addEventListener('pointercancel', () => { drag = null; canvas.classList.remove('dragging'); });
 canvas.addEventListener('pointerleave', () => { tip.style.display = 'none'; for (const s of sessions) s.hover = false; });
 canvas.addEventListener('wheel', e => { e.preventDefault(); const r = canvas.getBoundingClientRect(), mx = e.clientX - r.left, my = e.clientY - r.top, z = Math.max(.35, Math.min(3.2, cam.z * Math.exp(-e.deltaY * .0015)));
   cam.x = mx - (mx - cam.x) * z / cam.z; cam.y = my - (my - cam.y) * z / cam.z; cam.z = z; camTarget = null; }, {passive:false});
@@ -653,7 +656,7 @@ function drawSheet() { const {w, h, cw, rh} = sheetGeom(); if (sheet.width !== M
       const top = feet - (a === 'kiro' ? 66 : 76) * sc;
       if (s[0] === 'asleep') zzz(sg, cx + 12, top + 6, T); else if (s[0] !== 'walk') bubble(sg, cx, top, fake.status, T + k, s[0] === 'working' ? 'typing' : null);
       if (hov) reaction(sg, fake, cx, feet, T, sc); }); });
-  drawMote(sg, '#7ea2f7', T, 22, h - 22, 1); sg.textAlign = 'left'; sg.fillStyle = '#aab0bd'; sg.font = `800 12px ${FONT}`; sg.fillText('handoff 연결: 끈으로 부모 곁에 뜹니다', 38, h - 22); }
+  drawMote(sg, '#7ea2f7', T, 22, h - 22, 1); sg.textAlign = 'left'; sg.fillStyle = '#aab0bd'; sg.font = `800 12px ${FONT}`; sg.fillText('handoff 끈: 부모 세션 곁에 뜹니다', 38, h - 22); }
 sheet.addEventListener('pointermove', e => { const r = sheet.getBoundingClientRect(), {cw, rh} = sheetGeom(), c = Math.floor((e.clientX - r.left) / cw) - 1, rr = Math.floor((e.clientY - r.top - SHEET_TOP) / rh); sheetHover = c >= 0 && rr >= 0 && rr < 4 ? rr * 10 + c : -1; });
 sheet.addEventListener('pointerleave', () => { sheetHover = -1; });
 // ---------- tabs ----------
@@ -665,14 +668,14 @@ function selectScene(k) { sceneIdx = k; closeCard(); const sc = SCENES[k]; build
   canvas.setAttribute('aria-label', `${sc.name} 장면. 세션 ${sessions.length}개`); live.textContent = '휠 확대 · 드래그 이동 · 더블클릭 전체 보기 · 캐릭터 클릭 = 카드'; }
 SCENES.forEach((sc, k) => { const b = document.createElement('button'); b.type = 'button'; b.className = 'tab'; b.setAttribute('role', 'tab'); b.innerHTML = `<span class="number">${sc.n}</span><span class="name">${sc.name}</span><span class="sub">${sc.sub}</span>`; b.onclick = () => selectScene(k); tabs.appendChild(b); });
 tabs.addEventListener('keydown', e => { if (e.key !== 'ArrowRight' && e.key !== 'ArrowLeft') return; e.preventDefault(); const k = (sceneIdx + (e.key === 'ArrowRight' ? 1 : SCENES.length - 1)) % SCENES.length; selectScene(k); tabs.children[k].focus(); });
-const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
 let paused = false;
 function frame(ts) { const dt = Math.min(.05, (ts - (last || ts)) / 1000); last = ts;
-  if (!paused) { T += reduce ? 0 : dt; step(reduce ? 1 : dt); if (camTarget) { const a = .12; cam.x += (camTarget.x - cam.x) * a; cam.y += (camTarget.y - cam.y) * a; cam.z += (camTarget.z - cam.z) * a; if (Math.abs(camTarget.z - cam.z) < .001 && Math.abs(camTarget.x - cam.x) < .5) camTarget = null; } }
+  if (!paused) { T += reduce ? 0 : dt; step(reduce ? 1 : dt); if (camTarget) { const a = .12; cam.x += (camTarget.x - cam.x) * a; cam.y += (camTarget.y - cam.y) * a; cam.z += (camTarget.z - cam.z) * a; if (reduce || (Math.abs(camTarget.z - cam.z) < .001 && Math.abs(camTarget.x - cam.x) < .5 && Math.abs(camTarget.y - cam.y) < .5)) { cam = {...camTarget}; camTarget = null; } } }
   render(); drawSheet(); requestAnimationFrame(frame); }
 window.addEventListener('resize', resize);
 window.__office2 = {get sessions() { return sessions; }, get world() { return world; }, get cam() { return cam; }, selectScene, validateWorld, pause:v => { paused = v; },
   advance:sec => { for (let k = 0; k < sec * 30; k++) { T += 1 / 30; step(1 / 30); } }, settle:() => { if (camTarget) { cam = {...camTarget}; camTarget = null; } }, SCENES, openCard, closeCard, nextSession, rollup,
+  blinkAt, fitTarget:() => { const keep = camTarget; fit(false); const t = camTarget; camTarget = keep; return t; }, setCam:c => { cam = {...c}; camTarget = null; },
   stagePoint:s => { const p = screenOf(s); return {x:p.x * cam.z + cam.x, y:(p.y - 34 * CS) * cam.z + cam.y}; }};
 selectScene(0); resize(); requestAnimationFrame(frame);
 })();

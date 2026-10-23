@@ -1,6 +1,6 @@
 {
   "scope": "offline standalone HTML synthetic interactions, not native runtime proof",
-  "verifiedAt": "2026-10-23T14:58:59.964Z",
+  "verifiedAt": "2026-10-23T15:06:20.642Z",
   "html": "2026-10-23-office-view-gallery.ko.html",
   "test": "../tests/office-view-gallery.test.cjs",
   "result": "passed",
@@ -45,13 +45,13 @@
   "pageErrors": 0,
   "consoleErrors": 0,
   "providerCalls": 0,
-  "sourceSha256Before": "f61188a00e1b47e27498956557ec05456e6f09648409ed229ab4b9041db43cf6",
-  "sourceSha256After": "f61188a00e1b47e27498956557ec05456e6f09648409ed229ab4b9041db43cf6",
+  "sourceSha256Before": "250fa89460603e309f80ddcfbad176d22f66e4878933685b559a67824d8599e8",
+  "sourceSha256After": "250fa89460603e309f80ddcfbad176d22f66e4878933685b559a67824d8599e8",
   "cleanup": {
     "browser": true,
     "server": true
   },
-  "diagnosticReceipt": "<os-tmpdir>/mindplayer-office-qa-nwSspR/validation.json",
+  "diagnosticReceipt": "<os-tmpdir>/mindplayer-office-qa-UPbQXx/validation.json",
   "notVerified": [
     "A live MindPlayer state feed (the read-only 127.0.0.1 GET is a plan)",
     "Collecting the last tool for every session (codex needs a parser extension)",
@@ -59,6 +59,9 @@
     "Screen-reader behaviour of the canvas scene",
     "The key that opens this window from MindPlayer",
     "The daily terrain seed on a day other than the test day",
-    "Copied design or UI text beyond the banned-name hash list (reviewed by eye only)"
+    "Copied design or UI text beyond the banned-name hash list (reviewed by eye only)",
+    "Queue chips or outside labels hidden behind the card or the list at every viewport width",
+    "Readability of status glyphs under the context head effects",
+    "Markdown edge inputs beyond the one test string"
   ]
 }

@@ -152,6 +152,7 @@ async function main() {
         assert.deepEqual(fx, [[0, 1, 2, 3, 4, 0], [0, 1, 2, 3, 4, 5], [0, 1, 2, 3], ['휴… 종료', '신나게 종료!', '수고했습니다', '휴… 종료']], 'context tiers, ranks, age marks and farewell lines follow the stated thresholds');
         const mdOut = await office(() => window.__office2.md('<script>x</script> **b** `c` [l](https://example.test/a)\n\n- a\n  - b\n\n```\nq<y\n```\n\n| h |\n|---|\n| v |\n\n1 예   2 아니요'));
         assert.ok(!mdOut.includes('<script>') && mdOut.includes('&lt;script&gt;') && mdOut.includes('<b>b</b>') && mdOut.includes('<code>c</code>') && mdOut.includes('href="https://example.test/a"') && mdOut.includes('<ul><li>a<ul><li>b</li></ul></li></ul>') && mdOut.includes('<pre>q&lt;y</pre>') && mdOut.includes('<th>h</th>') && mdOut.includes('class="choices"'), `markdown renders escaped text, bold, code, links, nested lists, fences, tables and choice lines: ${mdOut}`);
+        const mdList = await office(() => window.__office2.md('  - first\n- second\n- third')); assert.ok(mdList.includes('second') && mdList.includes('third'), `list items shallower than the first one are kept: ${mdList}`);
         await office(() => window.__office2.openCard(window.__office2.sessions.find(s => s.title === '히스토리 정리'))); assert.equal(await page.locator('#card .reply table').count(), 1, 'a reply with a markdown table renders a table in the card'); await office(() => window.__office2.closeCard());
         await press('?'); assert.equal(await page.locator('#help.open').count(), 1, '? opens the shortcut help'); await press('Escape'); assert.equal(await page.locator('#help.open').count(), 0, 'Esc closes the help first');
         // wild sessions, capture and release
@@ -245,7 +246,8 @@ async function main() {
         diagnosticReceipt: `<os-tmpdir>/${path.basename(artifacts)}/validation.json`,
         notVerified: ['A live MindPlayer state feed (the read-only 127.0.0.1 GET is a plan)', 'Collecting the last tool for every session (codex needs a parser extension)',
           'Rendering cost with real session counts above 24', 'Screen-reader behaviour of the canvas scene', 'The key that opens this window from MindPlayer',
-          'The daily terrain seed on a day other than the test day', 'Copied design or UI text beyond the banned-name hash list (reviewed by eye only)'] };
+          'The daily terrain seed on a day other than the test day', 'Copied design or UI text beyond the banned-name hash list (reviewed by eye only)',
+          'Queue chips or outside labels hidden behind the card or the list at every viewport width', 'Readability of status glyphs under the context head effects', 'Markdown edge inputs beyond the one test string'] };
       fs.writeFileSync(record, JSON.stringify(summary, null, 2) + '\n');
     }
     console.log(JSON.stringify({ result: result.result, passed: result.passed.length, failed: result.failed, keyboardEvents: result.keyboardEvents,

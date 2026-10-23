@@ -48,7 +48,7 @@ h1{font-size:29px;letter-spacing:-1px;line-height:1.35;margin:12px 0 7px}
 .dex{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);width:min(640px,92%);max-height:86%;overflow:auto;background:#171a26;border:2px solid #3a415c;border-radius:14px;color:#d4d8e1;padding:16px 18px;display:none;z-index:5}.dex.open{display:block}.dex h4{margin:0 0 6px;font-size:15px}.dex .sub,.dex .src{font-size:12px;color:#aab0bd;margin:4px 0}.dex .cells{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin:10px 0}.dex .cell{background:#0f121b;border:1px solid #2c3247;border-radius:10px;padding:8px 10px;display:flex;flex-direction:column;gap:3px}.dex .cell b{font-size:12.5px}.dex .cell small{font-size:11px;color:#c4c9d4}.dex .cell.unknown{opacity:.45}.dex .x{position:absolute;right:10px;top:8px;background:none;border:0;color:#aab0bd;font-size:18px}
 .chip.btn{cursor:pointer;font:inherit}
 .help{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);width:min(440px,90%);background:#171a26;border:2px solid #3a415c;border-radius:14px;color:#d4d8e1;padding:16px 18px;display:none;z-index:5}.help.open{display:block}.help h4{margin:0 0 10px;font-size:15px}.help dl{display:grid;grid-template-columns:auto 1fr;gap:6px 14px;margin:0;font-size:13px}.help dt{font:700 12px ui-monospace,Menlo,monospace;color:#ffe9b0}.help p{margin:12px 0 0;font-size:12px;color:#aab0bd}
-.card .reply pre{background:#060810;border:1px solid #2c3247;border-radius:8px;padding:8px 10px;overflow:auto;font-size:12px}.card .reply code{background:#232838;border-radius:4px;padding:0 4px;font-size:12px}.card .reply table{border-collapse:collapse;margin:6px 0;font-size:12px}.card .reply th,.card .reply td{border:1px solid #2c3247;padding:3px 8px}.card .reply ul{margin:4px 0;padding-left:18px}.card .reply a{color:#7ea2f7}.card .reply p{margin:4px 0}.card .reply .choices{color:#ffb783;font-weight:700}
+.card .reply pre{background:#060810;border:1px solid #2c3247;border-radius:8px;padding:8px 10px;overflow:auto;font-size:12px}.card .reply code{background:#232838;border-radius:4px;padding:0 4px;font-size:12px}.card .reply table{border-collapse:collapse;margin:6px 0;font-size:12px}.card .reply th,.card .reply td{border:1px solid #2c3247;padding:3px 8px}.card .reply ul{margin:4px 0;padding-left:18px}.card .reply a{color:#7ea2f7}.card .reply .host{color:#7e8595;font-size:11px;margin-left:3px}.card .reply p{margin:4px 0}.card .reply .choices{color:#ffb783;font-weight:700}
 .baseinfo{position:absolute;right:14px;top:58px;width:300px;max-height:calc(100% - 130px);overflow:auto;background:rgba(14,18,28,.82);border:1.5px solid rgba(255,255,255,.35);border-radius:10px;color:#eef1f6;padding:6px;backdrop-filter:blur(2px)}
 .bi-head{font-weight:900;font-size:13px;padding:4px 8px 6px;border-bottom:1px solid rgba(255,255,255,.2);display:flex;justify-content:space-between}.bi-head span{font-weight:600;color:#aab3c2;font-size:11px}
 .bi-row{display:flex;gap:8px;align-items:center;width:100%;border:0;background:none;color:inherit;text-align:left;padding:5px 6px;border-radius:7px;font:inherit}.bi-row:hover,.bi-row.on{background:rgba(255,255,255,.12)}
@@ -71,7 +71,7 @@ table{width:100%;border-collapse:collapse;font-size:12.5px;line-height:1.6}th,td
 <main class="page">
   <div class="eyebrow"><span>MINDPLAYER / UI STUDIES</span><span class="edition">지형 시안 5개 · 2026.10.23 · 앱 미적용 · 합성 데이터</span></div>
   <h1>세션이 동료가 되어 거점에서 일합니다.</h1>
-  <p class="intro">MindPlayer가 연 <strong>읽기 전용 브라우저 창</strong>입니다. 세션 하나가 거점의 동료 하나입니다. 동료는 마지막 도구에 맞는 작업장을 스스로 찾아가 일합니다. 작업장마다 바닥이 다릅니다: 자료 밭은 흙, 채석장은 자갈, 작업대는 널빤지, 단말 광장은 돌, 보관함은 나무 덱, 먹이통은 꽃밭, 짚 침대는 짚입니다. 끝나면 납품 자리에 서고, 쉴 때는 먹이통에서 먹고, 마지막 프롬프트 뒤 10분이 지나면 짚 침대에서 잡니다. 종료하면 거점 단말 앞에 서서 마지막 화면을 보관합니다. 오른쪽 동료 현황 목록이 동료마다 상태를 한 문장으로 말합니다. <strong>지형은 날짜로 정합니다.</strong> 날짜 시드가 5개 지형 중 하나를 고르고 나무와 바위 자리를 섞습니다. 탭은 다른 날의 지형을 미리 보는 용도입니다. 거점 배치, 동료, 상태 규칙, 칩, 대기열, 카드는 날마다 같습니다. 동료는 MindPlayer 고유 종(walker.rs)입니다.</p>
+  <p class="intro">MindPlayer가 연 <strong>읽기 전용 브라우저 창</strong>입니다. 세션 하나가 거점의 동료 하나입니다. 동료는 마지막 도구에 맞는 작업장을 스스로 찾아가 일합니다. 작업장마다 바닥이 다릅니다: 자료 밭은 흙, 채석장은 자갈, 작업대는 널빤지, 단말 광장은 돌, 보관함은 나무 덱, 먹이통은 꽃밭, 짚 침대는 짚입니다. 끝나면 납품 자리에 서고, 쉴 때는 먹이통에서 먹고, 마지막 프롬프트 뒤 10분이 지나면 짚 침대에서 잡니다. 종료하면 거점 단말 앞에 서서 마지막 화면을 보관합니다. 오른쪽 동료 현황 목록이 동료마다 상태를 한 문장으로 말합니다. <strong>지형은 날짜로 정합니다.</strong> 날짜 시드의 난수가 5개 지형 중 하나를 고르고, 나무와 바위 후보의 일부를 날마다 다르게 뺍니다. 탭은 다른 지형을 미리 보는 용도입니다. 거점 배치, 동료, 상태 규칙, 칩, 대기열, 카드는 날마다 같습니다. 동료는 MindPlayer 고유 종(walker.rs)입니다.</p>
   <div class="sheet-wrap"><div class="section-heading"><h3>동료 시트: 종 4가지 × 상태 6가지</h3><span>5개 시안 공통 · 마우스를 올리면 반응합니다</span></div>
     <div class="window"><canvas class="sheet" id="sheet" role="img" aria-label="종 4가지와 상태 6가지 동료 시트"></canvas></div></div>
   <nav class="tabs" role="tablist" aria-label="지형 시안 5개"></nav>
@@ -103,17 +103,17 @@ table{width:100%;border-collapse:collapse;font-size:12.5px;line-height:1.6}th,td
         <tr><td>머리 위 기호</td><td>세션 상태입니다. <code>! blocked</code>, <code>● working</code>, <code>✓ done</code>, <code>○ idle</code>을 씁니다.</td><td><code>SessionStatus</code>와 <code>pane_dot</code>의 기호와 색입니다. 제품에 있습니다.</td></tr>
         <tr><td>목도리와 목록 묶음</td><td>세션의 category입니다. 작업장은 category와 무관합니다.</td><td><code>state.category_of</code>와 category 팔레트입니다. 제품에 있습니다.</td></tr>
         <tr><td>구역 바닥과 테두리</td><td>작업장 7곳이 각각 울타리 안의 네모 구역입니다. 바닥이 흙·자갈·널빤지·돌·나무 덱·꽃밭·짚으로 다릅니다. 구역 사이는 잔디 통로 한 칸입니다. 동료는 자기 구역 안에 섭니다. 구역이 차면 통로의 빈 칸에 섭니다.</td><td>새 배치 규칙입니다. 테스트가 모든 자리가 자기 구역 안에 있는지, 넘칠 때 겹치지 않는지 확인합니다.</td></tr>
-        <tr><td>날짜 시드 지형</td><td>오늘 날짜로 5개 지형 중 하나를 고릅니다. 나무·바위 자리도 날짜로 섞습니다. 탭의 "오늘" 표시가 그 지형입니다.</td><td>새 규칙입니다. 시드는 날짜(UTC 일수)입니다. 제품에는 날짜 시드가 없습니다.</td></tr>
+        <tr><td>날짜 시드 지형</td><td>오늘 날짜(UTC 일수)의 난수로 5개 지형 중 하나를 고릅니다. 나무·바위 후보의 일부를 날마다 다르게 뺍니다. 탭의 "오늘" 표시가 그 지형입니다.</td><td>새 규칙입니다. 시드는 날짜(UTC 일수)입니다. 제품에는 날짜 시드가 없습니다.</td></tr>
         <tr><td>종료(ended)</td><td>종료된 세션은 거점 단말 앞에 서서 마지막 화면을 보관합니다. 사라지지 않습니다. 대기열에서 끝남과 같은 순위입니다. 도착하면 25초 동안 한마디 합니다: 8시간 이상이거나 도구 2,000회 이상이면 "휴… 종료", 1시간 미만이면 "신나게 종료!", 그 밖에는 "수고했습니다".</td><td><code>status_rank</code>에서 Ended는 Completed와 같은 0순위입니다. 제품은 종료 세션의 마지막 화면을 유지합니다. 한마디 규칙은 새 규칙입니다.</td></tr>
         <tr><td>구역 이름표</td><td>구역 이름표 7개는 고원 위 여백에 높이를 엇갈려 두고 점선 꺾은선으로 구역의 뒤쪽 모서리와 잇습니다. 선을 모두 그린 뒤 상자를 그려서 선이 상자를 덮지 않습니다.</td><td>참고한 사무실 사양의 배치 규칙입니다. 캔버스 화면 좌표에 그립니다.</td></tr>
-        <tr><td>머리 위 복잡함</td><td>context 사용률이 오를수록 머리가 복잡해집니다. 50% 이상 낙서, 65% 이상 머리카락이 서고 땀, 80% 이상 머리 주위를 도는 종이·?·톱니와 김, 90% 이상 소용돌이 눈과 날아가는 종이.</td><td><code>Session.context_pct</code>는 kiro만 값이 있습니다(<code>discovery.rs</code> kiro_context_pct). codex·claude는 새 수집이 필요합니다. 시안의 값은 합성입니다.</td></tr>
-        <tr><td>압축(compaction)</td><td>압축 중이면 종이가 머리 위 "요약" 상자로 빨려 들어갑니다. 끝난 뒤에는 "🧹 정리 완료 · 전→후" 말풍선이 뜹니다. 지금까지 압축한 횟수만큼 발 옆에 상자를 쌓습니다.</td><td>MindPlayer에 압축 기록이 없습니다. transcript의 compact_boundary 수집이 새로 필요합니다. 시안의 값은 합성입니다.</td></tr>
-        <tr><td>직급과 연륜</td><td>도구 사용 횟수가 100 / 500 / 2,000 / 5,000 / 10,000을 넘을 때마다 직급이 오르고 왕관이 커집니다. 근속이 1 / 3 / 7일을 넘으면 흰머리, 수염, 지팡이가 생깁니다.</td><td>근속은 <code>Session.started_at</code>으로 잴 수 있습니다. 도구 횟수는 MindPlayer에 없어 새 수집이 필요합니다. 시안의 값은 합성입니다.</td></tr>
+        <tr><td>머리 위 복잡함</td><td>context 사용률이 오를수록 머리가 복잡해집니다. 50% 이상 낙서, 65% 이상 머리카락이 서고 땀, 80% 이상 머리 주위를 도는 종이·?·톱니와 김, 90% 이상 소용돌이 눈과 날아가는 종이.</td><td><code>Session.context_pct</code>는 kiro만 값이 있습니다(<code>discovery.rs</code> parse_kiro_file·kiro_context_pct). codex·claude·cursor는 새 수집이 필요합니다. 시안의 값은 합성입니다.</td></tr>
+        <tr><td>압축(compaction)</td><td>압축 중이면 종이가 머리 위 "요약" 상자로 빨려 들어갑니다. 끝난 뒤에는 "🧹 정리 완료 · 전→후" 말풍선이 뜹니다. 지금까지 압축한 횟수만큼 발 옆에 상자를 쌓습니다.</td><td>MindPlayer에 압축 횟수 기록은 없습니다. 압축 중 신호는 pane 화면의 "compacting" 글자로 이미 감지합니다(<code>pty.rs</code>). 횟수는 transcript의 compact_boundary 수집이 새로 필요합니다. 시안의 값은 합성입니다.</td></tr>
+        <tr><td>직급과 연륜</td><td>도구 사용 횟수가 100 / 500 / 2,000 / 5,000 / 10,000을 넘을 때마다 직급이 오르고 왕관이 커집니다. 근속이 1 / 3 / 7일을 넘으면 흰머리, 수염, 지팡이가 생깁니다.</td><td>근속은 <code>Session.started_at</code>으로 잴 수 있습니다. 도구 횟수 필드는 없지만 claude·kiro는 이미 읽는 <code>convo_log</code>의 <code>[tool_use]</code> 줄을 세면 됩니다. codex는 parser 확장, cursor는 없습니다. 시안의 값은 합성입니다.</td></tr>
         <tr><td>뒤통수</td><td>화면 위쪽(멀어지는 쪽)으로 걸을 때는 얼굴 대신 뒤통수를 보입니다. 좌우로 걸을 때는 몸을 뒤집습니다.</td><td>그리기 규칙입니다.</td></tr>
-        <tr><td>칠판</td><td>단말 광장 뒤쪽 칠판에 동료 수, 일하는 중, 기다림, "다음 ▶ 누구", 끝남·쉼을 적습니다. 상단 칩, 대기열, N 키와 같은 함수에서 값을 받습니다.</td><td>참고한 사무실 사양의 상황판입니다. 값은 이 페이지의 집계입니다.</td></tr>
+        <tr><td>칠판</td><td>단말 광장 뒤쪽 칠판에 동료 수, 일하는 중, 기다림, "다음 ▶ 누구", 끝남(종료 포함)·쉼, 도감을 적습니다. "다음 ▶"은 N 키·대기열과 같은 함수에서 받습니다.</td><td>참고한 사무실 사양의 상황판입니다. 값은 이 페이지의 집계입니다.</td></tr>
         <tr><td>야생과 포획</td><td>category가 없는 세션은 목책 밖 들판(지형의 땅)을 돌아다닙니다. MindPlayer에서 그 세션에 category를 붙이면 단말에서 구슬이 날아가고, 동료가 구슬에 들어가 세 번 흔들린 뒤 "포획!"과 함께 문 앞 계단에 나타나 들어옵니다. category를 해제하면 문으로 나가 들판으로 돌아갑니다(방생).</td><td><code>state.assign_category</code>·<code>clear_category</code>는 사용자가 TUI에서 하는 동작입니다. 이 창은 <code>category_of</code>의 변화만 읽습니다. 구슬·흔들림은 참고한 게임의 포획 장면 구조에서 가져온 연출이고 디자인은 새로 그렸습니다.</td></tr>
         <tr><td>도감</td><td>종 = agent 4 × 적성 4 = 16종. D 키나 📖 칩으로 패널을 엽니다. 종마다 오늘 본 세션 수 + 기록, 최고 직급, 5마리부터 ★ 보너스. 칠판에 "도감 n/16"을 적습니다.</td><td>agent는 제품에 있습니다. 적성은 <code>convo_log</code>의 마지막 도구에서 나옵니다(codex는 parser 확장, cursor는 없음). 날짜를 넘는 누적 기록은 새 저장이 필요합니다. 시안의 기록 값은 합성입니다.</td></tr>
-        <tr><td>카드의 마크다운</td><td>마지막 답변을 마크다운으로 그립니다. 코드 블록, 표, 중첩 목록, 굵게, 인라인 코드, 링크를 지원합니다. 선택지 줄(1 예 2 아니요)은 주황으로 강조합니다.</td><td>먼저 이스케이프하고 그다음에 마크다운을 해석합니다. 외부 아이콘(브랜드 배지)은 외부 요청 금지 조건 때문에 넣지 않습니다.</td></tr>
+        <tr><td>카드의 마크다운</td><td>마지막 답변을 마크다운으로 그립니다. 코드 블록, 표, 중첩 목록, 굵게, 인라인 코드, 링크를 지원합니다. 선택지 줄(1 예 2 아니요)은 주황으로 강조합니다.</td><td>먼저 이스케이프하고 그다음에 마크다운을 해석합니다. 링크는 글자 옆에 실제 호스트를 보여 줍니다. 외부 아이콘(브랜드 배지)은 외부 요청 금지 조건 때문에 넣지 않습니다.</td></tr>
         <tr><td>명패</td><td>첫 프롬프트 제목입니다.</td><td><code>Session.title</code>입니다. 제품에 있습니다.</td></tr>
         <tr><td>경과 시간</td><td>마지막 프롬프트 뒤 시간입니다. 세션이 실행 중이고 agent가 kiro나 cursor이면 now입니다.</td><td><code>last_prompt_at</code>입니다. codex와 claude만 값이 있습니다.</td></tr>
         <tr><td>먹이통과 짚 침대</td><td>idle이면 먹이통에서 먹습니다. idle이고 마지막 프롬프트 뒤 10분이 지났으면 짚 침대에서 잡니다. 침대 5개가 다 차면 먹이통에서 쉽니다.</td><td><strong>새 규칙.</strong> 제품에는 잠 규칙이 없습니다. <code>last_prompt_at</code>이 없는 kiro와 cursor는 자지 않습니다. handoff thread 안의 kiro·cursor는 thread의 값을 받으므로 잘 수 있습니다.</td></tr>
@@ -121,7 +121,7 @@ table{width:100%;border-collapse:collapse;font-size:12.5px;line-height:1.6}th,td
         <tr><td>카드의 마지막 답변</td><td>그 세션의 마지막 답변입니다.</td><td><code>convo_log</code>의 turn(claude·codex·kiro). <code>read_turns</code>는 있고, 이를 보여 주는 표면과 <code>[tool_use]</code>·<code>[tool_result]</code> 블록을 거르는 필터가 새로 필요합니다. cursor는 turn이 0개입니다.</td></tr>
         <tr><td>handoff 끈</td><td>handoff로 이어진 세션은 자기 작업장에서 일하는 동료입니다. 부모와 점선으로 이어지고 조금 작게 그립니다. 목록·대기열·카드에 나옵니다.</td><td><code>state.handoff_parent</code>입니다. 제품에 있습니다.</td></tr>
         <tr><td>동료 현황 목록, 대기열, N</td><td>오른쪽 목록이 동료마다 상태를 한 문장으로 말합니다. 아래 대기열은 나를 기다리는 동료를 줄 세웁니다. ✓ done과 종료가 먼저, 그다음 ! blocked입니다. 7개가 넘으면 +N으로 줄입니다. N을 누를 때마다 다음 동료로 넘어갑니다.</td><td>목록의 <code>status_rank</code>에서 done이 blocked보다 앞입니다. 목록은 24시간 기준 그룹을 먼저 나누지만, 이 시안은 그룹을 쓰지 않습니다.</td></tr>
-        <tr><td>고래 간판</td><td>MindPlayer 마스코트를 거점 뒤쪽 왼쪽 모퉁이의 나무 간판에 새깁니다.</td><td><code>mascot.rs</code> 색</td></tr>
+        <tr><td>고래 간판</td><td>MindPlayer 마스코트를 거점 뒤쪽 꼭짓점 옆의 나무 간판에 새깁니다.</td><td><code>mascot.rs</code> 색</td></tr>
       </tbody>
     </table></div>
   </section>
@@ -469,7 +469,7 @@ const PROPS = {
     const c = iso(p.i + .5, p.j + .5, 0); for (const dx of [-24, 24]) { g.strokeStyle = K.ink; g.lineWidth = 3; g.beginPath(); g.moveTo(c.x + dx, c.y); g.lineTo(c.x + dx, c.y - 62); g.stroke(); }
     rrect(g, c.x - 32, c.y - 70, 64, 44, 3, '#8a5a33', K.ink, 2); rrect(g, c.x - 28, c.y - 66, 56, 36, 2, '#2f4f3a', K.ink, 1.2);
     const ls = (typeof sessions !== 'undefined' ? sessions : []).filter(s => !s.gone), nx = typeof nextSession === 'function' ? nextSession() : null;
-    g.fillStyle = '#eef7e8'; g.font = `800 7.5px ${FONT}`; g.textAlign = 'left'; g.textBaseline = 'top';
+    g.fillStyle = '#eef7e8'; g.font = `800 8.5px ${FONT}`; g.textAlign = 'left'; g.textBaseline = 'top';
     g.fillText(`동료 ${ls.length} · 일 ${ls.filter(s => s.status === 'working').length} · 기다림 ${ls.filter(s => s.status === 'blocked').length}`, c.x - 25, c.y - 63);
     g.fillText(nx ? `다음 ▶ ${trunc(nx.title, 44, g)}` : '다음 ▶ 없음', c.x - 25, c.y - 52); g.fillText(`끝남 ${ls.filter(s => s.status === 'done' || s.status === 'ended').length} · 쉼 ${ls.filter(s => s.status === 'idle').length} · 도감 ${typeof dex === 'function' ? dex().filter(r => r.known).length : 0}/16`, c.x - 25, c.y - 41); },
   stairs(g, p, t, w) { // three steps from the ground up to the gate on the plateau's front edge
@@ -611,7 +611,8 @@ function freeSpot(w, room) {
   const open = (room.spots || []).find(sp => !taken.some(t => t[0] === sp[0] && t[1] === sp[1])); if (open) return open;
   for (const r of Object.values(w.rooms)) if (r !== room) for (const sp of r.spots || []) taken.push([sp[0], sp[1], null]); // other stations keep their listed spots
   const ex = {i:Math.floor(w.exitStep.i), j:Math.floor(w.exitStep.j)}, reach = (i, j) => bfs(w, {i, j}, ex).reached, extra = room.zone ? pickSpots(w, room.zone, 1, taken, reach) : []; if (extra[0]) return extra[0];
-  const aisle = (i, j) => zoneAt(i, j) === null && reach(i, j); return pickSpots(w, {i0:PL.i0, j0:PL.j0, w:PL.i1 - PL.i0, d:PL.j1 - PL.j0}, 1, taken, aisle)[0] || null; } // a full zone spills into the aisles only
+  const z = room.zone, ring = z ? {i0:Math.max(PL.i0, z.i0 - 1), j0:Math.max(PL.j0, z.j0 - 1), w:Math.min(PL.i1, z.i0 + z.w + 1) - Math.max(PL.i0, z.i0 - 1), d:Math.min(PL.j1, z.j0 + z.d + 1) - Math.max(PL.j0, z.j0 - 1)} : {i0:PL.i0, j0:PL.j0, w:PL.i1 - PL.i0, d:PL.j1 - PL.j0};
+  const aisle = (i, j) => zoneAt(i, j) === null && reach(i, j); return pickSpots(w, ring, 1, taken, aisle)[0] || null; } // a full zone spills only into the aisle ring around it
 function buildWorld() {
   const sc = SCENES[sceneIdx]; sessions = makeSessions();
   const w = {sc, props:[], seats:[], rooms:{}, ground:{}, plateau:PL, elev:44, flash:null, use:{}, rng:mulberry(DAY * 7 + sceneIdx)};
@@ -632,7 +633,8 @@ function validateWorld() { const w = world, bad = [];
   for (const [k, r] of Object.entries(w.rooms)) { if (r.need && (r.spots || []).length < r.need) bad.push(`station ${k} has ${(r.spots || []).length}/${r.need} spots`);
     for (const [i, j] of r.spots || []) { if (!walkable(w, i, j)) bad.push(`station ${k} spot (${i},${j})`); if (zoneAt(i, j) !== r.zone) bad.push(`station ${k} spot (${i},${j}) outside its zone`); } }
   for (const b of w.seats) if (zoneAt(b.i, b.j) !== w.rooms.bed.zone) bad.push(`bed (${b.i},${b.j}) outside the bed zone`);
-  for (const s of sessions) { if (s.gone || s.walking || s.pod || isWild(s) || s.capture) continue; const z = zoneAt(Math.floor(s.pos.i), Math.floor(s.pos.j)), own = (w.rooms[s.place] || {}).zone; if (z && own && z !== own) bad.push(`${s.title} stands in the ${z.key} zone but belongs to ${s.place}`);
+  for (const s of sessions) { if (s.gone || s.walking || s.pod || isWild(s) || s.capture) continue; const si = Math.floor(s.pos.i), sj = Math.floor(s.pos.j), z = zoneAt(si, sj), own = (w.rooms[s.place] || {}).zone; if (z && own && z !== own) bad.push(`${s.title} stands in the ${z.key} zone but belongs to ${s.place}`);
+    if (!z && own && (si < own.i0 - 1 || si > own.i0 + own.w || sj < own.j0 - 1 || sj > own.j0 + own.d)) bad.push(`${s.title} stands in an aisle far from its ${s.place} zone`);
     if (Math.floor(s.pos.i) === Math.floor(w.exitStep.i) && Math.floor(s.pos.j) === Math.floor(w.exitStep.j)) bad.push(`${s.title} blocks the terminal step`); }
   if (!walkable(w, Math.floor(w.exitStep.i), Math.floor(w.exitStep.j))) bad.push('terminal step');
   for (const s of sessions) { if (!isWild(s) || s.gone || s.capture) continue; const i = Math.floor(s.pos.i), j = Math.floor(s.pos.j); if (!landOutside(w, i, j) && !(i === RAMP.i && j === RAMP.j)) bad.push(`wild ${s.title} is not on land outside (${i},${j})`); }
@@ -657,7 +659,7 @@ const canvas = document.getElementById('scene'), stage = document.getElementById
 let W = 0, Hc = 0, DPR = 1;
 function resize() { const r = stage.getBoundingClientRect(); DPR = Math.min(2, window.devicePixelRatio || 1); W = r.width; Hc = r.height; canvas.width = W * DPR; canvas.height = Hc * DPR; canvas.style.width = W + 'px'; canvas.style.height = Hc + 'px'; fit(true); }
 function bounds() { const pts = [iso(0, M), iso(0, 0, 90), iso(N, 0, 90), iso(N, M)]; return {x0:Math.min(...pts.map(p => p.x)) - 10, x1:Math.max(...pts.map(p => p.x)) + 10, y0:Math.min(...pts.map(p => p.y)) - 10, y1:Math.max(...pts.map(p => p.y)) + 24}; }
-function fit(now) { if (!world || !W) return; const b = bounds(), avail = Hc - 104, z = Math.min(W / (b.x1 - b.x0), avail / (b.y1 - b.y0)) * 1.08; const t = {z, x:W / 2 - (b.x0 + b.x1) / 2 * z - 40, y:54 + avail / 2 - (b.y0 + b.y1) / 2 * z}; if (now) { cam = t; camTarget = null; } else camTarget = t; }
+function fit(now) { if (!world || !W) return; const b = bounds(), avail = Hc - 104, z = Math.min(W / (b.x1 - b.x0), avail / (b.y1 - b.y0)) * 1.08; const t = {z, x:W / 2 - (b.x0 + b.x1) / 2 * z - 40, y:54 + avail / 2 - (b.y0 + b.y1) / 2 * z}; fitZ = z; if (now) { cam = t; camTarget = null; } else camTarget = t; }
 function focusOn(s) { const p = screenOf(s), z = Math.max(cam.z, 1.5); camTarget = {z, x:W * .36 - p.x * z, y:Hc * .58 - (p.y - 30) * z}; }
 function objects() {
   const w = world, list = [], add = (o, draw) => list.push({i0:o.i, i1:o.i + (o.w || .4), j0:o.j, j1:o.j + (o.d || .4), draw});
@@ -687,18 +689,19 @@ function render() {
   for (let j = PL.j0; j < PL.j1; j++) for (let i = PL.i0; i < PL.i1; i++) { const pts = [iso(i, j), iso(i + 1, j), iso(i + 1, j + 1), iso(i, j + 1)], z = zoneAt(i, j); if (z) FLOOR[z.floor](ctx, i, j, pts); else poly(ctx, pts, sc.ground(i, j), 'rgba(0,0,0,.06)', 1); }
   for (const z of ZONES) { zoneBorder(ctx, z); const c = iso(z.i0 + z.w / 2, z.j0 + z.d / 2); ctx.save(); ctx.globalAlpha = .28; ctx.font = `900 46px ${FONT}`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillStyle = '#1f2430'; ctx.fillText(z.icon, c.x, c.y); ctx.restore(); }
   for (const p of w.props) if (p.type === 'palisade') PROPS.palisade(ctx, p, T);
+  outsideLabels(w, 'lines');
   for (const o of objects()) o.draw();
   for (const s of sessions) { if (s.parent == null || s.gone) continue; const p = sessions[s.parent]; if (!p || p.gone) continue; tether(ctx, screenOf(p), screenOf(s), AG[p.agent].color, T); }
   for (const s of sessions) { if (s.gone || s.walking || (s.capture && s.capture.phase !== 'fly')) continue; const p = screenOf(s), top = p.y - 74 * CS;
-    ctx.font = `800 10.5px ${FONT}`; pill(ctx, p.x, p.y - 58 * CS, trunc(s.title, 70, ctx), {size:10.5, bg:'rgba(20,24,34,.85)', fg:'#f4f1e8', stroke:'rgba(255,255,255,.55)', lw:1.4, bar:CATS[s.cat].color, padX:6, r:6});
+    ctx.font = `800 10.5px ${FONT}`; pill(ctx, p.x, p.y + (s.pod ? 10 : 16), trunc(s.title, 70, ctx), {size:10.5, bg:'rgba(20,24,34,.85)', fg:'#f4f1e8', stroke:'rgba(255,255,255,.55)', lw:1.4, bar:CATS[s.cat].color, padX:6, r:6});
     if (!isAsleep(s)) bubble(ctx, p.x, top, s.status, T + s.seed, s.status === 'working' ? 'typing' : null);
-    headFx(ctx, s, p.x, p.y, T, CS); if (s.hover) reaction(ctx, s, p.x, p.y, T, CS);
+    if (!s.pod) headFx(ctx, s, p.x, p.y, T, CS); if (s.hover) reaction(ctx, s, p.x, p.y, T, CS);
     if (s.compactDone) pill(ctx, p.x, top - 30, `🧹 정리 완료 · ${Math.min(99, (s.ctx || 40) + 30)}%→${s.ctx ?? 18}%`, {size:11, bg:'#eaf7ee', fg:'#1f5a36', stroke:'#2f9a5f'});
     if (s.status === 'ended' && s.saidAt && performance.now() < s.saidAt) pill(ctx, p.x, top - 30, farewell(s), {size:11, bg:'#f4f1e8', fg:'#14161f', stroke:K.ink});
-    if (s.hover && s.status === 'working' && s.tool) pill(ctx, p.x, top - 28, `${JOB[s.tool].icon} ${JOB[s.tool].ko} · ${JOB[s.tool].label}`, {size:11, bg:'#14161f', fg:'#f4f1e8', stroke:'#f4f1e8'}); }
+    if (s.hover && s.status === 'working' && s.tool) pill(ctx, p.x, top - 54, `${JOB[s.tool].icon} ${JOB[s.tool].ko} · ${JOB[s.tool].label}`, {size:11, bg:'#14161f', fg:'#f4f1e8', stroke:'#f4f1e8'}); }
   if (selected && !selected.gone) { const p = screenOf(selected), cy = p.y - 26 * CS; ctx.save(); ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 2.6; ctx.setLineDash([7, 5]); ctx.lineDashOffset = -T * 20; ctx.beginPath(); ctx.ellipse(p.x, cy, 32 * CS, 40 * CS, 0, 0, Math.PI * 2); ctx.stroke(); ctx.restore(); glow(ctx, p.x, cy, 50 * CS, '#ffffff', .14); }
   captureFx(w);
-  outsideLabels(w);
+  outsideLabels(w, 'boxes');
   { const p = iso(w.exit.i + .5, w.exit.j + .5, 96); pill(ctx, p.x, p.y, '⏏ 거점 단말', {size:11, bg:'rgba(20,24,34,.8)', fg:'#f4f1e8', stroke:'rgba(255,255,255,.5)', lw:1.2}); }
 }
 // capture: the sphere flies from the terminal, the companion shrinks into it, it wobbles three times, then bursts and the companion reappears on the ramp
@@ -709,23 +712,28 @@ function captureFx(w) { const now = performance.now(); for (const s of sessions)
     else if (c.phase === 'burst') { const b = screenOf(s); for (let n = 0; n < 8; n++) { const a = n * Math.PI / 4, d = 10 + el * .08; star(ctx, b.x + Math.cos(a) * d, b.y - 20 + Math.sin(a) * d * .6, 5, n % 2 ? '#ffd24a' : '#ffffff', K.ink); } pill(ctx, b.x, b.y - 60, `포획! ${CATS[c.cat].name}`, {size:12, bg:'#fff3c4', fg:'#14161f', stroke:K.ink});
       if (el >= 600 || reduce) { s.cat = c.cat; s.capture = null; s.pos = {i:RAMP.i + .5, j:RAMP.j + .5}; s.place = 'ramp'; const st = stationFor(s), r = world.rooms[st === 'bed' ? 'feedbox' : st], sp = freeSpot(world, r); if (sp) walkTo(s, {i:sp[0] + .5, j:sp[1] + .5}, () => { s.place = st === 'bed' ? 'feedbox' : st; }); else s.place = st; updateHud(); } }
   } }
-function outsideLabels(w) { // screen space: labels along the top margin, staggered, joined by elbows; every line is drawn before any box
+let fitZ = 1;
+function outsideLabels(w, pass) { // screen space: labels in the margin below the HUD chips and left of the list, staggered; lines go under the objects, boxes on top; hidden once zoomed in
+  if (cam.z > fitZ * 1.25) return;
   const items = ZONES.map(z => ({text:`${z.icon} ${z.label}`, wp:iso(z.i0 + .5, z.j0 + .5, 0)})).map(it => ({...it, sx:it.wp.x * cam.z + cam.x, sy:it.wp.y * cam.z + cam.y})).sort((a, b) => a.sx - b.sx);
-  const left = 16, right = Math.max(left + 200, W - (W > 900 ? 340 : 16)), gap = (right - left) / items.length;
+  const sr = stage.getBoundingClientRect(), br = baseEl.getBoundingClientRect(), listLeft = br.width && br.top - sr.top < sr.height / 2 ? br.left - sr.left - 10 : W - 16, top = hud.offsetHeight + 14;
+  const left = 16, right = Math.max(left + 200, listLeft), gap = (right - left) / items.length;
   ctx.save(); ctx.setTransform(DPR, 0, 0, DPR, 0, 0); ctx.font = `800 12px ${FONT}`;
-  items.forEach((it, k) => { it.bw = ctx.measureText(it.text).width + 18; it.bx = Math.min(right - it.bw, left + gap * k + Math.max(0, (gap - it.bw) / 2)); it.by = 64 + (k % 2) * 26; });
-  for (const it of items) { ctx.strokeStyle = 'rgba(20,24,34,.55)'; ctx.lineWidth = 1.6; ctx.setLineDash([3, 3]); ctx.beginPath(); ctx.moveTo(it.sx, it.sy); ctx.lineTo(it.sx, it.by + 30); ctx.lineTo(it.bx + it.bw / 2, it.by + 30); ctx.lineTo(it.bx + it.bw / 2, it.by + 22); ctx.stroke(); ctx.setLineDash([]); ellipse(ctx, it.sx, it.sy, 3, 3, '#f4f1e8', K.ink, 1.4); }
-  for (const it of items) { rrect(ctx, it.bx, it.by, it.bw, 22, 5, 'rgba(255,248,230,.96)', '#6a4a2a', 1.6); ctx.fillStyle = '#3a2a14'; ctx.textAlign = 'left'; ctx.textBaseline = 'middle'; ctx.fillText(it.text, it.bx + 9, it.by + 12); }
+  items.forEach((it, k) => { it.bw = ctx.measureText(it.text).width + 18; it.bx = Math.min(right - it.bw, left + gap * k + Math.max(0, (gap - it.bw) / 2)); it.by = top + (k % 2) * 26; });
+  if (pass === 'lines') for (const it of items) { ctx.strokeStyle = 'rgba(20,24,34,.55)'; ctx.lineWidth = 1.6; ctx.setLineDash([3, 3]); ctx.beginPath(); ctx.moveTo(it.sx, it.sy); ctx.lineTo(it.sx, it.by + 30); ctx.lineTo(it.bx + it.bw / 2, it.by + 30); ctx.lineTo(it.bx + it.bw / 2, it.by + 22); ctx.stroke(); ctx.setLineDash([]); ellipse(ctx, it.sx, it.sy, 3, 3, '#f4f1e8', K.ink, 1.4); }
+  else for (const it of items) { rrect(ctx, it.bx, it.by, it.bw, 22, 5, 'rgba(255,248,230,.96)', '#6a4a2a', 1.6); ctx.fillStyle = '#3a2a14'; ctx.textAlign = 'left'; ctx.textBaseline = 'middle'; ctx.fillText(it.text, it.bx + 9, it.by + 12); }
   ctx.restore();
 }
 // a small markdown renderer for the card: escape first, then fences, tables, lists, inline marks and links
 function md(src) { const lines = esc(src).split('\n'), out = []; let i = 0;
-  const inline = s => s.replace(/`([^`]+)`/g, '<code>$1</code>').replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>').replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+  const inline = s => { const codes = []; s = s.replace(/`([^`]+)`/g, (_, c) => { codes.push(c); return `\u0000${codes.length - 1}\u0000`; });
+    s = s.replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>').replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, (_, text, url) => { let host = ''; try { host = new URL(url).host; } catch (e) { host = ''; } return `<a href="${url}" target="_blank" rel="noopener">${text}</a><small class="host">(${host})</small>`; });
+    return s.replace(/\u0000(\d+)\u0000/g, (_, k) => `<code>${codes[+k]}</code>`); };
   while (i < lines.length) { const l = lines[i];
     if (l.startsWith('```')) { const buf = []; i++; while (i < lines.length && !lines[i].startsWith('```')) buf.push(lines[i++]); i++; out.push(`<pre>${buf.join('\n')}</pre>`); continue; }
     if (/^\|.*\|$/.test(l) && i + 1 < lines.length && /^\|[\s:|-]+\|$/.test(lines[i + 1])) { const cells = r => r.slice(1, -1).split('|').map(c => inline(c.trim())); const head = cells(l); i += 2; const rows = []; while (i < lines.length && /^\|.*\|$/.test(lines[i])) rows.push(cells(lines[i++])); out.push(`<table><thead><tr>${head.map(c => `<th>${c}</th>`).join('')}</tr></thead><tbody>${rows.map(r => `<tr>${r.map(c => `<td>${c}</td>`).join('')}</tr>`).join('')}</tbody></table>`); continue; }
-    if (/^\s*[-*] /.test(l)) { const items = []; while (i < lines.length && /^\s*[-*] /.test(lines[i])) { const depth = lines[i].match(/^\s*/)[0].length; items.push({depth, text:inline(lines[i].replace(/^\s*[-*] /, ''))}); i++; } const build = (start, depth) => { let html = '<ul>', n = start; while (n < items.length && items[n].depth >= depth) { if (items[n].depth > depth) { const [sub, next] = build(n, items[n].depth); html = html.endsWith('</li>') ? html.slice(0, -5) + sub + '</li>' : html + sub; n = next; } else { html += `<li>${items[n].text}</li>`; n++; } } return [html + '</ul>', n]; }; out.push(build(0, items[0].depth)[0]); continue; }
-    if (/^\d+ .+ {2,}\d+ /.test(l) || /^\d+ \S/.test(l)) { out.push(`<p class="choices">${inline(l)}</p>`); i++; continue; }
+    if (/^\s*[-*] /.test(l)) { const items = []; while (i < lines.length && /^\s*[-*] /.test(lines[i])) { const depth = lines[i].match(/^\s*/)[0].length; items.push({depth, text:inline(lines[i].replace(/^\s*[-*] /, ''))}); i++; } const build = (start, depth) => { let html = '<ul>', n = start; while (n < items.length && items[n].depth >= depth) { if (items[n].depth > depth) { const [sub, next] = build(n, items[n].depth); html = html.endsWith('</li>') ? html.slice(0, -5) + sub + '</li>' : html + sub; n = next; } else { html += `<li>${items[n].text}</li>`; n++; } } return [html + '</ul>', n]; }; let n = 0, html = ''; while (n < items.length) { const [h, next] = build(n, items[n].depth); html += h; n = next; } out.push(html); continue; }
+    if (/^\d+ \S.*\s{2,}\d+ \S/.test(l)) { out.push(`<p class="choices">${inline(l)}</p>`); i++; continue; }
     if (l.trim() === '') { i++; continue; }
     out.push(`<p>${inline(l)}</p>`); i++; }
   return out.join(''); }
@@ -750,20 +758,21 @@ function updateHud() { const focusRow = document.activeElement && document.activ
   baseEl.querySelectorAll('.bi-row').forEach(b => b.onclick = () => openCard(sessions[+b.dataset.k]));
   if (focusRow != null) { const b = baseEl.querySelector(`.bi-row[data-k="${focusRow}"]`); if (b) b.focus(); }
   document.getElementById('b-dex').onclick = () => toggleDex();
+  const qh = queueEl.offsetHeight + 24; card.style.bottom = qh + 'px'; if (innerWidth <= 900) baseEl.style.bottom = qh + 'px';
   const sr = document.getElementById('sr'), text = ls.map(s => `${s.title} ${sentence(s)}`).join(', '); if (sr.textContent !== text) sr.textContent = text; }
 const dexEl = document.getElementById('dex');
 function toggleDex(on) { const open = on ?? !dexEl.classList.contains('open'); dexEl.classList.toggle('open', open); if (!open) return; const rows = dex();
   dexEl.innerHTML = `<button class="x" type="button" aria-label="닫기">✕</button><h4>📖 도감 · ${rows.filter(r => r.known).length}/16 종</h4><p class="sub">종 = agent × 적성(마지막 도구). 숫자는 오늘 본 세션 + 기록. 5마리부터 보너스.</p><div class="cells">${rows.map(r => `<div class="cell${r.known ? '' : ' unknown'}"><b>${AG[r.agent].species} · ${JOB[r.job].ko}</b><small>${r.known ? `${r.total}마리${r.today ? ` (오늘 ${r.today})` : ''} · 최고 ${r.best}단계${r.bonus ? ' · ★ 보너스' : ''}` : '미발견'}</small></div>`).join('')}</div><p class="src">출처: agent는 제품에 있습니다. 적성은 convo_log의 마지막 도구에서 나옵니다(codex는 parser 확장, cursor는 없음). 날짜를 넘는 누적은 새 저장이 필요합니다.</p>`;
   dexEl.querySelector('.x').onclick = () => toggleDex(false); }
-function openCard(s, refresh) { selected = s; const st = ST[s.status], ag = AG[s.agent], reply = s.agent === 'cursor' ? null : s.reply, job = s.tool ? JOB[s.tool] : null;
+function openCard(s, refresh) { selected = s; const hadFocus = refresh && card.contains(document.activeElement); const st = ST[s.status], ag = AG[s.agent], reply = s.agent === 'cursor' ? null : s.reply, job = s.tool ? JOB[s.tool] : null;
   card.innerHTML = `<button class="x" type="button" aria-label="닫기">✕</button><h3>${esc(s.title)}</h3>
    <div class="meta"><span class="badge" style="background:${st.color}">${st.g} ${st.label}</span><b style="color:${ag.color}">▌${ag.species} · ${ag.name}</b> · ${esc(CATS[s.cat].name)} · ${when(s)}${s.parent != null ? ` · handoff ← ${esc(sessions[s.parent].title)}` : ''}</div>
-   <div class="apt">${s.status === 'working' ? (job ? `<span>${job.icon} ${job.ko}</span>` : '<span>도구 기록 없음 → 작업대</span>') : '<span>지금은 일하지 않음</span>'}<small>마지막 도구 기준</small></div>
+   <div class="apt">${s.status === 'working' ? (job ? `<span>${job.icon} ${job.ko}</span>` : '<span>도구 기록 없음 → 작업대</span>') + '<small>마지막 도구 기준</small>' : '<span>지금은 일하지 않음</span>'}</div>
    <div class="grid"><span>상태</span><span>${esc(sentence(s))}</span><span>context</span><span>${s.ctx == null ? '미측정' : s.ctx + '%' + (ctxTier(s.ctx) ? ' · 머리 복잡 ' + ctxTier(s.ctx) + '단계' : '')}${s.compacting ? ' · 압축 중' : ''}${s.compactions ? ' · 압축 ' + s.compactions + '회' : ''}</span><span>직급·근속</span><span>${rankOf(s.tools)}단계 (도구 ${s.tools.toLocaleString()}회) · ${s.hours < 1 ? Math.round(s.hours * 60) + '분' : s.hours < 48 ? Math.round(s.hours) + '시간' : Math.round(s.hours / 24) + '일'}${ageOf(s.hours) ? ' · 연륜 ' + ageOf(s.hours) + '단계' : ''}</span><span>usage</span><span>${esc(s.usage)}</span><span>account</span><span>${esc(s.account)}</span><span>id</span><span>${esc(s.id)}</span><span>위치</span><span>${esc(placeName(s))}</span></div>
    <div class="reply">${reply ? md(reply) : 'cursor 세션은 convo_log에 대화 turn이 없습니다.'}</div>
    <div class="src">마지막 답변: ${reply ? 'convo_log의 마지막 assistant turn입니다. read_turns는 있고, 이를 보여 주는 표면과 [tool_use]·[tool_result] 블록을 거르는 필터가 새로 필요합니다.' : 'cursor는 turn이 0개입니다.'}${s.agent === 'codex' && s.tool ? ' codex 도구 호출은 parser 확장이 필요합니다.' : ''}</div>
    <div class="hintline">이 창은 읽기 전용입니다. 답장은 MindPlayer 목록에서 이 세션을 고르고 <kbd>Enter</kbd>로 pane에 들어가서 합니다.</div>`;
-  card.classList.add('open'); card.querySelector('.x').onclick = closeCard; if (!refresh) focusOn(s); updateHud(); }
+  card.classList.add('open'); card.querySelector('.x').onclick = closeCard; if (hadFocus) card.querySelector('.x').focus(); if (!refresh) focusOn(s); updateHud(); }
 function closeCard() { card.classList.remove('open'); selected = null; if (world) updateHud(); }
 // ---------- input ----------
 let drag = null;
@@ -784,7 +793,7 @@ canvas.addEventListener('dblclick', () => { closeCard(); fit(false); });
 const help = document.getElementById('help');
 function toggleHelp(on) { help.classList.toggle('open', on ?? !help.classList.contains('open')); }
 stage.addEventListener('keydown', e => { if (e.metaKey || e.ctrlKey || e.altKey) return; const k = /^Key[A-Z]$/.test(e.code) ? e.code.slice(3).toLowerCase() : /^Digit\d$/.test(e.code) ? e.code.slice(5) : e.key;
-  const reply = card.querySelector('.reply'); if (reply && (k === 'j' || k === 'k' || k === 'PageDown' || k === 'PageUp')) { e.preventDefault(); card.scrollBy(0, (k === 'j' ? 48 : k === 'k' ? -48 : k === 'PageDown' ? 240 : -240)); return; }
+  if (card.classList.contains('open') && (k === 'j' || k === 'k' || k === 'PageDown' || k === 'PageUp')) { e.preventDefault(); card.scrollBy(0, (k === 'j' ? 48 : k === 'k' ? -48 : k === 'PageDown' ? 240 : -240)); return; }
   if (k === '?' || (e.shiftKey && e.code === 'Slash')) { e.preventDefault(); toggleHelp(); return; }
   if (k === 'd') { e.preventDefault(); toggleDex(); return; }
   if (k === 'n') { const s = nextSession(); if (s) { e.preventDefault(); openCard(s); } } else if (k === '0') { e.preventDefault(); closeCard(); fit(false); } else if (k === 'Escape') { if (help.classList.contains('open')) toggleHelp(false); else if (dexEl.classList.contains('open')) toggleDex(false); else closeCard(); } });
@@ -794,14 +803,14 @@ document.getElementById('b-fit').onclick = () => { closeCard(); fit(false); };
 document.getElementById('b-reset').onclick = () => { closeCard(); buildWorld(); updateHud(); live.textContent = '초기화했습니다.'; };
 document.getElementById('b-start').onclick = () => { const s = sessions.find(x => x.status === 'idle' && !x.walking && !x.gone && !isWild(x)); if (!s) { live.textContent = '쉬는 동료가 없습니다.'; return; }
   const from = placeName(s), sp = freeSpot(world, world.rooms.bench);
-  if (sp && walkTo(s, {i:sp[0] + .5, j:sp[1] + .5}, () => { s.place = 'bench'; })) { s.status = 'working'; s.tool = s.agent === 'cursor' ? null : 'edit'; s.mins = null; updateHud(); live.textContent = `"${s.title}" 쉬는 중 → 일하는 중: ${from}에서 작업대로 갑니다.`; } else live.textContent = '경로가 없습니다.'; };
+  if (sp && walkTo(s, {i:sp[0] + .5, j:sp[1] + .5}, () => { s.place = 'bench'; })) { s.status = 'working'; s.tool = s.agent === 'cursor' ? null : 'edit'; s.mins = null; updateHud(); live.textContent = `"${s.title}" 쉬는 중 → 일하는 중: ${from}에서 작업대로 갑니다.`; } else live.textContent = sp ? '경로가 없습니다.' : '빈 자리가 없습니다.'; };
 document.getElementById('b-catch').onclick = () => { const s = sessions.find(x => isWild(x) && !x.capture && !x.gone); if (!s) { live.textContent = '야생 동료가 없습니다.'; return; }
   const cat = s.parent != null && sessions[s.parent].cat !== 'none' ? sessions[s.parent].cat : s.agent === 'claude' ? 'probe' : 'infra'; s.path = []; s.walking = false; s.capture = {phase:'fly', t0:performance.now(), cat}; updateHud(); live.textContent = `"${s.title}"에 category "${CATS[cat].name}"를 붙입니다: 구슬이 날아갑니다.`; };
 document.getElementById('b-release').onclick = () => { const s = sessions.find(x => !isWild(x) && !x.walking && !x.capture && !x.gone && !x.pod && x.status !== 'ended'); if (!s) { live.textContent = '내보낼 동료가 없습니다.'; return; }
   if (walkTo(s, {i:RAMP.i + .5, j:RAMP.j + .5}, () => { s.cat = 'none'; s.place = 'wild'; const to = wildTile(world, s); if (to) walkTo(s, to, () => { s.place = 'wild'; }, outsidePred(world)); updateHud(); })) { live.textContent = `"${s.title}"의 category를 해제합니다: 문으로 나가 들판으로 돌아갑니다.`; } else live.textContent = '경로가 없습니다.'; };
 document.getElementById('b-end').onclick = () => { const s = sessions.find(x => x.status === 'done' && !x.gone && !x.walking && !isWild(x)); if (!s) { live.textContent = '끝난 동료가 없습니다.'; return; }
   const sp = freeSpot(world, world.rooms.terminal);
-  if (sp && walkTo(s, {i:sp[0] + .5, j:sp[1] + .5}, () => { s.place = 'terminal'; s.saidAt = performance.now() + 25000; world.flash = performance.now() + 600; })) { s.status = 'ended'; updateHud(); live.textContent = `"${s.title}" 끝남 → 종료: 거점 단말 앞으로 가서 마지막 화면을 보관합니다. 목록 순위는 끝남과 같습니다.`; } else live.textContent = '경로가 없습니다.'; };
+  if (sp && walkTo(s, {i:sp[0] + .5, j:sp[1] + .5}, () => { s.place = 'terminal'; s.saidAt = performance.now() + 25000; world.flash = performance.now() + 600; })) { s.status = 'ended'; updateHud(); live.textContent = `"${s.title}" 끝남 → 종료: 거점 단말 앞으로 가서 마지막 화면을 보관합니다. 목록 순위는 끝남과 같습니다.`; } else live.textContent = sp ? '경로가 없습니다.' : '빈 자리가 없습니다.'; };
 // ---------- character sheet ----------
 const sheet = document.getElementById('sheet'), sg = sheet.getContext('2d'); let sheetHover = -1;
 const SHEET = [['working', 'work', '● 일하는 중 · 작업장'], ['blocked', 'wave', '! 나를 기다림 · 단말 앞'], ['done', 'carry', '✓ 끝남 · 납품'], ['idle', 'eat', '○ 쉬는 중 · 먹이통'], ['asleep', 'sleep', '○ 잠듦 · 짚 침대 (10분+)'], ['walk', 'walk', '이동 · 종료하면 단말로']];

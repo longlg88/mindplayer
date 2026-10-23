@@ -378,6 +378,9 @@ fn run(terminal: &mut Terminal<CrosstermBackend<FrameSink>>, app: &mut App) -> R
                 needs_draw = true;
             }
             if last_refresh.elapsed() >= Duration::from_secs(3) {
+                if app.reload_accounts_if_changed() {
+                    needs_draw = true;
+                }
                 app.start_refresh();
                 // Account fetches enforce their own slower cadence and 429 backoff.
                 app.spawn_limits_fetch();

@@ -582,6 +582,10 @@ pub struct App {
     /// The logins available per provider. Always holds the one this machine
     /// already had, so a pane can always be started.
     pub(crate) accounts: Vec<mindplayer_core::accounts::Account>,
+    /// The list as this MindPlayer last read or wrote `accounts.json`, which tells another MindPlayer's save apart from this one's edits.
+    pub(crate) accounts_base: Vec<mindplayer_core::accounts::Account>,
+    /// The home whose `accounts.json` this MindPlayer reads and writes.
+    pub(crate) accounts_home: PathBuf,
     /// Startup account preference; an explicit Accounts selection clears it.
     pub(crate) preferred_codex_home: Option<PathBuf>,
     /// The Accounts screen, while it is open.
@@ -693,6 +697,8 @@ impl App {
         // to an index up front (an unknown id falls back to the default).
         let state_path = mindplayer_core::state::default_state_path();
         let state = State::load_from(&state_path);
+        let accounts_home = accounts_home_for_app();
+        let accounts = mindplayer_core::accounts::load_accounts(&accounts_home);
         let convo_dir = convo_dir_for_app();
         let walker_choice = resolve_walker(state.walker.as_deref());
         App {
@@ -790,7 +796,9 @@ impl App {
             pane_accounts: HashMap::new(),
             unusable_waiting: Vec::new(),
             quota_cache: mindplayer_core::limits::load_quota_cache(&limits_home_for_app(), BUILD),
-            accounts: mindplayer_core::accounts::load_accounts(&limits_home_for_app()),
+            accounts: accounts.clone(),
+            accounts_base: accounts,
+            accounts_home,
             preferred_codex_home: std::env::var_os("CODEX_HOME").map(PathBuf::from),
             accounts_panel: None,
             limits_started: None,
@@ -1247,6 +1255,20 @@ fn status_label(status: SessionStatus) -> &'static str {
         SessionStatus::Idle => "idle",
         SessionStatus::Ended => "ended",
         SessionStatus::Inactive => "inactive",
+    }
+}
+
+/// Where `accounts.json` lives; under `cargo test` each App gets its own unless a test names one, so one test's save never merges into another's list.
+fn accounts_home_for_app() -> PathBuf {
+    if cfg!(test) && std::env::var_os("MINDPLAYER_LIMITS_HOME").is_none() {
+        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        std::env::temp_dir().join(format!(
+            "mindplayer-test-accounts-{}-{n}",
+            std::process::id()
+        ))
+    } else {
+        limits_home_for_app()
     }
 }
 

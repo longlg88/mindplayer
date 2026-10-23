@@ -182,6 +182,13 @@ fn failure_hint(app: &App, row: &mindplayer_core::limits::QuotaRow) -> Option<(S
         FailureKind::Temporary => (format!("temporarily unavailable · {}", retry()), DIM),
         FailureKind::RateLimited => (format!("rate limited · {}", retry()), DIM),
         FailureKind::Unsupported => ("usage not available for this account".to_string(), DIM),
+        FailureKind::NotInstalled => (
+            format!(
+                "{} not installed · reinstall it, or press u then d to hide",
+                row.agent.program()
+            ),
+            ZOOM,
+        ),
         FailureKind::Unreadable => (
             format!("can't read {} output · details: u", row.agent.program()),
             ZOOM,

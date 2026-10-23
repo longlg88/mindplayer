@@ -1,6 +1,6 @@
 {
   "scope": "offline standalone HTML synthetic interactions, not native runtime proof",
-  "verifiedAt": "2026-10-23T14:41:32.359Z",
+  "verifiedAt": "2026-10-23T14:47:48.396Z",
   "html": "2026-10-23-office-view-gallery.ko.html",
   "test": "../tests/office-view-gallery.test.cjs",
   "result": "passed",
@@ -44,13 +44,13 @@
   "pageErrors": 0,
   "consoleErrors": 0,
   "providerCalls": 0,
-  "sourceSha256Before": "71299f3c740693ec26cb5d89075a298b9d8551aa64d74a35803d9f52bb829ada",
-  "sourceSha256After": "71299f3c740693ec26cb5d89075a298b9d8551aa64d74a35803d9f52bb829ada",
+  "sourceSha256Before": "9e3d9e649b402e10858b5f8b4e9dcd22352c0b6cbda73396fa67a375e9074bfd",
+  "sourceSha256After": "9e3d9e649b402e10858b5f8b4e9dcd22352c0b6cbda73396fa67a375e9074bfd",
   "cleanup": {
     "browser": true,
     "server": true
   },
-  "diagnosticReceipt": "<os-tmpdir>/mindplayer-office-qa-BCqjSG/validation.json",
+  "diagnosticReceipt": "<os-tmpdir>/mindplayer-office-qa-SkCoxt/validation.json",
   "notVerified": [
     "A live MindPlayer state feed (the read-only 127.0.0.1 GET is a plan)",
     "Collecting the last tool for every session (codex needs a parser extension)",

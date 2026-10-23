@@ -56,6 +56,9 @@ none  = docs, chore, ci, test, style
 
 ### Unreleased
 
+- Add the session base-camp view draft (`docs/plans/2026-10-23-office-view-gallery.ko.html`):
+  read-only companions on a daily terrain with fenced stations, category capture
+  and a species dex, with an offline interaction test.
 - Keep Codex's addressed viewport and cursor stable while reflowing history on
   resize, resize embedded PTYs before the first zoom/layout draw, honor history
   purge and synchronized presentation, and clamp restored cursors after shrink.

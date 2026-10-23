@@ -72,7 +72,7 @@ ul.plain{margin:0;padding-left:18px;font-size:12.5px;line-height:1.75}
       <li>도구별 방 이동(자료실, 작업실, 통화 부스): 도구 기록은 Trace를 켠 pane 하나만 읽습니다. kiro와 cursor는 Trace가 읽지 않습니다.</li>
       <li>도구 횟수로 정하는 직급과 왕관: 도구 횟수를 세는 코드가 없습니다.</li>
       <li>context가 찰수록 복잡해지는 머리: <code>context_pct</code>는 kiro만 기록합니다. 다른 agent는 값이 없습니다.</li>
-      <li>서브에이전트와 부모를 잇는 끈: 모든 agent에 공통인 부모 연결이 없습니다. handoff 연결과 kiro의 <code>parent_session_id</code>만 있습니다.</li>
+      <li>서브에이전트와 부모를 잇는 끈: 모든 agent에 공통인 부모 연결이 없습니다. handoff 연결만 있습니다. kiro 파일에는 <code>parent_session_id</code>가 있지만 MindPlayer는 저장하지 않습니다.</li>
       <li>압축 횟수 상자: 압축 횟수를 세는 코드가 없습니다.</li>
       <li>idle이 시작된 뒤의 시간: 이 시안은 그 시각을 쓰지 않습니다. 잠자기는 마지막 프롬프트 뒤 시간으로 정합니다. 이 값이 없는 kiro와 cursor는 자지 않습니다.</li>
     </ul>
@@ -326,7 +326,7 @@ function listItems() {
 function drawList(term, c0, w, h, opts) {
   const ls = sim.sessions, items = listItems();
   border(term, c0, 0, w, h, opts.focused ? K.accent : K.dim, ` Sessions · recent first · active (${items.filter(i => i.kind !== 'band').length}) `);
-  const inner = w - 2, maxTitle = Math.max(12, inner - 39 - (inner >= 56 ? 11 : 0));
+  const inner = w - 2, maxTitle = Math.max(12, w - 39 - (w >= 58 ? 11 : 0));
   let r = 1;
   for (const it of items) {
     const sel = it.kind === 's' && it.idx === opts.selected; const c = c0 + 1;
@@ -341,7 +341,7 @@ function drawList(term, c0, w, h, opts) {
       x = term.put(x, r, '   ', null, bg); if (s.cat) x = term.put(x, r, '│ ', fgOr(K.category), bg);
       x = term.put(x, r, st.badge + ' ', fgOr(st.color), bg, st.bold || sel); x = term.put(x, r, '▌', fgOr(ag.color), bg, true); x = term.put(x, r, ag.tag + ' ', fgOr(ag.color), bg, true);
       x = term.put(x, r, when(s).padStart(4) + ' ', fgOr(K.dim), bg, sel); x = term.put(x, r, '  ', null, bg);
-      x = term.put(x, r, truncChars(s.title, maxTitle), fgOr(K.fg), bg, sel); if (inner >= 56) x = term.put(x, r, '  ' + s.id, fgOr(K.idGreen), bg, sel); term.put(x, r, '  ' + s.usage, fgOr(K.dim), bg, sel); }
+      x = term.put(x, r, truncChars(s.title, maxTitle), fgOr(K.fg), bg, sel); if (w >= 58) x = term.put(x, r, '  ' + s.id, fgOr(K.idGreen), bg, sel); term.put(x, r, '  ' + s.usage, fgOr(K.dim), bg, sel); }
     r++;
   }
   return r; // first free row inside the panel
@@ -515,7 +515,7 @@ document.getElementById('b-end').onclick = () => { liveEl.textContent = !transit
   : stripDraft() ? '"운영 문서 정리" done → ended: 띠의 오른쪽 끝으로 나갑니다' : '"운영 문서 정리" done → ended: EXIT 매트로 나갑니다'; };
 document.getElementById('b-away').onclick = () => { sim.saver = true; render(); liveEl.textContent = '5분 동안 입력 없음 → 사무실 화면'; };
 document.getElementById('b-reset').onclick = () => selectDraft(draft);
-window.__office = {get frame() { return lastFrame; }, get sim() { return sim; }, selectDraft, tick:n => { for (let k = 0; k < n; k++) tickLoop(); }, pause:() => { clearInterval(timer); timer = null; }, SPR, DRAFTS, LAYOUTS, COLS, ROWS, reduce};
+window.__office = {get frame() { return lastFrame; }, get sim() { return sim; }, selectDraft, tick:n => { for (let k = 0; k < n; k++) tickLoop(); }, pause:() => { clearInterval(timer); timer = null; }, SPR, WHALE_FRAME, DRAFTS, LAYOUTS, COLS, ROWS, reduce};
 selectDraft(0); startLoop();
 })();
 </script>

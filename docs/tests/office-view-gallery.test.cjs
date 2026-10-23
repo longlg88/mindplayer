@@ -98,7 +98,11 @@ async function main() {
         const page_ = rustSprites(), spr = await office(() => window.__office.SPR);
         assert.deepEqual(spr.walkers.map(w => ({ id: w.id, frames: w.frames, sit: w.sit, sleep: w.sleep })), page_.walkers);
         assert.deepEqual(spr.whale.rows, page_.whale);
-        result.spritesMatchRustSource = true; result.passed.push('six walker characters and the first mascot variant equal walker.rs / mascot.rs pixel rows');
+        const blink = await office(() => [window.__office.WHALE_FRAME(0).rows, window.__office.WHALE_FRAME(2).rows]);
+        assert.deepEqual(blink[1], page_.whale, 'open-eye frame equals mascot.rs');
+        const changed = []; blink[0].forEach((row, r) => [...row].forEach((ch, c) => { if (ch !== page_.whale[r][c]) changed.push([r, c, ch]); }));
+        assert.deepEqual(changed, [[6, 5, 'A'], [6, 6, 'A']], 'blink closes exactly mascot.rs eye cells (6,5) and (6,6)');
+        result.spritesMatchRustSource = true; result.passed.push('six walker characters and the first mascot variant equal walker.rs / mascot.rs pixel rows; blink closes only the mascot.rs eye cells');
 
         result.proposals = await page.locator('.tab').count(); assert.equal(result.proposals, 5);
         result.syntheticSessions = (await sim()).sessions.length; assert.equal(result.syntheticSessions, 7);

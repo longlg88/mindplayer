@@ -18,11 +18,11 @@
   - 04 기억 아카이브: 큐브 서가 벽과 모노리스.
   - 05 자가 조립 공장: 컨베이어, 로봇 팔, 용광로.
 - 시안 5개가 같은 것: 캐릭터 4종(agent 색), 머리 위 상태 기호(`pane_dot`), 상단 칩, 대기열과 N, 카드, 확대·이동.
-- 데이터는 category, agent, `SessionStatus`, `title`, `last_prompt_at`, `convo_log`의 마지막 답변, handoff 연결을 쓴다.
+- 데이터는 category, agent, `SessionStatus`, `title`, `last_prompt_at`, `convo_log`의 마지막 답변, handoff 끈을 쓴다.
   - 잠(새 규칙): idle이고 마지막 프롬프트 뒤 10분이 지났으면 잔다. kiro와 cursor는 자지 않는다.
   - 방 이동(도구별): claude와 kiro는 `convo_log`에 도구 이름이 있다. codex는 도구 호출을 저장하지 않으므로 새 수집이 필요하다.
   - 카드의 마지막 답변: `convo_log` turn을 읽는 코드는 새로 필요하다. cursor는 turn이 0개다.
-  - 대기열과 N: `status_rank` 순서(ended·done 다음 blocked)다. N을 누를 때마다 다음 세션으로 넘어간다.
+  - 대기열과 N: `status_rank`에서 done이 blocked보다 앞이다. 목록의 24시간 그룹은 쓰지 않는다. N을 누를 때마다 다음 세션으로 넘어간다.
 - 경계: 카드에 답장·멈춤·키 전송 버튼이 없다. hook 설치, tmux `send-keys`, 파일 서버를 쓰지 않는다.
   실시간 연결은 미구현 계획이다(127.0.0.1의 읽기 전용 GET).
 - Visual language의 "no decorative art" 원칙과 충돌한다. 구현 전에 예외 승인이 필요하다.

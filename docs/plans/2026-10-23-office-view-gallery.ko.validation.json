@@ -1,60 +1,56 @@
 {
   "scope": "offline standalone HTML synthetic interactions, not native runtime proof",
-  "verifiedAt": "2026-10-23T09:23:48.640Z",
+  "verifiedAt": "2026-10-23T10:28:17.607Z",
   "html": "2026-10-23-office-view-gallery.ko.html",
   "test": "../tests/office-view-gallery.test.cjs",
   "result": "passed",
-  "passedContracts": 16,
+  "passedContracts": 14,
   "checked": [
-    "inline syntax, no network/storage APIs, no external URLs",
-    "six walker characters and the first mascot variant equal walker.rs / mascot.rs pixel rows; blink closes only the mascot.rs eye cells",
-    "five distinct proposals, each with a current-screen reconstruction and no office in it",
-    "every draft at 4 ticks: no text cell overlap, plates never cover a character, room stays in its area, each session shows its own status glyph",
-    "01/02: list selection moves the highlighted desk plate",
-    "03: o opens and closes the office (also ㅐ on a Korean layout), Esc returns, arrows move desks, Enter is synthetic only",
-    "04: seven desks in pane order, focused pane and desk move together",
-    "05: a modifier-only key keeps the away screen, the next key leaves it without moving the list, away button returns",
-    "Tab exits the terminal surface",
-    "no-preference: idle → working walks to the chair, done → ended leaves, a repeated click reports the current state, in all five drafts",
-    "viewport 1440: no document overflow, fixed cell terminal scrolls inside its frame",
-    "viewport 1280: no document overflow, fixed cell terminal scrolls inside its frame",
-    "viewport 768: no document overflow, fixed cell terminal scrolls inside its frame",
-    "viewport 390: no document overflow, fixed cell terminal scrolls inside its frame",
-    "viewport 320: no document overflow, fixed cell terminal scrolls inside its frame",
-    "reduce: idle → working walks to the chair, done → ended leaves, a repeated click reports the current state, in all five drafts"
+    "inline syntax, no network/storage APIs, no external URLs, no franchise names",
+    "five distinct scenes; every seat aisle, room spot, exit and desk path is walkable and no two standing AIs share a screen box",
+    "control: the crowding check fails when two standing AIs share a spot",
+    "N walks the queue in status_rank order and the first chip always names the N target; the card is read-only; ㅜ works as N",
+    "card shows convo_log replies for claude/codex/kiro and states that cursor has none",
+    "hover marks the AI under the pointer and shows its tooltip",
+    "after a vertical pan, 0 brings the camera back on x, y and zoom",
+    "Tab leaves the stage",
+    "no-preference: in all five scenes an idle AI walks to its console and a done AI leaves through the exit",
+    "viewport 1440: no document overflow, sheet and stage keep their size",
+    "viewport 1280: no document overflow, sheet and stage keep their size",
+    "viewport 768: no document overflow, sheet and stage keep their size",
+    "viewport 390: no document overflow, sheet and stage keep their size",
+    "reduce: in all five scenes an idle AI walks to its console and a done AI leaves through the exit"
   ],
-  "keyboardEvents": 12,
-  "proposals": 5,
-  "syntheticSessions": 7,
+  "keyboardEvents": 6,
+  "scenes": 5,
+  "syntheticSessions": 24,
   "motionModes": [
     "no-preference",
     "reduce"
   ],
-  "spritesMatchRustSource": true,
   "viewportWidths": [
     1440,
     1280,
     768,
-    390,
-    320
+    390
   ],
   "documentOverflow": 0,
   "externalRequests": 0,
   "pageErrors": 0,
   "consoleErrors": 0,
   "providerCalls": 0,
-  "sourceSha256Before": "66a06b491f64c393e6f5cf12d00960283ddc567142c12cd518309fa1d62905bd",
-  "sourceSha256After": "66a06b491f64c393e6f5cf12d00960283ddc567142c12cd518309fa1d62905bd",
+  "sourceSha256Before": "f21d8a41a6fd130fdfe109951d43fd793641275daf3de5007cb116703d9354f4",
+  "sourceSha256After": "f21d8a41a6fd130fdfe109951d43fd793641275daf3de5007cb116703d9354f4",
   "cleanup": {
     "browser": true,
     "server": true
   },
-  "diagnosticReceipt": "<os-tmpdir>/mindplayer-office-qa-UPh8xh/validation.json",
+  "diagnosticReceipt": "<os-tmpdir>/mindplayer-office-qa-oPwATs/validation.json",
   "notVerified": [
-    "Real ratatui rendering and redraw cost",
-    "Small real terminals and fonts with other Hangul widths",
-    "Key collisions for the draft-only o key in the real TUI",
-    "Layout for more than seven desks",
-    "Screen-reader behaviour"
+    "A live MindPlayer state feed (the read-only 127.0.0.1 GET is a plan)",
+    "Collecting the last tool for every session",
+    "Rendering cost with real session counts above 24",
+    "Screen-reader behaviour of the canvas scene",
+    "The key that opens this window from MindPlayer"
   ]
 }

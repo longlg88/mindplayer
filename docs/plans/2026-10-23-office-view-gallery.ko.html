@@ -45,6 +45,8 @@ h1{font-size:29px;letter-spacing:-1px;line-height:1.35;margin:12px 0 7px}
 .card .src{font-size:11px;color:#7e8595;margin:6px 0 10px}
 .card .hintline{margin-top:12px;font-size:12px;color:#aab0bd;border-top:1px solid #2c3247;padding-top:10px}
 .card .hintline kbd{font:700 11px ui-monospace,Menlo,monospace;border:1px solid #4a5272;border-radius:4px;padding:0 5px;color:#e8ebf2}
+.dex{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);width:min(640px,92%);max-height:86%;overflow:auto;background:#171a26;border:2px solid #3a415c;border-radius:14px;color:#d4d8e1;padding:16px 18px;display:none;z-index:5}.dex.open{display:block}.dex h4{margin:0 0 6px;font-size:15px}.dex .sub,.dex .src{font-size:12px;color:#aab0bd;margin:4px 0}.dex .cells{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin:10px 0}.dex .cell{background:#0f121b;border:1px solid #2c3247;border-radius:10px;padding:8px 10px;display:flex;flex-direction:column;gap:3px}.dex .cell b{font-size:12.5px}.dex .cell small{font-size:11px;color:#c4c9d4}.dex .cell.unknown{opacity:.45}.dex .x{position:absolute;right:10px;top:8px;background:none;border:0;color:#aab0bd;font-size:18px}
+.chip.btn{cursor:pointer;font:inherit}
 .help{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);width:min(440px,90%);background:#171a26;border:2px solid #3a415c;border-radius:14px;color:#d4d8e1;padding:16px 18px;display:none;z-index:5}.help.open{display:block}.help h4{margin:0 0 10px;font-size:15px}.help dl{display:grid;grid-template-columns:auto 1fr;gap:6px 14px;margin:0;font-size:13px}.help dt{font:700 12px ui-monospace,Menlo,monospace;color:#ffe9b0}.help p{margin:12px 0 0;font-size:12px;color:#aab0bd}
 .card .reply pre{background:#060810;border:1px solid #2c3247;border-radius:8px;padding:8px 10px;overflow:auto;font-size:12px}.card .reply code{background:#232838;border-radius:4px;padding:0 4px;font-size:12px}.card .reply table{border-collapse:collapse;margin:6px 0;font-size:12px}.card .reply th,.card .reply td{border:1px solid #2c3247;padding:3px 8px}.card .reply ul{margin:4px 0;padding-left:18px}.card .reply a{color:#7ea2f7}.card .reply p{margin:4px 0}.card .reply .choices{color:#ffb783;font-weight:700}
 .baseinfo{position:absolute;right:14px;top:58px;width:300px;max-height:calc(100% - 130px);overflow:auto;background:rgba(14,18,28,.82);border:1.5px solid rgba(255,255,255,.35);border-radius:10px;color:#eef1f6;padding:6px;backdrop-filter:blur(2px)}
@@ -84,11 +86,12 @@ table{width:100%;border-collapse:collapse;font-size:12.5px;line-height:1.6}th,td
         <div class="queue" id="queue" aria-label="나를 기다리는 세션"></div>
         <aside class="baseinfo" id="baseinfo" aria-label="동료 현황"></aside>
         <aside class="card" id="card" aria-live="polite"></aside>
-        <div class="help" id="help" role="dialog" aria-label="단축키"><h4>단축키 · 읽기 전용</h4><dl><dt>N</dt><dd>다음 동료 카드 (✓ 끝남·○ 종료 먼저, 그다음 ! 기다림)</dd><dt>0 · 더블클릭</dt><dd>전체 보기</dd><dt>j / k · PgUp / PgDn</dt><dd>카드 스크롤</dd><dt>Esc</dt><dd>카드·도움말 닫기</dd><dt>?</dt><dd>이 도움말</dd><dt>휠 · 드래그</dt><dd>확대 · 이동</dd></dl><p>한글 자판에서도 같은 키 위치로 동작합니다 (ㅜ = N). 답장·멈춤·키 전송은 없습니다.</p></div>
+        <div class="dex" id="dex" role="dialog" aria-label="도감"></div>
+        <div class="help" id="help" role="dialog" aria-label="단축키"><h4>단축키 · 읽기 전용</h4><dl><dt>N</dt><dd>다음 동료 카드 (✓ 끝남·○ 종료 먼저, 그다음 ! 기다림)</dd><dt>0 · 더블클릭</dt><dd>전체 보기</dd><dt>j / k · PgUp / PgDn</dt><dd>카드 스크롤</dd><dt>Esc</dt><dd>카드·도움말 닫기</dd><dt>D</dt><dd>도감 (종 = agent × 적성)</dd><dt>?</dt><dd>이 도움말</dd><dt>휠 · 드래그</dt><dd>확대 · 이동</dd></dl><p>한글 자판에서도 같은 키 위치로 동작합니다 (ㅜ = N). 답장·멈춤·키 전송은 없습니다.</p></div>
         <div class="tip" id="tip"></div>
       </div>
     </div>
-    <div class="trybar" id="keys"><span>체험</span><button type="button" id="b-next">N 다음 세션</button><button type="button" id="b-fit">0 전체 보기</button><button type="button" id="b-help">? 단축키</button><button type="button" id="b-start">예시 재생: 쉬는 동료가 일을 시작</button><button type="button" id="b-end">예시 재생: 끝난 동료가 종료되어 단말 앞으로</button><button type="button" id="b-reset">초기화</button><span class="live" id="live" aria-live="polite">휠 확대 · 드래그 이동 · 더블클릭 전체 보기 · 동료 클릭 = 카드</span></div>
+    <div class="trybar" id="keys"><span>체험</span><button type="button" id="b-next">N 다음 세션</button><button type="button" id="b-fit">0 전체 보기</button><button type="button" id="b-help">? 단축키</button><button type="button" id="b-catch">예시 재생: 야생 동료에 category 붙이기 (포획)</button><button type="button" id="b-release">예시 재생: category 해제 (방생)</button><button type="button" id="b-start">예시 재생: 쉬는 동료가 일을 시작</button><button type="button" id="b-end">예시 재생: 끝난 동료가 종료되어 단말 앞으로</button><button type="button" id="b-reset">초기화</button><span class="live" id="live" aria-live="polite">휠 확대 · 드래그 이동 · 더블클릭 전체 보기 · 동료 클릭 = 카드</span></div>
     <p class="sr" id="sr" aria-live="polite"></p>
   </section>
   <section class="retained" aria-labelledby="data-title">
@@ -108,6 +111,8 @@ table{width:100%;border-collapse:collapse;font-size:12.5px;line-height:1.6}th,td
         <tr><td>직급과 연륜</td><td>도구 사용 횟수가 100 / 500 / 2,000 / 5,000 / 10,000을 넘을 때마다 직급이 오르고 왕관이 커집니다. 근속이 1 / 3 / 7일을 넘으면 흰머리, 수염, 지팡이가 생깁니다.</td><td>근속은 <code>Session.started_at</code>으로 잴 수 있습니다. 도구 횟수는 MindPlayer에 없어 새 수집이 필요합니다. 시안의 값은 합성입니다.</td></tr>
         <tr><td>뒤통수</td><td>화면 위쪽(멀어지는 쪽)으로 걸을 때는 얼굴 대신 뒤통수를 보입니다. 좌우로 걸을 때는 몸을 뒤집습니다.</td><td>그리기 규칙입니다.</td></tr>
         <tr><td>칠판</td><td>단말 광장 뒤쪽 칠판에 동료 수, 일하는 중, 기다림, "다음 ▶ 누구", 끝남·쉼을 적습니다. 상단 칩, 대기열, N 키와 같은 함수에서 값을 받습니다.</td><td>참고한 사무실 사양의 상황판입니다. 값은 이 페이지의 집계입니다.</td></tr>
+        <tr><td>야생과 포획</td><td>category가 없는 세션은 목책 밖 들판(지형의 땅)을 돌아다닙니다. MindPlayer에서 그 세션에 category를 붙이면 단말에서 구슬이 날아가고, 동료가 구슬에 들어가 세 번 흔들린 뒤 "포획!"과 함께 문 앞 계단에 나타나 들어옵니다. category를 해제하면 문으로 나가 들판으로 돌아갑니다(방생).</td><td><code>state.assign_category</code>·<code>clear_category</code>는 사용자가 TUI에서 하는 동작입니다. 이 창은 <code>category_of</code>의 변화만 읽습니다. 구슬·흔들림은 참고한 게임의 포획 장면 구조에서 가져온 연출이고 디자인은 새로 그렸습니다.</td></tr>
+        <tr><td>도감</td><td>종 = agent 4 × 적성 4 = 16종. D 키나 📖 칩으로 패널을 엽니다. 종마다 오늘 본 세션 수 + 기록, 최고 직급, 5마리부터 ★ 보너스. 칠판에 "도감 n/16"을 적습니다.</td><td>agent는 제품에 있습니다. 적성은 <code>convo_log</code>의 마지막 도구에서 나옵니다(codex는 parser 확장, cursor는 없음). 날짜를 넘는 누적 기록은 새 저장이 필요합니다. 시안의 기록 값은 합성입니다.</td></tr>
         <tr><td>카드의 마크다운</td><td>마지막 답변을 마크다운으로 그립니다. 코드 블록, 표, 중첩 목록, 굵게, 인라인 코드, 링크를 지원합니다. 선택지 줄(1 예 2 아니요)은 주황으로 강조합니다.</td><td>먼저 이스케이프하고 그다음에 마크다운을 해석합니다. 외부 아이콘(브랜드 배지)은 외부 요청 금지 조건 때문에 넣지 않습니다.</td></tr>
         <tr><td>명패</td><td>첫 프롬프트 제목입니다.</td><td><code>Session.title</code>입니다. 제품에 있습니다.</td></tr>
         <tr><td>경과 시간</td><td>마지막 프롬프트 뒤 시간입니다. 세션이 실행 중이고 agent가 kiro나 cursor이면 now입니다.</td><td><code>last_prompt_at</code>입니다. codex와 claude만 값이 있습니다.</td></tr>
@@ -151,7 +156,7 @@ const AG = {codex:{name:'codex', species:'펭귄', color:'#7ea2f7'}, claude:{nam
 const ST = {working:{g:'●', label:'working', ko:'일하는 중', color:K.working}, blocked:{g:'!', label:'blocked', ko:'나를 기다림', color:K.waiting},
   done:{g:'✓', label:'done', ko:'끝남', color:K.completed}, idle:{g:'○', label:'idle', ko:'쉬는 중', color:K.idle}, ended:{g:'○', label:'ended', ko:'종료', color:K.ended}};
 const CATS = {status:{name:'상태 페이지', color:'#b48ead'}, infra:{name:'인프라 변경', color:'#a3be8c'}, mp:{name:'mindplayer', color:'#88c0d0'},
-  probe:{name:'조사', color:'#ebcb8b'}, cost:{name:'비용', color:'#d08770'}, none:{name:'uncategorized', color:'#8c94a2'}};
+  probe:{name:'조사', color:'#ebcb8b'}, cost:{name:'비용', color:'#d08770'}, none:{name:'야생 (category 없음)', color:'#8c94a2'}};
 // last tool → job aptitude → station
 const JOB = {read:{key:'gather', ko:'채집', icon:'🌿', station:'field', label:'📖 파일 읽기'}, shell:{key:'mine', ko:'채굴', icon:'⛏', station:'quarry', label:'$ 명령 실행'},
   mcp:{key:'carry', ko:'운반', icon:'📦', station:'depot', label:'☎ 외부 도구'}, edit:{key:'craft', ko:'수작업', icon:'🔨', station:'bench', label:'✎ 편집'}};
@@ -177,16 +182,18 @@ const RAW = [
  ['probe','claude','working','mcp',8,'알림 규칙 점검','알림 규칙 일부가 no-data 상태입니다.\n\n```\nrule-a  no-data\nrule-b  ok\n```'],
  ['probe','codex','blocked',null,12,'복구 검증','복구 범위를 넓힐까요?\n1 예   2 아니요'],
  ['probe','cursor','idle',null,null,'로그인 경로 확인','포털별 로그인 URL 표를 만들었습니다.'],
- ['probe','claude','working','shell',3,'로그 볼륨 확인','송신량을 지표로 확인하고 있습니다.'],
+ ['probe','claude','working','shell',3,'로그 볼륨 확인','송신량을 지표로 확인하고 있습니다.',15],
  ['cost','codex','working','read',11,'일별 비용 비교','지난주 일별 비용을 비교하고 있습니다.'],
  ['cost','claude','done',null,6,'압축 절감 추정','전체 압축 적용 시 월 절감액을 추정했습니다.'],
  ['cost','codex','idle',null,31,'단가 표','리전별 처리 단가 표를 만들었습니다.'],
- ['none','claude','blocked',null,15,'구독 정리','구독 계정을 정리할까요?\n1 예   2 아니요',16],
+ ['none','claude','blocked',null,15,'구독 정리','구독 계정을 정리할까요?\n1 예   2 아니요'],
  ['none','codex','working','edit',1,'메모리 정리','메모리 색인을 정리하고 있습니다.']];
 // per-session extras (synthetic): [context %, tool uses, tenure hours, compactions, compacting now, compaction just finished]
-const EXTRA = {0:[52, 640, 5, 1], 1:[68, 2300, 30, 2], 2:[30, 120, 1, 0], 3:[83, 90, 2, 0], 4:[20, 70, 0.5, 0], 5:[91, 5400, 80, 4, true], 6:[45, 410, 9, 1], 7:[72, 1800, 26, 2],
-  8:[35, 260, 3, 0], 9:[null, 60, 1, 0], 10:[58, 980, 12, 1], 11:[66, 3100, 175, 3, false, true], 12:[88, 12000, 400, 6], 13:[40, 30, 0.3, 0], 14:[76, 520, 6, 1], 15:[49, 150, 2, 0], 16:[93, 7800, 200, 5],
-  17:[null, 20, 0.2, 0], 18:[61, 700, 10, 1], 19:[54, 330, 4, 0], 20:[27, 90, 1, 0], 21:[70, 2600, 75, 2], 22:[64, 1300, 50, 1], 23:[33, 110, 0.7, 0]};
+const EXTRA = {0:[52, 640, 5, 1], 1:[68, 2300, 30, 2, false, false, 'edit'], 2:[30, 120, 1, 0, false, false, 'edit'], 3:[83, 90, 2, 0], 4:[20, 70, 0.5, 0, false, false, 'read'], 5:[91, 5400, 80, 4, true], 6:[45, 410, 9, 1], 7:[72, 1800, 26, 2, false, false, 'shell'],
+  8:[35, 260, 3, 0, false, false, 'read'], 9:[null, 60, 1, 0], 10:[58, 980, 12, 1, false, false, 'shell'], 11:[66, 3100, 175, 3, false, true], 12:[88, 12000, 400, 6, false, false, 'mcp'], 13:[40, 30, 0.3, 0, false, false, 'edit'], 14:[76, 520, 6, 1], 15:[49, 150, 2, 0], 16:[93, 7800, 200, 5, false, false, 'mcp'],
+  17:[null, 20, 0.2, 0], 18:[61, 700, 10, 1], 19:[54, 330, 4, 0], 20:[27, 90, 1, 0, false, false, 'read'], 21:[70, 2600, 75, 2, false, false, 'read'], 22:[64, 1300, 50, 1, false, false, 'mcp'], 23:[33, 110, 0.7, 0]};
+// sessions seen on earlier days per species (synthetic; the product would need to keep this tally)
+const DEX_HISTORY = {'codex:edit':4, 'codex:read':3, 'codex:shell':2, 'claude:mcp':3, 'claude:read':1, 'kiro:shell':1, 'claude:edit':2};
 const RANKS = [100, 500, 2000, 5000, 10000];
 const rankOf = n => RANKS.filter(t => n >= t).length;
 const ctxTier = p => p == null ? 0 : p >= 90 ? 4 : p >= 80 ? 3 : p >= 65 ? 2 : p >= 50 ? 1 : 0;
@@ -464,12 +471,19 @@ const PROPS = {
     const ls = (typeof sessions !== 'undefined' ? sessions : []).filter(s => !s.gone), nx = typeof nextSession === 'function' ? nextSession() : null;
     g.fillStyle = '#eef7e8'; g.font = `800 7.5px ${FONT}`; g.textAlign = 'left'; g.textBaseline = 'top';
     g.fillText(`동료 ${ls.length} · 일 ${ls.filter(s => s.status === 'working').length} · 기다림 ${ls.filter(s => s.status === 'blocked').length}`, c.x - 25, c.y - 63);
-    g.fillText(nx ? `다음 ▶ ${trunc(nx.title, 44, g)}` : '다음 ▶ 없음', c.x - 25, c.y - 52); g.fillText(`끝남 ${ls.filter(s => s.status === 'done' || s.status === 'ended').length} · 쉼 ${ls.filter(s => s.status === 'idle').length}`, c.x - 25, c.y - 41); },
+    g.fillText(nx ? `다음 ▶ ${trunc(nx.title, 44, g)}` : '다음 ▶ 없음', c.x - 25, c.y - 52); g.fillText(`끝남 ${ls.filter(s => s.status === 'done' || s.status === 'ended').length} · 쉼 ${ls.filter(s => s.status === 'idle').length} · 도감 ${typeof dex === 'function' ? dex().filter(r => r.known).length : 0}/16`, c.x - 25, c.y - 41); },
+  stairs(g, p, t, w) { // three steps from the ground up to the gate on the plateau's front edge
+    const h = (w && w.elev) || 44; for (let k = 0; k < 3; k++) { const z0 = h * k / 3, z1 = h * (k + 1) / 3, j0 = p.j + 1 - (k + 1) / 3, j1 = p.j + 1 - k / 3;
+      const a = iso(p.i, j1, z0), b = iso(p.i + 1, j1, z0), c = iso(p.i + 1, j1, z1), d = iso(p.i, j1, z1), e = iso(p.i, j0, z1), f = iso(p.i + 1, j0, z1);
+      poly(g, [a, b, c, d], '#8d7a63', K.ink, 1.6); poly(g, [d, c, f, e], '#c9b58f', K.ink, 1.6); } },
+  sphere(g, x, y, r, rot) { g.save(); g.translate(x, y); g.rotate(rot); g.beginPath(); g.arc(0, 0, r, Math.PI, 0); g.fillStyle = volume(g, 0, -r * .3, r, '#7ea2f7'); g.fill(); g.beginPath(); g.arc(0, 0, r, 0, Math.PI); g.fillStyle = volume(g, 0, r * .3, r, '#f4f1e8'); g.fill();
+    g.beginPath(); g.arc(0, 0, r, 0, Math.PI * 2); g.lineWidth = 2; g.strokeStyle = K.ink; g.stroke(); g.beginPath(); g.moveTo(-r, 0); g.lineTo(r, 0); g.lineWidth = 2.4; g.stroke(); ellipse(g, 0, 0, r * .28, r * .28, '#ffffff', K.ink, 1.6); g.restore(); },
   sign(g, p, t) { const b = iso(p.i + .5, p.j + .5, 0); g.strokeStyle = K.ink; g.lineWidth = 2.4; g.beginPath(); g.moveTo(b.x, b.y); g.lineTo(b.x, b.y - 30); g.stroke(); whaleSign(g, b.x, b.y - 48, .7); },
 };
 // ---------- the base: one plateau layout shared by every draft; the biome around it differs ----------
 const N = 30, M = 24, PL = {i0:4, i1:26, j0:3, j1:21};
 const inPlateau = (i, j) => i >= PL.i0 && i < PL.i1 && j >= PL.j0 && j < PL.j1;
+const GATE_I = 17, RAMP = {i:GATE_I, j:PL.j1}; // the ramp tile sits on the ground just outside the gate
 const P = (w, type, i, j, wd = 1, dd = 1, extra = {}) => { const p = {type, i, j, w:wd, d:dd, ...extra}; w.props.push(p); return p; };
 // the day decides the terrain and shuffles the decor outside the palisade
 const DAY = Math.floor(Date.now() / 864e5), DAY_LABEL = new Date().toISOString().slice(0, 10);
@@ -510,7 +524,8 @@ function buildBase(w) {
   w.exit = P(w, 'terminal', 13, 11); P(w, 'campfire', 16, 13); P(w, 'flag', 10, 9); P(w, 'board', 17, 9);
   P(w, 'spring', 22, 3, 2, 2); P(w, 'sign', 5, 4); P(w, 'lantern', 4, 19); P(w, 'lantern', 9, 20); P(w, 'lantern', 24, 7);
   P(w, 'palisade', PL.i0, PL.j0 - .5, PL.i1 - PL.i0, 0); P(w, 'palisade', PL.i0 - .5, PL.j0, 0, PL.j1 - PL.j0); P(w, 'gate', 17, PL.j1 - .5);
-  w.blocked = new Set(); for (const o of [...w.props, ...w.seats]) { if (o.type === 'palisade') continue; for (let i = Math.floor(o.i); i < Math.ceil(o.i + o.w); i++) for (let j = Math.floor(o.j); j < Math.ceil(o.j + o.d); j++) w.blocked.add(i + ',' + j); }
+  P(w, 'stairs', RAMP.i, RAMP.j);
+  w.blocked = new Set(); for (const o of [...w.props, ...w.seats]) { if (o.type === 'palisade' || o.type === 'gate' || o.type === 'stairs') continue; for (let i = Math.floor(o.i); i < Math.ceil(o.i + o.w); i++) for (let j = Math.floor(o.j); j < Math.ceil(o.j + o.d); j++) w.blocked.add(i + ',' + j); }
   const e = w.exit, step0 = [[e.i, e.j + 1], [e.i + 1, e.j], [e.i, e.j - 1], [e.i - 1, e.j]].find(([i, j]) => inPlateau(i, j) && !w.blocked.has(i + ',' + j)); w.exitStep = {i:step0[0] + .5, j:step0[1] + .5};
   const taken = w.seats.map(b => [b.i, b.j, 'bed']), stepKey = step0[0] + ',' + step0[1]; w.blocked.add(stepKey);
   const reach = (i, j) => { w.blocked.delete(stepKey); const ok = bfs(w, {i, j}, {i:step0[0], j:step0[1]}).reached; w.blocked.add(stepKey); return ok; }; // a spot boxed in by chests is no spot
@@ -581,11 +596,14 @@ function clouds(g, W, Hh, t, col) { for (let k = 0; k < 6; k++) { const cx = ((k
 function hills(g, W, Hh, a, b) { g.fillStyle = b; g.beginPath(); g.moveTo(0, Hh * .42); for (let x = 0; x <= W; x += 40) g.lineTo(x, Hh * .42 - Math.abs(Math.sin(x * .013)) * 70 - Math.abs(Math.sin(x * .031)) * 30); g.lineTo(W, Hh); g.lineTo(0, Hh); g.closePath(); g.fill(); g.fillStyle = a; g.beginPath(); g.moveTo(0, Hh * .5); for (let x = 0; x <= W; x += 40) g.lineTo(x, Hh * .5 - Math.abs(Math.sin(x * .017 + 1)) * 50); g.lineTo(W, Hh); g.lineTo(0, Hh); g.closePath(); g.fill(); }
 // ---------- simulation ----------
 let sceneIdx = 0, sessions = [], world = null, last = 0, T = 0, selected = null, cam = {x:0, y:0, z:1}, camTarget = null;
-function makeSessions() { return RAW.map((r, k) => ({k, cat:r[0], agent:r[1], status:r[2], tool:r[1] === 'cursor' ? null : r[3], mins:r[4], title:r[5], reply:r[6], parent:r[7] ?? null, seed:k * 7 % 11, ctx:r[1] === 'cursor' ? null : (EXTRA[k] || [])[0] ?? null, tools:(EXTRA[k] || [])[1] || 0, hours:(EXTRA[k] || [])[2] || 0, compactions:(EXTRA[k] || [])[3] || 0, compacting:!!(EXTRA[k] || [])[4], compactDone:!!(EXTRA[k] || [])[5], id:((0x1a2b3c4d + k * 0x9e3779b1) >>> 0).toString(16).padStart(8, '0'),
+function makeSessions() { return RAW.map((r, k) => ({k, cat:r[0], agent:r[1], status:r[2], tool:r[1] === 'cursor' ? null : r[3], mins:r[4], title:r[5], reply:r[6], parent:r[7] ?? null, seed:k * 7 % 11, job:r[1] === 'cursor' ? null : (r[3] || (EXTRA[k] || [])[6] || null), wander:mulberry(DAY * 31 + k), ctx:r[1] === 'cursor' ? null : (EXTRA[k] || [])[0] ?? null, tools:(EXTRA[k] || [])[1] || 0, hours:(EXTRA[k] || [])[2] || 0, compactions:(EXTRA[k] || [])[3] || 0, compacting:!!(EXTRA[k] || [])[4], compactDone:!!(EXTRA[k] || [])[5], id:((0x1a2b3c4d + k * 0x9e3779b1) >>> 0).toString(16).padStart(8, '0'),
   usage:r[1] === 'kiro' ? `ctx ${30 + k % 50}%` : r[1] === 'cursor' ? `~${8 + k}k tok` : `${40 + k * 9}k tok`, account:r[1] === 'codex' ? (k % 2 ? 'codex work' : 'codex side') : r[1] === 'claude' ? 'claude main' : '—',
   pos:null, path:[], walking:false, gone:false, hover:false, pod:null, place:null})); }
 TODAY_SCENE = Math.floor(mulberry(DAY)() * SCENES.length);
-const walkable = (w, i, j) => inPlateau(i, j) && !w.blocked.has(i + ',' + j);
+const landOutside = (w, i, j) => !inPlateau(i, j) && i >= 0 && i < N && j >= 0 && j < M && !w.blocked.has(i + ',' + j) && w.ground[i + ',' + j] !== 'water' && w.ground[i + ',' + j] !== 'lava';
+const walkable = (w, i, j) => (inPlateau(i, j) && !w.blocked.has(i + ',' + j)) || landOutside(w, i, j);
+const isWild = s => s.cat === 'none';
+const speciesKey = s => s.job ? `${s.agent}:${s.job}` : null;
 function stationFor(s) { if (s.status === 'blocked') return 'wait'; if (s.status === 'done') return 'deliver'; if (s.status === 'ended') return 'terminal'; if (s.status === 'working') return s.tool && JOB[s.tool] ? JOB[s.tool].station : 'bench'; return wantsSleep(s) ? 'bed' : 'feedbox'; }
 // a free standing spot of a station: an unused listed spot first, then any clear tile in the station's zone
 function freeSpot(w, room) {
@@ -597,36 +615,42 @@ function freeSpot(w, room) {
 function buildWorld() {
   const sc = SCENES[sceneIdx]; sessions = makeSessions();
   const w = {sc, props:[], seats:[], rooms:{}, ground:{}, plateau:PL, elev:44, flash:null, use:{}, rng:mulberry(DAY * 7 + sceneIdx)};
-  ELEV = (i, j) => inPlateau(Math.floor(i), Math.floor(j)) ? w.elev : 0;
+  ELEV = (i, j) => inPlateau(Math.floor(i), Math.floor(j)) ? w.elev : (Math.floor(i) === RAMP.i && j >= RAMP.j && j < RAMP.j + 1) ? w.elev * (RAMP.j + 1 - j) : 0;
   buildBase(w); sc.outside(w);
   const beds = w.seats.filter(p => p.type === 'bed'); let bedK = 0;
-  for (const s of sessions) { const st = stationFor(s);
+  for (const s of sessions) { if (isWild(s)) { s.place = 'wild'; s.pos = wildTile(w, s) || {i:RAMP.i + .5, j:RAMP.j + .5}; continue; } const st = stationFor(s);
     if (st === 'bed' && bedK < beds.length) { const bed = beds[bedK++]; bed.session = s; s.pod = bed; s.pos = {i:bed.i + .5, j:bed.j + .5}; s.place = 'bed'; continue; }
     const r = w.rooms[st === 'bed' ? 'feedbox' : st]; s.pos = {i:-1, j:-1}; world = w; const sp = freeSpot(w, r) || r.spots[0]; s.pos = {i:sp[0] + .5, j:sp[1] + .5}; s.place = st === 'bed' ? 'feedbox' : st; }
   world = w; fit(true);
 }
+// a random land tile outside the palisade, at least two tiles from it, reachable from the ramp
+function wildTile(w, s) { const cands = []; for (let i = 0; i < N; i++) for (let j = 0; j < M; j++) { if (!landOutside(w, i, j)) continue; const far = i < PL.i0 - 1 || i > PL.i1 || j < PL.j0 - 1 || j > PL.j1; if (far && bfs(w, {i, j}, RAMP, outsidePred(w)).reached) cands.push([i, j]); }
+  if (!cands.length) return null; const taken = sessions.filter(x => x !== s && x.pos && isWild(x)).map(x => [Math.floor(x.pos.i), Math.floor(x.pos.j)]); const free = cands.filter(c => taken.every(t => !collide(t, c))); const pool = free.length ? free : cands; const c = pool[Math.floor(s.wander() * pool.length)]; return {i:c[0] + .5, j:c[1] + .5}; }
 // layout contract: every station spot and the terminal step is walkable, no two standing companions share a screen column, everyone can reach a bench and the terminal
 function validateWorld() { const w = world, bad = [];
   for (const p of w.props) { if (inPlateau(Math.floor(p.i), Math.floor(p.j)) || p.type === 'palisade' || p.type === 'gate') continue; const gnd = w.ground[Math.floor(p.i) + ',' + Math.floor(p.j)]; if (gnd === 'water' || gnd === 'lava') bad.push(`${p.type} at (${p.i},${p.j}) stands on ${gnd}`); }
   for (const [k, r] of Object.entries(w.rooms)) { if (r.need && (r.spots || []).length < r.need) bad.push(`station ${k} has ${(r.spots || []).length}/${r.need} spots`);
     for (const [i, j] of r.spots || []) { if (!walkable(w, i, j)) bad.push(`station ${k} spot (${i},${j})`); if (zoneAt(i, j) !== r.zone) bad.push(`station ${k} spot (${i},${j}) outside its zone`); } }
   for (const b of w.seats) if (zoneAt(b.i, b.j) !== w.rooms.bed.zone) bad.push(`bed (${b.i},${b.j}) outside the bed zone`);
-  for (const s of sessions) { if (s.gone || s.walking || s.pod) continue; const z = zoneAt(Math.floor(s.pos.i), Math.floor(s.pos.j)), own = (w.rooms[s.place] || {}).zone; if (z && own && z !== own) bad.push(`${s.title} stands in the ${z.key} zone but belongs to ${s.place}`);
+  for (const s of sessions) { if (s.gone || s.walking || s.pod || isWild(s) || s.capture) continue; const z = zoneAt(Math.floor(s.pos.i), Math.floor(s.pos.j)), own = (w.rooms[s.place] || {}).zone; if (z && own && z !== own) bad.push(`${s.title} stands in the ${z.key} zone but belongs to ${s.place}`);
     if (Math.floor(s.pos.i) === Math.floor(w.exitStep.i) && Math.floor(s.pos.j) === Math.floor(w.exitStep.j)) bad.push(`${s.title} blocks the terminal step`); }
   if (!walkable(w, Math.floor(w.exitStep.i), Math.floor(w.exitStep.j))) bad.push('terminal step');
-  const free = sessions.filter(s => !s.gone).map(s => ({s, p:screenOf(s)}));
+  for (const s of sessions) { if (!isWild(s) || s.gone || s.capture) continue; const i = Math.floor(s.pos.i), j = Math.floor(s.pos.j); if (!landOutside(w, i, j) && !(i === RAMP.i && j === RAMP.j)) bad.push(`wild ${s.title} is not on land outside (${i},${j})`); }
+  const free = sessions.filter(s => !s.gone && !isWild(s) && !s.capture).map(s => ({s, p:screenOf(s)}));
   for (let a = 0; a < free.length; a++) for (let b = a + 1; b < free.length; b++) { const dx = Math.abs(free[a].p.x - free[b].p.x), dy = Math.abs(free[a].p.y - free[b].p.y), low = free[a].s.pod || free[b].s.pod; if ((dx < 44 && dy < (low ? 30 : 90)) || (!low && dx < 80 && dy < 24)) bad.push(`crowd ${free[a].s.title} / ${free[b].s.title}`); }
   const bench = w.rooms.bench.spots[0], ex = {i:Math.floor(w.exitStep.i), j:Math.floor(w.exitStep.j)};
-  for (const s of sessions) { const from = {i:Math.floor(s.pos.i), j:Math.floor(s.pos.j)}; if (!bfs(w, from, {i:bench[0], j:bench[1]}).reached) bad.push(`no path to bench ${s.title}`); if (!bfs(w, from, ex).reached) bad.push(`no path to terminal ${s.title}`); }
+  for (const s of sessions) { if (s.capture) continue; const from = {i:Math.floor(s.pos.i), j:Math.floor(s.pos.j)}; if (!bfs(w, from, {i:bench[0], j:bench[1]}).reached) bad.push(`no path to bench ${s.title}`); if (!bfs(w, from, ex).reached) bad.push(`no path to terminal ${s.title}`); }
   return bad; }
-function bfs(w, from, to) { const key = (i, j) => i + ',' + j, prev = new Map([[key(from.i, from.j), null]]), q = [from]; let reached = from.i === to.i && from.j === to.j;
+const outsidePred = w => (i, j) => landOutside(w, i, j) || (i === RAMP.i && j === RAMP.j); // wild paths never cross the plateau
+function bfs(w, from, to, pred = (i, j) => walkable(w, i, j)) { const key = (i, j) => i + ',' + j, prev = new Map([[key(from.i, from.j), null]]), q = [from]; let reached = from.i === to.i && from.j === to.j;
   while (q.length && !reached) { const c = q.shift(); for (const [di, dj] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) { const n = {i:c.i + di, j:c.j + dj}, k = key(n.i, n.j);
-      if (prev.has(k) || !walkable(w, n.i, n.j)) continue; prev.set(k, c); if (n.i === to.i && n.j === to.j) { reached = true; break; } q.push(n); } }
+      if (prev.has(k) || !pred(n.i, n.j)) continue; prev.set(k, c); if (n.i === to.i && n.j === to.j) { reached = true; break; } q.push(n); } }
   const out = []; if (!reached) { out.reached = false; return out; } let c = to; while (c && !(c.i === from.i && c.j === from.j)) { out.unshift(c); c = prev.get(key(c.i, c.j)); } out.reached = true; return out; }
-function walkTo(s, target, then) { const from = {i:Math.floor(s.pos.i), j:Math.floor(s.pos.j)}, goal = {i:Math.floor(target.i), j:Math.floor(target.j)}; const path = bfs(world, from, goal); if (!path.reached) return false;
+function walkTo(s, target, then, pred) { const from = {i:Math.floor(s.pos.i), j:Math.floor(s.pos.j)}, goal = {i:Math.floor(target.i), j:Math.floor(target.j)}; const path = bfs(world, from, goal, pred); if (!path.reached) return false; const wasWild = isWild(s);
   s.path = path.map(n => ({i:n.i + .5, j:n.j + .5})); s.path.push({...target}); s.walking = true; if (s.pod) { s.pod.session = null; s.pod = null; } s.place = 'walk'; s.hover = false; tip.style.display = 'none';
-  s.then = () => { then && then(); updateHud(); if (selected === s) openCard(s, true); }; return true; }
-function step(dt) { for (const s of sessions) { if (!s.walking) continue; const n = s.path[0]; if (!n) { s.walking = false; s.then && s.then(); continue; } const di = n.i - s.pos.i, dj = n.j - s.pos.j, d = Math.hypot(di, dj), sp = 2.6 * dt;
+  if (wasWild) s.place = 'wild'; s.then = () => { then && then(); if (!isWild(s) || s.place !== 'wild') updateHud(); if (selected === s && !isWild(s)) openCard(s, true); }; return true; }
+function step(dt) { for (const s of sessions) { if (isWild(s) && !s.walking && !s.capture && !s.gone) { s.rest = (s.rest ?? 1.5 + s.wander() * 3) - dt; if (s.rest <= 0) { s.rest = 1.5 + s.wander() * 3; const to = wildTile(world, s); if (to) walkTo(s, to, () => { s.place = 'wild'; }, outsidePred(world)); } }
+    if (!s.walking) continue; const n = s.path[0]; if (!n) { s.walking = false; s.then && s.then(); continue; } const di = n.i - s.pos.i, dj = n.j - s.pos.j, d = Math.hypot(di, dj), sp = 2.6 * dt;
     s.dir = (di - dj) < -.01 ? -1 : (di - dj) > .01 ? 1 : s.dir || 1; s.away = (di + dj) < -.01; if (d <= sp) { s.pos = {...n}; s.path.shift(); } else { s.pos.i += di / d * sp; s.pos.j += dj / d * sp; } } }
 // ---------- render ----------
 const canvas = document.getElementById('scene'), stage = document.getElementById('stage'), ctx = canvas.getContext('2d');
@@ -639,7 +663,7 @@ function objects() {
   const w = world, list = [], add = (o, draw) => list.push({i0:o.i, i1:o.i + (o.w || .4), j0:o.j, j1:o.j + (o.d || .4), draw});
   for (const p of w.props) { if (p.type === 'palisade') continue; add(p, () => PROPS[p.type](ctx, p === w.exit ? {...p, flash:w.flash && performance.now() < w.flash} : p, T, w)); }
   for (const p of w.seats) add(p, () => PROPS[p.type](ctx, p, T));
-  for (const s of sessions) { if (s.gone || (s.pod && !s.walking)) continue; add({i:s.pos.i - .2, j:s.pos.j - .2, w:.4, d:.4}, () => drawFree(s)); }
+  for (const s of sessions) { if (s.gone || (s.pod && !s.walking) || behindPlateau(s) || (s.capture && s.capture.phase !== 'fly' && s.capture.phase !== 'shrink')) continue; add({i:s.pos.i - .2, j:s.pos.j - .2, w:.4, d:.4}, () => drawFree(s)); }
   const n = list.length, behind = (a, b) => a.i1 <= b.i0 + 1e-6 || a.j1 <= b.j0 + 1e-6, depth = o => (o.i0 + o.i1 + o.j0 + o.j1) / 2, indeg = new Array(n).fill(0), adj = Array.from({length:n}, () => []);
   for (let a = 0; a < n; a++) for (let b = a + 1; b < n; b++) { const A = list[a], Bb = list[b]; if (A.i1 + A.j1 < Bb.i0 + Bb.j0 - 6 || Bb.i1 + Bb.j1 < A.i0 + A.j0 - 6) continue; if (A.i1 - A.j0 < Bb.i0 - Bb.j1 || Bb.i1 - Bb.j0 < A.i0 - A.j1) continue;
     const ab = behind(A, Bb), ba = behind(Bb, A), first = ab && !ba ? a : ba && !ab ? b : depth(A) <= depth(Bb) ? a : b; adj[first].push(first === a ? b : a); indeg[first === a ? b : a]++; }
@@ -648,7 +672,9 @@ function objects() {
   if (out.length < n) for (const o of list) if (!out.includes(o)) out.push(o);
   return out;
 }
-function drawFree(s) { const p = iso(s.pos.i, s.pos.j, 0), sc = CS * (s.parent == null ? 1 : .86); if (s.compactions) boxes(ctx, p.x, p.y, s.compactions);
+// a wild companion behind the plateau is painted before the plateau so the palisade hides it, not the reverse
+const behindPlateau = s => isWild(s) && (Math.floor(s.pos.j) < PL.j0 || Math.floor(s.pos.i) < PL.i0) && !(s.capture && (s.capture.phase === 'wobble' || s.capture.phase === 'burst'));
+function drawFree(s) { const p = iso(s.pos.i, s.pos.j, 0); let sc = CS * (s.parent == null ? 1 : .86); if (s.capture && s.capture.phase === 'shrink') sc *= Math.max(.05, 1 - (performance.now() - s.capture.t0) / 300); if (s.compactions) boxes(ctx, p.x, p.y, s.compactions);
   drawAI(ctx, s.agent, poseOf(s), T, {x:p.x, y:p.y, seed:s.seed, face:faceOf(s), flip:s.walking && s.dir < 0, back:s.walking && s.away, rank:rankOf(s.tools), age:ageOf(s.hours), scale:sc, scarf:CATS[s.cat].color, hop:s.status === 'blocked' && !s.walking, job:s.tool ? JOB[s.tool].key : 'craft'}); }
 function screenOf(s) { if (s.pod && !s.walking) { const q = iso(s.pod.i + .5, s.pod.j + .5, 8); return {x:q.x, y:q.y - 4}; } return iso(s.pos.i, s.pos.j, 0); }
 function render() {
@@ -656,13 +682,14 @@ function render() {
   ctx.setTransform(cam.z * DPR, 0, 0, cam.z * DPR, cam.x * DPR, cam.y * DPR);
   for (let j = 0; j < M; j++) for (let i = 0; i < N; i++) { if (inPlateau(i, j)) continue; const gcol = w.ground[i + ',' + j]; if (gcol === 'water' || gcol === 'lava') waterTile(ctx, i, j, T, sc.waterCol[0], sc.waterCol[1]); else poly(ctx, [iso(i, j), iso(i + 1, j), iso(i + 1, j + 1), iso(i, j + 1)], gcol, 'rgba(0,0,0,.07)', 1); }
   if (sc.id === 'volcano') { ctx.save(); ctx.globalCompositeOperation = 'lighter'; for (let j = 0; j < M; j++) for (let i = 0; i < N; i++) if (w.ground[i + ',' + j] === 'lava') { const c = iso(i + .5, j + .5); glow(ctx, c.x, c.y, 40, B.lava, .18 + .06 * Math.sin(T * 3 + i)); } ctx.restore(); }
+  for (const s of sessions) if (!s.gone && behindPlateau(s)) drawFree(s);
   cliffFace(ctx, w, T);
   for (let j = PL.j0; j < PL.j1; j++) for (let i = PL.i0; i < PL.i1; i++) { const pts = [iso(i, j), iso(i + 1, j), iso(i + 1, j + 1), iso(i, j + 1)], z = zoneAt(i, j); if (z) FLOOR[z.floor](ctx, i, j, pts); else poly(ctx, pts, sc.ground(i, j), 'rgba(0,0,0,.06)', 1); }
   for (const z of ZONES) { zoneBorder(ctx, z); const c = iso(z.i0 + z.w / 2, z.j0 + z.d / 2); ctx.save(); ctx.globalAlpha = .28; ctx.font = `900 46px ${FONT}`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillStyle = '#1f2430'; ctx.fillText(z.icon, c.x, c.y); ctx.restore(); }
   for (const p of w.props) if (p.type === 'palisade') PROPS.palisade(ctx, p, T);
   for (const o of objects()) o.draw();
   for (const s of sessions) { if (s.parent == null || s.gone) continue; const p = sessions[s.parent]; if (!p || p.gone) continue; tether(ctx, screenOf(p), screenOf(s), AG[p.agent].color, T); }
-  for (const s of sessions) { if (s.gone || s.walking) continue; const p = screenOf(s), top = p.y - 74 * CS;
+  for (const s of sessions) { if (s.gone || s.walking || (s.capture && s.capture.phase !== 'fly')) continue; const p = screenOf(s), top = p.y - 74 * CS;
     ctx.font = `800 10.5px ${FONT}`; pill(ctx, p.x, p.y - 58 * CS, trunc(s.title, 70, ctx), {size:10.5, bg:'rgba(20,24,34,.85)', fg:'#f4f1e8', stroke:'rgba(255,255,255,.55)', lw:1.4, bar:CATS[s.cat].color, padX:6, r:6});
     if (!isAsleep(s)) bubble(ctx, p.x, top, s.status, T + s.seed, s.status === 'working' ? 'typing' : null);
     headFx(ctx, s, p.x, p.y, T, CS); if (s.hover) reaction(ctx, s, p.x, p.y, T, CS);
@@ -670,9 +697,18 @@ function render() {
     if (s.status === 'ended' && s.saidAt && performance.now() < s.saidAt) pill(ctx, p.x, top - 30, farewell(s), {size:11, bg:'#f4f1e8', fg:'#14161f', stroke:K.ink});
     if (s.hover && s.status === 'working' && s.tool) pill(ctx, p.x, top - 28, `${JOB[s.tool].icon} ${JOB[s.tool].ko} · ${JOB[s.tool].label}`, {size:11, bg:'#14161f', fg:'#f4f1e8', stroke:'#f4f1e8'}); }
   if (selected && !selected.gone) { const p = screenOf(selected), cy = p.y - 26 * CS; ctx.save(); ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 2.6; ctx.setLineDash([7, 5]); ctx.lineDashOffset = -T * 20; ctx.beginPath(); ctx.ellipse(p.x, cy, 32 * CS, 40 * CS, 0, 0, Math.PI * 2); ctx.stroke(); ctx.restore(); glow(ctx, p.x, cy, 50 * CS, '#ffffff', .14); }
+  captureFx(w);
   outsideLabels(w);
   { const p = iso(w.exit.i + .5, w.exit.j + .5, 96); pill(ctx, p.x, p.y, '⏏ 거점 단말', {size:11, bg:'rgba(20,24,34,.8)', fg:'#f4f1e8', stroke:'rgba(255,255,255,.5)', lw:1.2}); }
 }
+// capture: the sphere flies from the terminal, the companion shrinks into it, it wobbles three times, then bursts and the companion reappears on the ramp
+function captureFx(w) { const now = performance.now(); for (const s of sessions) { const c = s.capture; if (!c) continue; const el = now - c.t0;
+    if (c.phase === 'fly') { const u = Math.min(1, el / 700), a = iso(w.exit.i + .5, w.exit.j + .5, 60), b = screenOf(s), x = a.x + (b.x - a.x) * u, y = a.y + (b.y - a.y) * u - Math.sin(u * Math.PI) * 120; PROPS.sphere(ctx, x, y - 30, 9, u * 12); if (u >= 1 || reduce) { c.phase = 'shrink'; c.t0 = now; } }
+    else if (c.phase === 'shrink') { const b = screenOf(s); PROPS.sphere(ctx, b.x, b.y - 30, 9, 0); if (el >= 300 || reduce) { c.phase = 'wobble'; c.t0 = now; } }
+    else if (c.phase === 'wobble') { const b = screenOf(s), k = Math.floor(el / 500), rot = Math.sin(el / 500 * Math.PI * 2) * .5 * (k < 3 ? 1 : 0); PROPS.sphere(ctx, b.x, b.y - 10, 10, rot); if (k >= 1) for (let n = 0; n < Math.min(k, 3); n++) star(ctx, b.x - 22 + n * 22, b.y - 40, 5, '#ffd24a', K.ink); if (el >= 1600 || reduce) { c.phase = 'burst'; c.t0 = now; } }
+    else if (c.phase === 'burst') { const b = screenOf(s); for (let n = 0; n < 8; n++) { const a = n * Math.PI / 4, d = 10 + el * .08; star(ctx, b.x + Math.cos(a) * d, b.y - 20 + Math.sin(a) * d * .6, 5, n % 2 ? '#ffd24a' : '#ffffff', K.ink); } pill(ctx, b.x, b.y - 60, `포획! ${CATS[c.cat].name}`, {size:12, bg:'#fff3c4', fg:'#14161f', stroke:K.ink});
+      if (el >= 600 || reduce) { s.cat = c.cat; s.capture = null; s.pos = {i:RAMP.i + .5, j:RAMP.j + .5}; s.place = 'ramp'; const st = stationFor(s), r = world.rooms[st === 'bed' ? 'feedbox' : st], sp = freeSpot(world, r); if (sp) walkTo(s, {i:sp[0] + .5, j:sp[1] + .5}, () => { s.place = st === 'bed' ? 'feedbox' : st; }); else s.place = st; updateHud(); } }
+  } }
 function outsideLabels(w) { // screen space: labels along the top margin, staggered, joined by elbows; every line is drawn before any box
   const items = ZONES.map(z => ({text:`${z.icon} ${z.label}`, wp:iso(z.i0 + .5, z.j0 + .5, 0)})).map(it => ({...it, sx:it.wp.x * cam.z + cam.x, sy:it.wp.y * cam.z + cam.y})).sort((a, b) => a.sx - b.sx);
   const left = 16, right = Math.max(left + 200, W - (W > 900 ? 340 : 16)), gap = (right - left) / items.length;
@@ -698,10 +734,14 @@ const hud = document.getElementById('hud'), queueEl = document.getElementById('q
 function rollup() { const rank = {done:0, ended:0, blocked:1}; return sessions.filter(s => !s.gone && s.status in rank).sort((a, b) => rank[a.status] - rank[b.status] || (a.mins ?? 0) - (b.mins ?? 0)); }
 function nextSession() { const q = rollup(); if (!q.length) return null; const k = selected ? q.indexOf(selected) : -1; return q[(k + 1) % q.length]; }
 const esc = s => s.replace(/[&<>"]/g, ch => ({'&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;'}[ch]));
-function sentence(s) { if (s.walking) return '이동 중'; if (s.status === 'blocked') return '당신의 지시를 기다립니다'; if (s.status === 'done') return '납품 완료, 납품 자리에서 대기'; if (s.status === 'ended') return '종료됨, 단말 앞에서 마지막 화면을 보관'; if (s.status === 'working') return `일하는 중 (${s.tool ? JOB[s.tool].ko : '도구 기록 없음, 작업대'})`; if (isAsleep(s)) return '짚 침대에서 자는 중'; return '먹이통에서 쉬는 중'; }
-function placeName(s) { if (s.walking) return '이동 중'; return (world.rooms[s.place] || {}).label || s.place; }
+function sentence(s) { if (s.capture) return '포획 중…'; if (isWild(s)) return '야생 · category 없음, 들판을 돌아다님'; if (s.walking) return '이동 중'; if (s.status === 'blocked') return '당신의 지시를 기다립니다'; if (s.status === 'done') return '납품 완료, 납품 자리에서 대기'; if (s.status === 'ended') return '종료됨, 단말 앞에서 마지막 화면을 보관'; if (s.status === 'working') return `일하는 중 (${s.tool ? JOB[s.tool].ko : '도구 기록 없음, 작업대'})`; if (isAsleep(s)) return '짚 침대에서 자는 중'; return '먹이통에서 쉬는 중'; }
+function placeName(s) { if (isWild(s)) return '들판 (목책 밖)'; if (s.walking) return '이동 중'; return (world.rooms[s.place] || {}).label || s.place; }
+// the dex: species = agent × aptitude, counted over the sessions seen today plus the recorded history
+function dex() { const seen = {}; for (const s of sessions) { if (s.gone) continue; const k = speciesKey(s); if (!k) continue; (seen[k] = seen[k] || {count:0, best:0, titles:[]}); seen[k].count++; seen[k].best = Math.max(seen[k].best, rankOf(s.tools)); seen[k].titles.push(s.title); }
+  const rows = []; for (const a of Object.keys(AG)) for (const j of Object.keys(JOB)) { const k = `${a}:${j}`, cur = seen[k] || {count:0, best:0, titles:[]}, total = cur.count + (DEX_HISTORY[k] || 0); rows.push({key:k, agent:a, job:j, today:cur.count, total, best:cur.best, bonus:total >= 5, known:total > 0}); }
+  return rows; }
 function updateHud() { const focusRow = document.activeElement && document.activeElement.classList && document.activeElement.classList.contains('bi-row') ? document.activeElement.dataset.k : null; const ls = sessions.filter(s => !s.gone), c = st => ls.filter(s => s.status === st).length, sc = world.sc, beds = world.seats.length;
-  hud.innerHTML = `<span class="chip title">${sc.name}${sceneIdx === TODAY_SCENE ? ' · 오늘' : ''}</span><span class="chip">${DAY_LABEL} 시드</span><span class="chip">동료<span class="n">${ls.length}</span></span><span class="chip">침대<span class="n">${ls.filter(s => s.pod).length}/${beds}</span></span><span class="chip" style="color:${K.working}">● 일하는 중<span class="n">${c('working')}</span></span><span class="chip" style="color:${K.waiting}">! 나를 기다림<span class="n">${c('blocked')}</span></span><span class="chip" style="color:${K.completed}">✓ 끝남<span class="n">${c('done')}</span></span><span class="chip" style="color:${K.ended}">○ 종료<span class="n">${c('ended')}</span></span><span class="chip" style="color:#c4cad6">○ 쉬는 중<span class="n">${c('idle')}</span></span><span class="chip">handoff<span class="n">${ls.filter(s => s.parent != null).length}</span></span><span class="chip hint">휠 확대 · 드래그 · 더블클릭 = 전체</span>`;
+  hud.innerHTML = `<span class="chip title">${sc.name}${sceneIdx === TODAY_SCENE ? ' · 오늘' : ''}</span><span class="chip">${DAY_LABEL} 시드</span><span class="chip">동료<span class="n">${ls.length}</span></span><span class="chip">침대<span class="n">${ls.filter(s => s.pod).length}/${beds}</span></span><span class="chip" style="color:${K.working}">● 일하는 중<span class="n">${c('working')}</span></span><span class="chip" style="color:${K.waiting}">! 나를 기다림<span class="n">${c('blocked')}</span></span><span class="chip" style="color:${K.completed}">✓ 끝남<span class="n">${c('done')}</span></span><span class="chip" style="color:${K.ended}">○ 종료<span class="n">${c('ended')}</span></span><span class="chip" style="color:#c4cad6">○ 쉬는 중<span class="n">${c('idle')}</span></span><span class="chip">handoff<span class="n">${ls.filter(s => s.parent != null).length}</span></span><span class="chip">야생<span class="n">${ls.filter(isWild).length}</span></span><button type="button" class="chip btn" id="b-dex">📖 도감<span class="n">${dex().filter(r => r.known).length}/16</span></button><span class="chip hint">휠 확대 · 드래그 · 더블클릭 = 전체</span>`;
   const q = rollup(), nx = nextSession();
   const rest = q.filter(s => s !== nx);
   queueEl.innerHTML = (nx ? `<span class="q next"><span class="k">N</span>다음 ▶ ${esc(nx.title)} · ${ST[nx.status].g} ${when(nx)}</span>` : '') + rest.slice(0, 6).map(s => `<span class="q" style="color:${ST[s.status].color};border-color:${ST[s.status].color}">${ST[s.status].g} ${esc(s.title)} · ${when(s)}</span>`).join('') + (rest.length > 6 ? `<span class="q" style="color:#c4cad6;border-color:#c4cad6">+${rest.length - 6}</span>` : '');
@@ -709,7 +749,12 @@ function updateHud() { const focusRow = document.activeElement && document.activ
   baseEl.innerHTML = `<div class="bi-head">동료 현황 <span>동료 ${ls.length} · 침대 ${beds}</span></div>` + ls.map(s => `<button type="button" class="bi-row${s === selected ? ' on' : ''}" data-k="${s.k}" style="--c:${AG[s.agent].color}"><span class="bi-face"><i>${ST[s.status].g}</i></span><span class="bi-text"><b>${esc(s.title)}</b><small>${esc(sentence(s))}</small></span></button>`).join('');
   baseEl.querySelectorAll('.bi-row').forEach(b => b.onclick = () => openCard(sessions[+b.dataset.k]));
   if (focusRow != null) { const b = baseEl.querySelector(`.bi-row[data-k="${focusRow}"]`); if (b) b.focus(); }
+  document.getElementById('b-dex').onclick = () => toggleDex();
   const sr = document.getElementById('sr'), text = ls.map(s => `${s.title} ${sentence(s)}`).join(', '); if (sr.textContent !== text) sr.textContent = text; }
+const dexEl = document.getElementById('dex');
+function toggleDex(on) { const open = on ?? !dexEl.classList.contains('open'); dexEl.classList.toggle('open', open); if (!open) return; const rows = dex();
+  dexEl.innerHTML = `<button class="x" type="button" aria-label="닫기">✕</button><h4>📖 도감 · ${rows.filter(r => r.known).length}/16 종</h4><p class="sub">종 = agent × 적성(마지막 도구). 숫자는 오늘 본 세션 + 기록. 5마리부터 보너스.</p><div class="cells">${rows.map(r => `<div class="cell${r.known ? '' : ' unknown'}"><b>${AG[r.agent].species} · ${JOB[r.job].ko}</b><small>${r.known ? `${r.total}마리${r.today ? ` (오늘 ${r.today})` : ''} · 최고 ${r.best}단계${r.bonus ? ' · ★ 보너스' : ''}` : '미발견'}</small></div>`).join('')}</div><p class="src">출처: agent는 제품에 있습니다. 적성은 convo_log의 마지막 도구에서 나옵니다(codex는 parser 확장, cursor는 없음). 날짜를 넘는 누적은 새 저장이 필요합니다.</p>`;
+  dexEl.querySelector('.x').onclick = () => toggleDex(false); }
 function openCard(s, refresh) { selected = s; const st = ST[s.status], ag = AG[s.agent], reply = s.agent === 'cursor' ? null : s.reply, job = s.tool ? JOB[s.tool] : null;
   card.innerHTML = `<button class="x" type="button" aria-label="닫기">✕</button><h3>${esc(s.title)}</h3>
    <div class="meta"><span class="badge" style="background:${st.color}">${st.g} ${st.label}</span><b style="color:${ag.color}">▌${ag.species} · ${ag.name}</b> · ${esc(CATS[s.cat].name)} · ${when(s)}${s.parent != null ? ` · handoff ← ${esc(sessions[s.parent].title)}` : ''}</div>
@@ -741,15 +786,20 @@ function toggleHelp(on) { help.classList.toggle('open', on ?? !help.classList.co
 stage.addEventListener('keydown', e => { if (e.metaKey || e.ctrlKey || e.altKey) return; const k = /^Key[A-Z]$/.test(e.code) ? e.code.slice(3).toLowerCase() : /^Digit\d$/.test(e.code) ? e.code.slice(5) : e.key;
   const reply = card.querySelector('.reply'); if (reply && (k === 'j' || k === 'k' || k === 'PageDown' || k === 'PageUp')) { e.preventDefault(); card.scrollBy(0, (k === 'j' ? 48 : k === 'k' ? -48 : k === 'PageDown' ? 240 : -240)); return; }
   if (k === '?' || (e.shiftKey && e.code === 'Slash')) { e.preventDefault(); toggleHelp(); return; }
-  if (k === 'n') { const s = nextSession(); if (s) { e.preventDefault(); openCard(s); } } else if (k === '0') { e.preventDefault(); closeCard(); fit(false); } else if (k === 'Escape') { if (help.classList.contains('open')) toggleHelp(false); else closeCard(); } });
+  if (k === 'd') { e.preventDefault(); toggleDex(); return; }
+  if (k === 'n') { const s = nextSession(); if (s) { e.preventDefault(); openCard(s); } } else if (k === '0') { e.preventDefault(); closeCard(); fit(false); } else if (k === 'Escape') { if (help.classList.contains('open')) toggleHelp(false); else if (dexEl.classList.contains('open')) toggleDex(false); else closeCard(); } });
 document.getElementById('b-help').onclick = () => toggleHelp();
 document.getElementById('b-next').onclick = () => { const s = nextSession(); if (s) openCard(s); };
 document.getElementById('b-fit').onclick = () => { closeCard(); fit(false); };
 document.getElementById('b-reset').onclick = () => { closeCard(); buildWorld(); updateHud(); live.textContent = '초기화했습니다.'; };
-document.getElementById('b-start').onclick = () => { const s = sessions.find(x => x.status === 'idle' && !x.walking && !x.gone); if (!s) { live.textContent = '쉬는 동료가 없습니다.'; return; }
+document.getElementById('b-start').onclick = () => { const s = sessions.find(x => x.status === 'idle' && !x.walking && !x.gone && !isWild(x)); if (!s) { live.textContent = '쉬는 동료가 없습니다.'; return; }
   const from = placeName(s), sp = freeSpot(world, world.rooms.bench);
   if (sp && walkTo(s, {i:sp[0] + .5, j:sp[1] + .5}, () => { s.place = 'bench'; })) { s.status = 'working'; s.tool = s.agent === 'cursor' ? null : 'edit'; s.mins = null; updateHud(); live.textContent = `"${s.title}" 쉬는 중 → 일하는 중: ${from}에서 작업대로 갑니다.`; } else live.textContent = '경로가 없습니다.'; };
-document.getElementById('b-end').onclick = () => { const s = sessions.find(x => x.status === 'done' && !x.gone && !x.walking); if (!s) { live.textContent = '끝난 동료가 없습니다.'; return; }
+document.getElementById('b-catch').onclick = () => { const s = sessions.find(x => isWild(x) && !x.capture && !x.gone); if (!s) { live.textContent = '야생 동료가 없습니다.'; return; }
+  const cat = s.parent != null && sessions[s.parent].cat !== 'none' ? sessions[s.parent].cat : s.agent === 'claude' ? 'probe' : 'infra'; s.path = []; s.walking = false; s.capture = {phase:'fly', t0:performance.now(), cat}; updateHud(); live.textContent = `"${s.title}"에 category "${CATS[cat].name}"를 붙입니다: 구슬이 날아갑니다.`; };
+document.getElementById('b-release').onclick = () => { const s = sessions.find(x => !isWild(x) && !x.walking && !x.capture && !x.gone && !x.pod && x.status !== 'ended'); if (!s) { live.textContent = '내보낼 동료가 없습니다.'; return; }
+  if (walkTo(s, {i:RAMP.i + .5, j:RAMP.j + .5}, () => { s.cat = 'none'; s.place = 'wild'; const to = wildTile(world, s); if (to) walkTo(s, to, () => { s.place = 'wild'; }, outsidePred(world)); updateHud(); })) { live.textContent = `"${s.title}"의 category를 해제합니다: 문으로 나가 들판으로 돌아갑니다.`; } else live.textContent = '경로가 없습니다.'; };
+document.getElementById('b-end').onclick = () => { const s = sessions.find(x => x.status === 'done' && !x.gone && !x.walking && !isWild(x)); if (!s) { live.textContent = '끝난 동료가 없습니다.'; return; }
   const sp = freeSpot(world, world.rooms.terminal);
   if (sp && walkTo(s, {i:sp[0] + .5, j:sp[1] + .5}, () => { s.place = 'terminal'; s.saidAt = performance.now() + 25000; world.flash = performance.now() + 600; })) { s.status = 'ended'; updateHud(); live.textContent = `"${s.title}" 끝남 → 종료: 거점 단말 앞으로 가서 마지막 화면을 보관합니다. 목록 순위는 끝남과 같습니다.`; } else live.textContent = '경로가 없습니다.'; };
 // ---------- character sheet ----------
@@ -787,7 +837,7 @@ function frame(ts) { const dt = Math.min(.05, (ts - (last || ts)) / 1000); last 
 window.addEventListener('resize', resize);
 window.__office2 = {get sessions() { return sessions; }, get world() { return world; }, get cam() { return cam; }, selectScene, validateWorld, pause:v => { paused = v; },
   advance:sec => { for (let k = 0; k < sec * 30; k++) { T += reduce ? 0 : 1 / 30; step(reduce ? 1 : 1 / 30); } }, settle:() => { if (camTarget) { cam = {...camTarget}; camTarget = null; } }, SCENES, openCard, closeCard, nextSession, rollup,
-  blinkAt, md, ctxTier, rankOf, ageOf, farewell, toggleHelp, fitTarget:() => { const keep = camTarget; fit(false); const t = camTarget; camTarget = keep; return t; }, setCam:c => { cam = {...c}; camTarget = null; }, easeFrames:n => { for (let k = 0; k < n; k++) easeCam(); },
+  blinkAt, md, ctxTier, rankOf, ageOf, farewell, toggleHelp, toggleDex, dex, isWild, speciesKey, RAMP, inPlateau, landOutside, freeSpot, zoneAt, fitTarget:() => { const keep = camTarget; fit(false); const t = camTarget; camTarget = keep; return t; }, setCam:c => { cam = {...c}; camTarget = null; }, easeFrames:n => { for (let k = 0; k < n; k++) easeCam(); },
   stagePoint:s => { const p = screenOf(s); return {x:p.x * cam.z + cam.x, y:(p.y - 26 * CS) * cam.z + cam.y}; }};
 selectScene(TODAY_SCENE); resize(); requestAnimationFrame(frame);
 })();

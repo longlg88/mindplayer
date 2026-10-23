@@ -28,6 +28,11 @@
   연륜(근속 1/3/7일 → 흰머리·수염·지팡이), 위로 걸을 때 뒤통수, 광장 칠판(동료 수·일하는 중·기다림·다음 ▶), 종료 한마디(휴…/신나게/수고), 카드의 마크다운, ? 도움말과 j/k 스크롤.
   넣지 않은 것: 서버, hooks, send-keys, 답장·멈춤·미루기, 지퍼 입, 회의, 책상 끌기, 서랍, 파일 뷰어, 외부 아이콘.
   출처: `Session.context_pct`는 kiro만 값이 있다(`discovery.rs` kiro_context_pct). `Session.started_at`은 있다. 압축 횟수와 도구 횟수는 MindPlayer에 없어 새 수집이 필요하다. 시안의 값은 합성이다.
+- 포획과 도감(사용자 결정 2026-10-23, 안 A+C): category가 없는 세션은 목책 밖 들판을 돌아다니는 야생 동료다. TUI에서 category를 붙이면(`state.assign_category`)
+  단말에서 구슬이 날아가 동료를 담고 세 번 흔들린 뒤 문 앞 계단에서 들어온다. 해제하면(`clear_category`) 문으로 나가 방생된다. 이 창은 `category_of`의 변화만 읽는다.
+  도감은 종 = agent 4 × 적성 4 = 16종이고, 종마다 본 세션 수·최고 직급·5마리 보너스를 둔다. 날짜를 넘는 누적은 새 저장이 필요하다. 채택하지 않은 안: 새 세션 발견 = 자동 포획(B), 포획률 = HP(D, 대응이 뒤집힘).
+  문 앞에 계단을 두어 절벽을 오르내린다. 구역 밖으로 넘친 동료는 통로에만 선다.
+- 동료 그림(2026-10-23 재작업): 입체 셀 셰이딩(3단 + 림라이트), 색을 띤 외곽선, 홍채·동공·하이라이트가 있는 눈, 종별 실루엣. 3D 렌더 수준을 바라면 다음 단계는 종별 PNG 스프라이트 시트다.
 - 데이터는 category, agent, `SessionStatus`, `title`, `last_prompt_at`, `convo_log`의 마지막 답변, `handoff_parent`를 쓴다.
   - 잠(새 규칙): `last_prompt_at`이 없는 kiro와 cursor는 자지 않는다. handoff thread 안의 kiro·cursor는 thread 값을 받으므로 잘 수 있다.
   - 작업장(도구별): claude와 kiro는 `convo_log`에 도구 이름이 있다. codex 기록에도 도구 왕복이 있지만 `parse_codex_turn`이 버리므로 parser 확장이 필요하다.

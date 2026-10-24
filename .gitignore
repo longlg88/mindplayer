@@ -16,9 +16,11 @@ app/src-tauri/gen/
 # MindPlayer runtime (not part of the repo)
 .mindplayer/
 
-# OMC / agent runtime state (never publish)
+# Agent runtime state (never publish)
 .omc/
 **/.omc/
+.omx/
+**/.omx/
 
 # A Claude Code session's git worktree lives here: a second checkout of this
 # same repo, plus its own `target/`. Nested inside the main worktree it shows up

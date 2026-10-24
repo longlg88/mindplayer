@@ -1,5 +1,63 @@
 # Design
 
+## 쿼터뷰 세션 오피스 5안 — 2026-10-23 / 설계 초안, 미승인
+
+산출물: [작은 동료들의 오피스 · HTML 5안](docs/plans/2026-10-23-mindplayer-office-gallery.ko.html).
+이번 요청은 실행 중인 Claude/Codex 등의 세션을 귀여운 쿼터뷰 오피스로 표현하는
+**시안 비교**다. 제품 코드·계정·세션·설치본·버전·커밋·배포는 변경하지 않는다.
+아래 최신 F6/계정 표시·기존 네이티브 실행 계약은 유지한다.
+
+- 근거: 1차로 기존 `DESIGN.md`, `AGENTS.md`, `walker.rs`의 12×8 캐릭터·반 블록,
+  `ui.rs` 목록/4+3 pane/전체 폭 quota 구획을 확인했다. 2차로 `main.rs`의 목록
+  키와 redraw gate, `pane.rs`의 상태 우선순위, `turn_status.rs`의 turn-ID 결합,
+  Ratatui 공식 HalfBlock API·이미지 프로토콜 문서·W3C 색상/움직임 지침을 대조했다.
+- 참고 제한: 지정 Slack 링크 두 개는 접근할 수 없어 Gavin 그림·본문을 보지 못했다.
+  이를 복제하거나 검수했다고 주장하지 않는다. 원래 MindPlayer duck/bunny/slime/
+  penguin 패턴과 직접 그린 바닥·책상·식물·방을 조합한다. 기존 캐릭터의 자세를
+  lifecycle에 연결하는 기능과 쿼터뷰 배치는 신규 **제안**이지 현재 기능이 아니다.
+- 브랜드/목표: 조용하고 귀여운 작업 공간을 기존 밀도 높은 세션 탐색에 추가한다.
+  목적은 여러 세션의 주의 필요 상태와 위치를 빠르게 찾는 것. 에이전트가 실제로
+  생각하거나 협업하는 과정을 관측한 것처럼 그리거나 게임 보상·가짜 진행률은 넣지 않는다.
+- 사용자/IA: 여러 CLI 세션을 동시에 관리하는 작업자. 목록 ↔ 오피스 보기 → 선택
+  세션 Enter → 기존 native pane. Ctrl-G Trace와 입력/승인/F6는 그대로 둔다.
+  오피스 진입은 list-only `o`가 미사용 후보이나 키 승인/제품 구현은 하지 않았다.
+  HTML에서는 비교 버튼으로 진입하며 Esc의 목록 복귀는 제안임을 표시한다.
+- 대안 5개: 01 한 층 스튜디오(전체 가시성), 02 프로젝트별 방(분류), 03 목록 옆
+  작은 오피스(기존 탐색 보존), 04 층층이 워크숍(여러 프로젝트), 05 집중 작업실
+  (선택 세션 확대). 기본 선택은 비교 편의를 위한 01이며 사용자 승인이 아니다.
+- 표현 대안 3개: 반 블록 문자 셀(기존 패턴 재사용, 제안 채택), 터미널 이미지
+  프로토콜(고해상도/호스트 검증 필요), 브라우저 SVG 동반 앱(별도 표면/이번 제외).
+  HTML Canvas의 같은 픽셀 배열을 `▀` 전경/배경 문자 셀로 변환해 비교한다.
+  Canvas 자체를 터미널에 넣는 것이 아니며 Rust TTY 동작을 증명하지 않는다.
+- 시각/컴포넌트: 기존 dark palette, 상태별 색+문자, 번호가 있는 책상, 기존 픽셀
+  캐릭터, 선택 테두리, 텍스트 세션 목록. 오피스가 목록 중앙 영역만 대체한다.
+  4-top/3-bottom 실행 화면과 전체 폭 계정 quota는 유지하며 상태를 quota로 추정하지 않는다.
+- 정체성/상태: provider+계정+실제 세션 ID가 하나의 키. 제목·카테고리·수동 in-progress
+  마크는 lifecycle이 아니다. 입력 필요/작업 중/턴 완료/대기/종료/관측 불가를 구분한다.
+  턴 완료는 matching native turn 신호가 있을 때만, 성공은 별도. signal 지연은
+  `? 미확인`; no-PTY history는 제품 Inactive와 구분해야 한다. 계정별 quota도 그대로
+  보이고 미확인 값을 0으로 치환하지 않는다. 일반 배치에서 상태가 변해도 자리 고정.
+- 동작/빈 상태/밀도: 방향키·책상/텍스트 선택·Enter 실행 화면·Ctrl-G Trace 합성 체험.
+  77개는 7개씩 페이지 + 화면 밖 수 표시, 동일 제목도 ID 유지, 빈 상태에서는 Enter
+  미실행. 오류/연결 지연을 성공/대기로 꾸미지 않는다. 실제 pagination 정책은 미결정.
+- 접근성/반응형: 색상 외 번호·기호·텍스트, 실제 button 의미·보이는 focus·Tab 탈출,
+  자동 애니메이션 없음. 문서는 1440/1280/850/390/320px 검증. 작은 브라우저에서는
+  텍스트 목록을 아래로 옮기되 실제 TUI의 폰트·최소 크기·스크린리더는 미검증이다.
+- 기술/검증 범위: 독립 HTML/CSS/JS, 네트워크/저장/새 의존성 없음. 합성 세션만 사용.
+  회귀 테스트 `docs/tests/office-gallery.test.cjs`는 소스 읽기와 task-owned 임시
+  스크린샷/receipt 쓰기만 수행한다. 실제 provider·CLI·인증/계정·PTY를 호출하지 않는다.
+- 브라우저 결과: `passed=38, failed=0`, 외부 요청/console 오류 0. 5안의 ID 유일성,
+  방향키/클릭→Enter/Esc, 4+3/전체 폭 quota, Ctrl-G, 6,048개 반 블록의 픽셀 색·셀
+  기하, 77개 pagination, 빈 상태/턴 완료/종료/신호 지연, 320–1440px를 확인했다.
+  집중 보기의 선택 세션 중복은 회귀 RED(`6 !== 7`)를 기록하고 고쳤다. 독립 검수에서
+  발견한 Trace 복귀 화면, native pane 순서, 현재/제안 상태 혼동도 고쳐 재검증했다.
+  실행 pane ID 집합/순서는 선택과 독립적이며 77개 fixture도 같은 순서의 페이지를 보인다.
+  이 결과는
+  합성 HTML 검증이며 제품 설치/실행이나 실제 작업 성공에 관한 증거가 아니다.
+- 미결정: 선택할 배치/조합, Slack 원본과의 차별성 검수, list-only 진입 키, 실제
+  데이터 가용성·밀도·최소 터미널 크기, font/host/tmux 성능. 이 HTML 승인은 앱 구현
+  승인과 별개다. 검증 결과는 최종 실행 receipt를 기준으로 보고한다.
+
 ## 세션별 F6 유지 토글 · 계정 표시 — 2026-10-19 / 최신 승인
 
 - 터미널 앱만 0.55.16으로 갱신·검증·로컬 설치한다. 데스크톱과 로그인/계정은 변경하지 않는다.
@@ -558,10 +616,10 @@ prompt. The agent PTY keeps running behind that view.
 
 ## Source of truth
 
-- Status: Active — Codex-only per-prompt input-row choice + optional exact-context preview approved; implementation/verification in progress. Claude is native only. Trace and native queue contracts remain; task/category gallery is unapproved.
-- Last refreshed: 2026-10-19 (latest Codex-only implementation scope; install not yet completed)
-- Primary product surfaces: Codex input-row routing choice, session list, native panes,
-  dedicated session trace window
+- Status: Active contract — latest approved session-local sticky Codex F6 toggle and pane-bound account labels remain authoritative. New quarter-view office gallery is Draft only; Claude remains native. Older per-prompt/F7 records are superseded.
+- Last refreshed: 2026-10-23 (office design draft; no application or install change)
+- Primary product surfaces: session list, native panes, Codex session-local F6 toggle,
+  dedicated session trace window; office is a proposed list presentation only
 - Evidence reviewed: README.md, mindplayer-core session/token models, the TUI
   entrypoint and renderer, startup_routing.rs, local_router.rs, spawn.rs,
   startup-check.mjs, actual PTY tests, and the local Codex JSONL event schema.
@@ -576,9 +634,9 @@ prompt. The agent PTY keeps running behind that view.
 
 ## Product goals
 
-- Routing goal: fresh Jev/native choice for every Codex prompt before Enter,
-  including queued and repeated text. Optional F7 preview shows the exact
-  bounded snapshot bound to that submission; no startup inheritance.
+- Routing goal: Codex session-local sticky F6 ON/OFF, initially OFF. Each actual
+  submission captures that session's current choice; later toggles preserve queued
+  input choices. No F7 context preview; Claude remains native.
 - Routing non-goals: Claude Jev, saved defaults, provider changes, queue ownership
   guessing, silent native fallback, full-history or automatic redaction claims.
 - Goals: open one session's trace from the list; explain token usage by turn;
@@ -630,9 +688,9 @@ prompt. The agent PTY keeps running behind that view.
 
 ## Components
 
-- Routing implementation: Codex native composer F6 selection, Enter submission,
-  optional initially closed F7 context; empty/selected/loading/available/error
-  states. Claude sessions have no selector or routing-status wrapper.
+- Routing implementation: Codex native composer sticky session-local F6 toggle,
+  Enter submission, immutable submitted choices; OFF/ON/loading/available/error
+  states. F7 context preview is removed. Claude has no routing selector/wrapper.
   Reuse the native pane's judgment/request/acceptance/execution/outcome model
   line, individual queue, original 4+3 composition, full-width quotas and Trace.
 - Existing components to reuse: session identity, agent/status colors, token

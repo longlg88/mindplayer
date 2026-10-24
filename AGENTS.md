@@ -2,6 +2,19 @@
 
 This file supplements, and does not override, working2's root AGENTS contract.
 
+- Public-repository privacy correction (2026-10-24): never put real employer,
+  customer, workspace, account labels, private repository namespaces, or local
+  workstation paths in source, fixtures, documentation, generated reports, or
+  commit messages. Use generic synthetic examples. A removal commit must not
+  repeat the removed identifiers in its message or trailers. Verify both the
+  current tree and all reachable historical file contents and commit/tag
+  metadata; a clean HEAD alone is not evidence that history is clean. Keep
+  agent runtime state out of version control. Rewriting published history
+  requires a concrete impact summary and explicit approval first.
+  A zero-result code search is not completion: inspect full commit bodies and
+  trailers, verify published commit search separately, and report retained
+  server-owned PR references. Never assume remaining hits are cache artifacts.
+
 - Latest UX override (2026-10-19, 0.55.16): Codex F6 is a session-local sticky
   ON/OFF toggle, initially OFF. Do not require repeated F6 for each prompt or
   invalidate the session mode on draft edits/submission. Copy the current mode

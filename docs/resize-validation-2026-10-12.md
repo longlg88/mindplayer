@@ -1,13 +1,15 @@
 # Codex resize/zoom fix — local validation, 2026-10-12
 
+Local workstation paths are anonymized with synthetic example-user identifiers; recorded evidence was not rerun.
+
 ## Source and installed binary
 
 - Base revision: `109c3e480d02edfadd02bb9e62460ac64558d3ff` (`v0.54.0`).
 - Source state: uncommitted resize fixes; dirty working tree. No commit or push.
 - Source/package and installed version: `0.54.1` (local patch build, not a published release).
-- Installed executable: `/Users/eden.jang/.local/bin/mindplayer`.
+- Installed executable: `/Users/example-user/.local/bin/mindplayer`.
 - Built and installed SHA-256: `8da19fc7d6c2989e47c34de4566be2e469b566125b37ad78f100418709b80762`.
-- Rollback executable: `/Users/eden.jang/.mindplayer/mindplayer-resize-rollback.1zdWv7/mindplayer-0.54.0`.
+- Rollback executable: `/Users/example-user/.mindplayer/mindplayer-resize-rollback.1zdWv7/mindplayer-0.54.0`.
 - Rollback version: `0.54.0`; SHA-256: `2e8c814b24a52de46d96442c6094cd251a71e23c3453ebe0c609a10e7538d650`.
 
 Existing user sessions were not terminated or restarted. A running old process
@@ -47,7 +49,7 @@ not a Codex guarantee or protocol-specified deadline.
 - `cargo clippy --workspace --all-targets -- -D warnings`: passed.
 - Workspace formatting, changed vendored-file formatting, and `git diff --check`: passed.
 - `cargo build --release -p mindplayer-tui`: passed; built from the patched source tree with its regression tests present.
-- `MINDPLAYER_TEST_BINARY=/Users/eden.jang/.local/bin/mindplayer cargo test -p mindplayer-tui --test smoke --quiet`: **13 passed, 1 fixture-only test ignored, 0 failed**. This exercises the exact installed release executable, not only a debug build or matching checksum.
+- `MINDPLAYER_TEST_BINARY=/Users/example-user/.local/bin/mindplayer cargo test -p mindplayer-tui --test smoke --quiet`: **13 passed, 1 fixture-only test ignored, 0 failed**. This exercises the exact installed release executable, not only a debug build or matching checksum.
 - Two real pane PTYs render an inline ratatui fixture. Width/height changes and zoom/restore repeat three times, checking exact restored geometry and stable physical semantic-row/prompt positions across changing paint ticks.
 - Regression tests cover first-draw geometry, history replay, saved cursor restore, tiny Korean-text panes, oversized pinned suffixes, cropped cursors, and height-only shrink with unused blank rows.
 - Independent review found a severe-height-shrink suffix truncation; the red reproducer was fixed. Follow-up review approved the allocation/cursor repair with no blocking findings.

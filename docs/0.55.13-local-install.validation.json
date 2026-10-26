@@ -1,4 +1,5 @@
 {
+  "pathAnonymization": "Local workstation paths are anonymized with synthetic example-user identifiers; recorded evidence was not rerun.",
   "schemaVersion": 1,
   "scope": "Requested local terminal-only version bump from 0.55.12 to 0.55.13; no behavior changes",
   "predecessor": "claude-jev-installed-2026-10-18.validation.json",
@@ -69,7 +70,7 @@
       "result": "GREEN"
     },
     {
-      "command": "env -u MINDPLAYER_VERSION -u MINDPLAYER_TEST_REAL_JEV -u NODE_OPTIONS -u CODEX_HOME MINDPLAYER_TEST_BINARY=/Users/eden.jang/.local/bin/mindplayer cargo test --locked -p mindplayer-tui --test smoke -- claude_jev_ claude_native_ embedded_router_ --nocapture --test-threads=1",
+      "command": "env -u MINDPLAYER_VERSION -u MINDPLAYER_TEST_REAL_JEV -u NODE_OPTIONS -u CODEX_HOME MINDPLAYER_TEST_BINARY=/Users/example-user/.local/bin/mindplayer cargo test --locked -p mindplayer-tui --test smoke -- claude_jev_ claude_native_ embedded_router_ --nocapture --test-threads=1",
       "exitCode": 0,
       "passed": 11,
       "failed": 0,
@@ -79,12 +80,12 @@
     {
       "command": "Fresh login shell: command -v mindplayer; separate mindplayer --version",
       "exitCode": 0,
-      "resolvedPath": "/Users/eden.jang/.local/bin/mindplayer",
+      "resolvedPath": "/Users/example-user/.local/bin/mindplayer",
       "output": "mindplayer 0.55.13"
     }
   ],
   "backup": {
-    "path": "/Users/eden.jang/.local/bin/mindplayer-0.55.12-rollback.vpxgef/mindplayer",
+    "path": "/Users/example-user/.local/bin/mindplayer-0.55.12-rollback.vpxgef/mindplayer",
     "version": "0.55.12",
     "sha256": "212fdaf7a08be7d6792427d76e96bb68256ce70cd5df1ad40162f76b6997c6e6",
     "verifiedBeforeReplacement": true
@@ -122,7 +123,7 @@
     "No remote release/tag/publication performed"
   ],
   "installation": {
-    "path": "/Users/eden.jang/.local/bin/mindplayer",
+    "path": "/Users/example-user/.local/bin/mindplayer",
     "version": "mindplayer 0.55.13",
     "sha256": "4595f893f68c5d8a0241e20030b2109c4582dba1dee836be4da6f5e0408f5c13",
     "releaseSha256": "4595f893f68c5d8a0241e20030b2109c4582dba1dee836be4da6f5e0408f5c13",

@@ -1,5 +1,7 @@
 # Session Jev toggle / 0.55.16
 
+Local workstation paths are anonymized with synthetic example-user identifiers; recorded evidence was not rerun.
+
 Approved scope: terminal MindPlayer only. Show the pane-bound Codex account,
 keep F6 Jev ON/OFF across prompts in the same running session, remove F7 context
 preview, bump source version and install the exact tested binary. Claude stays
@@ -56,7 +58,7 @@ Code Mode host must be tested through actual Core execution before activation.
 
 ## Completed local verification
 
-0.55.16 is installed at `/Users/eden.jang/.local/bin/mindplayer`. The final
+0.55.16 is installed at `/Users/example-user/.local/bin/mindplayer`. The final
 source and exact installed executable each passed the same 41 scoped Rust PTY
 smoke tests. The pinned private native candidate passed 47 contracts/cases
 (44 actual PTY cases, 45 isolated fixtures) and 57 native Rust regressions.
@@ -69,7 +71,7 @@ The test-only terminal projection was repaired from genuine retained ANSI and
 an independent Rust vt100 comparison; no product assertion was weakened.
 
 The paired old executable/native manifest remain in
-`/Users/eden.jang/.local/bin/mindplayer-0.55.15-rollback.P55Fp3`.
+`/Users/example-user/.local/bin/mindplayer-0.55.15-rollback.P55Fp3`.
 Existing running MindPlayer and child panes are not hot-patched: restart the app
 and reopen old panes. Desktop files are byte-identical. No live provider
 inference, login, global settings, commit or push was performed. Text-cell

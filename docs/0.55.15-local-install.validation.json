@@ -1,4 +1,5 @@
 {
+  "pathAnonymization": "Local workstation paths are anonymized with synthetic example-user identifiers; recorded evidence was not rerun.",
   "schemaVersion": 1,
   "status": "complete-installed-and-behaviorally-verified",
   "scope": "Terminal MindPlayer: Codex-only per-prompt Jev/native choice and optional exact state preview; remove Claude Jev runtime while preserving native Claude sessions/auth/accounts",
@@ -24,10 +25,10 @@
     { "check": "Final cargo fmt --all -- --check and git diff --check", "exitCode": 0 },
     { "check": "Release build from source 0.55.15 without version override", "exitCode": 0, "durationSeconds": 38.49, "version": "mindplayer 0.55.15", "sha256": "99a4839c9fa80d5dac02c7f4cfae7a9134c0526ff5733e866a1ee556d23864e1", "installed": true },
     { "check": "Frozen-source release rebuild", "exitCode": 0, "durationSeconds": 0.25, "sha256": "99a4839c9fa80d5dac02c7f4cfae7a9134c0526ff5733e866a1ee556d23864e1", "unchanged": true },
-    { "check": "Pinned native Codex v3 build.mjs: TUI/protocol/app-server plus CLI build", "exitCode": 0, "passed": 54, "failed": 0, "groups": [48, 4, 2], "log": "/private/tmp/mindplayer-native-v3-build.log", "candidate": "/Users/eden.jang/.mindplayer/native-codex/candidate-cbfaa977e4f5e580551a9c24abf97a94f47fb1a816028326f46069db57187570.json", "binarySha256": "cbfaa977e4f5e580551a9c24abf97a94f47fb1a816028326f46069db57187570", "patchSha256": "2aaada5bc54b24445910f36fe8355259d2b9fd75ecaf067e9d3d3ccaaf7d1079", "contract": "mindplayer-native-routing-v3", "version": "codex-cli 0.162.1", "sourceSha256BeforeAndAfter": "a6c97c717029278cab8ef3336e4aca0996c34a06748d0b72a81f9b2b97f8b460", "incremental": false, "offlineCargo": true, "activated": true },
+    { "check": "Pinned native Codex v3 build.mjs: TUI/protocol/app-server plus CLI build", "exitCode": 0, "passed": 54, "failed": 0, "groups": [48, 4, 2], "log": "/private/tmp/mindplayer-native-v3-build.log", "candidate": "/Users/example-user/.mindplayer/native-codex/candidate-cbfaa977e4f5e580551a9c24abf97a94f47fb1a816028326f46069db57187570.json", "binarySha256": "cbfaa977e4f5e580551a9c24abf97a94f47fb1a816028326f46069db57187570", "patchSha256": "2aaada5bc54b24445910f36fe8355259d2b9fd75ecaf067e9d3d3ccaaf7d1079", "contract": "mindplayer-native-routing-v3", "version": "codex-cli 0.162.1", "sourceSha256BeforeAndAfter": "a6c97c717029278cab8ef3336e4aca0996c34a06748d0b72a81f9b2b97f8b460", "incremental": false, "offlineCargo": true, "activated": true },
     { "check": "Same 37 source Rust smoke tests after fixture notification guard repair", "passed": 37, "failed": 0, "exitCode": 0, "durationSeconds": 85.17, "log": "/private/tmp/mindplayer-per-prompt-smoke-source-2.tap", "note": "Real Rust PTY/embedded production router, synthetic native composer/backend/judge; not private native-composer proof." },
     { "check": "Final frozen-source 37 Rust PTY smoke rerun", "passed": 37, "failed": 0, "exitCode": 0, "durationSeconds": 80.92, "log": "/private/tmp/mindplayer-per-prompt-smoke-source-frozen.tap", "sourceSha256BeforeAndAfter": "a6c97c717029278cab8ef3336e4aca0996c34a06748d0b72a81f9b2b97f8b460", "unchanged": true },
-    { "check": "Exact installed 0.55.15 executable, same 37 Rust PTY smoke tests", "passed": 37, "failed": 0, "filtered": 29, "exitCode": 0, "durationSeconds": 77.03, "binaryOverride": "/Users/eden.jang/.local/bin/mindplayer", "versionOverride": false, "log": "/private/tmp/mindplayer-per-prompt-smoke-installed.tap", "sourceSha256BeforeAndAfter": "ef03a352ce5655a687de1a4db581680ae0719d03317a6839fcb0d7a9808f7554", "unchanged": true, "scope": "Actual installed Rust app/PTY and embedded production router; synthetic native composer/backend/judge. Actual private native composer separately passed all 41 tests against the now-active exact candidate." },
+    { "check": "Exact installed 0.55.15 executable, same 37 Rust PTY smoke tests", "passed": 37, "failed": 0, "filtered": 29, "exitCode": 0, "durationSeconds": 77.03, "binaryOverride": "/Users/example-user/.local/bin/mindplayer", "versionOverride": false, "log": "/private/tmp/mindplayer-per-prompt-smoke-installed.tap", "sourceSha256BeforeAndAfter": "ef03a352ce5655a687de1a4db581680ae0719d03317a6839fcb0d7a9808f7554", "unchanged": true, "scope": "Actual installed Rust app/PTY and embedded production router; synthetic native composer/backend/judge. Actual private native composer separately passed all 41 tests against the now-active exact candidate." },
     { "check": "Pinned native Codex TUI strict Clippy for the owned crate", "command": "cargo clippy --locked --offline --profile dev-small -p codex-tui --lib --no-deps -- -D warnings", "exitCode": 0, "durationSeconds": 137, "log": "/private/tmp/mindplayer-native-v3-clippy-owned.log", "note": "Dependency-inclusive strict Clippy exited 101 on unchanged upstream app-server/src/message_processor.rs:372 clippy::let_and_return, verified against pinned HEAD; no upstream source was edited or lint assertion suppressed." },
     { "check": "Actual private native Core executes sibling Code Mode host and receives its correlated output", "status": "passed", "pureHarnessTestsPassed": 8, "providerCalls": 0, "paidInference": false, "result": "/private/tmp/mindplayer-code-mode-offline.kAkNfnKB/run-iOhADQ/result.json", "nativeSha256": "cbfaa977e4f5e580551a9c24abf97a94f47fb1a816028326f46069db57187570", "hostSha256": "0960435a104cf926e18bb938b8f6f8fcdf7e27be0c8d88e1911bc22a1de7d3e6", "cliPid": 7072, "hostPid": 7095, "hostParentPid": 7072, "model": "gpt-5.6-luna", "codeModeOnlyCatalogUnmodified": true, "localhostResponsesRequests": 2, "actualConsumer": "Second Core Responses request includes custom_tool_call_output with the exact call_id and random marker emitted by real sibling-host JavaScript execution", "networkBoundary": "OS sandbox denies outbound except loopback; isolated HOME/CODEX_HOME; synthetic provider requires no OpenAI auth", "cleanup": { "ownedPidsChecked": 5, "alivePids": [], "proxyPort": 61124, "portClosed": true }, "limitation": "Proves cell execution and actual Core receipt, not nested tool dispatch, model inference quality or native UI rendering." },
     { "check": "Unchanged exact startup resize/list-q contract, three additional isolated repetitions", "passed": 3, "failed": 0, "exitCode": 0, "note": "1.66s/1.71s/1.67s. Initial failure was not reproduced; cause remains unresolved, not claimed repaired." }
@@ -52,22 +53,22 @@
     "installedSmoke": { "suite": 23769, "fixtureRoots": 39, "pidsChecked": 37, "alivePids": [], "portsChecked": 17, "openPorts": [], "interrupted": false, "markersRetained": true }
   },
   "rollback": {
-    "directory": "/Users/eden.jang/.local/bin/mindplayer-0.55.14-rollback.u5rinP",
+    "directory": "/Users/example-user/.local/bin/mindplayer-0.55.14-rollback.u5rinP",
     "binaryVersion": "mindplayer 0.55.14",
     "binarySha256": "1d3af388be981877ed2c297b0b7c97ecb01bae4adce8c2d66cdd9d325aadf43a",
     "nativeManifestSha256": "5c2a0e37384a65d2b54f2238e819e8f3d90bdfea28140dcf3b71013fbdfeab83",
     "verifiedBeforeReplacement": true
   },
   "installation": {
-    "path": "/Users/eden.jang/.local/bin/mindplayer",
+    "path": "/Users/example-user/.local/bin/mindplayer",
     "version": "mindplayer 0.55.15",
     "sha256": "99a4839c9fa80d5dac02c7f4cfae7a9134c0526ff5733e866a1ee556d23864e1",
     "matchesFreshReleaseBuild": true,
     "finalFrozenRebuildExitCode": 0,
     "finalFrozenRebuildSeconds": 0.32,
-    "nativeManifest": "/Users/eden.jang/.mindplayer/native-codex/active.json",
+    "nativeManifest": "/Users/example-user/.mindplayer/native-codex/active.json",
     "nativeManifestSha256": "8435fb0063ed027eacada0d7df114afe84420aa0b5774cebcf6bbf93c8c57ee6",
-    "nativeBinary": "/Users/eden.jang/.mindplayer/native-codex/builds/cbfaa977e4f5e580551a9c24abf97a94f47fb1a816028326f46069db57187570/codex",
+    "nativeBinary": "/Users/example-user/.mindplayer/native-codex/builds/cbfaa977e4f5e580551a9c24abf97a94f47fb1a816028326f46069db57187570/codex",
     "nativeContract": "mindplayer-native-routing-v3",
     "pairedActivationVerified": true,
     "freshLoginShellPathAndVersionVerified": true,

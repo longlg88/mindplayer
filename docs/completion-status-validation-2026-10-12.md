@@ -1,5 +1,7 @@
 # Codex completion borders — local validation, 2026-10-12
 
+Local workstation paths are anonymized with synthetic example-user identifiers; recorded evidence was not rerun.
+
 ## Result and source
 
 Approved direction A is implemented in local MindPlayer **0.54.2**. Pane
@@ -13,9 +15,9 @@ unchanged: their geometry calculation was not modified.
 - Source state: dirty working tree, including the preceding 0.54.1 resize fixes
   and their regression tests. Existing changes were preserved. No commit/push.
 - Source/package and installed version: `0.54.2`, a local patch build.
-- Installed executable: `/Users/eden.jang/.local/bin/mindplayer`.
+- Installed executable: `/Users/example-user/.local/bin/mindplayer`.
 - Built and installed SHA-256: `cd5919b405053d75b3d590573e7a7639dab85709e04cf8a23de6a7f75a0f7bb4`.
-- Rollback executable: `/Users/eden.jang/.mindplayer/mindplayer-status-rollback.NTNztX/mindplayer-0.54.1`.
+- Rollback executable: `/Users/example-user/.mindplayer/mindplayer-status-rollback.NTNztX/mindplayer-0.54.1`.
 - Rollback version: `0.54.1`; SHA-256: `8da19fc7d6c2989e47c34de4566be2e469b566125b37ad78f100418709b80762`.
 
 The previous executable was copied and verified before an atomic replacement.
@@ -68,7 +70,7 @@ resurrect green via a delayed old completion.
 - `cargo clippy --workspace --all-targets -- -D warnings`: passed.
 - `cargo fmt --all --check` and `git diff --check`: passed.
 - `cargo build --release`: passed, without a version environment override.
-- `MINDPLAYER_TEST_BINARY=/Users/eden.jang/.local/bin/mindplayer cargo test
+- `MINDPLAYER_TEST_BINARY=/Users/example-user/.local/bin/mindplayer cargo test
   -p mindplayer-tui --test smoke --quiet -- --test-threads=1`: **18 passed,
   1 fixture-only test ignored, 0 failed** in 47.61 seconds. These tests execute
   the installed release, not only a debug build or matching checksum.

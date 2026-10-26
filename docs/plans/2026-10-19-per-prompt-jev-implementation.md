@@ -1,5 +1,7 @@
 # Per-prompt Jev implementation / 2026-10-19
 
+Local workstation paths are anonymized with synthetic example-user identifiers; recorded evidence was not rerun.
+
 Status: completed and locally installed as 0.55.15. Claude Jev runtime/bundle was
 removed; native Claude sessions/auth/accounts remain and show no Jev selector.
 Codex has a fresh F6 Jev/native choice for every prompt and optional F7 exact
@@ -141,7 +143,7 @@ cross-provider scope. Do not silently choose any of these alternatives.
 ## Version and installation gate
 
 Existing source/installed version: 0.55.14. Installed executable:
-`/Users/eden.jang/.local/bin/mindplayer`, SHA256
+`/Users/example-user/.local/bin/mindplayer`, SHA256
 `1d3af388be981877ed2c297b0b7c97ecb01bae4adce8c2d66cdd9d325aadf43a`.
 Source HEAD: `54529865aa69ef134c25b88a78c8139ce99b181f`, dirty.
 

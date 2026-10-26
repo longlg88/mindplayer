@@ -1,4 +1,5 @@
 {
+  "pathAnonymization": "Local workstation paths are anonymized with synthetic example-user identifiers; recorded evidence was not rerun.",
   "schemaVersion": 1,
   "date": "2026-10-16",
   "status": "partial-verified-native-effort-busy-input-blocked",
@@ -25,7 +26,7 @@
     ]
   },
   "installedUnchanged": {
-    "path": "/Users/eden.jang/.local/bin/mindplayer",
+    "path": "/Users/example-user/.local/bin/mindplayer",
     "version": "mindplayer 0.55.9",
     "sha256": "9a2b14c704dcbab0545d01bbd16ba0e27d1df05c7863daa3b82bf3c3e774e853",
     "liveUserPanesInterrupted": false

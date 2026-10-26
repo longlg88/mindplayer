@@ -44,6 +44,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+      - name: release version regressions
+        run: python3 -B .github/test-next-version.py
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy

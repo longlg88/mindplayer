@@ -3,7 +3,7 @@ name: Release
 # On every push to main: run the full functional gate, and ONLY if it is green
 # compute the next version (from RELEASE.md rules + commit messages), tag it, and
 # publish a GitHub Release with prebuilt binaries. No release-worthy commits
-# (only docs/chore/ci/test/style) → no release.
+# (only docs/chore/ci/test/style) → no release unless an exact Release-As is set.
 on:
   push:
     branches: [main]
@@ -21,6 +21,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+      - name: release version regressions
+        run: python3 -B .github/test-next-version.py
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
@@ -63,11 +65,11 @@ jobs:
           if [ -z "$LAST_TAG" ]; then
             CURRENT="$(grep -m1 '^version = ' Cargo.toml | sed 's/.*"\(.*\)".*/\1/')"
             echo "no prior tag; baseline $CURRENT, scanning full history"
-            git log --format=%B%x00 | python3 .github/next-version.py RELEASE.md "$CURRENT"
+            git log --format=%B%x00 | python3 -B .github/next-version.py RELEASE.md "$CURRENT"
           else
             CURRENT="${LAST_TAG#v}"
             echo "last tag $LAST_TAG; scanning $LAST_TAG..HEAD"
-            git log "$LAST_TAG..HEAD" --format=%B%x00 | python3 .github/next-version.py RELEASE.md "$CURRENT"
+            git log "$LAST_TAG..HEAD" --format=%B%x00 | python3 -B .github/next-version.py RELEASE.md "$CURRENT"
           fi
 
   release:

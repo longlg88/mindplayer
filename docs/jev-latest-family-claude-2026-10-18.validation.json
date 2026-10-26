@@ -1,4 +1,5 @@
 {
+  "pathAnonymization": "Local workstation paths are anonymized with synthetic example-user identifiers; recorded evidence was not rerun.",
   "schemaVersion": 1,
   "verifiedAt": "2026-10-17T23:52:41Z",
   "scope": "Terminal Codex latest-family source implementation; Claude native integration blocked pending a scope decision",
@@ -120,7 +121,7 @@
   },
   "untouchedBoundaries": {
     "desktopManifestSha256BeforeAndAfter": "0dd58825f167f09945726523ce7d1f68c6c9edf5a0603554634d6142cf02780f",
-    "installedBinary": "/Users/eden.jang/.local/bin/mindplayer",
+    "installedBinary": "/Users/example-user/.local/bin/mindplayer",
     "installedVersionUnchanged": "0.55.12",
     "installedSha256BeforeAndAfter": "391b1ee07a166a9b9300b8d3e3bd35599b5e45ceaf2367be49e7f0c8d77918fe",
     "releaseBuildOrInstall": false,

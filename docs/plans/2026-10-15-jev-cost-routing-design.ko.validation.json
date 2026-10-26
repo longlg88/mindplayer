@@ -1,11 +1,12 @@
 {
+  "path_anonymization": "Local workstation paths are anonymized with synthetic example-user identifiers; recorded evidence was not rerun.",
   "verified_at": "2026-10-15T07:32:43.119Z",
   "artifact": "docs/plans/2026-10-15-jev-cost-routing-design.ko.html",
   "artifact_sha256": "2d47939aca7055616fc4e1e28edc71a08d8737bebe44300dd606594831761a45",
   "source_revision": "54529865aa69ef134c25b88a78c8139ce99b181f",
   "source_dirty": true,
   "test": "docs/tests/jev-cost-routing-design.test.cjs",
-  "playwright_module": "/Users/eden.jang/.npm/_npx/e41f203b7505f1fb/node_modules/playwright",
+  "playwright_module": "/Users/example-user/.npm/_npx/e41f203b7505f1fb/node_modules/playwright",
   "browser": "Chrome 155.0.8059.80",
   "viewports": [[1440, 1000], [969, 822], [390, 844]],
   "screenshots": "/var/folders/t8/nkh_jkgj0db5bs30rywyn4gr0000gq/T/mindplayer-jev-design-1gJROy",

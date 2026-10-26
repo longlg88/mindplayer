@@ -38,6 +38,16 @@ impl Parser {
         }
     }
 
+    /// Drains terminal replies generated while processing child output.
+    ///
+    /// Replies capture the live child cursor at query time, independently of
+    /// presentation snapshots. Write these bytes to the child PTY after
+    /// releasing the parser lock. Pending replies are capped at 32 KiB;
+    /// overflow drops whole later replies until the queue is drained.
+    pub fn take_terminal_replies(&mut self) -> Vec<u8> {
+        self.screen.take_terminal_replies()
+    }
+
     /// Resizes the terminal.
     pub fn set_size(&mut self, rows: u16, cols: u16) {
         // Resizing may terminate synchronization early; never present a
@@ -131,6 +141,173 @@ impl std::io::Write for Parser {
 
     fn flush(&mut self) -> std::io::Result<()> {
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod terminal_reply_tests {
+    use super::Parser;
+
+    #[test]
+    fn cpr_captures_each_query_position_and_drains_once() {
+        let mut parser = Parser::new(4, 12, 0);
+        assert!(parser.take_terminal_replies().is_empty());
+        parser.process(b"\x1b[2;3H\x1b[6n\x1b[4;11H\x1b[6n\x1b[H");
+        assert_eq!(parser.take_terminal_replies(), b"\x1b[2;3R\x1b[4;11R");
+        assert_eq!(parser.screen().cursor_position(), (0, 0));
+        assert!(parser.take_terminal_replies().is_empty());
+    }
+
+    #[test]
+    fn cpr_waits_for_the_final_byte_across_every_split() {
+        let query = b"\x1b[6n";
+        for split in 0..query.len() {
+            let mut parser = Parser::new(4, 12, 0);
+            parser.process(b"\x1b[3;7H");
+            parser.process(&query[..split]);
+            assert!(parser.take_terminal_replies().is_empty());
+            parser.process(&query[split..]);
+            assert_eq!(parser.take_terminal_replies(), b"\x1b[3;7R");
+        }
+        let mut parser = Parser::new(4, 12, 0);
+        for byte in b"\x1b[6" {
+            parser.process(&[*byte]);
+            assert!(parser.take_terminal_replies().is_empty());
+        }
+        parser.process(b"n");
+        assert_eq!(parser.take_terminal_replies(), b"\x1b[1;1R");
+    }
+
+    #[test]
+    fn cpr_ignores_other_queries_parameters_and_string_payloads() {
+        let mut parser = Parser::new(4, 12, 0);
+        for input in [
+            b"\x1b[5n".as_slice(),
+            b"\x1b[?6n",
+            b"\x1b[n",
+            b"\x1b[0n",
+            b"\x1b[6;1n",
+            b"\x1b[6;n",
+            b"\x1b[;6n",
+            b"\x1b[6:1n",
+            b"\x1b[6:0n",
+            b"\x1b[6$n",
+            b"\x1b[6\x18n",
+            b"\x1b]2;payload [6n\x07",
+            b"\x1bPqpayload [6n\x1b\\",
+        ] {
+            parser.process(input);
+            assert!(parser.take_terminal_replies().is_empty(), "{input:?}");
+        }
+        // Overflowed parameter storage must not turn a malformed CSI into DSR.
+        let mut malformed = b"\x1b[6".to_vec();
+        malformed.extend_from_slice(&b";0".repeat(64));
+        malformed.push(b'n');
+        parser.process(&malformed);
+        assert!(parser.take_terminal_replies().is_empty());
+        parser.process(b"\x1b[H\x1b[6n");
+        assert_eq!(parser.take_terminal_replies(), b"\x1b[1;1R");
+    }
+
+    #[test]
+    fn cpr_uses_live_state_not_the_synchronized_snapshot() {
+        let mut parser = Parser::new(4, 12, 0);
+        parser.process(b"\x1b[2;3H\x1b[6n\x1b[?2026h\x1b[4;9H\x1b[6n");
+        assert_eq!(parser.render_screen().cursor_position(), (1, 2));
+        assert_eq!(parser.screen().cursor_position(), (3, 8));
+        assert!(parser
+            .synchronized_frame
+            .as_mut()
+            .unwrap()
+            .take_terminal_replies()
+            .is_empty());
+        assert_eq!(parser.take_terminal_replies(), b"\x1b[2;3R\x1b[4;9R");
+        parser.process(b"\x1b[?2026l");
+        assert!(parser.take_terminal_replies().is_empty());
+    }
+
+    #[test]
+    fn cpr_uses_active_grid_and_ignores_user_scrollback() {
+        let mut parser = Parser::new(3, 12, 10);
+        parser.process(b"history\r\nfirst\r\nsecond\r\nthird\x1b[2;4H");
+        parser.set_scrollback(1);
+        assert_eq!(parser.screen().scrollback(), 1);
+        parser.process(b"\x1b[6n\x1b[?1049h\x1b[3;8H\x1b[6n\x1b[?1049l\x1b[6n");
+        assert_eq!(
+            parser.take_terminal_replies(),
+            b"\x1b[2;4R\x1b[3;8R\x1b[2;4R"
+        );
+    }
+
+    #[test]
+    fn cpr_survives_resize_and_reports_the_new_geometry() {
+        let mut parser = Parser::new(4, 12, 0);
+        parser.process(b"\x1b[4;11H\x1b[6n\x1b[6");
+        parser.set_size(2, 6);
+        let cursor = parser.screen().cursor_position();
+        parser.process(b"n");
+        let expected = format!("\x1b[4;11R\x1b[{};{}R", cursor.0 + 1, cursor.1 + 1);
+        assert_eq!(parser.take_terminal_replies(), expected.as_bytes());
+    }
+
+    #[test]
+    fn cpr_clamps_pending_wrap_and_wide_character_columns() {
+        let mut parser = Parser::new(2, 3, 0);
+        parser.process(b"abc\x1b[6n");
+        assert_eq!(parser.screen().cursor_position(), (0, 3));
+        parser.process(b"d\x1b[6n");
+        assert_eq!(parser.take_terminal_replies(), b"\x1b[1;3R\x1b[2;2R");
+        let mut wide = Parser::new(2, 2, 0);
+        wide.process("한\x1b[6n".as_bytes());
+        assert_eq!(wide.take_terminal_replies(), b"\x1b[1;2R");
+    }
+
+    #[test]
+    fn cpr_preserves_queued_replies_across_terminal_reset() {
+        let mut parser = Parser::new(4, 12, 0);
+        parser.process(b"\x1b[3;7H\x1b[6n\x1bc\x1b[6n");
+        assert_eq!(parser.take_terminal_replies(), b"\x1b[3;7R\x1b[1;1R");
+    }
+
+    #[test]
+    fn cpr_bounds_whole_replies_across_chunks_and_recovers_after_drain() {
+        let mut parser = Parser::new(4, 12, 0);
+        parser.process(&b"\x1b[6n".repeat(4_000));
+        parser.process(&b"\x1b[6n".repeat(4_000));
+        let replies = parser.take_terminal_replies();
+        let reply = b"\x1b[1;1R";
+        assert_eq!(replies.len(), (32 * 1024 / reply.len()) * reply.len());
+        assert!(replies
+            .chunks_exact(reply.len())
+            .all(|chunk| chunk == reply));
+        assert!(parser.take_terminal_replies().is_empty());
+        parser.process(b"\x1b[2;3H\x1b[6n");
+        assert_eq!(parser.take_terminal_replies(), b"\x1b[2;3R");
+    }
+
+    #[test]
+    fn cpr_fits_every_query_from_an_eight_kibibyte_pty_read() {
+        let mut parser = Parser::new(1, u16::MAX, 0);
+        parser.process(b"\x1b[1;65535H");
+        parser.process(&b"\x1b[6n".repeat(8_192 / 4));
+        let replies = parser.take_terminal_replies();
+        let reply = b"\x1b[1;65535R";
+        assert_eq!(replies.len(), reply.len() * (8_192 / 4));
+        assert!(replies
+            .chunks_exact(reply.len())
+            .all(|chunk| chunk == reply));
+    }
+
+    #[test]
+    fn cpr_uses_page_coordinates_unless_origin_mode_is_enabled() {
+        let mut parser = Parser::new(8, 12, 0);
+        parser.process(b"\x1b[3;6r\x1b[4;7H\x1b[6n");
+        assert_eq!(parser.take_terminal_replies(), b"\x1b[4;7R");
+        parser.process(b"\x1b[?6h\x1b[2;8H\x1b[06n");
+        assert_eq!(parser.screen().cursor_position(), (3, 7));
+        assert_eq!(parser.take_terminal_replies(), b"\x1b[2;8R");
+        parser.process(b"\x1b7\x1b[?6l\x1b[5;9H\x1b[6n\x1b8\x1b[6n");
+        assert_eq!(parser.take_terminal_replies(), b"\x1b[5;9R\x1b[2;8R");
     }
 }
 

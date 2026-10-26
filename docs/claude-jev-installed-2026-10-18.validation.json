@@ -1,4 +1,5 @@
 {
+  "pathAnonymization": "Local workstation paths are anonymized with synthetic example-user identifiers; recorded evidence was not rerun.",
   "schemaVersion": 1,
   "scope": "Terminal MindPlayer: Codex and Claude Jev current-family model/effort selection; approved Claude native best-effort exception",
   "source": {
@@ -124,7 +125,7 @@
       "durationSeconds": 33.67
     },
     {
-      "command": "env MINDPLAYER_TEST_BINARY=/Users/eden.jang/.local/bin/mindplayer cargo test --locked -p mindplayer-tui --test smoke claude_ -- --nocapture --test-threads=1 (real-provider opt-ins removed)",
+      "command": "env MINDPLAYER_TEST_BINARY=/Users/example-user/.local/bin/mindplayer cargo test --locked -p mindplayer-tui --test smoke claude_ -- --nocapture --test-threads=1 (real-provider opt-ins removed)",
       "exitCode": 0,
       "passed": 18,
       "failed": 0,
@@ -137,7 +138,7 @@
       "note": "Expected no matches: production account labels/company names not hardcoded"
     },
     {
-      "command": "env MINDPLAYER_TEST_BINARY=/Users/eden.jang/.local/bin/mindplayer cargo test --locked -p mindplayer-tui --test smoke embedded_router_ -- --nocapture --test-threads=1 (real-provider opt-ins removed)",
+      "command": "env MINDPLAYER_TEST_BINARY=/Users/example-user/.local/bin/mindplayer cargo test --locked -p mindplayer-tui --test smoke embedded_router_ -- --nocapture --test-threads=1 (real-provider opt-ins removed)",
       "exitCode": 0,
       "passed": 5,
       "failed": 0,
@@ -300,12 +301,12 @@
     "Existing live panes are not hot-switched by binary replacement"
   ],
   "installation": {
-    "path": "/Users/eden.jang/.local/bin/mindplayer",
+    "path": "/Users/example-user/.local/bin/mindplayer",
     "version": "mindplayer 0.55.12",
     "sha256": "212fdaf7a08be7d6792427d76e96bb68256ce70cd5df1ad40162f76b6997c6e6",
     "releaseSha256": "212fdaf7a08be7d6792427d76e96bb68256ce70cd5df1ad40162f76b6997c6e6",
     "previousSha256": "391b1ee07a166a9b9300b8d3e3bd35599b5e45ceaf2367be49e7f0c8d77918fe",
-    "rollbackPath": "/Users/eden.jang/.local/bin/mindplayer-claude-jev-rollback.lSSrUb/mindplayer",
+    "rollbackPath": "/Users/example-user/.local/bin/mindplayer-claude-jev-rollback.lSSrUb/mindplayer",
     "rollbackSha256": "391b1ee07a166a9b9300b8d3e3bd35599b5e45ceaf2367be49e7f0c8d77918fe",
     "method": "Verified regular targets and unchanged backup, exclusive staged copy+checksum, atomic rename; no version override, desktop build or running-pane shutdown",
     "behavioralAcceptance": {

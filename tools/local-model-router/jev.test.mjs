@@ -2,7 +2,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { getEventListeners } from 'node:events';
 import { inspect } from 'node:util';
+import { setImmediate as tick } from 'node:timers/promises';
 import { QUESTIONS, JevError, createJevClient, validateJudgment } from './jev.mjs';
+import { JevService } from './service.mjs';
+import { ModelRouter } from './router.mjs';
 import { RUBRIC_VERSION, RUBRIC_INSTRUCTIONS, CONFIGURATION_INSTRUCTIONS, buildJudgmentSnapshot } from './rubric.mjs';
 
 const API_KEY = 'test-key-SECRET_CANARY';
@@ -48,6 +51,137 @@ function streamResponse(chunks, { status = 200, headers, finish = true, cancel =
 test('exports exactly the four agreed entry points', async () => {
   assert.deepEqual(Object.keys(await import('./jev.mjs')).sort(), ['QUESTIONS', 'JevError', 'createJevClient', 'validateJudgment'].sort());
 });
+
+test('capacity recovery reaches the real wire question without treating c0 as a safe fallback', async () => {
+  const configurations = [{ model: 'synthetic-healthy', effort: 'high', description: 'Synthetic eligible alternative' }];
+  const state = buildJudgmentSnapshot({ input: 'A self-contained task', baseline: { model: 'synthetic-blocked', effort: 'high' } });
+  const f = mocked((_, init) => {
+    const request = JSON.parse(init.body);
+    assert.deepEqual(request.state, state);
+    assert.deepEqual(Object.keys(request.questions.configuration.criteria), ['c0', 'abstain']);
+    assert.deepEqual(request.questions.configuration.criteria.c0, configurations[0]);
+    assert.equal(typeof request.questions.configuration.criteria.abstain, 'string');
+    assert.match(request.questions.configuration.instructions, /CAPACITY_RECOVERY:/);
+    assert.match(request.questions.configuration.instructions, /NOT a validated fallback/);
+    assert.match(request.questions.configuration.instructions, /select abstain/);
+    assert.doesNotMatch(request.questions.configuration.instructions, /report required_capability unknown/);
+    assert.doesNotMatch(JSON.stringify(request.questions.configuration.criteria), /synthetic-blocked/);
+    const body = fixture();
+    body.answers.configuration = { type: 'choice', choice: 'c0', confidence: 1, probabilities: { c0: 1, abstain: 0 } };
+    return jsonResponse(body);
+  }, { configurations, capacityRecovery: true });
+  const judgment = await f.judge(state);
+  assert.equal(judgment.configuration.model, 'synthetic-healthy');
+  assert.equal(f.calls(), 1);
+});
+
+test('capacity recovery cannot accept a model outside the supplied wire menu', async () => {
+  const f = mocked(() => {
+    const body = fixture();
+    body.answers.configuration = { type: 'choice', choice: 'c1', confidence: 1, probabilities: { c0: 0, c1: 1 } };
+    return jsonResponse(body);
+  }, { configurations: [{ model: 'synthetic-healthy', effort: 'high', description: '' }], capacityRecovery: true });
+  await assert.rejects(f.judge({ baseline: { model: 'synthetic-blocked', effort: 'high' } }), safeError('invalid-response'));
+  assert.equal(f.calls(), 1);
+  assert.throws(() => mocked(() => jsonResponse(), { capacityRecovery: 'true' }), safeError('invalid-config'));
+});
+
+test('configuration abstention is normalized without inventing a model and is forbidden outside recovery', () => {
+  const configurations = [{ model: 'synthetic-healthy', effort: 'high', description: '' }];
+  const body = fixture();
+  body.answers.configuration = { type: 'choice', choice: 'abstain', confidence: 1, probabilities: { c0: 0, abstain: 1 } };
+  assert.deepEqual(validateJudgment(body, { configurations, capacityRecovery: true }).configuration,
+    { choice: 'abstain', confidence: 1, probabilities: { c0: 0, abstain: 1 } });
+  assert.throws(() => validateJudgment(body, { configurations }), safeError('invalid-response'));
+  assert.throws(() => validateJudgment(body, { configurations, capacityRecovery: 'true' }), safeError('invalid-config'));
+  assert.throws(() => createJevClient({ ...OPTIONS, capacityRecovery: true }), safeError('invalid-config'));
+});
+
+test('capacity recovery reserves abstention bytes before filling a bounded criteria menu', async t => {
+  const catalog = ['model-a', ...Array.from({ length: 8 }, (_, i) => `model-b${i}`)].map((model, index) => ({
+    model, description: index ? 'x'.repeat(950) : 'base', inputModalities: ['text'],
+    supportedReasoningEfforts: [{ reasoningEffort: 'high' }], defaultReasoningEffort: 'high',
+  }));
+  const sent = [], received = [], wires = [];
+  const service = new JevService({ catalog, accountHome: '/synthetic/account',
+    account: { type: 'chatgpt', email: 'fixture@example.invalid' }, expectedThreadId: 'main', apiKey: 'synthetic-key',
+    externalPromptTransfer: true, requirePromptChoice: true, policyReader: () => null, judgmentLimits: { cooldownMs: 0 },
+    judgeFactory: options => createJevClient({ ...options, fetchImpl: async (_, init) => {
+      const wire = JSON.parse(init.body); wires.push(wire);
+      const body = fixture();
+      body.answers.context_sufficient.noul = 1;
+      body.answers.configuration = { type: 'choice', choice: 'c0', confidence: 1,
+        probabilities: Object.fromEntries(Object.keys(wire.questions.configuration.criteria).map(key => [key, Number(key === 'c0')])) };
+      return jsonResponse(body);
+    } }) });
+  const router = new ModelRouter({ catalog, service, toServer: message => sent.push(message), toClient: message => received.push(message) });
+  t.after(() => router.close());
+  router.client({ id: 'start', method: 'thread/start', params: { threadId: 'main', ephemeral: false, sessionStartSource: 'startup' } });
+  router.server({ id: 'start', result: { thread: { id: 'main', source: 'cli', ephemeral: false },
+    model: 'model-a', reasoningEffort: 'high', modelProvider: 'synthetic' } });
+  const turn = id => ({ id, method: 'turn/start', params: { threadId: 'main', model: 'model-a', effort: 'high',
+    input: [{ type: 'text', text: 'A self-contained synthetic task' }], mindplayerRoutingChoice: { mode: 'jev', includeRecent: false } } });
+  router.client(turn('first')); await tick();
+  assert.equal(wires.length, 1);
+  const normal = wires[0].questions.configuration.criteria;
+  assert.equal(Object.keys(normal).length, 9);
+  assert.ok(Buffer.byteLength(JSON.stringify(normal)) <= 8192);
+  router.server({ id: 'first', result: { turn: { id: 'failed-turn' } } });
+  router.server({ method: 'turn/completed', params: { threadId: 'main', turn: { id: 'failed-turn', status: 'failed',
+    error: { message: 'Synthetic overload', codexErrorInfo: 'serverOverloaded' } } } });
+  router.client(turn('followup')); await tick();
+  assert.equal(wires.length, 2, 'recovery reaches Jev instead of failing client configuration');
+  const recovery = wires[1].questions.configuration.criteria;
+  assert.equal(typeof recovery.abstain, 'string');
+  assert.ok(Buffer.byteLength(JSON.stringify(recovery)) <= 8192, 'the complete criteria, including abstain, retain the strict limit');
+  assert.equal(Object.keys(recovery).length, 8, 'seven alternatives plus abstain fit without silently dropping the no-match option');
+  assert.ok(!Object.values(recovery).some(value => value?.model === 'model-a'));
+  assert.equal(sent.filter(message => message.method === 'turn/start').length, 2);
+  assert.equal(sent.find(message => message.id === 'followup')?.params.model, 'model-b0');
+  assert.equal(received.some(message => message.id === 'followup' && message.error), false);
+});
+
+for (const reason of ['unclear alternative suitability', 'insufficient context']) {
+  test(`capacity recovery stops ${reason} through the real validator and router`, async t => {
+    const catalog = ['synthetic-blocked', 'synthetic-healthy'].map(model => ({ model, description: 'Synthetic text model',
+      inputModalities: ['text'], supportedReasoningEfforts: [{ reasoningEffort: 'high' }], defaultReasoningEffort: 'high' }));
+    const sent = [], received = [], audit = [], wires = [];
+    const service = new JevService({ catalog, accountHome: '/synthetic/account',
+      account: { type: 'chatgpt', email: 'fixture@example.invalid' }, expectedThreadId: 'main',
+      apiKey: 'synthetic-key', externalPromptTransfer: true, requirePromptChoice: true, policyReader: () => null,
+      judgmentLimits: { cooldownMs: 0 },
+      judgeFactory: options => createJevClient({ ...options, fetchImpl: async (_, init) => {
+        const wire = JSON.parse(init.body); wires.push(wire);
+        const choice = reason === 'unclear alternative suitability' ? 'abstain' : 'c0';
+        const body = fixture();
+        body.answers.required_capability = { type: 'choice', choice: 'bounded_routine', confidence: 1,
+          probabilities: { bounded_routine: 1, multistep_coordination: 0, open_problem: 0, unknown: 0 } };
+        body.answers.context_sufficient.noul = reason === 'insufficient context' ? 0 : 1;
+        body.answers.configuration = { type: 'choice', choice, confidence: 1,
+          probabilities: Object.fromEntries(Object.keys(wire.questions.configuration.criteria).map(key => [key, Number(key === choice)])) };
+        return jsonResponse(body);
+      } }), audit: event => audit.push(event) });
+    const router = new ModelRouter({ catalog, service, toServer: message => sent.push(message),
+      toClient: message => received.push(message), audit: event => audit.push(event) });
+    t.after(() => router.close());
+    router.client({ id: 'start', method: 'thread/start', params: { threadId: 'main', ephemeral: false, sessionStartSource: 'startup' } });
+    router.server({ id: 'start', result: { thread: { id: 'main', source: 'cli', ephemeral: false },
+      model: 'synthetic-blocked', reasoningEffort: 'high', modelProvider: 'synthetic' } });
+    const turn = (id, mode) => ({ id, method: 'turn/start', params: { threadId: 'main', model: 'synthetic-blocked',
+      effort: 'high', input: [{ type: 'text', text: 'A self-contained synthetic task' }], mindplayerRoutingChoice: { mode, includeRecent: false } } });
+    router.client(turn('first', 'native')); await tick();
+    router.server({ id: 'first', result: { turn: { id: 'failed-turn' } } });
+    router.server({ method: 'turn/completed', params: { threadId: 'main', turn: { id: 'failed-turn', status: 'failed',
+      error: { message: 'Synthetic overload', codexErrorInfo: 'serverOverloaded' } } } });
+    router.client(turn('followup', 'jev')); await tick();
+    assert.equal(wires.length, 1);
+    assert.equal(sent.filter(message => message.method === 'turn/start').length, 1, 'no unsafe alternative is sent');
+    assert.ok(received.find(message => message.id === 'followup')?.error);
+    assert.equal(audit.find(event => event.event === 'route-failed' && event.requestId === 'followup')?.reason,
+      'capacity-no-safe-alternative');
+    assert.equal(typeof wires[0].questions.configuration.criteria.abstain, 'string', 'an explicit no-match choice is offered');
+  });
+}
 
 test('three complete independent questions have immutable closed criteria', () => {
   assert.deepEqual(Object.keys(QUESTIONS), ['required_capability', 'context_sufficient', 'high_consequence']);

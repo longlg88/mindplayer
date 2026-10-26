@@ -87,6 +87,7 @@ impl App {
                 self.selected = pos;
             }
         }
+        self.reconcile_codex_clears();
         // Keep retrying (until matched or expired) while labels are unresolved.
         if self.awaits_rescan() {
             self.rescan_due = Some(Instant::now() + Duration::from_secs(6));

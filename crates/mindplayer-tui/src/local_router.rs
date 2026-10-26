@@ -126,6 +126,7 @@ pub(crate) struct RoutingStatus {
     pub revision: u64,
     pub stage: RoutingStage,
     pub thread_id: Option<String>,
+    pub clear_ancestors: Vec<String>,
     pub request_id: serde_json::Value,
     pub turn_id: Option<String>,
     pub model: Option<String>,
@@ -143,6 +144,7 @@ impl RoutingStatus {
             revision: 0,
             stage: RoutingStage::Ready,
             thread_id: None,
+            clear_ancestors: Vec::new(),
             request_id: serde_json::Value::Null,
             turn_id: None,
             model: None,
@@ -159,6 +161,12 @@ impl RoutingStatus {
         self.schema_version == 2
             && status_identifier(&self.generation)
             && self.revision <= MAX_SAFE_INTEGER
+            && self.clear_ancestors.len() <= 16
+            && self.clear_ancestors.iter().enumerate().all(|(index, id)| {
+                status_identifier(id)
+                    && self.thread_id.as_ref().is_some_and(|current| current != id)
+                    && !self.clear_ancestors[..index].contains(id)
+            })
             && [
                 &self.thread_id,
                 &self.turn_id,
@@ -296,7 +304,7 @@ impl RoutingStatusChannel {
         let value: serde_json::Value = serde_json::from_slice(&bytes)?;
         // Option fields must be explicitly present as null, not silently
         // defaulted by serde when a writer emits an incomplete contract.
-        if value.as_object().is_none_or(|object| object.len() != 12) {
+        if value.as_object().is_none_or(|object| object.len() != 13) {
             bail!("라우팅 상태 필드가 잘못되었습니다");
         }
         let next: RoutingStatus = serde_json::from_value(value)?;
@@ -1562,7 +1570,7 @@ mod status_tests {
     }
 
     #[test]
-    fn routing_status_v2_bootstrap_preserves_the_twelve_field_contract() {
+    fn routing_status_v2_bootstrap_preserves_the_thirteen_field_contract() {
         let fixture = Fixture::new();
         let channel = fixture.channel();
         let snapshot = channel.snapshot().unwrap();
@@ -1570,7 +1578,7 @@ mod status_tests {
             serde_json::to_value(&snapshot).unwrap(),
             serde_json::json!({
                 "schemaVersion": 2, "generation": snapshot.generation, "revision": 0,
-                "stage": "ready", "threadId": null, "requestId": null, "turnId": null,
+                "stage": "ready", "threadId": null, "clearAncestors": [], "requestId": null, "turnId": null,
                 "model": null, "effort": null, "observedModel": null, "reason": null,
                 "serverModelReported": false,
             })
@@ -1592,6 +1600,7 @@ mod status_tests {
         let mut value = serde_json::json!({
             "schemaVersion": 2, "generation": channel.snapshot().unwrap().generation,
             "revision": 0, "stage": "requested", "threadId": "main-thread",
+            "clearAncestors": [],
             "requestId": 1, "turnId": null, "model": "gpt-5.5", "effort": "high",
             "observedModel": null, "reason": "catalog-guided-jev", "serverModelReported": false,
         });
@@ -1689,6 +1698,7 @@ mod status_tests {
         status.revision = 2;
         status.stage = RoutingStage::Judging;
         status.thread_id = Some("main-thread".into());
+        status.clear_ancestors = vec!["prior-main".into()];
         publish(&channel, &status);
         assert_ne!(fs::metadata(channel.path()).unwrap().ino(), initial_inode);
         assert!(channel.poll());
@@ -1708,6 +1718,98 @@ mod status_tests {
         publish(&channel, &other_generation);
         assert!(!channel.poll());
         assert_eq!(channel.snapshot(), Some(status));
+    }
+
+    #[test]
+    fn routing_status_clear_ancestry_survives_followup_snapshots_and_accepts_explicit_resets() {
+        let fixture = Fixture::new();
+        let channel = fixture.channel();
+        let mut next = channel.snapshot().unwrap();
+        next.thread_id = Some("clear-2".into());
+        next.clear_ancestors = vec!["original".into(), "clear-1".into()];
+        for (revision, stage) in [
+            (1, RoutingStage::Ready),
+            (2, RoutingStage::Judging),
+            (3, RoutingStage::Requested),
+            (4, RoutingStage::Accepted),
+            (5, RoutingStage::Running),
+            (6, RoutingStage::Completed),
+        ] {
+            next.revision = revision;
+            next.stage = stage;
+            publish(&channel, &next);
+            assert!(channel.poll());
+            assert_eq!(
+                channel.snapshot().unwrap().clear_ancestors,
+                next.clear_ancestors
+            );
+        }
+        next.revision += 1;
+        next.thread_id = Some("selected-resume".into());
+        next.clear_ancestors.clear();
+        publish(&channel, &next);
+        assert!(channel.poll());
+        assert!(channel.snapshot().unwrap().clear_ancestors.is_empty());
+    }
+
+    #[test]
+    fn routing_status_clear_ancestry_is_bounded_validated_and_excludes_the_current_thread() {
+        let fixture = Fixture::new();
+        let channel = fixture.channel();
+        let mut next = channel.snapshot().unwrap();
+        next.revision = 1;
+        next.thread_id = Some("t".repeat(128));
+        next.clear_ancestors = (0..16).map(|index| format!("prior-{index:0122}")).collect();
+        next.request_id = serde_json::json!("r".repeat(128));
+        next.turn_id = Some("u".repeat(128));
+        next.model = Some("m".repeat(128));
+        next.effort = Some("e".repeat(128));
+        next.observed_model = Some("o".repeat(128));
+        next.reason = Some("s".repeat(128));
+        next.server_model_reported = true;
+        let mut maximal = next.clone();
+        maximal.generation = "g".repeat(128);
+        maximal.revision = MAX_SAFE_INTEGER;
+        assert!(maximal.valid());
+        assert!(serde_json::to_vec(&maximal).unwrap().len() as u64 <= STATUS_MAX_BYTES);
+        publish(&channel, &next);
+        assert!(
+            channel.poll(),
+            "sixteen maximal identifiers must fit the channel"
+        );
+        assert_eq!(channel.snapshot().unwrap(), next);
+
+        let mut valid = serde_json::to_value(&next).unwrap();
+        valid["revision"] = serde_json::json!(2);
+        for ancestors in [
+            serde_json::Value::Null,
+            serde_json::json!({"threadId": "prior"}),
+            serde_json::json!("prior"),
+            serde_json::json!([1]),
+            serde_json::json!([""]),
+            serde_json::json!(["unsafe id"]),
+            serde_json::json!(["unsafe\u{1b}[31m"]),
+            serde_json::json!(["한글"]),
+            serde_json::json!(["x".repeat(129)]),
+            serde_json::json!([next.thread_id.as_ref().unwrap()]),
+            serde_json::json!(["prior", "prior"]),
+            serde_json::json!((0..17)
+                .map(|index| format!("prior-{index}"))
+                .collect::<Vec<_>>()),
+        ] {
+            let mut value = valid.clone();
+            value["clearAncestors"] = ancestors;
+            fs::write(channel.path(), serde_json::to_vec(&value).unwrap()).unwrap();
+            assert!(!channel.poll(), "invalid clear ancestry accepted: {value}");
+            assert_eq!(channel.snapshot().unwrap(), next);
+        }
+        valid["threadId"] = serde_json::Value::Null;
+        fs::write(channel.path(), serde_json::to_vec(&valid).unwrap()).unwrap();
+        assert!(
+            !channel.poll(),
+            "ancestry must name prior IDs of a current thread"
+        );
+        assert_eq!(channel.snapshot().unwrap(), next);
     }
 
     #[test]
@@ -1773,9 +1875,11 @@ mod status_tests {
             value[field] = replacement;
             invalid.push(value);
         }
-        let mut missing = valid.clone();
-        missing.as_object_mut().unwrap().remove("model");
-        invalid.push(missing);
+        for field in valid.as_object().unwrap().keys() {
+            let mut missing = valid.clone();
+            missing.as_object_mut().unwrap().remove(field);
+            invalid.push(missing);
+        }
         let mut extra = valid;
         extra["prompt"] = serde_json::json!("not allowed");
         invalid.push(extra);

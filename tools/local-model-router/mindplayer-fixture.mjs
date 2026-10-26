@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Synthetic offline Codex server/UI: current-looking IDs are compatibility
 // fixtures, not proof of genuine model availability, inference, or effort.
-import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { createInterface } from 'node:readline';
 import { pathToFileURL } from 'node:url';
 
@@ -80,6 +80,8 @@ function reply(message, result) {
 }
 
 function appServer() {
+  const capacityFailure = existsSync(`${markerDir}/synthetic-capacity-failure`);
+  let capacityFailed = false;
   writeFileSync(`${markerDir}/app-server.pid`, `${process.pid}\n`);
   writeFileSync(`${markerDir}/backend-env.json`, JSON.stringify({ gatewayKeyPresent: !!process.env.AI_GATEWAY_API_KEY, typesafeKeyPresent: !!process.env.TYPESAFE_API_KEY }));
   let email = 'fixture@example.com';
@@ -120,7 +122,14 @@ function appServer() {
         clientUserMessageId: message.params.clientUserMessageId ?? null,
         routingChoicePresent: Object.hasOwn(message.params, 'mindplayerRoutingChoice') })}\n`);
       reply(message, { turn: { id: `fixture-turn-${label}` } });
-      process.stdout.write(`${JSON.stringify({ method: 'turn/completed', params: { threadId: message.params.threadId, turn: { id: `fixture-turn-${label}`, status: 'completed' } } })}\n`);
+      const overloaded = capacityFailure && !capacityFailed && label === 'A' && message.params.model === 'gpt-6-luna';
+      if (overloaded) {
+        capacityFailed = true;
+        process.stdout.write(`${JSON.stringify({ method: 'error', params: { threadId: message.params.threadId,
+          turnId: `fixture-turn-${label}`, willRetry: false,
+          error: { message: 'Synthetic server capacity failure', codexErrorInfo: 'serverOverloaded' } } })}\n`);
+      }
+      process.stdout.write(`${JSON.stringify({ method: 'turn/completed', params: { threadId: message.params.threadId, turn: { id: `fixture-turn-${label}`, status: overloaded ? 'failed' : 'completed' } } })}\n`);
     } else if (message.id !== undefined) reply(message, {});
   });
 }
@@ -168,6 +177,10 @@ function remoteUi() {
       });
       composer.input(buffered); buffered = '';
     } else if (initialized) {
+      if ((message.method === 'error' || message.params?.turn?.status === 'failed')
+          && existsSync(`${markerDir}/synthetic-capacity-failure`)) {
+        appendFileSync(`${markerDir}/capacity-events.jsonl`, `${JSON.stringify(message)}\n`, { mode: 0o600 });
+      }
       if (message.error) {
         appendFileSync(`${markerDir}/ui-errors.jsonl`, `${JSON.stringify(message)}\n`, { mode: 0o600 });
         process.stdout.write(`\r\nPROMPT-ERROR ${message.error.message}\r\n`);

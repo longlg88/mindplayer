@@ -12,8 +12,9 @@ commit, picks the highest bump, applies it to <current_version>, and prints:
     version=<X.Y.Z>          (only when bump != none)
 
 If $GITHUB_OUTPUT is set, the same key=value lines are appended there.
-Conventions: `type!:` / `BREAKING CHANGE` -> major; a `Release-As: <bump>`
-trailer overrides everything.
+Conventions: `type!:` / `BREAKING CHANGE` -> major; `Release-As: <bump>`
+overrides a commit's bump. `Release-As: X.Y.Z` selects an exact forward version
+at least as high as the normal bump requires, and releases even chore-only ranges.
 """
 import os
 import re
@@ -72,24 +73,52 @@ def main():
     # Commits are NUL-separated (git log --format=%B%x00).
     commits = [c for c in raw.split("\0") if c.strip()]
     best = "none"
+    targets = set()
     for c in commits:
+        for value in re.findall(r"^[ \t]*Release-As:[ \t]*(.*)$", c, re.I | re.M):
+            value = value.strip()
+            if value.lower() in ("major", "minor", "patch"):
+                continue
+            if not re.fullmatch(r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)", value):
+                raise SystemExit("Release-As: invalid value; expected major, minor, patch, or canonical X.Y.Z")
+            targets.add(tuple(map(int, value.split("."))))
         b = classify(c, rules)
         if RANK[b] > RANK[best]:
             best = b
+    if len(targets) > 1:
+        raise SystemExit("Release-As: conflicting exact targets in commit range")
 
-    out = [f"bump={best}"]
-    if best != "none":
+    version = None
+    if best != "none" or targets:
         nums = re.findall(r"\d+", current)
         major, minor, patch = (int(nums[0]) if len(nums) > 0 else 0,
                                int(nums[1]) if len(nums) > 1 else 0,
                                int(nums[2]) if len(nums) > 2 else 0)
+        baseline = (major, minor, patch)
         if best == "major":
             major, minor, patch = major + 1, 0, 0
         elif best == "minor":
             minor, patch = minor + 1, 0
-        else:
+        elif best == "patch":
             patch += 1
-        out.append(f"version={major}.{minor}.{patch}")
+        if targets:
+            target = next(iter(targets))
+            if target <= baseline:
+                raise SystemExit("Release-As target must be strictly newer than the current version")
+            if target < (major, minor, patch):
+                raise SystemExit(f"Release-As target is below required version {major}.{minor}.{patch}")
+            if target[0] > baseline[0]:
+                best = "major"
+            elif target[1] > baseline[1]:
+                best = "minor"
+            else:
+                best = "patch"
+            major, minor, patch = target
+        version = f"{major}.{minor}.{patch}"
+
+    out = [f"bump={best}"]
+    if version is not None:
+        out.append(f"version={version}")
 
     text = "\n".join(out) + "\n"
     sys.stdout.write(text)

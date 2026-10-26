@@ -1,5 +1,5 @@
 import { systemFetch } from './system-fetch.mjs';
-import { buildConfigurationInstructions, RUBRIC_INSTRUCTIONS, RUBRIC_VERSION } from './rubric.mjs';
+import { buildConfigurationInstructions, CONFIGURATION_ABSTAIN, RUBRIC_INSTRUCTIONS, RUBRIC_VERSION } from './rubric.mjs';
 
 // Wire contracts: https://docs.typesafe.ai/api.md and
 // https://vercel.com/docs/ai-gateway/sdks-and-apis/typesafe.md
@@ -79,7 +79,7 @@ const requireResponse = valid => { if (!valid) throw new JevError('invalid-respo
 
 // c0 is the caller-validated policy fallback, which may differ from the actual
 // state.baseline after a current-family migration; never a catalog-order default.
-function configurationOptions(configurations) {
+function configurationOptions(configurations, capacityRecovery = false) {
   if (configurations === undefined) return undefined;
   try {
     if (!Array.isArray(configurations) || !configurations.length || configurations.length > MAX_CONFIGURATIONS) throw new Error();
@@ -94,6 +94,7 @@ function configurationOptions(configurations) {
       identities.add(identity);
       return [`c${index}`, { ...configuration }];
     }));
+    if (capacityRecovery) criteria.abstain = CONFIGURATION_ABSTAIN;
     if (Buffer.byteLength(JSON.stringify(criteria)) > MAX_CRITERIA_BYTES) throw new Error();
     return criteria;
   } catch { throw new JevError('invalid-config'); }
@@ -127,9 +128,9 @@ function validateChoice(answer, options, allowRoundedConfiguration = false) {
   return probabilities;
 }
 
-export function validateJudgment(body, { provider = 'gateway', configurations } = {}) {
-  if (!isProvider(provider)) throw new JevError('invalid-config');
-  const options = configurationOptions(configurations);
+export function validateJudgment(body, { provider = 'gateway', configurations, capacityRecovery = false } = {}) {
+  if (!isProvider(provider) || typeof capacityRecovery !== 'boolean' || (capacityRecovery && configurations === undefined)) throw new JevError('invalid-config');
+  const options = configurationOptions(configurations, capacityRecovery);
   try {
     // Gateway echoes its alias; TypeSafe returns the physical Jev version.
     requireResponse(isRecord(body));
@@ -143,7 +144,7 @@ export function validateJudgment(body, { provider = 'gateway', configurations } 
       const answer = body.answers.configuration;
       const distribution = validateChoice(answer, Object.keys(options), true);
       const selected = options[answer.choice];
-      configuration = { model: selected.model, effort: selected.effort, choice: answer.choice,
+      configuration = { ...(answer.choice === 'abstain' ? {} : { model: selected.model, effort: selected.effort }), choice: answer.choice,
         confidence: answer.confidence, probabilities: distribution };
     }
     for (const answer of [context, consequence]) {
@@ -195,20 +196,21 @@ function isTlsError(error) {
   return [error?.code, error?.cause?.code].some(code => typeof code === 'string' && (code.startsWith('ERR_TLS_') || code.startsWith('ERR_SSL_') || certificateCodes.includes(code)));
 }
 
-export function createJevClient({ apiKey, provider = 'gateway', configurations,
+export function createJevClient({ apiKey, provider = 'gateway', configurations, capacityRecovery = false,
   fetchImpl = provider === 'gateway' && process.platform === 'darwin' ? systemFetch : fetch,
   timeoutMs = 15_000, maxRequestBytes = 32 * 1024, maxResponseBytes = 64 * 1024 } = {}) {
   if (!isProvider(provider) || typeof apiKey !== 'string' || apiKey.length > 8192 || !/^[A-Za-z0-9._~+/-]+=*$/.test(apiKey)
+    || typeof capacityRecovery !== 'boolean' || (capacityRecovery && configurations === undefined)
     || typeof fetchImpl !== 'function' || !Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 2 ** 31 - 1
     || ![maxRequestBytes, maxResponseBytes].every(bytes => Number.isSafeInteger(bytes) && bytes > 0 && bytes <= MAX_BYTES)) {
     throw new JevError('invalid-config');
   }
   const endpoint = provider === 'typesafe' ? TYPESAFE_ENDPOINT : ENDPOINT;
   const model = provider === 'typesafe' ? TYPESAFE_MODEL : MODEL;
-  const options = configurationOptions(configurations);
+  const options = configurationOptions(configurations, capacityRecovery);
   // Questions are independent: this rubric evaluates the supplied state itself,
   // not answers to the other three questions in the same request.
-  const validatedConfigurations = options ? Object.values(options) : undefined;
+  const validatedConfigurations = options ? Object.entries(options).filter(([key]) => key !== 'abstain').map(([, value]) => value) : undefined;
 
   return async function judge(state, { signal } = {}) {
     if (signal !== undefined && !(signal instanceof AbortSignal)) throw new JevError('invalid-request');
@@ -242,7 +244,7 @@ export function createJevClient({ apiKey, provider = 'gateway', configurations,
       try {
         if (typeof state !== 'string' && !isRecord(state) && !Array.isArray(state)) throw new JevError('invalid-request');
         const questions = options ? { ...QUESTIONS, configuration: {
-          type: 'choice', instructions: buildConfigurationInstructions(validatedConfigurations), criteria: options,
+          type: 'choice', instructions: buildConfigurationInstructions(validatedConfigurations, { capacityRecovery }), criteria: options,
         } } : QUESTIONS;
         requestBody = JSON.stringify({ model, state, questions }, (_, value) => {
           if (value === undefined || ['function', 'symbol', 'bigint'].includes(typeof value) || (typeof value === 'number' && !Number.isFinite(value))) throw new JevError('invalid-request');
@@ -291,7 +293,7 @@ export function createJevClient({ apiKey, provider = 'gateway', configurations,
         let judgment;
         try {
           const json = new TextDecoder('utf-8', { fatal: true }).decode(Buffer.concat(chunks, bytes));
-          judgment = validateJudgment(JSON.parse(json), { provider, configurations: validatedConfigurations });
+          judgment = validateJudgment(JSON.parse(json), { provider, configurations: validatedConfigurations, capacityRecovery });
         } catch {
           throw new JevError('invalid-response');
         }

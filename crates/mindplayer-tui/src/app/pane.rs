@@ -534,7 +534,7 @@ impl App {
         }
         self.hook_status_due = Some(Instant::now() + HOOK_STATUS_POLL_INTERVAL);
 
-        let mut changed = false;
+        let mut changed = self.reconcile_codex_clears();
         let live_ids: Vec<String> = self.ptys.keys().cloned().collect();
         for id in &live_ids {
             if self.ended.contains(id) {

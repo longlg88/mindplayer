@@ -388,6 +388,17 @@ impl Grid {
         self.pos
     }
 
+    pub fn cursor_report_position(&self) -> Pos {
+        Pos {
+            row: if self.origin_mode {
+                self.pos.row.saturating_sub(self.scroll_top)
+            } else {
+                self.pos.row
+            },
+            col: self.pos.col.min(self.size.cols.saturating_sub(1)),
+        }
+    }
+
     pub fn set_pos(&mut self, mut pos: Pos) {
         if self.origin_mode {
             pos.row = pos.row.saturating_add(self.scroll_top);

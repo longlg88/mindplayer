@@ -23,3 +23,7 @@ chrono.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 walkdir.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+# Keep unread terminal input ready after a simultaneous resize notification.
+crossterm = { version = "0.28", features = ["use-dev-tty"] }

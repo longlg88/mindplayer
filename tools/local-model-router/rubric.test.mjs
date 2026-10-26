@@ -12,7 +12,9 @@ const error = code => value => value instanceof PolicyError && value.code === co
 
 test('versioned rubric keeps general judgment separate from candidate selection', async () => {
   assert.deepEqual(Object.keys(await import('./rubric.mjs')).sort(),
-    ['RUBRIC_VERSION', 'RUBRIC_INSTRUCTIONS', 'CONFIGURATION_INSTRUCTIONS', 'buildConfigurationInstructions', 'buildJudgmentSnapshot'].sort());
+    ['RUBRIC_VERSION', 'RUBRIC_INSTRUCTIONS', 'CONFIGURATION_INSTRUCTIONS', 'CONFIGURATION_ABSTAIN', 'buildConfigurationInstructions', 'buildJudgmentSnapshot'].sort());
+  // Shared by wire serialization and the service's exact recovery byte reservation.
+  assert.match(rubric.CONFIGURATION_ABSTAIN, /^Stop without submitting:.*suitability/);
   assert.equal(RUBRIC_VERSION, 'mindplayer-capacity-v2');
   assert.ok(CONFIGURATION_INSTRUCTIONS.startsWith(RUBRIC_INSTRUCTIONS));
   assert.ok(RUBRIC_INSTRUCTIONS.includes(RUBRIC_VERSION));

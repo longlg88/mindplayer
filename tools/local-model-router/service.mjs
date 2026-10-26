@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { createJevClient } from './jev.mjs';
 import { buildSnapshot, filterConfigurations, chooseConfiguration } from './policy.mjs';
-import { RUBRIC_VERSION, buildJudgmentSnapshot } from './rubric.mjs';
+import { CONFIGURATION_ABSTAIN, RUBRIC_VERSION, buildJudgmentSnapshot } from './rubric.mjs';
 import { snapshotFamilyRegistry, reviewFamilyRegistry } from './current-family.mjs';
 
 export function childEnvironment(env) {
@@ -83,7 +83,7 @@ const sameConfiguration = (a, b) => a?.model === b?.model && a?.effort === b?.ef
 const instant = value => typeof value === 'number' ? value : typeof value === 'string' ? Date.parse(value) : NaN;
 
 function catalogConfigurations(catalog, baseline, { accountFingerprint, modelProvider, now, input, requirements = {},
-  baselineOnly = false, baselineError = 'baseline-ineligible', effortError = baselineError }) {
+  baselineOnly = false, baselineError = 'baseline-ineligible', effortError = baselineError, criteriaReserveBytes = 0 }) {
   if (!Array.isArray(catalog) || catalog.length > 1000) throw fail('catalog-invalid');
   const strings = value => Array.isArray(value) && value.every(item => typeof item === 'string' && item.trim());
   if (!requirements || typeof requirements !== 'object' || Array.isArray(requirements)
@@ -132,7 +132,7 @@ function catalogConfigurations(catalog, baseline, { accountFingerprint, modelPro
   const add = configuration => {
     if (configurations.length >= 32 || configurations.some(value => sameConfiguration(value, configuration))) return;
     const criteria = Object.fromEntries([...configurations, configuration].map((value, index) => [`c${index}`, value]));
-    if (Buffer.byteLength(JSON.stringify(criteria)) <= 8 * 1024) configurations.push(configuration);
+    if (Buffer.byteLength(JSON.stringify(criteria)) + criteriaReserveBytes <= 8 * 1024) configurations.push(configuration);
   };
   // Represent distinct models before additional efforts, so a model with many
   // efforts cannot consume the bounded menu. No ordering implies a ranking.
@@ -175,6 +175,8 @@ export class JevService {
     this.revision = 0;
     this.catalogRevision = 0;
     this.threads = new Map();
+    this.capacityBlocks = new Map();
+    this.turnRequests = new WeakMap();
     this.lifecycleCount = 0;
     this.lifecycleEpoch = 0;
     this.lifecycleRequests = new WeakMap();
@@ -187,6 +189,86 @@ export class JevService {
     if (['thread/start', 'thread/resume', 'thread/fork'].includes(request?.method)) {
       this.lifecycleRequests.set(request, this.lifecycleEpoch);
     }
+  }
+
+  capacityKey(thread, model) {
+    return JSON.stringify([this.accountFingerprint, thread.modelProvider ?? null, model]);
+  }
+
+  trackSubmission(request) {
+    const thread = this.threads.get(request.params?.threadId);
+    if (thread?.owned) this.turnRequests.set(request, { thread, account: this.accountFingerprint });
+  }
+
+  capacityBlocked(thread, model) {
+    const key = this.capacityKey(thread, model);
+    const until = this.capacityBlocks.get(key);
+    if (until === undefined) return false;
+    if (until > this.now()) return true;
+    this.capacityBlocks.delete(key);
+    return false;
+  }
+
+  observeCapacity(thread, request, response) {
+    if (!thread?.owned || !this.accountFingerprint) return;
+    const ack = request?.method === 'turn/start' && !request.params?.toolOutput
+      && Array.isArray(request.params?.input) && request.params.input.length && !response.error;
+    const method = response.method;
+    if (!ack && !['error', 'turn/completed', 'model/rerouted'].includes(method)) return;
+    const turnId = ack ? response.result?.turn?.id : response.params?.turn?.id ?? response.params?.turnId;
+    if (!safeModel(turnId)) return;
+    thread.capacityTurns ??= new Map();
+    let turn = thread.capacityTurns.get(turnId);
+    if (!turn) {
+      turn = { reroutes: [] };
+      thread.capacityTurns.set(turnId, turn);
+      // Metadata only; unacknowledged notifications cannot supply a model.
+      if (thread.capacityTurns.size > 128) thread.capacityTurns.delete(thread.capacityTurns.keys().next().value);
+    }
+    if (ack) {
+      const owner = this.turnRequests.get(request);
+      this.turnRequests.delete(request);
+      if (!owner || owner.thread !== thread || owner.account !== this.accountFingerprint) return;
+      const model = request.params.collaborationMode?.settings?.model ?? request.params.model ?? thread.baseline.model;
+      if (!safeModel(model)) return;
+      if (turn.model !== undefined && turn.model !== model) turn.ambiguous = true;
+      turn.model = model;
+    } else if (method === 'model/rerouted') {
+      if (turn.finished) return;
+      const { fromModel, toModel } = response.params;
+      const previous = turn.reroutes.at(-1);
+      if (previous?.fromModel === fromModel && previous?.toModel === toModel) return;
+      if (!safeModel(fromModel) || !safeModel(toModel) || turn.reroutes.length >= 8) turn.ambiguous = true;
+      else turn.reroutes.push({ fromModel, toModel });
+    } else if (method === 'error') {
+      if (turn.finished || response.params.willRetry !== false) return;
+      turn.overloaded = response.params.error?.codexErrorInfo === 'serverOverloaded';
+    } else {
+      if (turn.finished) return;
+      turn.finished = true;
+      turn.failed = response.params.turn.status === 'failed';
+      turn.overloaded = response.params.turn.error?.codexErrorInfo !== undefined
+        ? response.params.turn.error.codexErrorInfo === 'serverOverloaded' : turn.overloaded;
+      turn.failedAt = this.now();
+    }
+    if (!turn.model || !turn.finished || !turn.failed || !turn.overloaded || turn.recorded || turn.ambiguous) return;
+    let model = turn.model;
+    for (const reroute of turn.reroutes) {
+      if (reroute.fromModel !== model) return; // Never blame the requested model after an unexplained reroute.
+      model = reroute.toModel;
+    }
+    turn.recorded = true;
+    const until = turn.failedAt + 60_000;
+    if (until <= this.now()) return;
+    for (const [key, expiry] of this.capacityBlocks) if (expiry <= this.now()) this.capacityBlocks.delete(key);
+    // Native catalogs are bounded to 1,000 models. Refuse extra attribution
+    // rather than evicting a still-blocked model and silently selecting it.
+    const key = this.capacityKey(thread, model);
+    if (this.capacityBlocks.size >= 1000 && !this.capacityBlocks.has(key)) return;
+    this.capacityBlocks.set(key, Math.max(this.capacityBlocks.get(key) ?? 0, until));
+    this.revision++;
+    this.audit({ event: 'model-capacity-blocked', threadId: response.params?.threadId ?? request.params.threadId,
+      turnId, model, reason: 'server-overloaded', retryAfterMs: Math.max(0, until - this.now()) });
   }
 
   observe(request, response) {
@@ -251,8 +333,11 @@ export class JevService {
         ((firstLifecycle && thread.id === this.expectedThreadId) || prior?.owned === true || selected);
       const forked = request.method === 'thread/fork' && selected && this.threads.get(request.params?.threadId)?.owned === true;
       const owned = !excluded && userSource && (startup || resumed || forked);
+      // Native /clear uses this source even when the private UI also marks a
+      // user selection. Selection alone cannot establish clear continuity.
+      const clear = owned && request.method === 'thread/start' && request.params?.sessionStartSource === 'clear';
       this.audit({ event: 'thread-ownership', threadId: thread.id, owned, ephemeral: helper,
-        startup, resumed, forked, userSource, policyVersion: 'mindplayer-private-ui-lifecycle-v3' });
+        startup, clear, resumed, forked, userSource, policyVersion: 'mindplayer-private-ui-lifecycle-v3' });
       this.threads.set(thread.id, { owned, excluded, history: [], contextKnown: request.method === 'thread/start', version: (prior?.version ?? 0) + 1,
         resumeContextPending: request.method === 'thread/resume',
         modelProvider: response.result.modelProvider ?? prior?.modelProvider ?? null,
@@ -270,6 +355,7 @@ export class JevService {
       this.invalidate();
     }
     const thread = this.threads.get(response.params?.threadId ?? request?.params?.threadId);
+    this.observeCapacity(thread, request, response);
     if (thread?.owned && response.method === 'item/completed') {
       const item = response.params.item;
       if (item?.type === 'userMessage') {
@@ -343,6 +429,7 @@ export class JevService {
 
   invalidate() {
     this.revision++; this.lifecycleEpoch++;
+    this.capacityBlocks.clear();
     for (const thread of this.threads.values()) { thread.owned = false; delete thread.previousDecision; delete thread.pendingDecision; }
   }
   close() { this.closed = true; this.invalidate(); this.threads.clear(); }
@@ -414,8 +501,10 @@ export class JevService {
     if (migrating && !family.legacyModels.includes(baseline.model)) throw fail('registry-review-required');
     if (migrating && policy) throw fail('latest-family-policy-conflict');
     const fallback = migrating ? { model: family.frontier, effort: baseline.effort } : baseline;
+    const capacityRecovery = this.capacityBlocked(thread, fallback.model);
     const familyCatalog = () => family ? this.catalog.filter(row => family.currentModels.includes(row?.model)) : this.catalog;
     const nativeEligible = value => {
+      if (this.capacityBlocked(thread, value.model)) return false;
       if (!family) return true;
       if (!family.currentModels.includes(value.model) || (baseline.effort === 'ultra'
         ? !sameConfiguration(value, fallback) : value.effort === 'ultra')) return false;
@@ -427,8 +516,15 @@ export class JevService {
       // No verified native token-count adapter exists yet: leave unknown fields
       // omitted, never estimate them from prompt length or prior-turn usage.
       requirements }).filter(nativeEligible) : null;
-    const choiceOptions = { ...catalogOptions, ...(migrating ? { baselineError: 'latest-family-anchor-unavailable', effortError: 'latest-family-effort-unsupported' } : {}) };
-    const configurations = policy ? undefined : Object.freeze(catalogConfigurations(familyCatalog(), fallback, { ...choiceOptions, now: this.now() }).map(Object.freeze));
+    const choiceOptions = { ...catalogOptions,
+      // Reserve the exact extra JSON member before filling the bounded menu.
+      criteriaReserveBytes: capacityRecovery ? Buffer.byteLength(`,"abstain":${JSON.stringify(CONFIGURATION_ABSTAIN)}`) : 0,
+      ...(migrating ? { baselineError: 'latest-family-anchor-unavailable', effortError: 'latest-family-effort-unsupported' } : {}) };
+    const configurations = policy ? undefined : Object.freeze(catalogConfigurations(familyCatalog(), fallback, { ...choiceOptions, now: this.now() })
+      .filter(value => !this.capacityBlocked(thread, value.model)).map(Object.freeze));
+    // Empirical comparisons require their exact baseline. Do not replace that
+    // evidence with a heuristic when its baseline is temporarily blocked.
+    if ((policy && capacityRecovery) || (configurations && !configurations.length)) throw fail('capacity-no-safe-alternative');
     const binding = Object.freeze({ generation: this.generation, accountFingerprint: this.accountFingerprint,
       catalogRevision: this.catalogRevision, policyDigest: loaded?.digest ?? null, rubricVersion: RUBRIC_VERSION,
       ...(family ? { registryVersion: family.version, registryDigest: family.digest } : {}) });
@@ -460,8 +556,14 @@ export class JevService {
       };
       if (candidates) return guarded(chooseConfiguration({ candidates, baseline, judgment, thresholds: policy.thresholds, context, now: this.now() }));
       const live = catalogConfigurations(familyCatalog(), fallback, { ...choiceOptions, now: this.now() });
-      const keep = reason => guarded({ ...fallback, changed: !sameConfiguration(fallback, baseline), reason, executionCostUsd: null });
-      if (!judgment) return keep('selection-unavailable');
+      const keep = reason => {
+        if (capacityRecovery) throw fail('capacity-no-safe-alternative');
+        return guarded({ ...fallback, changed: !sameConfiguration(fallback, baseline), reason, executionCostUsd: null });
+      };
+      if (!judgment) return capacityRecovery ? null : keep('selection-unavailable');
+      // No confidence cutoff: explicit abstention or a certain missing-context
+      // answer cannot authorize switching away from an unavailable fallback.
+      if (capacityRecovery && (judgment.configuration?.choice === 'abstain' || judgment.contextSufficient === 0)) throw fail('capacity-no-safe-alternative');
       const selected = configurations.find((value, index) => sameConfiguration(value, judgment.configuration) && judgment.configuration?.choice === `c${index}`);
       if (!selected) throw fail('invalid-response');
       if (!live.some(value => sameConfiguration(value, selected))) throw fail('selected-configuration-unavailable');
@@ -493,7 +595,7 @@ export class JevService {
       this.audit({ event: 'jev-started', ...auditId, rubricVersion: RUBRIC_VERSION,
         catalogRevision: this.catalogRevision, previousDecisionKnown: context.previousDecision != null });
       const judge = this.judgeFactory({ apiKey: this.apiKey, provider: this.provider, timeoutMs, maxRequestBytes, maxResponseBytes,
-        ...(configurations ? { configurations } : {}) });
+        ...(configurations ? { configurations, capacityRecovery } : {}) });
       judgment = await judge(context, { signal });
     }
     catch (error) {

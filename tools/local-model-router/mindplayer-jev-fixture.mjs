@@ -95,6 +95,13 @@ globalThis.fetch = async function (...args) {
   const text = typeof request?.state === 'string' ? request.state : request?.state?.currentInput;
   const label = text === 'A' ? 'A' : text === 'analyze B' ? 'B' : text === 'C' ? 'C' : 'bootstrap';
   const state = request?.state;
+  const criteria = request?.questions?.configuration?.criteria;
+  const candidates = Object.entries(criteria ?? {}).filter(([key]) => key !== 'abstain');
+  const configurations = criteria ? candidates.map(([, value]) => value) : undefined;
+  const instructions = request?.questions?.configuration?.instructions;
+  const capacityRecovery = instructions?.includes('CAPACITY_RECOVERY:') === true;
+  const configurationRubricMatches = instructions === buildConfigurationInstructions(configurations ?? [], { capacityRecovery });
+  const syntheticCapacity = !real && existsSync(join(markerDir, 'synthetic-capacity-failure'));
   const prior = state?.previousDecision;
   const previousDecision = prior == null ? null : Object.fromEntries(
     ['model', 'effort', 'capability', 'contextSufficient', 'highConsequence', 'turnOutcome'].map(key => [key, prior[key]]));
@@ -105,12 +112,14 @@ globalThis.fetch = async function (...args) {
     stateKeys: state && typeof state === 'object' ? Object.keys(state).sort() : [],
     stateBytes: Buffer.byteLength(JSON.stringify(state ?? null)),
     recentCount: Array.isArray(state?.recent) ? state.recent.length : null,
-    configurationMenu: Object.values(request?.questions?.configuration?.criteria ?? {})
+    configurationMenu: (configurations ?? [])
       .map(value => ({ model: value?.model, effort: value?.effort })),
     previousDecision, previousDecisionKeys: prior == null ? [] : Object.keys(prior).sort(),
-    configurationRubricMatches: request?.questions?.configuration?.instructions === buildConfigurationInstructions(Object.values(request?.questions?.configuration?.criteria ?? {})),
+    ...(syntheticCapacity ? { configurationCriteriaJson: JSON.stringify(criteria), configurationInstructions: instructions, capacityRecovery } : {}),
+    configurationRubricMatches,
     questionsHaveRubric: Object.values(request?.questions ?? {}).every(question => question.instructions?.includes(`Rubric ${RUBRIC_VERSION}.`)),
   });
+  if (syntheticCapacity && !configurationRubricMatches) throw new Error('Synthetic capacity fixture requires production configuration instructions');
 
   let response;
   if (real) {
@@ -120,10 +129,10 @@ globalThis.fetch = async function (...args) {
     response = new Response('raw-upstream-secret-canary', { status: 429 });
   } else {
     const capability = ['A', 'C'].includes(label) ? 'bounded_routine' : label === 'B' ? 'open_problem' : 'multistep_coordination';
-    const criteria = request?.questions?.configuration?.criteria;
     const entries = Object.entries(criteria ?? {});
-    const chosen = entries.find(([, value]) => value.model === (label === 'B' ? 'gpt-6-astra' : 'gpt-6-luna')
-      && value.effort === (label === 'B' ? 'high' : 'low'))?.[0];
+    const chosen = candidates.find(([, value]) => value.model === (label === 'B' ? 'gpt-6-astra' : 'gpt-6-luna')
+      && value.effort === (label === 'B' ? 'high' : 'low'))?.[0]
+      ?? (syntheticCapacity ? candidates.find(([, value]) => value.model === 'gpt-6.1-sol' && value.effort === 'medium')?.[0] : undefined);
     response = Response.json({
       model: 'jev-1.13.0',
       answers: {
@@ -143,8 +152,7 @@ globalThis.fetch = async function (...args) {
   if (response.ok) {
     try {
       const body = await response.clone().json();
-      const configurations = request?.questions?.configuration ? Object.values(request.questions.configuration.criteria) : undefined;
-      const judgment = validateJudgment(body, { provider, configurations });
+      const judgment = validateJudgment(body, { provider, configurations, capacityRecovery });
       Object.assign(metadata, { model: body.model, capability: judgment.capability, usage: judgment.usage,
         contextSufficient: judgment.contextSufficient, highConsequence: judgment.highConsequence,
         configuration: judgment.configuration ?? null });

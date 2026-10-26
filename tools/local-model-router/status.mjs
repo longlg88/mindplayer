@@ -20,7 +20,7 @@ export function createStatusSink(path) {
     const initial = JSON.parse(bytes.subarray(0, count).toString('utf8'));
     if (initial.schemaVersion !== 2 || !identifier(initial.generation) || initial.revision !== 0 || initial.stage !== 'ready') throw new Error();
     state = { schemaVersion: 2, generation: initial.generation, revision: 0, stage: 'ready', threadId: null,
-      requestId: null, turnId: null, model: null, effort: null, observedModel: null, reason: null, serverModelReported: false };
+      clearAncestors: [], requestId: null, turnId: null, model: null, effort: null, observedModel: null, reason: null, serverModelReported: false };
   } catch { throw new Error('Invalid pane status channel'); }
   finally { if (fd !== undefined) closeSync(fd); }
   let owned = null;
@@ -39,23 +39,34 @@ export function createStatusSink(path) {
       : submitted && state.stage === 'requested' && event.requestId === state.requestId);
   const publish = patch => {
     const next = { ...state, ...patch, revision: state.revision + 1 };
+    const body = JSON.stringify(next);
+    if (Buffer.byteLength(body) > 4096) throw new Error('Invalid pane status size');
     const temporary = `${path}.${randomUUID()}.tmp`;
     try {
-      writeFileSync(temporary, JSON.stringify(next), { flag: 'wx', mode: 0o600 });
+      writeFileSync(temporary, body, { flag: 'wx', mode: 0o600 });
       renameSync(temporary, path);
       state = next;
     } finally { try { unlinkSync(temporary); } catch { /* renamed or not created */ } }
   };
   return event => {
     if (event.event === 'thread-ownership' && event.owned === true && identifier(event.threadId)) {
-      if (owned === event.threadId) return;
+      if (owned === event.threadId) {
+        if (event.clear !== true && state.clearAncestors.length) publish({ clearAncestors: [] });
+        return;
+      }
+      // Keep evidence across missed UI polls, but only along explicit clear
+      // transitions. Resume, fork and ordinary startup always sever the chain.
+      const clearAncestors = event.clear === true && owned !== null
+        ? [...state.clearAncestors.filter(id => id !== event.threadId && id !== owned), owned].slice(-16) : [];
       owned = event.threadId;
       submitted = false;
       retiredTurns.clear();
-      publish({ stage: 'ready', threadId: owned, requestId: null, turnId: null, model: null, effort: null,
+      publish({ stage: 'ready', threadId: owned, clearAncestors, requestId: null, turnId: null, model: null, effort: null,
         observedModel: null, serverModelReported: false, reason: null });
       return;
     }
+    // Retain verified history for delayed UI polls after exit. Clearing the
+    // live owner still prevents the next binding from extending that history.
     if (event.event === 'connection-closed-no-replay') {
       owned = null;
       publish({ stage: 'closed', reason: 'connection-closed' });

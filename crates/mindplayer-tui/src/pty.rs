@@ -277,6 +277,7 @@ pub struct PtySession {
 /// Non-blocking PTY input path. The TUI thread enqueues bytes and returns
 /// immediately; a stuck child can block this writer thread without freezing the
 /// render/event loop.
+#[derive(Clone)]
 struct PtyWriter {
     tx: SyncSender<Vec<u8>>,
     closed: Arc<AtomicBool>,
@@ -423,6 +424,7 @@ impl PtySession {
 
         {
             let parser = parser.clone();
+            let writer = writer.clone();
             let dirty = dirty.clone();
             let seq = seq.clone();
             let blocked = blocked.clone();
@@ -435,7 +437,7 @@ impl PtySession {
                     match reader.read(&mut buf) {
                         Ok(0) => break, // EOF: child closed the PTY
                         Ok(n) => {
-                            if let Ok(mut p) = parser.lock() {
+                            let replies = if let Ok(mut p) = parser.lock() {
                                 p.process(&buf[..n]);
                                 synchronized_pending
                                     .store(p.synchronized_update_pending(), Ordering::Relaxed);
@@ -445,7 +447,18 @@ impl PtySession {
                                 blocked.store(text_looks_blocked(&screen), Ordering::Relaxed);
                                 busy.store(text_looks_busy(&screen), Ordering::Relaxed);
                                 idle.store(text_looks_idle(&screen), Ordering::Relaxed);
-                            }
+                                p.take_terminal_replies()
+                            } else {
+                                Vec::new()
+                            };
+                            // Answer from this pane's live terminal, not the
+                            // outer terminal or a held synchronized frame.
+                            // Use the existing bounded writer after releasing
+                            // the parser lock; neither output nor UI may block
+                            // on a child that has stopped reading its input.
+                            // Like input, replies are best-effort if that queue
+                            // is full or closed; never retry on the reader.
+                            writer.enqueue(replies);
                             dirty.store(true, Ordering::Relaxed);
                             seq.fetch_add(1, Ordering::Relaxed);
                         }
@@ -489,10 +502,7 @@ impl PtySession {
 
     /// Returns true (and resets) if the screen changed since the last check.
     pub fn take_dirty(&self) -> bool {
-        let routing_changed = self
-            .routing_status
-            .as_ref()
-            .is_some_and(|channel| channel.poll());
+        let routing_changed = self.poll_routing_status();
         let mut expired = false;
         // Startup and idle repaint output intentionally do not stamp working
         // activity. Schedule timeout recovery independently of that badge so
@@ -505,6 +515,12 @@ impl PtySession {
             }
         }
         self.dirty.swap(false, Ordering::Relaxed) || expired || routing_changed
+    }
+
+    pub(crate) fn poll_routing_status(&self) -> bool {
+        self.routing_status
+            .as_ref()
+            .is_some_and(|channel| channel.poll())
     }
 
     pub(crate) fn routing_status(&self) -> Option<crate::local_router::RoutingStatus> {
@@ -527,6 +543,19 @@ impl PtySession {
             .as_ref()
             .and_then(|channel| channel.snapshot())
             .and_then(|status| status.thread_id)
+    }
+
+    /// Continuity is owned lifecycle metadata, independent of whether the
+    /// current turn's display status has already been retired by local input.
+    pub(crate) fn routing_clear_target(&self, previous: &str) -> Option<String> {
+        let status = self.routing_status.as_ref()?.snapshot()?;
+        status
+            .clear_ancestors
+            .iter()
+            .any(|id| id == previous)
+            .then_some(status.thread_id)
+            .flatten()
+            .filter(|id| id != previous)
     }
 
     pub(crate) fn retire_routing_status(&mut self, status: crate::local_router::RoutingStatus) {
@@ -2264,6 +2293,66 @@ mod account_env {
         let text = read_pane(&session, Duration::from_secs(10));
         assert!(text.contains("status=[unset]"), "{text}");
         assert!(session.routing_status().is_none());
+    }
+}
+
+#[cfg(test)]
+mod terminal_queries {
+    use super::*;
+
+    #[test]
+    fn cloned_writer_shares_a_bounded_fifo_without_blocking_when_full() {
+        let (tx, rx) = mpsc::sync_channel(2);
+        let writer = PtyWriter {
+            tx,
+            closed: Arc::new(AtomicBool::new(false)),
+        };
+        let replies = writer.clone();
+        assert!(writer.enqueue(b"draft".to_vec()));
+        assert!(replies.enqueue(b"\x1b[3;5R".to_vec()));
+        assert!(!replies.enqueue(b"\x1b[7;9R".to_vec()));
+        assert_eq!(rx.try_recv().unwrap(), b"draft");
+        assert_eq!(rx.try_recv().unwrap(), b"\x1b[3;5R");
+        assert!(replies.enqueue(b"\x1b[7;9R".to_vec()));
+        assert_eq!(rx.try_recv().unwrap(), b"\x1b[7;9R");
+        writer.closed.store(true, Ordering::Relaxed);
+        assert!(!replies.enqueue(b"closed".to_vec()));
+    }
+
+    #[test]
+    fn child_cursor_queries_receive_pane_local_replies_without_user_input() {
+        // A short terminal read timeout lets the unimplemented protocol fail
+        // normally rather than leaving a fixture waiting for keyboard input.
+        let script = r#"stty raw -echo min 0 time 5
+printf '\033[3;5H\033[6n\033[7;9H\033[6n'
+reply=$(dd bs=1 count=12 2>/dev/null | od -An -tx1 | tr -d ' \n')
+printf '\033[Hreply=%s done' "$reply""#;
+        let mut session = PtySession::spawn(
+            &MpCommand {
+                program: "sh".into(),
+                args: vec!["-c".into(), script.into()],
+                cwd: std::env::temp_dir(),
+                env: Default::default(),
+            },
+            "mp-child-cursor-query-test",
+            10,
+            100,
+        )
+        .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let text = loop {
+            let text = session.parser.lock().unwrap().screen().contents();
+            if text.contains("done") && !session.is_alive() {
+                break text;
+            }
+            assert!(Instant::now() < deadline, "child did not finish: {text:?}");
+            thread::sleep(Duration::from_millis(10));
+        };
+        assert!(session.exited_successfully(), "child failed: {text:?}");
+        assert!(
+            text.contains("reply=1b5b333b35521b5b373b3952 done"),
+            "child did not receive its query-time cursor positions: {text:?}"
+        );
     }
 }
 

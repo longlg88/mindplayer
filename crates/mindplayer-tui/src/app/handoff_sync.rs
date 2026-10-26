@@ -310,7 +310,10 @@ impl App {
             let result = handoff::prepare_thread_sync_input(&target, &peers);
             let _ = tx.send((target.id, result));
         });
-        self.thread_sync_rx = Some(rx);
+        self.thread_sync_rx = Some(PendingSessionSync {
+            target_id: id.clone(),
+            result: rx,
+        });
         // Mark it needed-and-in-flight immediately so a second reopen before
         // this one resolves doesn't queue a duplicate read for the same id.
         self.thread_sync_at.insert(id.clone(), Utc::now());
@@ -331,13 +334,20 @@ impl App {
         let Some(rx) = &self.thread_sync_rx else {
             return false;
         };
-        let Ok((id, result)) = rx.try_recv() else {
+        let Ok((id, result)) = rx.result.try_recv() else {
             return false;
         };
         self.thread_sync_rx = None;
         let Ok(sync) = result else {
             return false;
         };
+        // The actual consumer must reject pre-clear work even while rollout
+        // discovery or a durable label save is still pending.
+        if self.sync_target_was_cleared(&id) {
+            self.state.thread_synced.remove(&id);
+            let _ = self.save_state();
+            return false;
+        }
         if self.ended.contains(&id) {
             return false;
         }
@@ -411,7 +421,10 @@ impl App {
             };
             let _ = tx.send((target.id, result));
         });
-        self.category_sync_rx = Some(rx);
+        self.category_sync_rx = Some(PendingSessionSync {
+            target_id: session.id.clone(),
+            result: rx,
+        });
         true
     }
 
@@ -423,13 +436,16 @@ impl App {
         let Some(rx) = &self.category_sync_rx else {
             return false;
         };
-        let Ok((id, result)) = rx.try_recv() else {
+        let Ok((id, result)) = rx.result.try_recv() else {
             return false;
         };
         self.category_sync_rx = None;
         let Ok((sync, advance)) = result else {
             return false; // nothing new, or unreadable peers
         };
+        if self.sync_target_was_cleared(&id) {
+            return false;
+        }
         if self.ended.contains(&id) {
             return false;
         }

@@ -4648,6 +4648,7 @@ mod tests {
         serde_json::from_value(serde_json::json!({
             "schemaVersion": 2, "generation": "ui-test", "revision": 1,
             "stage": stage, "threadId": "main-thread", "requestId": 1,
+            "clearAncestors": [],
             "turnId": null, "model": "gpt-5.5", "effort": "high",
             "observedModel": null, "reason": null, "serverModelReported": false,
         }))

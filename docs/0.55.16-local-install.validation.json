@@ -1,4 +1,5 @@
 {
+  "pathAnonymization": "Local workstation paths are anonymized with synthetic example-user identifiers; recorded evidence was not rerun.",
   "schemaVersion": 1,
   "status": "complete-installed-and-behaviorally-verified",
   "verifiedAt": "2026-10-19T06:10:52.568Z",
@@ -71,7 +72,7 @@
       "exitCode": 0,
       "durationSeconds": 87.37,
       "log": "/private/tmp/mindplayer-05516-smoke-installed.log",
-      "binaryOverride": "/Users/eden.jang/.local/bin/mindplayer",
+      "binaryOverride": "/Users/example-user/.local/bin/mindplayer",
       "versionOverride": false,
       "note": "Same audited isolated tests, including Claude native/no-Jev paths. Four stable 40x120 real-app buffers retained. Actual private native composer independently verified above."
     },
@@ -150,7 +151,7 @@
     {
       "check": "Fresh interactive login-shell resolution",
       "exitCode": 0,
-      "path": "/Users/eden.jang/.local/bin/mindplayer",
+      "path": "/Users/example-user/.local/bin/mindplayer",
       "version": "mindplayer 0.55.16",
       "note": "Checked with a real tool PTY. Earlier non-TTY interactive zsh emitted monitor/zle/gitstatus startup warnings, while resolving the same correct executable; no shell settings were changed."
     }
@@ -213,21 +214,21 @@
     }
   },
   "installed": {
-    "path": "/Users/eden.jang/.local/bin/mindplayer",
+    "path": "/Users/example-user/.local/bin/mindplayer",
     "version": "mindplayer 0.55.16",
     "sha256": "d2b796ae17a6c204a6cc826c16adf00cf79d7d44734b02164c76d31b6b128b91",
-    "nativeManifest": "/Users/eden.jang/.mindplayer/native-codex/active.json",
+    "nativeManifest": "/Users/example-user/.mindplayer/native-codex/active.json",
     "nativeManifestSha256": "332ab98485955338e9db6c743b4c3fd85e03864183eb0a5314283d32e3561140",
     "nativeSourceRevision": "092d3acd6bec3e3a14bdc7e7a2810ab628ab759d",
     "nativeVersion": "0.162.1",
     "nativeContract": "mindplayer-native-routing-v4",
-    "nativeBinary": "/Users/eden.jang/.mindplayer/native-codex/builds/0d1796f19c262c944c920c021b2c19273abe72f2ba3435e2a21788af83dedc4d/codex",
+    "nativeBinary": "/Users/example-user/.mindplayer/native-codex/builds/0d1796f19c262c944c920c021b2c19273abe72f2ba3435e2a21788af83dedc4d/codex",
     "nativeBinarySha256": "0d1796f19c262c944c920c021b2c19273abe72f2ba3435e2a21788af83dedc4d",
     "patchSha256": "798c336990453cd0b336e87e03013a2ceee54c7add7704ec7ce9a0696a98d2a9",
     "codeModeHostSha256": "0960435a104cf926e18bb938b8f6f8fcdf7e27be0c8d88e1911bc22a1de7d3e6",
     "codeModeHostOrigin": "Explicit official prebuilt 0.162.1, not source-build attested; actual Core/host compatibility verified offline.",
     "pairedActivation": "Staged owned regular files, verified exact hashes, manifest 0600/8 fields, runtime path/contract/hash gates retained; paired replacement with rollback on activation failure.",
-    "backup": "/Users/eden.jang/.local/bin/mindplayer-0.55.15-rollback.P55Fp3",
+    "backup": "/Users/example-user/.local/bin/mindplayer-0.55.15-rollback.P55Fp3",
     "backupBinarySha256": "99a4839c9fa80d5dac02c7f4cfae7a9134c0526ff5733e866a1ee556d23864e1",
     "backupManifestSha256": "8435fb0063ed027eacada0d7df114afe84420aa0b5774cebcf6bbf93c8c57ee6",
     "restartRequired": "Already-running MindPlayer/child panes retain old code. Exit/relaunch MindPlayer and reopen old panes for this version; no user session was terminated automatically."

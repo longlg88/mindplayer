@@ -74,7 +74,7 @@
       "failed": 0,
       "ignored": 2,
       "duration_seconds": 65.46,
-      "command": "MINDPLAYER_TEST_BINARY=/Users/eden.jang/.local/bin/mindplayer cargo test --offline --locked -p mindplayer-tui --test smoke -- --test-threads=2",
+      "command": "MINDPLAYER_TEST_BINARY=/Users/example-user/.local/bin/mindplayer cargo test --offline --locked -p mindplayer-tui --test smoke -- --test-threads=2",
       "claude_auth_scenarios_included": 12,
       "synthetic_not_real_OAuth": true
     }
@@ -94,16 +94,17 @@
     "synthesis": "COMMENT; no merge-ready approval claimed"
   },
   "installation": {
-    "path": "/Users/eden.jang/.local/bin/mindplayer",
+    "path": "/Users/example-user/.local/bin/mindplayer",
     "version": "0.55.12",
     "sha256": "391b1ee07a166a9b9300b8d3e3bd35599b5e45ceaf2367be49e7f0c8d77918fe",
     "matches_release_build": true,
     "replacement": "Atomic same-directory rename after workspace tests passed",
-    "rollback": "/Users/eden.jang/.local/bin/mindplayer-provider-auth-rollback.rPbVXn/mindplayer",
+    "rollback": "/Users/example-user/.local/bin/mindplayer-provider-auth-rollback.rPbVXn/mindplayer",
     "rollback_sha256": "b71ddc88c669600991fb4047766cc713146e79b3fa73ff17c4d67157b12d23ba",
     "running_user_processes_stopped": false
   },
   "sanitization": {
+    "local_paths": "Local workstation paths are anonymized with synthetic example-user identifiers; recorded evidence was not rerun.",
     "case_insensitive_personal_company_account_literal_matches": 0,
     "excluded": [".git", "target", "node_modules", ".omc", ".omx"],
     "user_account_configuration_edited": false,

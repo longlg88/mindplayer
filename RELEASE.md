@@ -17,7 +17,7 @@ reads (`.github/next-version.py` parses the `ci:bump-rules` block).
 
 If a range of commits since the last release contains a mix, the **highest** bump
 wins. If it contains only `docs`/`chore`/`ci`/`test`/`style` commits, **no
-release** is cut.
+release** is cut unless an exact `Release-As: X.Y.Z` target is supplied.
 
 ## How to signal the bump
 
@@ -33,12 +33,37 @@ perf: memoize blocked detection         → PATCH
 docs: rewrite install section           → (no release on its own)
 ```
 
-To override the computed bump for a specific release, add a trailer to the
-commit message:
+To override a commit's bump, add a `Release-As: major`, `Release-As: minor`, or
+`Release-As: patch` trailer to its message:
 
 ```
 Release-As: minor
 ```
+
+These named overrides keep their existing precedence over that commit's type
+and breaking-change signals; the highest resulting bump across the range wins.
+
+To align a release with an already tested version, use an exact target instead:
+
+```
+Release-As: 0.57.5
+```
+
+Exact targets must be canonical `X.Y.Z`: three non-negative decimal integers,
+without leading zeroes, a `v` prefix, prerelease/build suffixes, or extra text.
+Trailer names and named bumps remain case-insensitive; surrounding whitespace
+is allowed. Any other `Release-As:` value fails version calculation.
+
+The target must be strictly newer than the current release and at least the
+version required by the normal bump calculation, including named overrides.
+For example, from `0.57.2`, a patch range normally yields `0.57.3` and may target
+`0.57.5`; a feature range requires at least `0.58.0`. All exact targets in the
+range must agree: repeated identical targets are allowed, conflicting targets
+fail. An exact target triggers a release even for a chore-only range, and the
+reported bump reflects the target's actual major/minor/patch change. Invalid,
+same, older, or insufficient targets fail before any release outputs are written.
+Without an exact target, existing named-override and automatic bump behavior
+is unchanged.
 
 ## The machine-readable rules (CI parses this block)
 
@@ -49,8 +74,9 @@ patch = fix, perf, refactor, build, revert, deps, patch
 none  = docs, chore, ci, test, style
 -->
 
-(Edit the block above to change how the CI maps commit types to version bumps;
-`!`/`BREAKING CHANGE` always force MAJOR, and `Release-As:` always wins.)
+(Edit the block above to change how CI maps commit types to bumps. Breaking
+signals imply MAJOR unless a named override applies; exact targets must satisfy
+the resulting minimum version.)
 
 ## Changelog
 
@@ -68,6 +94,18 @@ none  = docs, chore, ci, test, style
 - Show Codex Business `individualLimit` as a credits/spend-cap row instead of
   presenting it as a monthly usage window, and mark accounts blocked only when
   the app-server refuses ordinary usage.
+
+### v0.57.5 — 2026-10-26
+
+- Preserve session labels, pane continuity, and resume targets across native
+  `/clear` session changes.
+- Answer pane-local cursor-position queries, including fragmented queries, and
+  keep ready input responsive across resize events. Full native resize
+  resolution remains unverified.
+- Exclude a model from Jev candidates for 60 seconds after a correlated final
+  `serverOverloaded` failure within the same connection, provider, and account.
+  Reconsider remaining candidates on the next explicit input; Jev can abstain
+  without submission. Failed turns are never retried automatically.
 
 ### v0.55.2 — 2026-10-13
 

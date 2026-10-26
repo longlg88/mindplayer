@@ -22,6 +22,8 @@ export const CONFIGURATION_INSTRUCTIONS = `${RUBRIC_INSTRUCTIONS}
 For configuration selection only, select exact model/effort with the least sufficient capacity using supplied native descriptions. Match task demands to those descriptions. Favor capacity/careful reasoning for high consequence tasks. c0 is the exact caller-validated policy fallback and may differ from state.baseline (the actual incoming configuration). When currentFamily is supplied, candidates belong only to its reviewed current family intersected with native eligibility; never select an older or outside model. Without currentFamily, candidates carry no latest-family guarantee. Preserve c0 for ambiguous references, unclear comparisons/alternative suitability, truncated input or omitted attachments. Short ambiguous follow-ups cannot justify lowering capacity. Select only supplied candidates; preserve provider, account, tools, permissions and delegation scope.
 Model IDs/option order are not capacity or price rankings. Never infer prices, measured quality, quota savings or a guaranteed cost optimum. Confidence is distribution concentration, not correctness/authority; invent no thresholds. Never bypass the caller's evaluated quality/cost policy.`;
 
+export const CONFIGURATION_ABSTAIN = 'Stop without submitting: no supplied alternative is demonstrably suitable, or missing/ambiguous context prevents establishing suitability.';
+
 const CAPABILITIES = ['bounded_routine', 'multistep_coordination', 'open_problem', 'unknown'];
 const EFFORTS = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
 const OUTCOMES = ['completed', 'interrupted', 'failed', 'unknown'];
@@ -46,16 +48,19 @@ const API_PRICES = {
  * never capability judgment, eligibility, execution authorization or billing.
  * Check freshness on each request, including long-lived client instances.
  */
-export function buildConfigurationInstructions(configurations, { now = Date.now() } = {}) {
+export function buildConfigurationInstructions(configurations, { now = Date.now(), capacityRecovery = false } = {}) {
+  const instructions = capacityRecovery
+    ? `${CONFIGURATION_INSTRUCTIONS}\nCAPACITY_RECOVERY: The incoming baseline is temporarily excluded after a correlated server-overload failure. This overrides all instructions to preserve c0: c0 is an ordinary remaining candidate, NOT a validated fallback. Select only a supplied suitable configuration. If references or alternative suitability are unclear, select abstain; the caller will stop without submission. This question independently establishes suitability from state, never other answers. Never treat catalog order as a quality ranking or assume lower effort fixes model capacity.`
+    : CONFIGURATION_INSTRUCTIONS;
   if (!Number.isFinite(now) || now < Date.parse('2026-10-18T00:00:00Z')
-    || now >= Date.parse('2026-11-18T00:00:00Z')) return CONFIGURATION_INSTRUCTIONS;
+    || now >= Date.parse('2026-11-18T00:00:00Z')) return instructions;
   const offered = [...new Set(configurations.map(configuration => configuration.model))];
   const models = Object.fromEntries(offered.filter(model => Object.hasOwn(API_PRICES, model)).map(model => [model, API_PRICES[model]]));
-  if (!Object.keys(models).length) return CONFIGURATION_INSTRUCTIONS;
+  if (!Object.keys(models).length) return instructions;
   const reference = { unit: 'USD per 1000000 tokens', verifiedAt: '2026-10-18', validUntilExclusive: '2026-11-18',
     basis: 'First-party Standard/global text API, non-batch, non-fast; tool fees and regional/provider premiums excluded',
     models, unknownModels: offered.filter(model => !Object.hasOwn(API_PRICES, model)) };
-  return `${CONFIGURATION_INSTRUCTIONS}\nUse quality and native requirements first; reference rates are a secondary comparison only among sufficiently capable eligible choices. API prices are not subscription quota or an actual native bill. Full native prompt token count, output quantity, cache mix and active billing regime are unknown; the bounded state is not the full prompt and cannot determine a tier. Effort is not a fixed price multiplier. Missing or expired prices are unknown; never invent expected dollars, token quantities, quota savings or guaranteed cost optimality. When cost/quality suitability is unclear, preserve c0.\nAPI_PRICE_REFERENCE=${JSON.stringify(reference)}`;
+  return `${instructions}\nUse quality and native requirements first; reference rates are a secondary comparison only among sufficiently capable eligible choices. API prices are not subscription quota or an actual native bill. Full native prompt token count, output quantity, cache mix and active billing regime are unknown; the bounded state is not the full prompt and cannot determine a tier. Effort is not a fixed price multiplier. Missing or expired prices are unknown; never invent expected dollars, token quantities, quota savings or guaranteed cost optimality. When cost/quality suitability is unclear, ${capacityRecovery ? 'select abstain; there is no validated fallback' : 'preserve c0'}.\nAPI_PRICE_REFERENCE=${JSON.stringify(reference)}`;
 }
 
 function sanitizePreviousDecision(value) {

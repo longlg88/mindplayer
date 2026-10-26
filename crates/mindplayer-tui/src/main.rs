@@ -431,7 +431,14 @@ fn run(terminal: &mut Terminal<CrosstermBackend<FrameSink>>, app: &mut App) -> R
                 // Publish the Jev disclosure after a choice change before
                 // accepting a queued Enter as consent. Normal native typing
                 // continues to drain the whole event batch below.
-                if startup_input || !event::poll(Duration::from_millis(0))? {
+                // The Unix TTY backend checks its deadline before buffered
+                // events. A zero timeout would leave those keys for later frames.
+                let drain_poll = if cfg!(unix) {
+                    Duration::from_millis(1)
+                } else {
+                    Duration::ZERO
+                };
+                if startup_input || !event::poll(drain_poll)? {
                     break;
                 }
             }

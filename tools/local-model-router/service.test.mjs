@@ -1,12 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync, chmodSync, rmSync, symlinkSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, readFileSync, chmodSync, rmSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setImmediate as tick } from 'node:timers/promises';
 import { childEnvironment, loadPolicy, loadJevCredentials, provisionJevCredentials, loginFingerprint, JevService } from './service.mjs';
 import { ModelRouter } from './router.mjs';
 import { createJevClient } from './jev.mjs';
+import { createStatusSink } from './status.mjs';
 import { createServer } from 'node:http';
 
 const catalog = [{ model: 'native', hidden: false, inputModalities: ['text'], supportedReasoningEfforts: [{ reasoningEffort: 'max' }] }];
@@ -802,6 +803,66 @@ test('marked user new/fork lifecycles route independently while background looka
     assert.equal(f.sent.filter(e => e.id === 4 && e.method === 'turn/start').length, 1);
     f.router.close();
   }
+});
+
+test('ownership exposes an explicit clear flag only for a verified native thread/start clear request', () => {
+  for (const [method, params, thread, expectedOwned, expectedClear] of [
+    ['thread/start', { sessionStartSource: 'clear' }, {}, true, true],
+    ['thread/start', { sessionStartSource: 'startup' }, {}, true, false],
+    ['thread/start', { sessionStartSource: null }, {}, true, false],
+    ['thread/start', { sessionStartSource: 'startup', input: '/clear', title: '/clear', clear: true }, { sessionStartSource: 'clear' }, true, false],
+    ['thread/resume', { sessionStartSource: 'clear' }, {}, true, false],
+    ['thread/fork', { sessionStartSource: 'clear', threadId: 'main' }, {}, true, false],
+    ['thread/start', { sessionStartSource: 'clear', ephemeral: true }, {}, false, false],
+    ['thread/start', { sessionStartSource: 'clear' }, { ephemeral: true }, false, false],
+    ['thread/start', { sessionStartSource: 'clear' }, { parentThreadId: 'parent' }, false, false],
+    ['thread/start', { sessionStartSource: 'clear' }, { threadSource: 'automation' }, false, false],
+    ['thread/start', { sessionStartSource: 'clear' }, { source: 'subAgent' }, false, false],
+  ]) {
+    const f = harness();
+    try {
+      f.lifecycle();
+      assert.equal(f.audit.find(event => event.event === 'thread-ownership').clear, false);
+      f.router.client({ id: 3, method, params: { threadId: 'selected', ephemeral: false, threadSource: 'user', mindplayerUserSelection: true, ...params } });
+      f.router.server({ id: 3, result: { thread: { id: 'selected', source: 'vscode', originator: 'codex-tui', threadSource: 'user', ephemeral: false, ...thread }, model: 'native', reasoningEffort: 'max' } });
+      const event = f.audit.filter(row => row.event === 'thread-ownership').at(-1);
+      assert.equal(event.owned, expectedOwned, JSON.stringify({ method, params, thread }));
+      assert.equal(event.clear, expectedClear, JSON.stringify({ method, params, thread }));
+    } finally { f.router.close(); }
+  }
+});
+
+test('only fresh successful owned clear ACKs extend the pane status ancestry', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'mindplayer-clear-status-test-'));
+  const path = join(dir, 'status.json');
+  writeFileSync(path, JSON.stringify({ schemaVersion: 2, generation: 'pane-1', revision: 0, stage: 'ready' }), { mode: 0o600 });
+  const sink = createStatusSink(path);
+  const f = harness();
+  f.router.audit = f.service.audit = event => { f.audit.push(event); sink(event); };
+  const read = () => JSON.parse(readFileSync(path, 'utf8'));
+  const start = (id, threadId, sessionStartSource = 'clear') => f.router.client({ id, method: 'thread/start', params: { ephemeral: false, threadSource: 'user', sessionStartSource } });
+  const ack = (id, threadId, thread = {}) => f.router.server({ id, result: { thread: { id: threadId, source: 'vscode', originator: 'codex-tui', threadSource: 'user', ephemeral: false, ...thread } } });
+  try {
+    f.lifecycle();
+    start(3, 'clear-1'); ack(3, 'clear-1');
+    start(4, 'clear-2'); ack(4, 'clear-2');
+    assert.deepEqual(read().clearAncestors, ['main', 'clear-1']);
+    const current = read();
+    start(5, 'helper'); ack(5, 'helper', { parentThreadId: 'parent' });
+    start(6, 'rejected'); f.router.server({ id: 6, error: { code: -32603, message: 'synthetic rejection' } });
+    assert.deepEqual(read(), current);
+    for (const revoke of ['account', 'closed']) {
+      start(7, 'stale');
+      if (revoke === 'account') f.service.invalidate();
+      else f.router.server({ method: 'thread/closed', params: { threadId: 'clear-2' } });
+      const revoked = read();
+      const ownershipCount = f.audit.filter(event => event.event === 'thread-ownership').length;
+      ack(7, 'stale');
+      assert.deepEqual(read(), revoked);
+      assert.equal(f.audit.filter(event => event.event === 'thread-ownership').length, ownershipCount);
+      assert.equal(f.audit.at(-1).event, 'thread-ownership-stale');
+    }
+  } finally { f.router.close(); rmSync(dir, { recursive: true, force: true }); }
 });
 
 test('measured native 0.162.1 first startup tuple owns main; later lookalikes remain unowned', () => {

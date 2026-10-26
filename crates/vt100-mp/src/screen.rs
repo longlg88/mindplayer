@@ -7,6 +7,10 @@ const MODE_HIDE_CURSOR: u8 = 0b0000_0100;
 const MODE_ALTERNATE_SCREEN: u8 = 0b0000_1000;
 const MODE_BRACKETED_PASTE: u8 = 0b0001_0000;
 
+// Enough for all CSI 6 n queries in an 8192-byte PTY read, even with two
+// five-digit coordinates. Bound undrained transport state across calls too.
+const MAX_TERMINAL_REPLY_BYTES: usize = 32 * 1024;
+
 /// The xterm mouse handling mode currently in use.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum MouseProtocolMode {
@@ -81,6 +85,7 @@ pub struct Screen {
     visual_bell_count: usize,
 
     errors: usize,
+    terminal_replies: Vec<u8>,
 }
 
 impl Screen {
@@ -106,6 +111,7 @@ impl Screen {
             visual_bell_count: 0,
 
             errors: 0,
+            terminal_replies: Vec::new(),
         }
     }
 
@@ -121,6 +127,10 @@ impl Screen {
 
     pub(crate) fn end_synchronized_update(&mut self) {
         self.synchronized_update_start = None;
+    }
+
+    pub(crate) fn take_terminal_replies(&mut self) -> Vec<u8> {
+        std::mem::take(&mut self.terminal_replies)
     }
 
     pub(crate) fn presentation_snapshot(&self) -> Self {
@@ -143,6 +153,8 @@ impl Screen {
             audible_bell_count: self.audible_bell_count,
             visual_bell_count: self.visual_bell_count,
             errors: self.errors,
+            // Replies are transport state, never part of a presentation.
+            terminal_replies: Vec::new(),
         }
     }
 
@@ -1094,6 +1106,7 @@ impl Screen {
         let audible_bell_count = self.audible_bell_count;
         let visual_bell_count = self.visual_bell_count;
         let errors = self.errors;
+        let terminal_replies = self.take_terminal_replies();
 
         *self = Self::new(self.grid.size(), self.grid.scrollback_len());
 
@@ -1102,6 +1115,8 @@ impl Screen {
         self.audible_bell_count = audible_bell_count;
         self.visual_bell_count = visual_bell_count;
         self.errors = errors;
+        // Resetting presentation must not discard an earlier query's reply.
+        self.terminal_replies = terminal_replies;
     }
 
     // ESC g
@@ -1110,6 +1125,28 @@ impl Screen {
     }
 
     // csi codes
+
+    // CSI 6 n (standard cursor position report only).
+    fn dsr(&mut self, params: &vte::Params) {
+        let mut params = params.iter();
+        if params.next() != Some(&[6][..]) || params.next().is_some() {
+            return;
+        }
+
+        let pos = self.grid().cursor_report_position();
+        let mut row_buffer = itoa::Buffer::new();
+        let mut col_buffer = itoa::Buffer::new();
+        let row = row_buffer.format(pos.row + 1).as_bytes();
+        let col = col_buffer.format(pos.col + 1).as_bytes();
+        if self.terminal_replies.len() + row.len() + col.len() + 4 > MAX_TERMINAL_REPLY_BYTES {
+            return;
+        }
+        self.terminal_replies.extend_from_slice(b"\x1b[");
+        self.terminal_replies.extend_from_slice(row);
+        self.terminal_replies.push(b';');
+        self.terminal_replies.extend_from_slice(col);
+        self.terminal_replies.push(b'R');
+    }
 
     // CSI @
     fn ich(&mut self, count: u16) {
@@ -1574,7 +1611,7 @@ impl vte::Perform for Screen {
         );
     }
 
-    fn csi_dispatch(&mut self, params: &vte::Params, intermediates: &[u8], _ignore: bool, c: char) {
+    fn csi_dispatch(&mut self, params: &vte::Params, intermediates: &[u8], ignore: bool, c: char) {
         match intermediates.first() {
             None => match c {
                 '@' => self.ich(canonicalize_params_1(params, 1)),
@@ -1596,6 +1633,7 @@ impl vte::Perform for Screen {
                 'h' => self.sm(params),
                 'l' => self.rm(params),
                 'm' => self.sgr(params),
+                'n' if !ignore => self.dsr(params),
                 'r' => self.decstbm(canonicalize_params_decstbm(params, self.grid().size())),
                 _ => {
                     if log::log_enabled!(log::Level::Debug) {

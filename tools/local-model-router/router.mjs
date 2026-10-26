@@ -20,6 +20,7 @@ const JEV_FAILURES = Object.freeze({
   'latest-family-policy-conflict': ['latest-family-policy-conflict', 'Current model-family restriction conflicts with the empirical routing policy; nothing was sent'],
   'latest-family-selection-invalid': ['latest-family-selection-invalid', 'Selected configuration is outside the reviewed current model family; nothing was sent'],
   'baseline-ineligible': ['baseline-ineligible', 'Incoming model and effort are not eligible in the native catalog; nothing was sent'],
+  'capacity-no-safe-alternative': ['capacity-no-safe-alternative', '모델이 일시적으로 혼잡하며 적합한 대체 모델을 확인하지 못했습니다. 요청은 전송하지 않았습니다. 잠시 후 다시 시도하세요.'],
   'external-transfer-policy-unset': ['external-transfer-policy-unset', 'Jev external prompt transfer is not authorized by the current policy; nothing was sent'],
 });
 
@@ -219,6 +220,7 @@ export class ModelRouter {
         this.record({ event: 'route-skipped', threadId, requestId: request.id, reason: decision.reason,
           model: request.params.collaborationMode?.settings?.model ?? request.params.model,
           effort: request.params.collaborationMode?.settings?.reasoning_effort ?? request.params.effort ?? null });
+        this.service?.trackSubmission?.(forwarded);
         this.toServer(forwarded);
         state.phase = 'sent';
         return;
@@ -248,9 +250,11 @@ export class ModelRouter {
       failure = 'submission-uncertain-no-replay';
       state.phase = 'sending';
       state.model = candidate.model;
-      this.requests.set(idKey(request.id), { ...request, params });
+      const forwarded = { ...request, params };
+      this.requests.set(idKey(request.id), forwarded);
       this.record({ event: 'route-requested', threadId, requestId: request.id, model: candidate.model, effort: effort ?? null, reason: decision.reason });
-      this.toServer({ ...request, params });
+      this.service?.trackSubmission?.(forwarded);
+      this.toServer(forwarded);
       state.phase = 'sent';
     } catch (error) {
       if (!this.closed && !state.abort.signal.aborted && this.pending.get(threadId) === state) {

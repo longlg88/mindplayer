@@ -255,6 +255,246 @@ function groupExists(pid) {
   catch (error) { if (error.code === 'ESRCH') return false; throw new Error('Cannot verify owned process-group exit; isolated temporary files retained'); }
 }
 
+// Offline alternative to the paid live scenario below. The composer is the
+// supplied, unmodified private native executable; only app-server replies and
+// rollout files are synthetic. No credentials or model inference are used.
+// MINDPLAYER_TEST_NATIVE_CLEAR=1 MINDPLAYER_TEST_BINARY=/absolute/mindplayer \
+// MINDPLAYER_NATIVE_CODEX=/absolute/private/codex \
+//   node --test --test-name-pattern='offline native /clear' tools/local-model-router/native-ui-live.test.mjs
+async function clearFixtureBackend({ root, cwd, codexHome, before, after, model }) {
+  const { appendFileSync, mkdirSync, writeFileSync } = await import('node:fs');
+  const { join } = await import('node:path');
+  const { createInterface } = await import('node:readline');
+  const record = row => appendFileSync(join(root, 'backend.jsonl'), JSON.stringify({ pid: process.pid, ...row }) + '\n', { mode: 0o600 });
+  record({ event: 'backend-started' });
+  const config = { model, model_provider: 'openai', model_reasoning_effort: 'medium',
+    approval_policy: 'never', sandbox_mode: 'danger-full-access', analytics: { enabled: false },
+    check_for_update_on_startup: false, cli_auth_credentials_store: 'file', projects: { [cwd]: { trust_level: 'trusted' } } };
+  const models = [model, 'gpt-6-astra'].map((name, index) => ({ id: name, model: name, displayName: name,
+    description: 'Offline lifecycle fixture; no inference.', hidden: false, isDefault: index === 0,
+    inputModalities: ['text'], defaultReasoningEffort: 'medium',
+    supportedReasoningEfforts: [{ reasoningEffort: 'medium', description: 'Fixture' }] }));
+  const thread = id => ({ id, sessionId: id, projectId: null, preview: 'offline clear fixture', ephemeral: false,
+    modelProvider: 'openai', model, reasoningEffort: 'medium', createdAt: 1700000000, updatedAt: 1700000001,
+    cwd, cliVersion: '0.162.1', source: 'vscode', originator: 'codex-tui', threadSource: 'user',
+    status: { type: 'idle' }, turns: [] });
+  const persist = id => {
+    const directory = join(codexHome, 'sessions');
+    mkdirSync(directory, { recursive: true });
+    const path = join(directory, `rollout-${id}.jsonl`), timestamp = new Date().toISOString();
+    writeFileSync(path, [
+      { type: 'session_meta', payload: { id, cwd, timestamp, rollout_path: path } },
+      { type: 'response_item', payload: { role: 'user', content: [{ text: 'offline clear fixture' }] } },
+    ].map(row => JSON.stringify(row) + '\n').join(''), { flag: 'wx', mode: 0o600 });
+  };
+  const output = message => process.stdout.write(JSON.stringify(message) + '\n');
+  createInterface({ input: process.stdin }).on('line', line => {
+    const request = JSON.parse(line);
+    if (request.id === undefined || !request.method) return;
+    record({ event: 'request', method: request.method, params: request.params });
+    const reply = result => output({ id: request.id, result });
+    switch (request.method) {
+      case 'initialize': return reply({ userAgent: 'offline-native-clear/0.162.1', codexHome, platformFamily: 'unix', platformOs: process.platform === 'darwin' ? 'macos' : 'linux' });
+      case 'account/read': return reply({ account: { type: 'chatgpt', email: 'native-clear@example.invalid', planType: 'business' }, requiresOpenaiAuth: false,
+        workspaceRouting: { chatgptAccountId: 'offline-native-clear-account', backendOrigin: 'https://example.invalid', accountRoutingOverride: 'NO_CONSTRAINT' } });
+      case 'account/rateLimits/read': return reply({ accountId: 'offline-native-clear-account', rateLimits: { primary: { usedPercent: 0, windowDurationMins: 10080 } }, ordinaryUsageAllowed: true });
+      case 'config/read': return reply({ config, origins: {}, layers: [] });
+      case 'config/value/write': case 'config/batchWrite': return reply({ status: 'ok', version: 'offline-native-clear', filePath: join(codexHome, 'config.toml'), overriddenMetadata: null });
+      case 'configRequirements/read': return reply({ requirements: null });
+      case 'model/list': return reply({ data: models, nextCursor: null });
+      case 'collaborationMode/list': return reply({ data: [{ name: 'Default', mode: 'default', model, reasoning_effort: 'medium' }] });
+      case 'app/installed': case 'skills/list': case 'hooks/list': return reply({ data: [] });
+      case 'thread/list': case 'thread/loaded/list': case 'app/list': case 'mcpServerStatus/list': case 'experimentalFeature/list': case 'permissionProfile/list': return reply({ data: [], nextCursor: null });
+      case 'plugin/list': return reply({ marketplaces: [], marketplaceLoadErrors: [], featuredPluginIds: [] });
+      case 'thread/read': return reply({ thread: thread(request.params.threadId) });
+      case 'thread/goal/get': return reply({ goal: null });
+      case 'thread/start': case 'thread/resume': {
+        const id = request.method === 'thread/resume' ? request.params.threadId : after;
+        if (request.method === 'thread/start') persist(id);
+        record({ event: 'lifecycle', method: request.method, threadId: id, sessionStartSource: request.params.sessionStartSource ?? null });
+        return reply({ thread: thread(id), model, modelProvider: 'openai', reasoningEffort: 'medium',
+          approvalPolicy: 'never', approvalsReviewer: 'user', cwd, sandbox: { type: 'dangerFullAccess' } });
+      }
+      case 'thread/unsubscribe': return reply({ status: 'unsubscribed' });
+      case 'thread/settings/update': return reply({});
+      default:
+        record({ event: 'unexpected-request', method: request.method });
+        return output({ id: request.id, error: { code: -32601, message: 'Offline lifecycle fixture does not execute turns' } });
+    }
+  });
+}
+
+test('offline native /clear preserves the labelled pane and resumes the new ID after app restart', {
+  skip: process.env.MINDPLAYER_TEST_NATIVE_CLEAR !== '1', timeout: 120_000,
+}, async t => {
+  const suppliedApp = process.env.MINDPLAYER_TEST_BINARY, suppliedNative = process.env.MINDPLAYER_NATIVE_CODEX;
+  assert.ok(suppliedApp && isAbsolute(suppliedApp) && suppliedNative && isAbsolute(suppliedNative), 'explicit absolute app and pinned private native binaries required');
+  const app = realpathSync(suppliedApp), native = realpathSync(suppliedNative);
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'mindplayer-native-clear-')));
+  const home = join(root, 'home'), codexHome = join(home, '.codex'), cwd = join(root, 'work');
+  const state = join(home, '.mindplayer'), statePath = join(state, 'state.json'), temporary = join(root, 'tmp');
+  const before = '0199ef00-0000-7000-8000-000000000001', after = '0199ef00-0000-7000-8000-000000000002', label = 'NATIVE_CLEAR_TOPIC';
+  let bridge, closed = true, stopping = false, output = '', failure, command = 0, runner;
+  const owned = new Set(), groups = new Set(), acknowledgements = new Set();
+  let screen = new TerminalScreenFixture(40, 120), decoder = new StringDecoder('utf8');
+  const backend = () => rows(join(root, 'backend.jsonl'));
+  const uiPids = () => existsSync(join(root, 'ui-pids')) ? readFileSync(join(root, 'ui-pids'), 'utf8').trim().split('\n').filter(Boolean).map(Number) : [];
+  const discover = () => {
+    for (const pid of [runner, ...uiPids(), ...backend().map(row => row.pid)].filter(Number.isSafeInteger)) owned.add(pid);
+    const table = processTable();
+    for (let changed = true; changed;) {
+      changed = false;
+      for (const row of table) if (owned.has(row.parent) && !owned.has(row.pid)) { owned.add(row.pid); changed = true; }
+    }
+    for (const row of table) if (owned.has(row.pid)) {
+      assert.ok(owned.has(row.group), `cleanup must never acquire an unrelated process group: ${JSON.stringify({ row, runner, owned: [...owned] })}`); groups.add(row.group);
+    }
+    return table;
+  };
+  const livingGroups = () => {
+    const table = discover();
+    return [...groups].filter(group => table.some(row => row.group === group));
+  };
+  const signalOwned = signal => {
+    const table = discover();
+    for (const group of livingGroups()) {
+      assert.ok(table.filter(row => row.group === group).every(row => owned.has(row.pid)), 'signal only exclusively owned groups');
+      try { process.kill(-group, signal); } catch (error) { if (error.code !== 'ESRCH') throw error; }
+    }
+  };
+  t.after(async () => {
+    stopping = true;
+    const evidence = realpathSync(mkdtempSync(join(tmpdir(), 'mindplayer-native-clear-evidence-')));
+    writeFileSync(join(evidence, 'terminal.ansi'), output, { mode: 0o600 });
+    writeFileSync(join(evidence, 'screen.txt'), screen.text(), { mode: 0o600 });
+    writeFileSync(join(evidence, 'backend.json'), JSON.stringify(backend(), null, 2), { mode: 0o600 });
+    for (const path of files(root).filter(path => /(?:routing\.jsonl|codex-tui\.log|native-stderr)$/.test(path))) {
+      assert.ok(statSync(path).size <= MAX_BYTES, 'owned diagnostic file size bound');
+      writeFileSync(join(evidence, relative(root, path).split(sep).join('_')), readFileSync(path), { mode: 0o600 });
+    }
+    // Acquire launcher descendants before stopping the app can reparent them.
+    discover();
+    if (bridge?.stdin.writable) bridge.stdin.write(JSON.stringify({ id: ++command, op: 'stop' }) + '\n');
+    signalOwned('SIGTERM');
+    const deadline = Date.now() + 10_000, forceAt = Date.now() + 3000;
+    while (!closed || livingGroups().length) {
+      if (Date.now() >= forceAt) signalOwned('SIGKILL');
+      assert.ok(Date.now() < deadline, 'owned child remains; retain isolated fixture files');
+      await delay(50);
+    }
+    const cleanup = { alivePids: discover().filter(row => owned.has(row.pid)).map(row => row.pid), uiPids: uiPids(), rootRemoved: false };
+    assert.deepEqual(cleanup.alivePids, []);
+    rmSync(root, { recursive: true, force: true }); cleanup.rootRemoved = !existsSync(root);
+    writeFileSync(join(evidence, 'cleanup.json'), JSON.stringify(cleanup), { mode: 0o600 });
+    t.diagnostic(JSON.stringify({ evidence, cleanup, scope: 'real supplied MindPlayer and unmodified native composer; local synthetic backend and rollouts; no auth/inference' }));
+  });
+  for (const path of [home, codexHome, cwd, state, temporary, join(root, 'bin'), join(codexHome, 'sessions')]) mkdirSync(path, { recursive: true, mode: 0o700 });
+  const env = { HOME: home, CODEX_HOME: codexHome, PATH: `${join(root, 'bin')}:${dirname(process.execPath)}:/usr/bin:/bin`,
+    TMPDIR: temporary + sep, XDG_CONFIG_HOME: join(home, '.config'), XDG_CACHE_HOME: join(home, '.cache'), XDG_DATA_HOME: join(home, '.local', 'share'),
+    TERM: 'xterm-256color', LANG: 'en_US.UTF-8', LC_ALL: 'en_US.UTF-8', RUST_BACKTRACE: '0', MINDPLAYER_CODEX_DIR: join(codexHome, 'sessions') };
+  for (const provider of ['CLAUDE', 'KIRO', 'CURSOR']) {
+    env[`MINDPLAYER_${provider}_DIR`] = join(root, provider.toLowerCase()); mkdirSync(env[`MINDPLAYER_${provider}_DIR`], { mode: 0o700 });
+  }
+  assert.ok(!Object.keys(env).some(key => /KEY|TOKEN|PROXY|NODE_OPTIONS/.test(key)), 'no inherited credential or network configuration');
+  assert.equal(execFileSync(native, ['--version'], { env, encoding: 'utf8', timeout: 10_000 }).trim(), VERSION);
+  assert.equal(execFileSync(native, ['--mindplayer-ui-contract'], { env, encoding: 'utf8', timeout: 10_000 }).trim(), CONTRACT);
+  const appVersion = execFileSync(app, ['--version'], { env, encoding: 'utf8', timeout: 10_000 }).trim();
+  const nativeSha256 = await sha256(native), appSha256 = await sha256(app);
+  const backendPath = join(root, 'backend.mjs');
+  writeFileSync(backendPath, `await (${clearFixtureBackend.toString()})(${JSON.stringify({ root, cwd, codexHome, before, after, model: TEST_BASELINE.model })});\n`, { mode: 0o600 });
+  const wrapper = `#!/bin/sh\ncase " $* " in\n  *" app-server "*) exec ${shellWord(process.execPath)} ${shellWord(backendPath)} ;;\nesac\ncase "$1" in\n  --version|--mindplayer-ui-contract) exec ${shellWord(native)} "$@" ;;\n  login) exit 97 ;;\nesac\nprintf '%s\\n' "$$" >> ${shellWord(join(root, 'ui-pids'))}\nexec ${shellWord(native)} "$@" 2>> ${shellWord(join(root, 'native-stderr'))}\n`;
+  const digest = createHash('sha256').update(wrapper).digest('hex'), nativeRoot = join(state, 'native-codex');
+  const relativeBinary = `builds/${digest}/codex`, relativeHost = `builds/${digest}/codex-code-mode-host`;
+  mkdirSync(dirname(join(nativeRoot, relativeBinary)), { recursive: true, mode: 0o700 });
+  writeFileSync(join(nativeRoot, relativeBinary), wrapper, { mode: 0o700 });
+  // This no-op host cannot execute inference/tools; no submitted turns exist.
+  writeFileSync(join(nativeRoot, relativeHost), '#!/bin/sh\nexit 98\n', { mode: 0o700 });
+  writeFileSync(join(nativeRoot, 'active.json'), JSON.stringify({ schemaVersion: 1, sourceRevision: REVISION, contract: CONTRACT,
+    version: '0.162.1', binarySha256: digest, binary: relativeBinary, codeModeHostSha256: await sha256(join(nativeRoot, relativeHost)), codeModeHost: relativeHost }), { mode: 0o600 });
+  writeFileSync(join(root, 'bin', 'codex'), wrapper, { mode: 0o700 });
+  writeFileSync(join(codexHome, 'config.toml'), `model = ${JSON.stringify(TEST_BASELINE.model)}\nmodel_reasoning_effort = "medium"\ncli_auth_credentials_store = "file"\ncheck_for_update_on_startup = false\nanalytics.enabled = false\n[projects.${JSON.stringify(cwd)}]\ntrust_level = "trusted"\n`, { mode: 0o600 });
+  writeFileSync(join(state, 'accounts.json'), JSON.stringify(['codex', 'claude', 'kiro', 'cursor'].map(provider => ({ provider, name: 'default', slot: { kind: 'inherited' }, role: 'primary', disabled: provider !== 'codex' }))), { mode: 0o600 });
+  const originalRollout = join(codexHome, 'sessions', `rollout-${before}.jsonl`);
+  writeFileSync(originalRollout, [{ type: 'session_meta', payload: { id: before, cwd, timestamp: '2026-01-01T00:00:00Z', rollout_path: originalRollout } },
+    { type: 'response_item', payload: { role: 'user', content: [{ text: 'before native clear' }] } }].map(row => JSON.stringify(row) + '\n').join(''), { mode: 0o600 });
+  const originalHash = await sha256(originalRollout);
+  writeFileSync(statePath, JSON.stringify({ labels: { [before]: label }, thread_synced: [before, after] }), { mode: 0o600 });
+  const wait = async (check, label, timeoutMs = 15_000) => {
+    const deadline = Date.now() + timeoutMs;
+    for (;;) {
+      if (failure) throw failure;
+      const result = check(); if (result) return result;
+      assert.ok(Date.now() < deadline, `Timed out: ${label}; backend methods=${backend().filter(row => row.event === 'request').map(row => row.method).join(',')}; screen=${screen.text()}`);
+      await delay(25);
+    }
+  };
+  const write = async text => {
+    const id = ++command;
+    bridge.stdin.write(JSON.stringify({ id, op: 'write', data: Buffer.from(text).toString('base64') }) + '\n');
+    await wait(() => acknowledgements.has(id), 'real PTY write acknowledgement', 5000);
+  };
+  const launch = () => {
+    screen = new TerminalScreenFixture(40, 120); decoder = new StringDecoder('utf8'); failure = undefined; closed = false;
+    bridge = spawn(process.env.MINDPLAYER_NATIVE_PYTHON ?? '/opt/homebrew/bin/python3', ['-u', fileURLToPath(new URL('./native-queue-pty.py', import.meta.url))], { env, cwd, stdio: ['pipe', 'pipe', 'pipe'] });
+    bridge.stderr.resume(); bridge.on('error', () => { failure = new Error('Offline PTY bridge failed'); });
+    bridge.on('close', () => { closed = true; }); bridge.stdin.on('error', () => { if (!stopping) failure = new Error('Offline PTY bridge input closed'); });
+    createInterface({ input: bridge.stdout }).on('line', line => {
+      const row = JSON.parse(line);
+      if (row.event === 'started') runner = row.pid;
+      if (row.event === 'ack') acknowledgements.add(row.id);
+      if (row.event === 'output') { const text = decoder.write(Buffer.from(row.data, 'base64')); output += text; screen.write(text); }
+      if (row.event === 'bridge-error') failure = new Error('Offline PTY bridge error');
+    });
+    bridge.stdin.write(JSON.stringify({ binary: app, args: [cwd], cwd, env }) + '\n');
+  };
+  const list = async () => {
+    await wait(() => screen.text().includes('collect sessions'), 'scope picker'); await write('\r');
+    await wait(() => screen.text().includes(label) && screen.text().includes('multi-select'), 'labelled session in list');
+  };
+  const open = async id => {
+    await write('/'); await write(label); await write('\r'); await write('\r');
+    await wait(() => screen.text().includes('v로 연결') || backend().some(row => row.event === 'lifecycle' && row.method === 'thread/resume' && row.threadId === id), 'bound synthetic account or actual native resume');
+    if (screen.text().includes('v로 연결')) await write('v');
+    await wait(() => backend().some(row => row.event === 'lifecycle' && row.method === 'thread/resume' && row.threadId === id)
+      && composerText(screen.text()).includes(composerText(CHOICE.native)), 'real resumed native OFF composer');
+    discover();
+  };
+  launch(); await list(); await open(before);
+  const pid = uiPids()[0];
+  assert.ok(discover().some(row => row.pid === pid && row.command === native), 'actual UI process must exec the supplied private native executable');
+  await write(F6); await wait(() => composerText(screen.text()).includes(composerText(CHOICE.jev)), 'initial F6 ON');
+  await write('\x1b[200~/clear\x1b[201~'); await wait(() => screen.text().includes('/clear'), 'actual native clear composer draft'); await write('\r');
+  const clear = await wait(() => backend().find(row => row.event === 'lifecycle' && row.method === 'thread/start'), 'real native clear lifecycle');
+  assert.equal(clear.sessionStartSource, 'clear'); assert.equal(clear.threadId, after); assert.notEqual(clear.threadId, before);
+  await wait(() => { const saved = JSON.parse(readFileSync(statePath, 'utf8')); return saved.labels?.[after] === label && !Object.hasOwn(saved.labels ?? {}, before); }, 'persisted label moved to cleared ID');
+  assert.deepEqual(uiPids(), [pid], 'clear must retain the existing native PTY');
+  await wait(() => composerText(screen.text()).includes(composerText(CHOICE.native)), 'fresh native clear session starts OFF');
+  await write(F6); await wait(() => composerText(screen.text()).includes(composerText(CHOICE.jev)), 'F6 continues after clear');
+  await write('retained native draft'); await wait(() => screen.text().includes('retained native draft'), 'after-clear native draft');
+  await write('\x11'); await wait(() => screen.text().includes('multi-select') && !screen.text().includes(CHOICE.jev), 'hide cleared pane');
+  const resumes = backend().filter(row => row.event === 'lifecycle' && row.method === 'thread/resume').length;
+  await write('\r'); await wait(() => composerText(screen.text()).includes(composerText(CHOICE.jev)) && screen.text().includes('retained native draft'), 'reenter same cleared PTY with ON draft intact');
+  assert.deepEqual(uiPids(), [pid]); assert.equal(backend().filter(row => row.event === 'lifecycle' && row.method === 'thread/resume').length, resumes, 'reentry must retain the native process');
+  await write('\x15'); await write('\x1b[200~/quit\x1b[201~'); await write('\r');
+  await wait(() => !processTable().some(row => row.pid === pid), 'ordinary native quit');
+  await write('\x11'); await write('q'); await wait(() => closed, 'ordinary app exit');
+  assert.deepEqual(livingGroups(), [], 'first app and native children must exit before restart');
+  launch(); await list(); await open(after);
+  assert.equal(uiPids().length, 2, 'app restart starts one genuine new native UI');
+  const lifecycle = backend().filter(row => row.event === 'lifecycle');
+  assert.deepEqual(lifecycle.map(row => [row.method, row.threadId]), [['thread/resume', before], ['thread/start', after], ['thread/resume', after]]);
+  assert.equal(await sha256(originalRollout), originalHash, 'original transcript must remain byte-identical');
+  assert.equal(backend().some(row => row.event === 'unexpected-request'), false, 'no unimplemented RPC or turn inference may be hidden');
+  assert.equal(await sha256(app), appSha256, 'supplied app binary must not change during this proof');
+  assert.equal(await sha256(native), nativeSha256, 'supplied native binary must not change during this proof');
+  await write('\x1b[200~/quit\x1b[201~'); await write('\r');
+  await wait(() => !processTable().some(row => row.pid === uiPids().at(-1)), 'ordinary restarted native quit');
+  await write('\x11'); await write('q'); await wait(() => closed, 'ordinary restarted app exit');
+  assert.deepEqual(livingGroups(), [], 'restarted app and native children must exit');
+  t.diagnostic(JSON.stringify({ app, appVersion, appSha256, native, nativeVersion: VERSION, nativeSha256, lifecycle,
+    samePtyAcrossClearAndReentry: true, stickyF6AfterClear: true, persistedLabelResumesAfterRestart: true, inference: false, credentials: false }));
+});
+
 test('ignores an unfinished JSONL record while the native writer is appending', () => {
   assert.deepEqual(completeJsonl('{"event":"ready"}\n{"event":'), [{ event: 'ready' }]);
 });

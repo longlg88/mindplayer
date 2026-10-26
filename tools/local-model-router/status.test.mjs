@@ -13,6 +13,117 @@ function fixture(run) {
   finally { rmSync(dir, { recursive: true, force: true }); }
 }
 
+test('native clear ancestry survives missed polls and every turn status update', () => fixture((path, read) => {
+  const sink = createStatusSink(path);
+  sink({ event: 'thread-ownership', owned: true, threadId: 'main', clear: false });
+  assert.deepEqual(read().clearAncestors, []);
+  sink({ event: 'thread-ownership', owned: true, threadId: 'clear-1', clear: true });
+  sink({ event: 'thread-ownership', owned: true, threadId: 'clear-2', clear: true });
+  const ready = read();
+  assert.deepEqual(ready.clearAncestors, ['main', 'clear-1']);
+  assert.equal(Object.keys(ready).length, 13);
+  for (const event of [
+    { event: 'route-deciding', requestId: 1 },
+    { event: 'route-requested', requestId: 1, model: 'selected', effort: 'high' },
+    { event: 'start-acknowledged', requestId: 1, turnId: 'turn-1' },
+    { event: 'turn-started', turnId: 'turn-1' },
+    { event: 'model/rerouted', turnId: 'turn-1', toModel: 'reported' },
+    { event: 'turn-completed', turnId: 'turn-1', status: 'completed' },
+    { event: 'route-deciding', requestId: 2 },
+    { event: 'route-failed', requestId: 2, reason: 'selector-error' },
+  ]) {
+    sink({ ...event, threadId: 'clear-2' });
+    assert.deepEqual(read().clearAncestors, ['main', 'clear-1']);
+  }
+  const current = read();
+  sink({ event: 'turn-started', threadId: 'main', turnId: 'late-turn' });
+  sink({ event: 'thread-ownership', owned: false, threadId: 'helper', clear: true });
+  assert.deepEqual(read(), current);
+}));
+
+test('selection, resume, fork and other startups reset clear ancestry, including same-thread resume', () => {
+  for (const lifecycle of [
+    { threadId: 'resumed', resumed: true, clear: false },
+    { threadId: 'forked', forked: true, clear: false },
+    { threadId: 'started', startup: true, clear: false },
+    { threadId: 'marked', startup: true, mindplayerUserSelection: true },
+    { threadId: 'same', resumed: true, clear: false },
+    { threadId: 'prompt-lookalike', startup: true, input: '/clear', title: '/clear' },
+  ]) fixture((path, read) => {
+    const sink = createStatusSink(path);
+    sink({ event: 'thread-ownership', owned: true, threadId: 'original' });
+    sink({ event: 'thread-ownership', owned: true, threadId: 'same', clear: true });
+    assert.deepEqual(read().clearAncestors, ['original']);
+    sink({ event: 'thread-ownership', owned: true, ...lifecycle });
+    assert.deepEqual(read().clearAncestors, [], JSON.stringify(lifecycle));
+    sink({ event: 'thread-ownership', owned: true, threadId: 'next-clear', clear: true });
+    assert.deepEqual(read().clearAncestors, [lifecycle.threadId]);
+  });
+});
+
+test('clear evidence contains only the latest sixteen distinct validated prior owned identifiers within 4096 bytes', () => fixture((path, read) => {
+  writeFileSync(path, JSON.stringify({ schemaVersion: 2, generation: 'g'.repeat(128), revision: 0, stage: 'ready' }));
+  const sink = createStatusSink(path);
+  const ids = Array.from({ length: 20 }, (_, index) => `thread-${String(index).padStart(3, '0')}-`.padEnd(128, 'x'));
+  sink({ event: 'thread-ownership', owned: true, threadId: ids[0], clear: true });
+  assert.deepEqual(read().clearAncestors, [], 'a first clear has no previous owned thread');
+  for (let index = 1; index < ids.length; index++) {
+    sink({ event: 'thread-ownership', owned: true, threadId: ids[index], clear: true });
+    assert.deepEqual(read().clearAncestors, ids.slice(Math.max(0, index - 16), index));
+  }
+  const current = read();
+  for (const threadId of ['', 'unsafe id', 'unsafe\n', '한글', 'x'.repeat(129), null, 4]) {
+    sink({ event: 'thread-ownership', owned: true, threadId, clear: true });
+    assert.deepEqual(read(), current);
+  }
+  sink({ event: 'route-deciding', threadId: ids.at(-1), requestId: 'r'.repeat(128) });
+  sink({ event: 'route-requested', threadId: ids.at(-1), requestId: 'r'.repeat(128), model: 'm'.repeat(128), effort: 'e'.repeat(128), reason: 's'.repeat(128) });
+  sink({ event: 'start-acknowledged', threadId: ids.at(-1), requestId: 'r'.repeat(128), turnId: 't'.repeat(128) });
+  sink({ event: 'model/rerouted', threadId: ids.at(-1), turnId: 't'.repeat(128), toModel: 'o'.repeat(128) });
+  assert.equal(read().clearAncestors.length, 16);
+  assert.ok(statSync(path).size <= 4096, 'maximal identifiers and metadata fit the status byte cap');
+  sink({ event: 'thread-ownership', owned: true, threadId: ids.at(-2), clear: true });
+  assert.deepEqual(read().clearAncestors, [...ids.slice(-17, -2), ids.at(-1)]);
+  const revisited = read();
+  sink({ event: 'thread-ownership', owned: true, threadId: ids.at(-2), clear: true });
+  assert.deepEqual(read(), revisited, 'same-thread ACK cannot append the current ID');
+}));
+
+test('thread and connection closure retain historical clear ancestry but sever the chain for fresh ownership', () => {
+  for (const event of [{ event: 'thread-closed', threadId: 'cleared' }, { event: 'connection-closed-no-replay' }]) {
+    for (const clear of [true, false]) for (const threadId of ['fresh', 'cleared']) fixture((path, read) => {
+      const sink = createStatusSink(path);
+      sink({ event: 'thread-ownership', owned: true, threadId: 'original' });
+      sink({ event: 'thread-ownership', owned: true, threadId: 'cleared', clear: true });
+      sink({ event: 'route-deciding', threadId: 'cleared', requestId: 1 });
+      sink({ event: 'route-requested', threadId: 'cleared', requestId: 1, model: 'selected' });
+      sink({ event: 'start-acknowledged', threadId: 'cleared', requestId: 1, turnId: 'old-turn' });
+      sink({ event: 'turn-started', threadId: 'cleared', turnId: 'old-turn' });
+      assert.deepEqual(read().clearAncestors, ['original']);
+      sink(event);
+      assert.equal(read().stage, 'closed');
+      assert.equal(read().threadId, 'cleared');
+      assert.deepEqual(read().clearAncestors, ['original'], 'verified history survives exit before the next UI poll');
+      const closed = read();
+      const lateEvents = [
+        { event: 'turn-started', requestId: 1, turnId: 'old-turn' },
+        { event: 'turn-completed', requestId: 1, turnId: 'old-turn', status: 'completed' },
+        { event: 'start-acknowledged', requestId: 1, turnId: 'old-turn' },
+        { event: 'model/rerouted', turnId: 'old-turn', toModel: 'late-model' },
+      ];
+      for (const late of lateEvents) sink({ ...late, threadId: 'cleared' });
+      assert.deepEqual(read(), closed, 'old turns cannot rewrite the retained closed snapshot');
+      sink({ event: 'thread-ownership', owned: true, threadId, clear });
+      assert.equal(read().stage, 'ready');
+      assert.equal(read().threadId, threadId);
+      assert.deepEqual(read().clearAncestors, []);
+      const fresh = read();
+      for (const late of lateEvents) sink({ ...late, threadId: 'cleared' });
+      assert.deepEqual(read(), fresh, 'old turns cannot claim a fresh binding, even for the same thread ID');
+    });
+  }
+});
+
 test('cancelled judgment is interrupted without a native turn and an identical retry starts fresh', () => fixture((path, read) => {
   const sink = createStatusSink(path);
   sink({ event: 'thread-ownership', owned: true, threadId: 'main' });

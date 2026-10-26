@@ -27,6 +27,15 @@ type CategorySyncResult = (
     Result<(handoff::PreparedHandoff, Vec<(String, u64)>), String>,
 );
 
+type ThreadSyncResult = (String, Result<handoff::PreparedHandoff, String>);
+
+/// Keep the target outside the receiver too: native /clear must be able to
+/// cancel only that session's obsolete read before the worker has completed.
+struct PendingSessionSync<T> {
+    target_id: String,
+    result: Receiver<T>,
+}
+
 /// A finished conversation-log batch. The worker owns a clone of the index
 /// while it runs and hands the whole thing back, so the UI thread never sees a
 /// half-updated index.
@@ -349,7 +358,7 @@ pub struct App {
     /// In-flight category sync (see `spawn_category_sync_for`). Reading peer
     /// transcripts happens off the main thread — doing it inline froze the UI
     /// when thread-sync did the same thing.
-    pub(crate) category_sync_rx: Option<Receiver<CategorySyncResult>>,
+    category_sync_rx: Option<PendingSessionSync<CategorySyncResult>>,
     /// Open category menu (`t` on a header).
     pub category_menu: Option<CategoryMenu>,
     pub cwd: PathBuf,
@@ -649,7 +658,7 @@ pub struct App {
     /// session would freeze the whole UI (input and rendering both) until
     /// the read finished. Keyed by the target session id so a stale result
     /// can never land on a pane the user has since switched away from.
-    thread_sync_rx: Option<Receiver<(String, Result<handoff::PreparedHandoff, String>)>>,
+    thread_sync_rx: Option<PendingSessionSync<ThreadSyncResult>>,
     /// In-flight background `.html`-candidate scan sweep (see
     /// `spawn_html_scan`/`apply_html_scan`). Walking each live pane's cwd
     /// (`scan_html_candidates`) is a blocking filesystem walk that takes long
@@ -1380,6 +1389,7 @@ mod link_copy;
 mod modals;
 mod pane;
 mod selection;
+mod session_continuity;
 mod session_list;
 mod spawn;
 

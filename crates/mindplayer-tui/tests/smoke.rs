@@ -3521,6 +3521,40 @@ fn search_then_typed_input_reaches_the_live_pane() {
     );
 }
 
+/// SIGWINCH must not strand terminal input until another key produces readiness.
+#[test]
+fn resize_bursts_do_not_leave_typed_input_waiting_for_another_key() {
+    let mut mp = Mp::launch();
+    mp.start_into_main_list();
+    mp.send(b"\r");
+    mp.expect(PANE_READY, STEP_TIMEOUT, "echo pane is ready");
+
+    for cycle in 0..16 {
+        let token = format!("k{cycle:02}");
+        for step in 0..8 {
+            mp.resize(32 + step % 2, 88 + step % 3);
+            if step == 3 {
+                mp.send(token.as_bytes());
+            }
+        }
+        // No later input or resize may rescue a missed readiness notification.
+        mp.expect(
+            &token,
+            STEP_TIMEOUT,
+            "input during resize must arrive unaided",
+        );
+    }
+
+    // All of these ordinary key events share one read. A zero-timeout drain
+    // on the Unix TTY backend must not strand parser-buffered events.
+    mp.send(b"BATCH_1234567890");
+    mp.expect(
+        "BATCH_1234567890",
+        STEP_TIMEOUT,
+        "drain a multi-key input batch",
+    );
+}
+
 /// Scenario 2 — zoom-hides-multi-launch regression (commit e6aa682).
 ///
 /// With a leftover zoom on (Ctrl-Z against a single open pane), marking two
@@ -4879,7 +4913,9 @@ fn claude_launcher_preserves_context(entry: &str) {
                 .join("claude-brvo-0002.jsonl");
             append_claude_turn(&source, "user", "original Claude launch question");
             append_claude_turn(&source, "assistant", "original Claude launch answer");
-            mp.send(b"/brvo\x1b");
+            mp.send(b"/brvo");
+            mp.expect("type to filter", STEP_TIMEOUT, "source search is open");
+            mp.send(b"\x1b");
             mp.expect_absent("type to filter", STEP_TIMEOUT, "select the source session");
             mp.send(b"h");
             mp.expect("Handoff", STEP_TIMEOUT, "choose Claude handoff account");
@@ -6173,6 +6209,237 @@ fn embedded_router_jev_menu_excludes_legacy_models_before_current_family() {
 }
 
 #[test]
+fn embedded_router_excludes_capacity_failures_until_explicit_followup() {
+    // The installed MINDPLAYER_TEST_BINARY runs in a real PTY. Both provider
+    // responses are SYNTHETIC; this does not prove real inference or capacity.
+    let mut mp = Mp::launch_actual_router_fixture();
+    std::fs::write(mp.router_marker("synthetic-capacity-failure"), b"opt-in\n").unwrap();
+    let status_root = mp._tmp.join("home/.mindplayer/routing-status");
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        mp.resume_router_fixture();
+        mp.assert_router_gateway_key_is_private();
+        mp.submit_jev(b"A\r");
+        let first = mp.wait_for_router_turn("A");
+        assert_eq!(first["model"], "gpt-6-luna");
+        assert_eq!(first["effort"], "low");
+        mp.wait_for_router_audit_event("start-acknowledged", "fixture-turn-A");
+        mp.wait_for_router_audit_event("turn-completed", "fixture-turn-A");
+        mp.wait_for_router_status("gpt-6-luna", "failed", Some("fixture-turn-A"));
+        assert!(mp.wait_until(STEP_TIMEOUT, |_| mp
+            .router_rows("capacity-events.jsonl")
+            .len()
+            == 2));
+        let events = mp.router_rows("capacity-events.jsonl");
+        assert_eq!(events[0]["method"], "error");
+        assert_eq!(events[0]["params"]["threadId"], first["threadId"]);
+        assert_eq!(events[0]["params"]["turnId"], "fixture-turn-A");
+        assert_eq!(
+            events[0]["params"]["error"]["codexErrorInfo"],
+            "serverOverloaded"
+        );
+        assert_eq!(events[0]["params"]["willRetry"], false);
+        assert_eq!(events[1]["method"], "turn/completed");
+        assert_eq!(events[1]["params"]["turn"]["id"], "fixture-turn-A");
+        assert_eq!(events[1]["params"]["turn"]["status"], "failed");
+        // Terminal status and delivered events synchronize the next explicit
+        // input. A fixed sleep would not establish native queue ownership.
+        assert_eq!(
+            mp.router_rows("routes.jsonl").len(),
+            1,
+            "no automatic resubmit after failure"
+        );
+        assert_eq!(mp.router_rows("ui-requests.jsonl").len(), 1);
+        assert_eq!(mp.router_rows("jev.jsonl").len(), 2);
+
+        for (input, label, model, effort) in [
+            (b"C\r".as_slice(), "C", "gpt-6.1-sol", "medium"),
+            (b"analyze B\r".as_slice(), "B", "gpt-6-astra", "high"),
+        ] {
+            mp.send(input);
+            let route = mp.wait_for_router_turn(label);
+            assert_eq!(route["model"], model);
+            assert_eq!(route["effort"], effort);
+            mp.wait_for_router_status(model, "completed", Some(&format!("fixture-turn-{label}")));
+            mp.assert_router_audit_turn_once(label);
+        }
+        let judgments = mp.router_rows("jev.jsonl");
+        let starts: Vec<_> = judgments
+            .iter()
+            .filter(|row| row["event"] == "start")
+            .collect();
+        assert_eq!(
+            starts.len(),
+            3,
+            "exactly one judgment per explicit ON prompt"
+        );
+        for (index, start) in starts.iter().enumerate() {
+            assert_eq!(start["label"], ["A", "C", "B"][index]);
+            assert_eq!(start["configurationRubricMatches"], true);
+            assert_eq!(start["questionsHaveRubric"], true);
+            assert_eq!(start["capacityRecovery"], index > 0);
+            assert_eq!(
+                start["configurationInstructions"]
+                    .as_str()
+                    .unwrap()
+                    .contains("CAPACITY_RECOVERY:"),
+                index > 0
+            );
+            assert_eq!(
+                start["stateKeys"],
+                serde_json::json!([
+                    "attachments",
+                    "baseline",
+                    "contextKnown",
+                    "currentFamily",
+                    "currentInput",
+                    "previousDecision",
+                    "recent",
+                    "rubricVersion",
+                    "schemaVersion",
+                    "truncated"
+                ])
+            );
+            let criteria: serde_json::Value =
+                serde_json::from_str(start["configurationCriteriaJson"].as_str().unwrap()).unwrap();
+            let menu = criteria
+                .as_object()
+                .expect("actual serialized Jev criteria");
+            assert_eq!(menu.contains_key("abstain"), index > 0);
+            if index > 0 {
+                assert!(
+                    menu["abstain"].is_string(),
+                    "abstain has no model or effort"
+                );
+            }
+            let candidates: Vec<_> = menu
+                .iter()
+                .filter(|(key, _)| key.as_str() != "abstain")
+                .map(|(_, value)| value)
+                .collect();
+            let models: BTreeSet<_> = candidates
+                .iter()
+                .map(|choice| choice["model"].as_str().unwrap())
+                .collect();
+            let mut expected = BTreeSet::from(["gpt-6.1-sol", "gpt-6-astra"]);
+            if index == 0 {
+                expected.insert("gpt-6-luna");
+            }
+            assert_eq!(
+                models, expected,
+                "the failed model must stay absent from every later Jev menu"
+            );
+            assert_eq!(
+                candidates.len(),
+                expected.len(),
+                "no duplicate model/effort candidates"
+            );
+            assert_eq!(menu.len(), expected.len() + usize::from(index > 0));
+            let response = judgments
+                .iter()
+                .find(|row| row["event"] == "response" && row["label"] == start["label"])
+                .unwrap();
+            assert!(
+                candidates.iter().any(|choice| choice["model"]
+                    == response["configuration"]["model"]
+                    && choice["effort"] == response["configuration"]["effort"]),
+                "synthetic Jev must choose a supplied candidate"
+            );
+            let probabilities = response["configuration"]["probabilities"]
+                .as_object()
+                .unwrap();
+            assert_eq!(
+                probabilities.keys().collect::<BTreeSet<_>>(),
+                menu.keys().collect::<BTreeSet<_>>(),
+                "probabilities include every actual criterion, including abstain"
+            );
+        }
+
+        mp.choose_prompt(false);
+        mp.send(b"D\r");
+        let native = mp.wait_for_router_turn("bootstrap");
+        assert_eq!(native["params"]["input"][0]["text"], "D");
+        assert_eq!(
+            native["model"], "gpt-6-luna",
+            "OFF preserves the native configuration"
+        );
+        assert_eq!(native["effort"], "low");
+        mp.wait_for_router_audit_event("turn-completed", "fixture-turn-bootstrap");
+        assert_eq!(
+            mp.router_rows("jev.jsonl").len(),
+            judgments.len(),
+            "OFF never judges"
+        );
+        let sent = mp.router_rows("ui-requests.jsonl");
+        let routes = mp.router_rows("routes.jsonl");
+        assert_eq!(sent.len(), 4);
+        assert_eq!(
+            routes.len(),
+            sent.len(),
+            "no silent retry or ping-pong submission"
+        );
+        let identities: BTreeSet<_> = sent
+            .iter()
+            .map(|request| request["params"]["clientUserMessageId"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            identities.len(),
+            4,
+            "every explicit input has its own identity"
+        );
+        for ((request, route), text) in sent.iter().zip(&routes).zip(["A", "C", "analyze B", "D"]) {
+            assert_eq!(request["params"]["input"][0]["text"], text);
+            assert_eq!(route["params"]["input"][0]["text"], text);
+            assert_eq!(
+                route["clientUserMessageId"],
+                request["params"]["clientUserMessageId"]
+            );
+            assert_eq!(route["threadId"], first["threadId"]);
+            assert_eq!(route["routingChoicePresent"], false);
+        }
+        let audit = mp.router_audit_rows();
+        for event in ["start-acknowledged", "turn-completed"] {
+            assert_eq!(audit.iter().filter(|row| row["event"] == event).count(), 4);
+        }
+        assert!(!mp
+            ._tmp
+            .join("home/.mindplayer/jev-credentials.json")
+            .exists());
+    }));
+    let children: Vec<u32> = ["ui.pid", "app-server.pid"]
+        .into_iter()
+        .filter_map(|name| {
+            std::fs::read_to_string(mp.router_marker(name))
+                .ok()?
+                .trim()
+                .parse()
+                .ok()
+        })
+        .collect();
+    let port = std::fs::read_to_string(mp.router_marker("proxy-url"))
+        .ok()
+        .and_then(|url| url.trim().rsplit(':').next()?.parse::<u16>().ok());
+    mp.send(b"\x11");
+    mp.expect(
+        "closed live pane",
+        STEP_TIMEOUT,
+        "hide capacity fixture before natural quit",
+    );
+    mp.quit_from_list();
+    assert!(
+        mp.wait_until(STEP_TIMEOUT, |_| {
+            children.iter().all(|pid| !fixture_process_exists(*pid))
+                && port.is_none_or(|port| TcpStream::connect(("127.0.0.1", port)).is_err())
+                && std::fs::read_dir(&status_root)
+                    .map_or(true, |mut entries| entries.next().is_none())
+        }),
+        "natural quit must clean up synthetic children, proxy, and owned status channel"
+    );
+    if let Err(panic) = result {
+        std::panic::resume_unwind(panic);
+    }
+}
+
+#[test]
 fn embedded_router_late_ack_preserves_running_without_reroute() {
     let mut mp = Mp::launch_router_fixture(CodexFixture::LifecycleRouter);
     mp.resume_router_fixture();
@@ -6240,6 +6507,241 @@ fn embedded_router_status_tracks_the_owned_thread_after_resume() {
         STEP_TIMEOUT,
         "current rollout completes its own turn",
     );
+}
+
+#[test]
+fn embedded_router_clear_preserves_the_label_live_pty_and_resume_target() {
+    // Offline app-consumer proof: the actual binary/router run in PTYs, but
+    // ownership metadata and native UI/backend are synthetic. Select the exact
+    // installed consumer with MINDPLAYER_TEST_BINARY; native /clear is separate.
+    let mut mp = Mp::launch_router_fixture(CodexFixture::KeylessRouter);
+    let state_path = mp._tmp.join("state");
+    // The shared fixture creates an empty directory at MINDPLAYER_STATE.
+    // This scenario needs that exact isolated path to become a durable file.
+    std::fs::remove_dir(&state_path).expect("remove empty fixture state directory");
+    mp.start_into_main_list();
+    let status_root = mp._tmp.join("home/.mindplayer/routing-status");
+    let mut child_pids = Vec::new();
+    let mut proxy_ports = Vec::new();
+    // Preserve natural app/router cleanup even when the old installed consumer
+    // fails the continuity assertion. Mp::drop alone kills the outer process.
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        const OLD_ID: &str = "codex-alfa-0001";
+        const NEW_ID: &str = "codex-clear-0003";
+        const LABEL: &str = "MPCLEARCONTINUITY";
+        // Recency can put BRVO first; anchor label editing to the actual ALFA
+        // pane rather than assuming the first visible row's identity.
+        mp.send(b"/alfa\r");
+        mp.expect(
+            PANE_READY,
+            STARTUP_TIMEOUT,
+            "resume the original fixture row",
+        );
+        mp.send(b"\x18");
+        mp.expect(
+            "multi-select",
+            STEP_TIMEOUT,
+            "return to the resumed row in the list",
+        );
+        mp.send(b"e");
+        mp.expect(
+            "Set label",
+            STEP_TIMEOUT,
+            "label the first native fixture row",
+        );
+        mp.send(format!("{LABEL}\r").as_bytes());
+        mp.expect_absent("Set label", STEP_TIMEOUT, "save the fixture label");
+        let saved = mindplayer_core::State::load_from(&state_path);
+        assert_eq!(saved.label_for(OLD_ID), Some(LABEL));
+        mp.send(format!("/{LABEL}\r").as_bytes());
+        mp.expect(
+            PANE_READY,
+            STARTUP_TIMEOUT,
+            "resume the labeled native fixture",
+        );
+        mp.expect(PROMPT_NATIVE, STEP_TIMEOUT, "offline session has Jev OFF");
+        let original_ui = std::fs::read_to_string(mp.router_marker("ui.pid")).unwrap();
+        let original_backend = std::fs::read_to_string(mp.router_marker("app-server.pid")).unwrap();
+        child_pids.push(original_ui.trim().parse::<u32>().unwrap());
+        child_pids.push(original_backend.trim().parse::<u32>().unwrap());
+        let port = std::fs::read_to_string(mp.router_marker("proxy-url"))
+            .unwrap()
+            .trim()
+            .rsplit(':')
+            .next()
+            .unwrap()
+            .parse::<u16>()
+            .unwrap();
+        proxy_ports.push(port);
+        let original_args = mp.router_json("ui.json")["args"].clone();
+        assert!(original_args
+            .as_array()
+            .unwrap()
+            .windows(2)
+            .any(|args| args == ["resume", OLD_ID]));
+        let original_transcript = std::fs::read(&mp.codex_alfa_file).unwrap();
+        let paths: Vec<_> = std::fs::read_dir(&status_root)
+            .unwrap()
+            .map(|entry| entry.unwrap().path().join("status.json"))
+            .collect();
+        assert_eq!(paths.len(), 1, "one pane-owned status channel");
+        let mut status: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&paths[0]).unwrap()).unwrap();
+        assert_eq!(status["schemaVersion"], 2);
+        assert_eq!(status["threadId"], OLD_ID);
+        assert_eq!(status["stage"], "ready");
+        status["revision"] = serde_json::json!(status["revision"].as_u64().unwrap() + 1);
+        status["threadId"] = serde_json::json!(NEW_ID);
+        status["clearAncestors"] = serde_json::json!([OLD_ID]);
+        assert_eq!(status.as_object().unwrap().len(), 13);
+        // Preserve the real generation and private file permissions, as in the
+        // adjacent /resume ownership test. No native transcript is rewritten.
+        std::fs::write(&paths[0], serde_json::to_vec(&status).unwrap()).unwrap();
+        mp.send(b"\x11");
+        mp.expect(
+            "closed live pane",
+            STEP_TIMEOUT,
+            "hide the original live PTY",
+        );
+        // Deliberately delay the producer's first rollout beyond one status
+        // polling interval. Only automatic discovery can find this new row.
+        std::thread::sleep(Duration::from_millis(650));
+        assert_eq!(
+            mindplayer_core::State::load_from(&state_path).label_for(OLD_ID),
+            Some(LABEL),
+            "retain the old label until the target transcript exists"
+        );
+        let current_file = seed_codex_session(
+            &isolated_codex_home(&mp).join("sessions"),
+            &mp._tmp.join("scope"),
+            NEW_ID,
+            "MPCLEAREDTRANSCRIPT",
+        );
+        let current_transcript = std::fs::read(&current_file).unwrap();
+        assert!(
+            mp.wait_until(STEP_TIMEOUT, |_| {
+                let saved = mindplayer_core::State::load_from(&state_path);
+                saved.label_for(NEW_ID) == Some(LABEL) && saved.label_for(OLD_ID).is_none()
+            }),
+            "/clear must persist the label on {NEW_ID}, remove it from {OLD_ID}, and discover the late rollout without manual refresh; saved labels: {:?}",
+            mindplayer_core::State::load_from(&state_path).labels
+        );
+        assert!(fixture_process_exists(child_pids[0]));
+        assert!(fixture_process_exists(child_pids[1]));
+        assert!(TcpStream::connect(("127.0.0.1", port)).is_ok());
+        assert!(
+            paths[0].is_file(),
+            "hidden PTY retains its owned status channel"
+        );
+        mp.send(format!("/{LABEL}\r").as_bytes());
+        mp.expect(
+            PANE_READY,
+            STEP_TIMEOUT,
+            "reattach the cleared label's live PTY",
+        );
+        mp.send(b"A");
+        mp.expect(
+            "> A",
+            STEP_TIMEOUT,
+            "input still reaches the original native composer after clear and reattach",
+        );
+        assert_eq!(
+            std::fs::read_to_string(mp.router_marker("ui.pid")).unwrap(),
+            original_ui,
+            "clear and label reattach must not respawn the UI"
+        );
+        assert_eq!(
+            std::fs::read_to_string(mp.router_marker("app-server.pid")).unwrap(),
+            original_backend,
+            "clear and label reattach must not respawn the backend"
+        );
+        assert_eq!(std::fs::read_dir(&status_root).unwrap().count(), 1);
+        mp.send(b"\r");
+        let input = mp.wait_for_router_turn("A");
+        assert_eq!(input["params"]["input"][0]["text"], "A");
+        mp.wait_for_router_audit_event("turn-completed", "fixture-turn-A");
+
+        // End only the recorded synthetic UI, then resume by label. This
+        // exercises a fresh native command without requiring a real login.
+        assert!(std::process::Command::new("kill")
+            .args(["-TERM", original_ui.trim()])
+            .status()
+            .unwrap()
+            .success());
+        mp.expect(
+            "session ended",
+            STEP_TIMEOUT,
+            "fixture child has genuinely exited",
+        );
+        mp.send(b"\x11");
+        mp.expect("closed live pane", STEP_TIMEOUT, "close the ended pane");
+        mp.send(format!("/{LABEL}\r").as_bytes());
+        assert!(
+            mp.wait_until(STARTUP_TIMEOUT, |_| {
+                let metadata = std::fs::read(mp.router_marker("ui.json"))
+                    .ok()
+                    .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok());
+                metadata.as_ref().is_some_and(|metadata| {
+                    metadata["args"]
+                        .as_array()
+                        .is_some_and(|args| args.windows(2).any(|args| args == ["resume", NEW_ID]))
+                })
+            }),
+            "resuming the migrated label must launch the exact new native thread ID"
+        );
+        let metadata = mp.router_json("ui.json");
+        assert_eq!(metadata["cwd"], mp._tmp.join("scope").display().to_string());
+        assert_eq!(
+            metadata["codexHome"],
+            isolated_codex_home(&mp).display().to_string()
+        );
+        assert_ne!(
+            std::fs::read_to_string(mp.router_marker("ui.pid")).unwrap(),
+            original_ui
+        );
+        mp.send(b"C\r");
+        assert_eq!(mp.wait_for_router_turn("C")["threadId"], NEW_ID);
+        mp.wait_for_router_audit_event("turn-completed", "fixture-turn-C");
+        assert!(mp.router_rows("jev.jsonl").is_empty());
+        let saved = mindplayer_core::State::load_from(&state_path);
+        assert_eq!(saved.label_for(NEW_ID), Some(LABEL));
+        assert_eq!(saved.label_for(OLD_ID), None);
+        assert_eq!(
+            std::fs::read(&mp.codex_alfa_file).unwrap(),
+            original_transcript
+        );
+        assert_eq!(std::fs::read(&current_file).unwrap(), current_transcript);
+    }));
+    for name in ["ui.pid", "app-server.pid"] {
+        if let Ok(pid) = std::fs::read_to_string(mp.router_marker(name)) {
+            child_pids.push(pid.trim().parse().unwrap());
+        }
+    }
+    if let Ok(proxy) = std::fs::read_to_string(mp.router_marker("proxy-url")) {
+        proxy_ports.push(proxy.trim().rsplit(':').next().unwrap().parse().unwrap());
+    }
+    for modal in ["Set label", "type to filter"] {
+        if mp.screen().contains(modal) {
+            mp.send(b"\x1b");
+            mp.expect_absent(modal, STEP_TIMEOUT, "close fixture modal before cleanup");
+        }
+    }
+    mp.send(b"\x11");
+    mp.quit_from_list();
+    assert!(
+        mp.wait_until(STEP_TIMEOUT, |_| {
+            child_pids.iter().all(|pid| !fixture_process_exists(*pid))
+                && proxy_ports
+                    .iter()
+                    .all(|port| TcpStream::connect(("127.0.0.1", *port)).is_err())
+                && std::fs::read_dir(&status_root)
+                    .map_or(true, |mut entries| entries.next().is_none())
+        }),
+        "natural app quit must clean up the synthetic children, proxies, and owned status channels"
+    );
+    if let Err(panic) = result {
+        std::panic::resume_unwind(panic);
+    }
 }
 
 #[test]

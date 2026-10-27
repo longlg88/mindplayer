@@ -589,7 +589,7 @@ mod tests {
         let _ = thread_tx.send(("before-clear".into(), Ok(sync())));
         let _ = category_tx.send((
             "before-clear".into(),
-            Ok((sync(), vec![("peer".into(), 99)])),
+            Ok((sync(), vec![("peer".into(), 99, None)])),
         ));
         fixture.app.poll_thread_sync();
         fixture.app.poll_category_sync();
@@ -629,7 +629,10 @@ mod tests {
         };
         thread_tx.send(("other".into(), Ok(sync()))).unwrap();
         category_tx
-            .send(("other".into(), Ok((sync(), vec![("peer".into(), 99)]))))
+            .send((
+                "other".into(),
+                Ok((sync(), vec![("peer".into(), 99, None)])),
+            ))
             .unwrap();
         assert!(fixture.app.poll_thread_sync());
         assert!(fixture.app.poll_category_sync());
@@ -668,7 +671,7 @@ mod tests {
             category_tx
                 .send((
                     "before-clear".into(),
-                    Ok((sync(), vec![("peer".into(), 99)])),
+                    Ok((sync(), vec![("peer".into(), 99, None)])),
                 ))
                 .unwrap();
             fixture.app.poll_thread_sync();

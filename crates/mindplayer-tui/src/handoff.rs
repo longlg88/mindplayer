@@ -438,13 +438,22 @@ fn extract_transcript(source: &Session) -> Result<String, String> {
 pub struct PeerDelta {
     pub session: Session,
     pub text: String,
-    /// Peer transcript length after this read — the next watermark.
+    /// End of the consumed snapshot — the next watermark, excluding partial JSONL.
     pub new_len: u64,
     /// Bytes newly included. 0 means nothing to say.
     pub added_bytes: u64,
-    /// The peer's file shrank below the watermark (rewritten/rotated), so this
-    /// is a full re-read rather than an increment.
+    /// The file shrank or the old watermark splits a record, requiring a
+    /// conservative full re-read rather than an increment.
     pub reset: bool,
+}
+
+/// Kiro discovery returns metadata; its append-only conversation is adjacent.
+pub(crate) fn transcript_source(source: &Session) -> PathBuf {
+    if source.agent == Agent::Kiro {
+        source.file.with_extension("jsonl")
+    } else {
+        source.file.clone()
+    }
 }
 
 /// Read a peer transcript from `mark` onward. Returns `None` when there is
@@ -454,22 +463,34 @@ pub fn extract_transcript_delta(source: &Session, mark: u64) -> Option<PeerDelta
     if source.file.as_os_str().is_empty() {
         return None;
     }
-    let len = std::fs::metadata(&source.file).ok()?.len();
+    if source.agent == Agent::Cursor {
+        return None; // Listing metadata is not an incremental conversation.
+    }
+    let mut transcript = source.clone();
+    transcript.file = transcript_source(source);
+    let len = std::fs::metadata(&transcript.file).ok()?.len();
     if len == 0 {
         return None;
     }
-    // Shrunk below the mark: the file was rewritten or rotated, so the mark is
-    // meaningless. Fall back to a full read rather than guessing an offset.
-    let reset = len < mark;
+    // Older versions checkpointed partial records. A mark inside one must be
+    // replayed, even when subsequent complete records would parse after it.
+    let reset = len < mark || (mark > 0 && !is_jsonl_boundary(&transcript.file, mark)?);
     let from = if reset { 0 } else { mark };
     if !reset && len <= mark {
         return None; // nothing appended since last time
     }
 
+    let new_len = complete_jsonl_end(&transcript.file, from, len)?;
     let text = if from == 0 {
-        extract_transcript(source).ok()?
+        extract_jsonl_snapshot(
+            &transcript,
+            parse_turn_for(source.agent),
+            new_len,
+            MAX_SOURCE_BYTES,
+        )
+        .ok()?
     } else {
-        read_transcript_from(source, from)?
+        read_transcript_from(&transcript, from, new_len)?
     };
     let text = text.trim().to_string();
     if text.is_empty() {
@@ -478,29 +499,50 @@ pub fn extract_transcript_delta(source: &Session, mark: u64) -> Option<PeerDelta
     Some(PeerDelta {
         session: source.clone(),
         text,
-        new_len: len,
-        added_bytes: len.saturating_sub(from),
+        new_len,
+        added_bytes: new_len.saturating_sub(from),
         reset,
     })
 }
 
-/// Parse only the JSONL records after `from`. A byte offset can land mid-record
-/// (a partially flushed write); `parse_jsonl_reader` skips lines that do not
-/// parse, so the leading fragment is discarded on its own.
-fn read_transcript_from(source: &Session, from: u64) -> Option<String> {
-    let parse_turn = match source.agent {
-        Agent::Claude => parse_claude_turn,
-        Agent::Codex => parse_codex_turn,
-        // Kiro keeps a JSON sidecar rather than an append-only JSONL, so an
-        // offset means nothing there — always take the whole thing.
-        Agent::Kiro => return extract_transcript(source).ok(),
-        // Cursor persists only listing metadata locally; there is no append-only
-        // transcript delta to synchronize into another lane.
-        Agent::Cursor => return None,
-    };
+fn is_jsonl_boundary(path: &Path, mark: u64) -> Option<bool> {
+    let mut file = File::open(path).ok()?;
+    file.seek(SeekFrom::Start(mark.checked_sub(1)?)).ok()?;
+    let mut previous = [0];
+    file.read_exact(&mut previous).ok()?;
+    Some(previous[0] == b'\n')
+}
+
+/// Find the last complete record within a fixed snapshot. Search backwards in
+/// small chunks, bounded by the normal transcript read budget. A partial line
+/// larger than that budget stays pending rather than being checkpointed away.
+fn complete_jsonl_end(path: &Path, from: u64, len: u64) -> Option<u64> {
+    let mut file = File::open(path).ok()?;
+    let lower = from.max(len.saturating_sub(MAX_SOURCE_BYTES));
+    let mut end = len;
+    let mut buf = [0u8; 8192];
+    while end > lower {
+        let start = end.saturating_sub(buf.len() as u64).max(lower);
+        let size = (end - start) as usize;
+        file.seek(SeekFrom::Start(start)).ok()?;
+        file.read_exact(&mut buf[..size]).ok()?;
+        if let Some(newline) = buf[..size].iter().rposition(|byte| *byte == b'\n') {
+            return Some(start + newline as u64 + 1);
+        }
+        end = start;
+    }
+    None
+}
+
+/// Parse only the JSONL snapshot after `from`, never bytes appended after `end`.
+fn read_transcript_from(source: &Session, from: u64, end: u64) -> Option<String> {
+    let parse_turn = parse_turn_for(source.agent);
     let mut file = File::open(&source.file).ok()?;
     file.seek(SeekFrom::Start(from)).ok()?;
-    let (out, count) = parse_jsonl_reader(BufReader::new(file), parse_turn);
+    let (out, count) = parse_jsonl_reader(
+        BufReader::new(file.take(end.saturating_sub(from))),
+        parse_turn,
+    );
     (count > 0).then(|| out.trim().to_string())
 }
 
@@ -538,11 +580,22 @@ fn extract_jsonl_transcript_with_limit(
     parse_turn: fn(&Value) -> Option<(String, String)>,
     max_source_bytes: u64,
 ) -> Result<String, String> {
+    let file_len = std::fs::metadata(&source.file)
+        .map_err(|e| format!("failed to inspect {}: {e}", source.file.display()))?
+        .len();
+    extract_jsonl_snapshot(source, parse_turn, file_len, max_source_bytes)
+}
+
+fn extract_jsonl_snapshot(
+    source: &Session,
+    parse_turn: fn(&Value) -> Option<(String, String)>,
+    file_len: u64,
+    max_source_bytes: u64,
+) -> Result<String, String> {
     let file = File::open(&source.file)
         .map_err(|e| format!("failed to open {}: {e}", source.file.display()))?;
-    let file_len = file.metadata().ok().map(|m| m.len()).unwrap_or(0);
     if file_len <= max_source_bytes {
-        let (out, count) = parse_jsonl_reader(BufReader::new(file), parse_turn);
+        let (out, count) = parse_jsonl_reader(BufReader::new(file.take(file_len)), parse_turn);
         if count == 0 {
             return Err(format!(
                 "no readable transcript turns found in {}",
@@ -654,6 +707,7 @@ fn read_head_and_tail_windows(
         .map_err(|e| format!("failed to seek {}: {e}", path.display()))?;
     let mut tail = Vec::new();
     tail_file
+        .take(file_len.saturating_sub(tail_start))
         .read_to_end(&mut tail)
         .map_err(|e| format!("failed to read {}: {e}", path.display()))?;
     let mut tail_record_dropped = false;
@@ -1141,6 +1195,178 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn kiro_delta_tracks_jsonl_growth_instead_of_sidecar_length() {
+        let dir = temp_dir("kiro-delta");
+        let sidecar = dir.join("source.json");
+        let jsonl = sidecar.with_extension("jsonl");
+        fs::write(&sidecar, "{\"title\":\"stable\"}").unwrap();
+        let first = "{\"kind\":\"Prompt\",\"data\":{\"content\":\"FIRST\"}}\n";
+        let next = "{\"kind\":\"AssistantMessage\",\"data\":{\"content\":\"SECOND\"}}\n";
+        fs::write(&jsonl, first).unwrap();
+        let mut source = session(sidecar.clone());
+        source.agent = Agent::Kiro;
+
+        let initial = extract_transcript_delta(&source, 0).unwrap();
+        assert_eq!(initial.new_len, first.len() as u64);
+        assert!(initial.text.contains("FIRST"));
+        assert!(extract_transcript_delta(&source, initial.new_len).is_none());
+        let mut writer = fs::OpenOptions::new().append(true).open(&jsonl).unwrap();
+        let split = next.len() / 2;
+        writer.write_all(&next.as_bytes()[..split]).unwrap();
+        assert!(extract_transcript_delta(&source, initial.new_len).is_none());
+        writer.write_all(&next.as_bytes()[split..]).unwrap();
+
+        let delta = extract_transcript_delta(&source, initial.new_len).unwrap();
+        assert!(delta.text.contains("SECOND"));
+        assert!(!delta.text.contains("FIRST"));
+        assert_eq!(delta.new_len, (first.len() + next.len()) as u64);
+        assert_eq!(delta.added_bytes, next.len() as u64);
+        assert_eq!(
+            fs::read_to_string(sidecar).unwrap(),
+            "{\"title\":\"stable\"}"
+        );
+        assert!(extract_transcript_delta(&source, delta.new_len).is_none());
+    }
+
+    #[test]
+    fn legacy_mid_record_marks_replay_instead_of_skipping_completed_turns() {
+        for agent in [Agent::Claude, Agent::Codex] {
+            let dir = temp_dir(&format!("legacy-partial-{}", agent.as_str()));
+            let path = dir.join("source.jsonl");
+            let record = |text: &str| {
+                let value = match agent {
+                    Agent::Claude => serde_json::json!({
+                        "type": "assistant", "message": {"content": text}
+                    }),
+                    Agent::Codex => serde_json::json!({
+                        "type": "response_item", "payload": {"type": "message",
+                            "content": [{"type": "output_text", "text": text}]}
+                    }),
+                    _ => unreachable!(),
+                };
+                format!("{value}\n")
+            };
+            let first = record("FIRST");
+            let second = record("SECOND");
+            let third = record("THIRD");
+            let legacy_mark = (first.len() + second.find("SECOND").unwrap() + 3) as u64;
+            fs::write(&path, format!("{first}{second}{third}")).unwrap();
+            let mut source = session(path);
+            source.agent = agent;
+            let delta = extract_transcript_delta(&source, legacy_mark).unwrap();
+            assert!(
+                delta.text.contains("SECOND"),
+                "{agent:?}: old partial marks lose this turn"
+            );
+            assert!(delta.text.contains("THIRD"));
+            assert!(delta.reset);
+            assert!(extract_transcript_delta(&source, delta.new_len).is_none());
+        }
+    }
+
+    #[test]
+    fn category_delta_keeps_partial_records_for_the_next_sync() {
+        for agent in [Agent::Claude, Agent::Codex] {
+            for incremental in [false, true] {
+                let dir = temp_dir(&format!("delta-partial-{}-{incremental}", agent.as_str()));
+                let path = dir.join("source.jsonl");
+                let record = |text: &str| {
+                    let value = match agent {
+                        Agent::Claude => serde_json::json!({
+                            "type": "assistant", "message": {"role": "assistant", "content": text}
+                        }),
+                        Agent::Codex => serde_json::json!({
+                            "type": "response_item", "payload": {"type": "message", "role": "assistant",
+                                "content": [{"type": "output_text", "text": text}]}
+                        }),
+                        _ => unreachable!(),
+                    };
+                    format!("{value}\n")
+                };
+                let baseline = if incremental {
+                    record("OLD")
+                } else {
+                    String::new()
+                };
+                let complete = record("FIRST");
+                let next = record("SECOND");
+                let split = next.find("SECOND").unwrap() + 3;
+                fs::write(&path, format!("{baseline}{complete}{}", &next[..split])).unwrap();
+                let mut source = session(path.clone());
+                source.agent = agent;
+
+                let first = extract_transcript_delta(&source, baseline.len() as u64).unwrap();
+                assert!(first.text.contains("FIRST"));
+                assert!(!first.text.contains("OLD"));
+                assert_eq!(
+                    first.new_len,
+                    (baseline.len() + complete.len()) as u64,
+                    "{agent:?}, incremental={incremental}: a partial record is not consumed"
+                );
+                assert!(extract_transcript_delta(&source, first.new_len).is_none());
+
+                let mut file = fs::OpenOptions::new().append(true).open(&path).unwrap();
+                file.write_all(&next.as_bytes()[split..]).unwrap();
+                let second = extract_transcript_delta(&source, first.new_len).unwrap();
+                assert!(second.text.contains("SECOND"));
+                assert!(!second.text.contains("FIRST"));
+                assert_eq!(second.new_len, fs::metadata(&path).unwrap().len());
+                assert!(extract_transcript_delta(&source, second.new_len).is_none());
+            }
+        }
+    }
+
+    #[test]
+    fn transcript_tail_window_does_not_read_past_its_snapshot() {
+        let dir = temp_dir("tail-snapshot");
+        let path = dir.join("source.jsonl");
+        let snapshot = b"first complete record\nsecond complete record\n";
+        fs::write(&path, snapshot).unwrap();
+        let mut writer = fs::OpenOptions::new().append(true).open(&path).unwrap();
+        writer.write_all(b"LATER APPEND\n").unwrap();
+
+        let (_, tail, _) = read_head_and_tail_windows(&path, snapshot.len() as u64, 32).unwrap();
+        assert!(
+            !String::from_utf8_lossy(&tail).contains("LATER APPEND"),
+            "the next watermark must cover every byte included in this snapshot"
+        );
+    }
+
+    #[test]
+    fn initial_and_incremental_transcripts_stay_inside_the_snapshot() {
+        let dir = temp_dir("delta-snapshot");
+        let path = dir.join("source.jsonl");
+        let first = "{\"type\":\"user\",\"message\":{\"content\":\"FIRST\"}}\n";
+        let second = "{\"type\":\"assistant\",\"message\":{\"content\":\"SECOND\"}}\n";
+        let later = "{\"type\":\"assistant\",\"message\":{\"content\":\"LATER\"}}\n";
+        fs::write(&path, format!("{first}{second}{later}")).unwrap();
+        let source = session(path);
+        let end = (first.len() + second.len()) as u64;
+
+        let initial =
+            extract_jsonl_snapshot(&source, parse_claude_turn, end, MAX_SOURCE_BYTES).unwrap();
+        assert!(initial.contains("FIRST") && initial.contains("SECOND"));
+        assert!(!initial.contains("LATER"));
+        let incremental = read_transcript_from(&source, first.len() as u64, end).unwrap();
+        assert!(incremental.contains("SECOND"));
+        assert!(!incremental.contains("FIRST") && !incremental.contains("LATER"));
+    }
+
+    #[test]
+    fn category_delta_does_not_commit_a_record_before_its_newline() {
+        let dir = temp_dir("delta-no-newline");
+        let path = dir.join("source.jsonl");
+        fs::write(&path, r#"{"type":"user","message":{"content":"FIRST"}}"#).unwrap();
+        let source = session(path.clone());
+        assert!(extract_transcript_delta(&source, 0).is_none());
+        let mut writer = fs::OpenOptions::new().append(true).open(&path).unwrap();
+        writer.write_all(b"\n").unwrap();
+        let delta = extract_transcript_delta(&source, 0).unwrap();
+        assert!(delta.text.contains("FIRST"));
+        assert_eq!(delta.new_len, fs::metadata(&path).unwrap().len());
     }
 
     #[test]

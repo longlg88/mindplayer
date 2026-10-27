@@ -21,6 +21,22 @@ pub(crate) fn deltas_for(marks: Vec<(Session, u64)>) -> Vec<handoff::PeerDelta> 
         .collect()
 }
 
+fn peer_sync_mark(state: &State, target: &str, peer: &Session) -> u64 {
+    if peer.agent == Agent::Kiro {
+        // Legacy Kiro marks measured the sidecar. Even an aligned byte count
+        // cannot prove that any of the JSONL conversation was delivered.
+        state.sync_mark_for_source(target, &peer.id, &handoff::transcript_source(peer))
+    } else {
+        state.sync_mark(target, &peer.id)
+    }
+}
+
+fn sync_advance(delta: &handoff::PeerDelta) -> CategorySyncAdvance {
+    let source =
+        (delta.session.agent == Agent::Kiro).then(|| handoff::transcript_source(&delta.session));
+    (delta.session.id.clone(), delta.new_len, source)
+}
+
 impl App {
     /// Every login a handoff can land on, grouped by provider. The account a
     /// new session would use leads within each provider, so accepting the
@@ -256,7 +272,7 @@ impl App {
             .category_peer_sessions(id)
             .into_iter()
             .map(|p| {
-                let m = self.state.sync_mark(id, &p.id);
+                let m = peer_sync_mark(&self.state, id, &p);
                 (p, m)
             })
             .collect();
@@ -351,7 +367,7 @@ impl App {
         if self.ended.contains(&id) {
             return false;
         }
-        let injected = self.ptys.get(&id).is_some_and(|p| p.looks_idle())
+        let injected = self.ready_for_peer_input(&id)
             && self.dispatch_turn_input(&id, true, |p| p.paste_and_submit(&sync.input));
         if injected {
             self.turn_submitted.insert(id.clone());
@@ -363,12 +379,12 @@ impl App {
                 sync.artifact.display()
             );
         } else {
-            // Either live but not idle right now, or not spawned yet (a fresh
-            // resume's PTY is still pending on pane-size). Either way, hand it
-            // to the same deferred-input path a fresh spawn's initial prompt
-            // uses, so it still goes out (via `flush_initial_inputs`) once the
-            // target prompt is ready instead of being silently dropped.
-            self.queue_initial_input(id.clone(), sync.input);
+            let readiness = if self.ptys.contains_key(&id) {
+                DeferredInputReadiness::AfterIdle
+            } else {
+                DeferredInputReadiness::Startup
+            };
+            self.queue_deferred_input(id.clone(), sync.input, readiness);
             self.status = format!("peer-lane sync for {} queued", short(&id));
         }
         true
@@ -400,7 +416,7 @@ impl App {
         let marks: Vec<(Session, u64)> = peers
             .into_iter()
             .map(|p| {
-                let m = self.state.sync_mark(&session.id, &p.id);
+                let m = peer_sync_mark(&self.state, &session.id, &p);
                 (p, m)
             })
             .collect();
@@ -412,10 +428,7 @@ impl App {
             let result = if deltas.is_empty() {
                 Err("no peer lane has anything new".to_string())
             } else {
-                let advance: Vec<(String, u64)> = deltas
-                    .iter()
-                    .map(|d| (d.session.id.clone(), d.new_len))
-                    .collect();
+                let advance: Vec<CategorySyncAdvance> = deltas.iter().map(sync_advance).collect();
                 handoff::prepare_category_sync_input(&target, &cat_name, &deltas)
                     .map(|prep| (prep, advance))
             };
@@ -449,7 +462,7 @@ impl App {
         if self.ended.contains(&id) {
             return false;
         }
-        let injected = self.ptys.get(&id).is_some_and(|p| p.looks_idle())
+        let injected = self.ready_for_peer_input(&id)
             && self.dispatch_turn_input(&id, true, |p| p.paste_and_submit(&sync.input));
         if injected {
             self.turn_submitted.insert(id.clone());
@@ -460,16 +473,96 @@ impl App {
                 sync.transcript_chars
             );
         } else {
-            // Live but mid-turn, or the PTY is still pending on pane size. The
-            // deferred path sends it once the prompt is ready rather than
-            // dropping it, so a busy target is delayed, never skipped.
-            self.queue_initial_input(id.clone(), sync.input);
+            let readiness = if self.ptys.contains_key(&id) {
+                DeferredInputReadiness::AfterIdle
+            } else {
+                DeferredInputReadiness::Startup
+            };
+            self.queue_deferred_input(id.clone(), sync.input, readiness);
             self.status = format!("category sync for {} queued", short(&id));
         }
-        for (peer_id, new_len) in advance {
-            self.state.set_sync_mark(&id, &peer_id, new_len);
+        for (peer_id, new_len, source) in advance {
+            if let Some(source) = source {
+                self.state
+                    .set_sync_mark_for_source(&id, &peer_id, &source, new_len);
+            } else {
+                self.state.set_sync_mark(&id, &peer_id, new_len);
+            }
         }
         let _ = self.save_state();
         true
+    }
+}
+
+#[cfg(test)]
+mod source_tests {
+    use super::*;
+    use crate::app::tests::{fresh_login_test_home, isolated_app, session};
+    use std::io::Write;
+
+    #[test]
+    fn kiro_sync_migrates_legacy_marks_and_persists_the_captured_source() {
+        let dir = fresh_login_test_home();
+        let mut peer = session("peer", Agent::Kiro, false);
+        peer.file = dir.join("peer.json");
+        let source = handoff::transcript_source(&peer);
+        let first = "{\"kind\":\"Prompt\",\"data\":{\"content\":\"FIRST\"}}\n";
+        std::fs::write(&peer.file, "{}").unwrap();
+        std::fs::write(&source, first).unwrap();
+        let mut app = isolated_app();
+        app.state_path = dir.join("state.json");
+        app.all_sessions = vec![session("target", Agent::Claude, false), peer.clone()];
+        let category = app.state.create_category("topic", Utc::now()).unwrap();
+        app.state.assign_category("target", &category);
+        app.state.assign_category("peer", &category);
+        // A sidecar mark may even coincide with a valid JSONL boundary.
+        app.state
+            .set_sync_mark("target", "peer", first.len() as u64);
+        let deltas = app.category_deltas("target");
+        assert_eq!(
+            deltas.len(),
+            1,
+            "unbound sidecar marks must be replayed once"
+        );
+        assert!(deltas[0].text.contains("FIRST"));
+        let advance = deltas.iter().map(sync_advance).collect();
+        let (tx, rx) = mpsc::channel();
+        app.category_sync_rx = Some(PendingSessionSync {
+            target_id: "target".into(),
+            result: rx,
+        });
+        tx.send((
+            "target".into(),
+            Ok((
+                handoff::PreparedHandoff {
+                    input: b"synthetic peer context\r".to_vec(),
+                    artifact: dir.join("synthetic.md"),
+                    transcript_chars: 22,
+                    inline_truncated: false,
+                },
+                advance,
+            )),
+        ))
+        .unwrap();
+        assert!(app.poll_category_sync());
+        app.state = State::load_from(&app.state_path);
+        assert_eq!(
+            peer_sync_mark(&app.state, "target", &peer),
+            first.len() as u64
+        );
+        assert!(app.category_deltas("target").is_empty());
+        let mut writer = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&source)
+            .unwrap();
+        writer
+            .write_all(b"{\"kind\":\"AssistantMessage\",\"data\":{\"content\":\"SECOND\"}}\n")
+            .unwrap();
+        let next = app.category_deltas("target");
+        assert_eq!(next.len(), 1);
+        assert!(next[0].text.contains("SECOND"));
+        assert!(!next[0].text.contains("FIRST"));
+        peer.file = dir.join("replacement.json");
+        assert_eq!(peer_sync_mark(&app.state, "target", &peer), 0);
     }
 }

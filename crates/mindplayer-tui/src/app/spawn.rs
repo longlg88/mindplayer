@@ -260,22 +260,43 @@ impl App {
     }
 
     pub(crate) fn queue_initial_input(&mut self, id: String, input: Vec<u8>) {
+        self.queue_deferred_input(id, input, DeferredInputReadiness::Startup);
+    }
+
+    pub(super) fn queue_deferred_input(
+        &mut self,
+        id: String,
+        input: Vec<u8>,
+        readiness: DeferredInputReadiness,
+    ) {
         let now = Instant::now();
         if let Some(existing) = self.pending_initial_inputs.get_mut(&id) {
             trim_submit(&mut existing.bytes);
             existing.bytes.extend_from_slice(b"\n\n---\n\n");
             existing.bytes.extend(input);
             existing.queued_at = now;
+            if readiness == DeferredInputReadiness::AfterIdle {
+                existing.readiness = readiness;
+            }
         } else {
             self.pending_initial_inputs.insert(
                 id,
                 DeferredInitialInput {
                     bytes: input,
                     queued_at: now,
+                    readiness,
                     held_input: Vec::new(),
                 },
             );
         }
+    }
+
+    pub(super) fn ready_for_peer_input(&self, id: &str) -> bool {
+        self.ptys.get(id).is_some_and(|pty| pty.looks_idle())
+            && matches!(
+                self.session_status(id),
+                SessionStatus::Idle | SessionStatus::Completed
+            )
     }
 
     pub(crate) fn enqueue_spawn(&mut self, spawn: PendingSpawn) {
@@ -298,7 +319,7 @@ impl App {
             return false;
         }
         if self.ptys.contains_key(&session.id) {
-            if self.ptys[&session.id].looks_idle() {
+            if self.ready_for_peer_input(&session.id) {
                 if !self.dispatch_turn_input(&session.id, true, |p| p.paste_and_submit(&input)) {
                     self.status = format!("failed to submit input to {}", short(&session.id));
                     return false;
@@ -307,7 +328,11 @@ impl App {
                 self.submitted_at.insert(session.id.clone(), Instant::now());
                 self.out_at.insert(session.id.clone(), Instant::now());
             } else {
-                self.queue_initial_input(session.id.clone(), input);
+                self.queue_deferred_input(
+                    session.id.clone(),
+                    input,
+                    DeferredInputReadiness::AfterIdle,
+                );
             }
             return true;
         }
@@ -662,6 +687,7 @@ impl App {
                         DeferredInitialInput {
                             bytes: input,
                             queued_at: Instant::now(),
+                            readiness: DeferredInputReadiness::Startup,
                             held_input: Vec::new(),
                         },
                     );
@@ -714,12 +740,15 @@ impl App {
                 if self.ended.contains(id) {
                     return None;
                 }
-                should_send_initial_input(
-                    pty.looks_idle(),
-                    pty.output_seq(),
-                    now.saturating_duration_since(input.queued_at),
-                )
-                .then(|| id.clone())
+                let ready = match input.readiness {
+                    DeferredInputReadiness::Startup => should_send_initial_input(
+                        pty.looks_idle(),
+                        pty.output_seq(),
+                        now.saturating_duration_since(input.queued_at),
+                    ),
+                    DeferredInputReadiness::AfterIdle => self.ready_for_peer_input(id),
+                };
+                ready.then(|| id.clone())
             })
             .collect();
         let mut sent = false;
@@ -751,8 +780,7 @@ impl App {
         sent
     }
 
-    /// If the focused pane still has a deferred initial-input (handoff /
-    /// thread-sync prompt) waiting to go out, buffer these
+    /// If the focused pane still has startup input waiting to go out, buffer these
     /// bytes on it instead of forwarding them to the child now — so typing
     /// right after opening such a session is held and replayed afterward
     /// (see `flush_initial_inputs`) rather than silently dropped.
@@ -763,6 +791,11 @@ impl App {
         let Some(entry) = self.pending_initial_inputs.get_mut(&id) else {
             return false;
         };
+        // A busy pane must still receive interrupts and approval replies while
+        // automatic context waits for its current turn to finish.
+        if entry.readiness == DeferredInputReadiness::AfterIdle {
+            return false;
+        }
         entry.held_input.extend_from_slice(bytes);
         self.status =
             "waiting for target prompt to submit initial context; input is held".to_string();

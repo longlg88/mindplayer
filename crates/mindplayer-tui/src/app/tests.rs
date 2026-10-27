@@ -723,6 +723,7 @@ fn typing_while_initial_input_pending_is_held_not_dropped() {
         DeferredInitialInput {
             bytes: b"handoff context".to_vec(),
             queued_at: Instant::now(),
+            readiness: DeferredInputReadiness::Startup,
             held_input: Vec::new(),
         },
     );
@@ -737,6 +738,87 @@ fn typing_while_initial_input_pending_is_held_not_dropped() {
 }
 
 #[test]
+fn after_idle_context_does_not_capture_control_or_approval_input() {
+    let directory = FreshLoginTestHome::new();
+    let receipt = directory.0.join("received.bin");
+    let ready = directory.0.join("ready");
+    let id = "busy-user-controls";
+    let command = mindplayer_core::Command {
+        program: "python3".into(),
+        args: vec![
+            "-u".into(),
+            "-c".into(),
+            r#"
+import os, sys, tty
+tty.setraw(0)
+with open(sys.argv[1], 'wb', buffering=0) as receipt:
+    open(sys.argv[2], 'wb').close()
+    while True:
+        chunk = os.read(0, 4096)
+        if not chunk:
+            break
+        receipt.write(chunk)
+"#
+            .into(),
+            receipt.to_string_lossy().into_owned(),
+            ready.to_string_lossy().into_owned(),
+        ],
+        cwd: directory.0.clone(),
+        env: Default::default(),
+    };
+    let mut app = isolated_app_at(directory.0.join("state.json"));
+    app.ptys
+        .insert(id.into(), PtySession::spawn(&command, id, 6, 40).unwrap());
+    app.focus_or_add_pane(id);
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while !ready.exists() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(ready.exists(), "the child must enter raw mode before input");
+    let context = b"automatic peer context\r";
+    app.queue_deferred_input(
+        id.into(),
+        context.to_vec(),
+        DeferredInputReadiness::AfterIdle,
+    );
+
+    let expect_received = |app: &mut App, expected: &[u8]| {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            // Standalone Escape is intentionally delayed by the reply guard.
+            app.flush_terminal_reply_guards();
+            let received = std::fs::read(&receipt).unwrap();
+            if received == expected {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "child received {received:?}, expected {expected:?}"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let pending = &app.pending_initial_inputs[id];
+        assert_eq!(pending.bytes, context);
+        assert!(
+            pending.held_input.is_empty(),
+            "user controls must not be held"
+        );
+        assert!(
+            !app.flush_initial_inputs(),
+            "automatic context remains queued"
+        );
+    };
+
+    app.send_to_pty(b"\x1b");
+    expect_received(&mut app, b"\x1b");
+    app.send_to_pty(b"\x03");
+    expect_received(&mut app, b"\x1b\x03");
+    app.send_to_pty(b"y\r");
+    expect_received(&mut app, b"\x1b\x03y\r");
+    app.ptys.clear();
+}
+
+#[test]
 fn pasting_while_initial_input_pending_is_never_held() {
     let mut app = App::new();
     app.focus_or_add_pane("a");
@@ -745,6 +827,7 @@ fn pasting_while_initial_input_pending_is_never_held() {
         DeferredInitialInput {
             bytes: b"handoff context".to_vec(),
             queued_at: Instant::now(),
+            readiness: DeferredInputReadiness::Startup,
             held_input: Vec::new(),
         },
     );
@@ -2769,6 +2852,103 @@ fn initial_input_waits_for_prompt() {
     assert!(!should_send_initial_input(false, 0, Duration::from_secs(3)));
     assert!(should_send_initial_input(false, 1, Duration::from_secs(3)));
     assert!(should_send_initial_input(false, 0, Duration::from_secs(10)));
+}
+
+#[test]
+fn deferred_category_sync_never_forces_or_retires_an_active_turn() {
+    assert_deferred_sync_preserves_active_turn(true);
+}
+
+#[test]
+fn deferred_thread_sync_never_forces_or_retires_an_active_turn() {
+    assert_deferred_sync_preserves_active_turn(false);
+}
+
+fn assert_deferred_sync_preserves_active_turn(category: bool) {
+    use std::io::Write;
+    let directory = FreshLoginTestHome::new();
+    let id = "busy-sync-target";
+    let rollout = directory.0.join("rollout.jsonl");
+    std::fs::write(
+        &rollout,
+        "{\"type\":\"event_msg\",\"payload\":{\"type\":\"task_started\",\"turn_id\":\"active\"}}\n",
+    )
+    .unwrap();
+    let mut target = session(id, Agent::Codex, false);
+    target.file = rollout.clone();
+    let mut app = isolated_app_at(directory.0.join("state.json"));
+    app.all_sessions.push(target);
+    let command = mindplayer_core::Command {
+        program: "cat".into(),
+        args: Vec::new(),
+        cwd: directory.0.clone(),
+        env: Default::default(),
+    };
+    app.ptys
+        .insert(id.into(), PtySession::spawn(&command, id, 6, 40).unwrap());
+    let mut reader = crate::turn_status::TurnStatusReader::new_from_start(rollout.clone());
+    assert!(reader.poll());
+    app.codex_turns.insert(id.into(), reader);
+    let submitted = Instant::now() - Duration::from_secs(30);
+    app.submitted_at.insert(id.into(), submitted);
+    app.turn_submitted.insert(id.into());
+    let sync = crate::handoff::PreparedHandoff {
+        input: b"peer context\r".to_vec(),
+        artifact: directory.0.join("sync.md"),
+        transcript_chars: 12,
+        inline_truncated: false,
+    };
+    if category {
+        let (tx, rx) = mpsc::channel();
+        app.category_sync_rx = Some(PendingSessionSync {
+            target_id: id.into(),
+            result: rx,
+        });
+        tx.send((id.into(), Ok((sync, Vec::new())))).unwrap();
+        assert!(app.poll_category_sync());
+    } else {
+        let (tx, rx) = mpsc::channel();
+        app.thread_sync_rx = Some(PendingSessionSync {
+            target_id: id.into(),
+            result: rx,
+        });
+        tx.send((id.into(), Ok(sync))).unwrap();
+        assert!(app.poll_thread_sync());
+    }
+    app.pending_initial_inputs.get_mut(id).unwrap().queued_at =
+        Instant::now() - Duration::from_secs(60);
+
+    assert!(
+        !app.flush_initial_inputs(),
+        "category={category}: elapsed time cannot authorize input during an active turn"
+    );
+    assert!(app.pending_initial_inputs.contains_key(id));
+    assert_eq!(app.submitted_at.get(id), Some(&submitted));
+    assert_eq!(app.codex_turns[id].status(), Some(SessionStatus::Working));
+
+    // An input affordance alone is not proof that the active native turn ended.
+    assert!(app.ptys.get_mut(id).unwrap().send(b">\n"));
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while !app.ptys[id].looks_idle() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(app.ptys[id].looks_idle());
+    assert!(!app.flush_initial_inputs());
+    assert_eq!(app.codex_turns[id].status(), Some(SessionStatus::Working));
+
+    writeln!(
+        std::fs::OpenOptions::new().append(true).open(rollout).unwrap(),
+        "{{\"type\":\"event_msg\",\"payload\":{{\"type\":\"task_complete\",\"turn_id\":\"active\"}}}}"
+    )
+    .unwrap();
+    assert!(app.codex_turns.get_mut(id).unwrap().poll());
+    assert!(
+        app.flush_initial_inputs(),
+        "deliver after genuine completion"
+    );
+    assert!(!app.pending_initial_inputs.contains_key(id));
+    assert!(app.submitted_at[id] > submitted);
+    app.ptys.clear();
 }
 
 #[test]

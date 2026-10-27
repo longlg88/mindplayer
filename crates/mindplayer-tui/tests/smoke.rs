@@ -973,6 +973,18 @@ exit 0"#
         };
         if stale_completion {
             append_codex_task_event(&codex_alfa_file, "task_complete", "stale");
+            // Task-status scenarios must select their transcript explicitly,
+            // not depend on filesystem timestamp resolution or scan order.
+            // Keep BRVO newer so blindly resuming the first row is always wrong.
+            let now = SystemTime::now();
+            for (file, age) in [(&codex_alfa_file, 2), (&codex_brvo_file, 1)] {
+                std::fs::File::open(file)
+                    .unwrap()
+                    .set_times(
+                        std::fs::FileTimes::new().set_modified(now - Duration::from_secs(age)),
+                    )
+                    .unwrap();
+            }
         }
 
         let pair = native_pty_system()
@@ -1381,6 +1393,18 @@ exit 0"#
 
     fn task_status_file(&self) -> &Path {
         &self.codex_alfa_file
+    }
+
+    fn resume_task_status_fixture(&mut self) {
+        self.start_into_main_list();
+        self.send(b"/");
+        self.expect(
+            "type to filter",
+            STEP_TIMEOUT,
+            "select task-status transcript",
+        );
+        self.send(b"alfa\r");
+        assert_single_codex_resume(self, &self._tmp.join("home/.codex"), "codex-alfa-0001");
     }
 
     fn send(&mut self, bytes: &[u8]) {
@@ -2885,9 +2909,7 @@ fn startup_list_q_exits_without_launching_a_session() {
 #[test]
 fn codex_task_events_drive_correlated_status_colors() {
     let mut mp = Mp::launch_task_status_fixture();
-    mp.start_into_main_list();
-    mp.send(b"\r");
-    mp.expect(PANE_READY, STEP_TIMEOUT, "agent pane came up");
+    mp.resume_task_status_fixture();
 
     // The stale completion was present before startup and must not mark the
     // newly opened live pane done.
@@ -2924,9 +2946,7 @@ fn codex_task_events_drive_correlated_status_colors() {
 #[test]
 fn completed_status_survives_focus_zoom_and_narrow_resize() {
     let mut mp = Mp::launch_task_status_fixture();
-    mp.start_into_main_list();
-    mp.send(b"\r");
-    mp.expect(PANE_READY, STEP_TIMEOUT, "agent pane came up");
+    mp.resume_task_status_fixture();
     append_codex_task_event(mp.task_status_file(), "task_started", "fresh");
     mp.expect_foreground(WORKING_BORDER, STEP_TIMEOUT, "task is working");
     append_codex_task_event(mp.task_status_file(), "task_complete", "fresh");
@@ -2946,9 +2966,7 @@ fn completed_status_survives_focus_zoom_and_narrow_resize() {
 #[test]
 fn local_input_and_interrupt_clear_completion() {
     let mut mp = Mp::launch_task_status_fixture();
-    mp.start_into_main_list();
-    mp.send(b"\r");
-    mp.expect(PANE_READY, STEP_TIMEOUT, "agent pane came up");
+    mp.resume_task_status_fixture();
     append_codex_task_event(mp.task_status_file(), "task_started", "fresh");
     append_codex_task_event(mp.task_status_file(), "task_complete", "fresh");
     mp.expect_foreground(COMPLETED_BORDER, STEP_TIMEOUT, "task is complete");

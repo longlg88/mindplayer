@@ -13,6 +13,21 @@ use mindplayer_core::accounts::{
 /// Marks a pane that is signing an account in rather than running a session.
 pub(crate) const LOGIN_PREFIX: &str = "login:";
 
+/// Reserve a private home for a named account, failing if its slot is occupied.
+pub(super) fn reserve_account_home(account: &Account) -> std::io::Result<()> {
+    let path = account.slot_path();
+    if let Some(parent) = path.parent() {
+        mindplayer_core::private::create_dir_private(parent)?;
+    }
+    let mut builder = std::fs::DirBuilder::new();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        builder.mode(mindplayer_core::private::DIR_MODE);
+    }
+    builder.create(path)
+}
+
 /// How an account is remembered as already asked about this run.
 pub(crate) fn unusable_key(account: &Account) -> String {
     format!("{}/{}", account.provider.as_str(), account.name)
@@ -280,15 +295,7 @@ impl App {
             .collect();
         self.keep_selection(|app| app.accounts = fresh);
         if !renames.is_empty() {
-            self.relabel_usage_after_rename(&renames);
-            for (agent, name) in self.pane_accounts.values_mut() {
-                if let Some((_, new)) = renames
-                    .iter()
-                    .find(|(old, _)| old.provider == *agent && old.name == *name)
-                {
-                    name.clone_from(&new.name);
-                }
-            }
+            self.relabel_after_rename(&renames);
         }
         true
     }
@@ -586,12 +593,27 @@ impl App {
         }
     }
 
-    /// How many open panes belong to `account`.
+    /// How many visible panes or running hidden PTYs belong to `account`.
     ///
-    /// Open, not merely alive: a pane whose child has exited is still on
-    /// screen and still that account's, and renaming or removing an account
-    /// out from under it would leave a pane nothing can explain.
+    /// Visible panes keep their account even after exit. Ctrl-Q hides a pane
+    /// while retaining its PTY, so that home remains in use until it exits.
+    /// An exit remains blocked until `reap_pty` records it in `ended`.
     pub(crate) fn pane_count_on(&self, account: &Account) -> usize {
+        self.count_panes_on(
+            account,
+            self.panes.iter().chain(
+                self.ptys
+                    .keys()
+                    .filter(|id| !self.panes.contains(*id) && !self.ended.contains(*id)),
+            ),
+        )
+    }
+
+    fn count_panes_on<'a>(
+        &self,
+        account: &Account,
+        ids: impl Iterator<Item = &'a String>,
+    ) -> usize {
         let home = limits_home_for_app();
         // A sign-in pane has no transcript to judge by, so it is known by the id it was opened under.
         let login_id = format!(
@@ -599,21 +621,17 @@ impl App {
             account.provider.as_str(),
             account.name
         );
-        let started_on = |id: &String| {
-            self.pane_accounts
-                .get(id)
-                .is_some_and(|(agent, name)| *agent == account.provider && *name == account.name)
-        };
-        let recorded = self.panes.iter().filter(|id| started_on(id)).count();
-        recorded
-            + self
-                .panes
-                .iter()
-                .filter(|id| !started_on(id))
-                .filter_map(|id| self.all_sessions.iter().find(|s| &s.id == id))
-                .filter(|s| {
-                    s.id == login_id
-                        || (s.agent == account.provider
+        ids.filter(|id| {
+            if let Some((agent, name)) = self.pane_accounts.get(*id) {
+                return *agent == account.provider && *name == account.name;
+            }
+            *id == &login_id
+                || self
+                    .all_sessions
+                    .iter()
+                    .find(|s| &s.id == *id)
+                    .is_some_and(|s| {
+                        s.agent == account.provider
                             && mindplayer_core::accounts::owner_of(
                                 &self.accounts,
                                 s.agent,
@@ -621,9 +639,10 @@ impl App {
                                 &home,
                             )
                             .name
-                                == account.name)
-                })
-                .count()
+                                == account.name
+                    })
+        })
+        .count()
     }
 
     pub fn accounts_start_add(&mut self) {
@@ -718,8 +737,12 @@ impl App {
             self.set_error("a directory for that name is already in use — choose another name");
             return;
         }
-        if let Err(e) = mindplayer_core::private::create_dir_private(&account.slot_path()) {
-            self.set_error(format!("could not make a home for this account: {e}"));
+        if let Err(e) = reserve_account_home(&account) {
+            if e.kind() == std::io::ErrorKind::AlreadyExists {
+                self.set_error("a directory for that name is already in use — choose another name");
+            } else {
+                self.set_error(format!("could not make a home for this account: {e}"));
+            }
             return;
         }
 
@@ -758,14 +781,15 @@ impl App {
             self.set_error(AccountError::Duplicate(name.to_string()).to_string());
             return;
         }
-        if self.pane_count_on(&account) > 0 {
+        // A label-only rename keeps the home; hidden panes need not block it.
+        if self.count_panes_on(&account, self.panes.iter()) > 0 {
             self.set_error("a pane is running on this account — close it first");
             return;
         }
 
         self.accounts[i].name = name.to_string();
         let renamed = self.accounts[i].clone();
-        self.relabel_usage_after_rename(&[(account.clone(), renamed)]);
+        self.relabel_after_rename(&[(account.clone(), renamed)]);
         self.persist_accounts();
         // The save can take in a removal of this account by another MindPlayer, whose message then stands.
         if !self
@@ -784,10 +808,11 @@ impl App {
         );
     }
 
-    /// A usage worker captures account names before it starts. Drop that
+    /// Carry a rename onto recorded pane ownership and usage. A usage worker
+    /// captures account names before it starts. Drop that
     /// worker on rename so its old rows cannot land after the rename, and
     /// relabel readings already on screen until the forced replacement lands.
-    fn relabel_usage_after_rename(&mut self, renames: &[(Account, Account)]) {
+    fn relabel_after_rename(&mut self, renames: &[(Account, Account)]) {
         // One pass per row, so names that trade places are not renamed twice.
         let renamed = |agent: Agent, name: &str| {
             renames
@@ -795,6 +820,11 @@ impl App {
                 .find(|(old, _)| old.provider == agent && old.name == name)
                 .map(|(_, new)| new)
         };
+        for (agent, name) in self.pane_accounts.values_mut() {
+            if let Some(new) = renamed(*agent, name) {
+                name.clone_from(&new.name);
+            }
+        }
         let relabel = |rows: &mut Vec<mindplayer_core::limits::QuotaRow>| {
             for row in rows {
                 if let Some(new) = renamed(row.agent, &row.account) {

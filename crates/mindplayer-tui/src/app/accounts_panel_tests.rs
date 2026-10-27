@@ -816,6 +816,376 @@ fn a_session_still_starting_on_the_account_blocks_the_erase() {
     );
 }
 
+mod account_lifecycle_regressions {
+    use super::*;
+    use std::fs;
+    use std::sync::Barrier;
+    use std::time::{Duration, Instant};
+
+    struct TestDirectory(PathBuf);
+
+    impl TestDirectory {
+        fn new() -> Self {
+            for n in 0.. {
+                let path = std::env::temp_dir()
+                    .join(format!("mp-account-lifecycle-{}-{n}", std::process::id()));
+                match fs::create_dir(&path) {
+                    Ok(()) => return Self(path),
+                    Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                    Err(e) => panic!("could not create account test directory: {e}"),
+                }
+            }
+            unreachable!("an unbounded range always has a free test directory")
+        }
+    }
+
+    impl Drop for TestDirectory {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    struct TestPtyLog(PathBuf);
+
+    impl Drop for TestPtyLog {
+        fn drop(&mut self) {
+            let _ = fs::remove_file(&self.0);
+        }
+    }
+
+    #[test]
+    fn same_name_home_reservation_has_exactly_one_winner() {
+        let home = TestDirectory::new();
+        for provider in MULTI_ACCOUNT_AGENTS {
+            let account = Account::isolated(&home.0, provider, "contended").unwrap();
+            let ready = Barrier::new(2);
+            let outcomes = std::thread::scope(|scope| {
+                let contenders: Vec<_> = (0..2)
+                    .map(|_| {
+                        let account = &account;
+                        let ready = &ready;
+                        scope.spawn(move || {
+                            ready.wait();
+                            super::super::accounts_panel::reserve_account_home(account)
+                        })
+                    })
+                    .collect();
+                contenders
+                    .into_iter()
+                    .map(|contender| contender.join().expect("reservation thread panicked"))
+                    .collect::<Vec<_>>()
+            });
+
+            assert_eq!(
+                outcomes.iter().filter(|outcome| outcome.is_ok()).count(),
+                1,
+                "{provider:?} callers shared one credential home: {outcomes:?}"
+            );
+            let error = outcomes.into_iter().find_map(Result::err).unwrap();
+            assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                assert_eq!(
+                    fs::metadata(account.slot_path())
+                        .unwrap()
+                        .permissions()
+                        .mode()
+                        & 0o777,
+                    mindplayer_core::private::DIR_MODE,
+                    "the winning home must be private"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_hidden_running_pty_blocks_removal_until_real_exit() {
+        for provider in [Agent::Codex, Agent::Claude] {
+            let registry = TestDirectory::new();
+            let home = limits_home_for_app();
+            assert_eq!(
+                home,
+                std::env::temp_dir().join(format!("mindplayer-test-home-{}", std::process::id())),
+                "this fixture must use cargo test's isolated home"
+            );
+            let account = Account::isolated(&home, provider, "hidden-running-pty").unwrap();
+            let path = account.slot_path();
+            mindplayer_core::private::create_dir_private(path.parent().unwrap()).unwrap();
+            fs::create_dir(&path).expect("this test owns a new account slot");
+            let _slot = TestDirectory(path.clone());
+            let id = format!(
+                "new:{}:hidden-account-{}",
+                provider.as_str(),
+                std::process::id()
+            );
+            let _log = TestPtyLog(crate::pty::stderr_log_path(&id).into());
+            let mut app = super::super::tests::isolated_app();
+            app.accounts_home = registry.0.clone();
+            app.accounts = vec![Account::inherited(provider), account.clone()];
+            app.all_sessions
+                .push(super::super::tests::session(&id, provider, false));
+            app.pane_accounts
+                .insert(id.clone(), (provider, account.name.clone()));
+            let command = mindplayer_core::Command {
+                program: "/bin/sh".into(),
+                args: vec!["-c".into(), "read -r line".into()],
+                cwd: path.clone(),
+                env: Default::default(),
+            };
+            app.ptys.insert(
+                id.clone(),
+                PtySession::spawn_with_routing(
+                    &command,
+                    &id,
+                    6,
+                    30,
+                    crate::startup_routing::RoutingMode::Native,
+                )
+                .expect("spawn a synthetic child without authentication"),
+            );
+            app.focus_or_add_pane(&id);
+            assert_eq!(app.pane_count_on(&account), 1, "visible PTYs count once");
+            app.remove_pane(&id);
+            assert!(!app.panes.contains(&id), "Ctrl-Q must hide the actual pane");
+            assert!(
+                app.ptys.get_mut(&id).unwrap().is_alive(),
+                "hiding must retain the child"
+            );
+            app.open_accounts();
+            select(&mut app, provider);
+            app.accounts_move(1);
+            app.accounts_remove();
+            app.accounts_remove();
+            assert!(
+                app.accounts.contains(&account),
+                "removed {provider:?} under a hidden child"
+            );
+            assert!(path.is_dir(), "erased the hidden child's provider home");
+            assert!(app
+                .accounts_panel
+                .as_ref()
+                .unwrap()
+                .error
+                .as_deref()
+                .is_some_and(|error| error.contains("pane is running")));
+
+            assert!(
+                app.ptys.get_mut(&id).unwrap().send(b"done\r"),
+                "release the child through its PTY"
+            );
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while !app.ended.contains(&id) && Instant::now() < deadline {
+                app.reap_pty();
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            assert!(app.ended.contains(&id), "the real child did not exit");
+            assert!(
+                app.ptys[&id].exited_successfully(),
+                "the child must exit normally"
+            );
+            assert!(
+                app.ptys.contains_key(&id),
+                "the ended PTY's frame is retained"
+            );
+            assert_eq!(
+                app.pane_count_on(&account),
+                0,
+                "hidden ended PTYs must not block removal"
+            );
+
+            app.focus_or_add_pane(&id);
+            assert_eq!(
+                app.pane_count_on(&account),
+                1,
+                "an ended visible pane still belongs to its account"
+            );
+            app.remove_pane(&id);
+            app.accounts_remove();
+            app.accounts_remove();
+            assert!(
+                !app.accounts.contains(&account),
+                "removal is allowed after the actual exit"
+            );
+            assert!(!path.exists(), "the unused provider home must be erased");
+        }
+    }
+
+    #[test]
+    fn a_hidden_running_pty_can_be_renamed_without_losing_ownership() {
+        for provider in [Agent::Codex, Agent::Claude] {
+            let registry = TestDirectory::new();
+            let home = limits_home_for_app();
+            assert_eq!(
+                home,
+                std::env::temp_dir().join(format!("mindplayer-test-home-{}", std::process::id())),
+                "this fixture must use cargo test's isolated home"
+            );
+            let account = Account::isolated(&home, provider, "hidden-rename-pty").unwrap();
+            let path = account.slot_path();
+            mindplayer_core::private::create_dir_private(path.parent().unwrap()).unwrap();
+            fs::create_dir(&path).expect("this test owns a new account slot");
+            let _slot = TestDirectory(path.clone());
+            fs::write(path.join("auth.json"), "synthetic login\n").unwrap();
+            let id = format!(
+                "new:{}:hidden-rename-{}",
+                provider.as_str(),
+                std::process::id()
+            );
+            let _log = TestPtyLog(crate::pty::stderr_log_path(&id).into());
+            let mut app = super::super::tests::isolated_app();
+            app.accounts_home = registry.0.clone();
+            app.accounts = vec![Account::inherited(provider), account.clone()];
+            app.all_sessions
+                .push(super::super::tests::session(&id, provider, false));
+            app.pane_accounts
+                .insert(id.clone(), (provider, account.name.clone()));
+            app.limits = Some(vec![mindplayer_core::limits::QuotaRow {
+                agent: provider,
+                account: account.name.clone(),
+                used_percent: Some(42.0),
+                ..Default::default()
+            }]);
+            let command = mindplayer_core::Command {
+                program: "/bin/sh".into(),
+                args: vec!["-c".into(), "read -r line".into()],
+                cwd: path.clone(),
+                env: Default::default(),
+            };
+            app.ptys.insert(
+                id.clone(),
+                PtySession::spawn_with_routing(
+                    &command,
+                    &id,
+                    6,
+                    30,
+                    crate::startup_routing::RoutingMode::Native,
+                )
+                .expect("spawn a synthetic child without authentication"),
+            );
+            app.focus_or_add_pane(&id);
+            app.remove_pane(&id);
+            assert!(!app.panes.contains(&id), "the real pane must be hidden");
+            assert!(
+                app.ptys.get_mut(&id).unwrap().is_alive(),
+                "the hidden child must still be running"
+            );
+
+            app.open_accounts();
+            select(&mut app, provider);
+            app.accounts_move(1);
+            app.accounts_start_rename();
+            app.accounts_panel.as_mut().unwrap().new_name = Some("renamed-hidden".into());
+            app.accounts_confirm_add();
+            let renamed = app
+                .accounts
+                .iter()
+                .find(|account| account.provider == provider && account.name == "renamed-hidden")
+                .cloned()
+                .unwrap_or_else(|| {
+                    panic!(
+                        "a hidden {provider:?} pane blocked a label-only rename: {:?}",
+                        app.accounts_panel
+                    )
+                });
+            assert_eq!(
+                renamed.slot_path(),
+                path,
+                "rename must keep the provider home"
+            );
+            assert_eq!(renamed.launch_env(), account.launch_env());
+            assert_eq!(
+                fs::read_to_string(path.join("auth.json")).unwrap(),
+                "synthetic login\n"
+            );
+            assert!(
+                app.ptys.get_mut(&id).unwrap().is_alive(),
+                "rename must retain the real child"
+            );
+            assert_eq!(
+                app.pane_accounts[&id],
+                (provider, renamed.name.clone()),
+                "the hidden pane must follow its renamed account"
+            );
+            assert_eq!(
+                app.account_of_session(&app.all_sessions[0]),
+                renamed,
+                "a transcript-free hidden pane must keep its owner"
+            );
+            assert_eq!(
+                app.pane_count_on(&renamed),
+                1,
+                "the renamed home is still in use"
+            );
+            assert_eq!(
+                app.pane_count_on(&account),
+                0,
+                "the old label no longer owns the pane"
+            );
+            assert_eq!(app.limits.as_ref().unwrap()[0].account, renamed.name);
+            assert!(app.limits_force_refresh, "rename must refresh usage");
+
+            app.accounts_remove();
+            app.accounts_remove();
+            assert!(
+                app.accounts.contains(&renamed),
+                "the renamed hidden child's home cannot be removed"
+            );
+            assert_eq!(
+                fs::read_to_string(path.join("auth.json")).unwrap(),
+                "synthetic login\n"
+            );
+            assert!(
+                app.ptys.get_mut(&id).unwrap().is_alive(),
+                "removal must not terminate the hidden child"
+            );
+        }
+    }
+
+    #[test]
+    fn pane_ownership_keeps_recorded_accounts_and_transcript_fallbacks_distinct() {
+        let home = TestDirectory::new();
+        let mut app = super::super::tests::isolated_app();
+        let inherited = Account::inherited(Agent::Codex);
+        let isolated = Account::isolated(&home.0, Agent::Codex, "isolated").unwrap();
+        let other_provider = Account::inherited(Agent::Claude);
+        app.accounts = vec![inherited.clone(), isolated.clone(), other_provider.clone()];
+        let mut session = super::super::tests::session("new:recorded-owner", Agent::Codex, false);
+        app.all_sessions.push(session.clone());
+        app.focus_or_add_pane(&session.id);
+        app.pane_accounts
+            .insert(session.id.clone(), (Agent::Codex, isolated.name.clone()));
+        assert_eq!(app.pane_count_on(&isolated), 1);
+        assert_eq!(
+            app.pane_count_on(&inherited),
+            0,
+            "a recorded owner takes precedence over an empty transcript"
+        );
+        assert_eq!(
+            app.pane_count_on(&other_provider),
+            0,
+            "providers must stay distinct"
+        );
+
+        app.pane_accounts.clear();
+        session.file = isolated.session_root(&home.0).join("record.jsonl");
+        app.all_sessions = vec![session];
+        assert_eq!(
+            app.pane_count_on(&isolated),
+            1,
+            "older panes use transcript ownership"
+        );
+        assert_eq!(app.pane_count_on(&inherited), 0);
+        app.all_sessions[0].file = PathBuf::new();
+        assert_eq!(app.pane_count_on(&isolated), 0);
+        assert_eq!(
+            app.pane_count_on(&inherited),
+            1,
+            "unknown paths retain the inherited fallback"
+        );
+    }
+}
+
 /// A provider with nothing behind it was reached for every few minutes
 /// forever. It is asked about once, and a no turns it off.
 mod unavailable_account_prompt {

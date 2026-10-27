@@ -65,24 +65,7 @@ impl PtyManager {
 
         // Redirect stderr to a per-session log so it never shares the TUI PTY.
         let log = stderr_log_path(id);
-        let mut line = String::from("exec ");
-        line.push_str(&shell_quote(&cmd.program));
-        for arg in &cmd.args {
-            line.push(' ');
-            line.push_str(&shell_quote(arg));
-        }
-        line.push_str(" 2>>");
-        line.push_str(&shell_quote(&log));
-
-        let mut builder = CommandBuilder::new("sh");
-        builder.arg("-c");
-        builder.arg(&line);
-        if !cmd.cwd.as_os_str().is_empty() {
-            builder.cwd(&cmd.cwd);
-        }
-        builder.env("TERM", "xterm-256color");
-
-        let child = pair.slave.spawn_command(builder)?;
+        let child = pair.slave.spawn_command(command_builder(cmd, &log))?;
         drop(pair.slave);
 
         let mut reader = pair.master.try_clone_reader()?;
@@ -184,6 +167,33 @@ fn terminate(h: &mut PtyHandle) {
     h.exited = true;
 }
 
+fn command_builder(cmd: &MpCommand, log: &str) -> CommandBuilder {
+    let mut line = String::from("exec ");
+    line.push_str(&shell_quote(&cmd.program));
+    for arg in &cmd.args {
+        line.push(' ');
+        line.push_str(&shell_quote(arg));
+    }
+    line.push_str(" 2>>");
+    line.push_str(&shell_quote(log));
+
+    let mut builder = CommandBuilder::new("sh");
+    builder.arg("-c");
+    builder.arg(&line);
+    if !cmd.cwd.as_os_str().is_empty() {
+        builder.cwd(&cmd.cwd);
+    }
+    builder.env("TERM", "xterm-256color");
+    // Clear ambient values first so explicit selections take precedence.
+    for name in &cmd.env.unset {
+        builder.env_remove(name);
+    }
+    for (name, value) in &cmd.env.set {
+        builder.env(name, value);
+    }
+    builder
+}
+
 /// POSIX single-quote a token so it is safe inside `sh -c`.
 fn shell_quote(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + 2);
@@ -224,4 +234,135 @@ fn stderr_log_path(session_id: &str) -> String {
         .open(&path);
     let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
     path.to_string_lossy().into_owned()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mindplayer_core::accounts::LaunchEnv;
+    use std::path::PathBuf;
+    use std::process::Command;
+
+    // Seed inheritance in a separate test process, avoiding global env changes
+    // that could race other tests or affect the user's homes and credentials.
+    fn inherited_env_test(name: &str) -> anyhow::Result<bool> {
+        if std::env::var("PTY_ENV_TEST_CHILD").as_deref() == Ok(name) {
+            return Ok(true);
+        }
+        let output = Command::new(std::env::current_exe()?)
+            .args(["--exact", name, "--nocapture"])
+            .env("PTY_ENV_TEST_CHILD", name)
+            .env("PTY_TEST_REMOVE", "ambient")
+            .env("PTY_TEST_OVERRIDE", "ambient")
+            .env("PTY_TEST_BOTH", "ambient")
+            .env("PTY_TEST_KEEP", "inherited")
+            .env_remove("PTY_TEST_EMPTY")
+            .output()?;
+        assert!(
+            output.status.success(),
+            "PTY regression subprocess failed:\n{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
+        Ok(false)
+    }
+
+    fn pty_output(cmd: &MpCommand) -> anyhow::Result<String> {
+        let pair = native_pty_system().openpty(PtySize {
+            rows: 24,
+            cols: 80,
+            pixel_width: 0,
+            pixel_height: 0,
+        })?;
+        let mut reader = pair.master.try_clone_reader()?;
+        let mut child = pair
+            .slave
+            .spawn_command(command_builder(cmd, "/dev/null"))?;
+        drop(pair.slave);
+        let mut output = String::new();
+        let read = reader.read_to_string(&mut output);
+        if read.is_err() {
+            let _ = child.kill();
+        }
+        // Drain before waiting: PTY output can hold up child exit on macOS.
+        // Reap before assertions, including the RED run and read failures.
+        let status = child.wait()?;
+        read?;
+        assert!(status.success(), "PTY child failed: {status:?}: {output}");
+        Ok(output.replace("\r\n", "\n"))
+    }
+
+    #[test]
+    fn launch_env_unsets_inherited_values() -> anyhow::Result<()> {
+        if !inherited_env_test("pty::tests::launch_env_unsets_inherited_values")? {
+            return Ok(());
+        }
+        let cmd = MpCommand {
+            program: "/bin/sh".into(),
+            args: vec![
+                "-c".into(),
+                "printf '<%s><%s><%s>' \"${PTY_TEST_REMOVE+present}\" \"$PTY_TEST_KEEP\" \"$TERM\""
+                    .into(),
+            ],
+            cwd: PathBuf::new(),
+            env: LaunchEnv {
+                unset: vec!["PTY_TEST_REMOVE".into()],
+                ..LaunchEnv::default()
+            },
+        };
+        assert_eq!(pty_output(&cmd)?, "<><inherited><xterm-256color>");
+        Ok(())
+    }
+
+    #[test]
+    fn launch_env_sets_values_after_unset() -> anyhow::Result<()> {
+        if !inherited_env_test("pty::tests::launch_env_sets_values_after_unset")? {
+            return Ok(());
+        }
+        let cmd = MpCommand {
+            program: "/bin/sh".into(),
+            args: vec![
+                "-c".into(),
+                "printf '<%s><%s><%s><%s><%s>' \"$PTY_TEST_OVERRIDE\" \"$PTY_TEST_BOTH\" \"${PTY_TEST_EMPTY+present}\" \"$PTY_TEST_EMPTY\" \"$TERM\"".into(),
+            ],
+            cwd: PathBuf::new(),
+            env: LaunchEnv {
+                unset: vec!["PTY_TEST_BOTH".into()],
+                set: vec![
+                    ("PTY_TEST_OVERRIDE".into(), "selected ' $value".into()),
+                    ("PTY_TEST_BOTH".into(), "selected".into()),
+                    ("PTY_TEST_EMPTY".into(), String::new()),
+                    ("TERM".into(), "screen-256color".into()),
+                ],
+            },
+        };
+        assert_eq!(
+            pty_output(&cmd)?,
+            "<selected ' $value><selected><present><><screen-256color>"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn launch_env_preserves_cwd_args_and_base_term() -> anyhow::Result<()> {
+        let cwd = std::env::temp_dir().canonicalize()?;
+        let cmd = MpCommand {
+            program: "/bin/sh".into(),
+            args: vec![
+                "-c".into(),
+                "test -t 0 && test -t 1 && ! test -t 2 || exit 1; test \"$(pwd -P)\" = \"$1\" || exit 2; printf '<%s><%s><%s>' \"$TERM\" \"$2\" \"$3\"; printf 'stderr-only' >&2".into(),
+                "pty-test".into(),
+                cwd.to_string_lossy().into_owned(),
+                "spaces ' quotes $() ; *\nnext line".into(),
+                String::new(),
+            ],
+            cwd,
+            env: LaunchEnv::default(),
+        };
+        assert_eq!(
+            pty_output(&cmd)?,
+            "<xterm-256color><spaces ' quotes $() ; *\nnext line><>"
+        );
+        Ok(())
+    }
 }

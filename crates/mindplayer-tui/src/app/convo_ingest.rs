@@ -44,11 +44,11 @@ impl App {
     /// read. Comparing a kiro sidecar against a jsonl watermark made all 120
     /// kiro sessions permanently pending, which starved the batch.
     fn convo_is_pending(&self, session: &Session) -> bool {
-        let Some((_, len)) = convo_log::source_of(session) else {
+        let Some((source, len)) = convo_log::source_of(session) else {
             return false;
         };
         match self.convo_index.sessions.get(&session.id) {
-            Some(m) => m.watermark != len,
+            Some(m) => m.source != source || m.watermark != len,
             None => true,
         }
     }
@@ -274,6 +274,34 @@ mod tests {
         assert!(!app.spawn_convo_ingest());
         assert_eq!(app.convo_ingested, 1);
         assert_eq!(app.convo_total_turns(), 1);
+    }
+
+    #[test]
+    fn an_equal_sized_replacement_source_is_ingested() {
+        let dir = scratch("replaced-source");
+        let mut app = isolated_app();
+        app.convo_dir = dir.join("convo");
+        let first = dir.join("first.jsonl");
+        let second = dir.join("second.jsonl");
+        write_claude(&first, &[("user", "old source")]);
+        write_claude(&second, &[("user", "new source")]);
+        assert_eq!(
+            std::fs::metadata(&first).unwrap().len(),
+            std::fs::metadata(&second).unwrap().len()
+        );
+        app.all_sessions = vec![session_with("same-session", first)];
+        assert!(run_one_batch(&mut app));
+        app.all_sessions[0].file = second.clone();
+
+        assert!(
+            run_one_batch(&mut app),
+            "changed provenance must schedule a rebuild"
+        );
+        let turns = convo_log::read_turns(&app.convo_dir, "same-session");
+        assert_eq!(turns.len(), 1);
+        assert_eq!(turns[0].text, "new source");
+        assert_eq!(app.convo_index.sessions["same-session"].source, second);
+        assert_eq!(app.convo_backlog(), 0);
     }
 
     fn kiro_session(id: &str, dir: &std::path::Path) -> Session {

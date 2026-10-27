@@ -22,9 +22,10 @@ type HtmlScanBatch = Vec<(String, Vec<(PathBuf, SystemTime)>)>;
 /// A finished category sync: the prompt to inject, plus the new watermark per
 /// peer. Named so the channel type stays readable and `clippy::type_complexity`
 /// stays quiet.
+type CategorySyncAdvance = (String, u64, Option<PathBuf>);
 type CategorySyncResult = (
     String,
-    Result<(handoff::PreparedHandoff, Vec<(String, u64)>), String>,
+    Result<(handoff::PreparedHandoff, Vec<CategorySyncAdvance>), String>,
 );
 
 type ThreadSyncResult = (String, Result<handoff::PreparedHandoff, String>);
@@ -685,11 +686,20 @@ pub struct PendingSpawn {
 struct DeferredInitialInput {
     bytes: Vec<u8>,
     queued_at: Instant,
+    readiness: DeferredInputReadiness,
     /// Keystrokes the user typed into this pane while `bytes` was still
     /// waiting to go out. Held here instead of forwarded to the pty so they
     /// never interleave with (and corrupt) the queued prompt; replayed in
     /// order once `flush_initial_inputs` actually sends it.
     held_input: Vec<u8>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DeferredInputReadiness {
+    /// A newly spawned CLI retains its output/elapsed-time startup fallbacks.
+    Startup,
+    /// An existing turn must finish; elapsed time never authorizes a send.
+    AfterIdle,
 }
 
 impl App {

@@ -107,6 +107,11 @@ pub struct State {
     /// re-trigger but re-sending the whole transcript every time.
     #[serde(default)]
     pub sync_marks: BTreeMap<String, BTreeMap<String, u64>>,
+    /// Optional source provenance. Kiro's old marks measured metadata instead
+    /// of JSONL, so an unbound mark must not be reused for its conversation.
+    /// Kept separate so older readers can still load the numeric marks.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub sync_sources: BTreeMap<String, BTreeMap<String, PathBuf>>,
 }
 
 /// A user-named topic. Sessions join by id, never by name — see
@@ -151,6 +156,7 @@ impl Default for State {
             session_category: BTreeMap::new(),
             collapsed_categories: BTreeSet::new(),
             sync_marks: BTreeMap::new(),
+            sync_sources: BTreeMap::new(),
         }
     }
 }
@@ -331,10 +337,40 @@ impl State {
     }
 
     pub fn set_sync_mark(&mut self, target: &str, peer: &str, peer_len: u64) {
+        if let Some(sources) = self.sync_sources.get_mut(target) {
+            sources.remove(peer);
+            if sources.is_empty() {
+                self.sync_sources.remove(target);
+            }
+        }
         self.sync_marks
             .entry(target.to_string())
             .or_default()
             .insert(peer.to_string(), peer_len);
+    }
+
+    /// Return a watermark only when it belongs to this transcript source.
+    pub fn sync_mark_for_source(&self, target: &str, peer: &str, source: &Path) -> u64 {
+        if self
+            .sync_sources
+            .get(target)
+            .and_then(|m| m.get(peer))
+            .map(PathBuf::as_path)
+            == Some(source)
+        {
+            self.sync_mark(target, peer)
+        } else {
+            0
+        }
+    }
+
+    /// Record the consumed length and its source together.
+    pub fn set_sync_mark_for_source(&mut self, target: &str, peer: &str, source: &Path, len: u64) {
+        self.set_sync_mark(target, peer, len);
+        self.sync_sources
+            .entry(target.to_string())
+            .or_default()
+            .insert(peer.to_string(), source.to_path_buf());
     }
 
     /// Forget every watermark involving a session, so a re-created or
@@ -346,6 +382,11 @@ impl State {
             marks.remove(id);
         }
         self.sync_marks.retain(|_, m| !m.is_empty());
+        self.sync_sources.remove(id);
+        for sources in self.sync_sources.values_mut() {
+            sources.remove(id);
+        }
+        self.sync_sources.retain(|_, m| !m.is_empty());
     }
 
     /// Drop watermarks for sessions that no longer exist. Returns true if
@@ -353,6 +394,7 @@ impl State {
     pub fn prune_sync_marks(&mut self, known_sessions: &BTreeSet<String>) -> bool {
         let before = self.sync_marks.len();
         let inner_before: usize = self.sync_marks.values().map(|m| m.len()).sum();
+        let sources_before: usize = self.sync_sources.values().map(|m| m.len()).sum();
         self.sync_marks
             .retain(|target, _| known_sessions.contains(target));
         for marks in self.sync_marks.values_mut() {
@@ -360,7 +402,18 @@ impl State {
         }
         self.sync_marks.retain(|_, m| !m.is_empty());
         let inner_after: usize = self.sync_marks.values().map(|m| m.len()).sum();
-        before != self.sync_marks.len() || inner_before != inner_after
+        self.sync_sources.retain(|target, sources| {
+            sources.retain(|peer, _| {
+                self.sync_marks
+                    .get(target)
+                    .is_some_and(|marks| marks.contains_key(peer))
+            });
+            !sources.is_empty()
+        });
+        let sources_after: usize = self.sync_sources.values().map(|m| m.len()).sum();
+        before != self.sync_marks.len()
+            || inner_before != inner_after
+            || sources_before != sources_after
     }
 
     pub fn is_collapsed(&self, cat_id: &str) -> bool {
@@ -627,6 +680,44 @@ impl State {
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[test]
+    fn source_bound_sync_marks_do_not_reuse_legacy_or_other_sources() {
+        let mut state: State =
+            serde_json::from_str(r#"{"sync_marks":{"target":{"peer":45}}}"#).unwrap();
+        let source = Path::new("/synthetic/conversation.jsonl");
+        assert_eq!(state.sync_mark("target", "peer"), 45);
+        assert_eq!(state.sync_mark_for_source("target", "peer", source), 0);
+        state.set_sync_mark_for_source("target", "peer", source, 90);
+        let encoded = serde_json::to_string(&state).unwrap();
+        let mut loaded: State = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(loaded.sync_mark_for_source("target", "peer", source), 90);
+        assert_eq!(
+            loaded.sync_mark_for_source("target", "peer", Path::new("/synthetic/replaced.jsonl")),
+            0
+        );
+        // Keep the original numeric field readable by older versions.
+        let json: serde_json::Value = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(json["sync_marks"]["target"]["peer"], 90);
+        loaded.set_sync_mark("target", "peer", 123);
+        assert_eq!(loaded.sync_mark_for_source("target", "peer", source), 0);
+    }
+
+    #[test]
+    fn clearing_and_pruning_sync_marks_also_forgets_their_sources() {
+        let mut state = State::default();
+        let source = Path::new("/synthetic/conversation.jsonl");
+        state.set_sync_mark_for_source("target", "peer", source, 90);
+        state.set_sync_mark_for_source("peer", "target", source, 80);
+        state.clear_sync_marks_for("peer");
+        assert!(state.sync_marks.is_empty());
+        assert!(state.sync_sources.is_empty());
+        state.set_sync_mark_for_source("target", "peer", source, 90);
+        assert!(state.prune_sync_marks(&BTreeSet::from(["target".into()])));
+        assert!(state.sync_marks.is_empty());
+        assert!(state.sync_sources.is_empty());
+        assert!(!state.prune_sync_marks(&BTreeSet::from(["target".into()])));
+    }
 
     #[test]
     fn roundtrip_atomic_save_and_load() {

@@ -82,6 +82,9 @@ the resulting minimum version.)
 
 ### Unreleased
 
+- Align the Vercel key row with the provider quota rows: same columns and
+  colours, and dollar amounts shown to the cent.
+
 - Reduce development build storage and clean up isolated smoke-test fixtures.
 
 - Show only Vercel key usage, with an optional key-specific local display

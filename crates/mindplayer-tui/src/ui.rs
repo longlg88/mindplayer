@@ -78,11 +78,17 @@ fn quota_label_color(label: &str) -> Color {
         "codex" => ACCENT,
         "claude" => Color::Magenta,
         "kiro" => Color::Cyan,
+        VERCEL_HEAD => Color::White,
         _ => Color::Rgb(180, 142, 240),
     }
 }
 
-fn vercel_footer_lines(app: &App, width: u16) -> Vec<Line<'static>> {
+/// Provider column text for the Vercel key's budget row.
+const VERCEL_HEAD: &str = "vercel";
+
+/// The Vercel key's budget as a quota row, so it shares the provider rows' columns.
+fn vercel_quota_row(app: &App) -> mindplayer_core::limits::QuotaRow {
+    use mindplayer_core::limits::{compact_decimal, QuotaRow};
     use mindplayer_core::vercel_usage::VercelUsageError;
 
     let reading = if app.vercel_cwd.as_ref() == Some(&app.cwd) {
@@ -90,7 +96,7 @@ fn vercel_footer_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     } else {
         None
     };
-    let (text, color) = match reading {
+    let (label, used_percent, detail) = match reading {
         Some(Ok(usage)) => match &usage.key {
             Ok(budget) => {
                 let limit = usage.target.unwrap_or(budget.limit);
@@ -99,77 +105,98 @@ fn vercel_footer_lines(app: &App, width: u16) -> Vec<Line<'static>> {
                 } else {
                     "API key limit"
                 };
-                if limit > 0.0 {
-                    let used = budget.used / limit * 100.0;
-                    let filled = ((used / 100.0) * QUOTA_GAUGE_CELLS as f64)
-                        .round()
-                        .clamp(0.0, QUOTA_GAUGE_CELLS as f64)
-                        as usize;
-                    let percent = if used.is_finite() {
-                        format!("{used:.1}%")
-                    } else {
-                        "over 100%".to_string()
-                    };
-                    (
-                        format!(
-                            " vercel key  {}{}  {percent} used  ${} / ${limit}  {limit_label}  {}",
-                            "▰".repeat(filled),
-                            "▱".repeat(QUOTA_GAUGE_CELLS - filled),
-                            budget.used,
-                            budget.refresh_period
-                        ),
-                        quota_tier(used),
-                    )
-                } else {
-                    (
-                        format!(
-                            " vercel key  —  percentage unavailable  ${} / ${limit}  {limit_label}  {}",
-                            budget.used, budget.refresh_period
-                        ),
-                        DIM,
-                    )
-                }
+                let used = budget.used / limit * 100.0;
+                (
+                    format!("key {}", budget.refresh_period)
+                        .trim_end()
+                        .to_string(),
+                    (limit > 0.0 && used.is_finite()).then_some(used),
+                    format!(
+                        "${:.2}/${} {limit_label}",
+                        budget.used,
+                        compact_decimal(limit)
+                    ),
+                )
             }
-            Err(VercelUsageError::NoBudget) => (" vercel key  no active budget".to_string(), DIM),
-            Err(_) => (" vercel key  unavailable".to_string(), DIM),
+            Err(VercelUsageError::NoBudget) => {
+                ("key".to_string(), None, "no active budget".to_string())
+            }
+            Err(_) => ("key".to_string(), None, "unavailable".to_string()),
         },
-        Some(Err(_)) => (" vercel  unavailable".to_string(), DIM),
-        None => (" vercel  loading".to_string(), DIM),
+        Some(Err(_)) => (String::new(), None, "unavailable".to_string()),
+        None => (String::new(), None, "loading".to_string()),
     };
+    QuotaRow {
+        label,
+        used_percent,
+        detail,
+        ..Default::default()
+    }
+}
 
+/// The Vercel row in the provider rows' columns; a figure that would run past the edge moves to its own lines so no amount is cut short.
+fn vercel_footer_lines(
+    row: &mindplayer_core::limits::QuotaRow,
+    platform_width: usize,
+    name_width: usize,
+    width: u16,
+) -> Vec<Line<'static>> {
+    let head = Span::styled(
+        format!(" {VERCEL_HEAD:<platform_width$} "),
+        Style::default()
+            .fg(quota_label_color(VERCEL_HEAD))
+            .add_modifier(Modifier::BOLD),
+    );
     let width = usize::from(width.max(1));
-    let mut wrapped = Vec::new();
-    let mut current = String::new();
-    let mut too_wide = false;
-    for word in text.split_whitespace() {
+    let mut full = vec![head.clone()];
+    full.extend(quota_row_spans(row, name_width, None));
+    if Line::from(full.clone()).width() <= width {
+        return vec![Line::from(full)];
+    }
+
+    let bare = mindplayer_core::limits::QuotaRow {
+        detail: String::new(),
+        ..row.clone()
+    };
+    let mut first = vec![head];
+    first.extend(quota_row_spans(&bare, name_width, None));
+    let indent = platform_width + 4;
+    let room = width.saturating_sub(indent);
+    let mut wrapped: Vec<String> = Vec::new();
+    for word in row.detail.split_whitespace() {
         let word_width = Line::from(word).width();
-        if word_width > width {
-            too_wide = true;
-            break;
+        match wrapped.last_mut() {
+            Some(line) if Line::from(line.as_str()).width() + 1 + word_width <= room => {
+                line.push(' ');
+                line.push_str(word);
+            }
+            _ => wrapped.push(word.to_string()),
         }
-        let current_width = Line::from(current.as_str()).width();
-        if !current.is_empty() && current_width + 1 + word_width > width {
-            wrapped.push(std::mem::take(&mut current));
-        }
-        if !current.is_empty() {
-            current.push(' ');
-        }
-        current.push_str(word);
     }
-    if !current.is_empty() {
-        wrapped.push(current);
+    if wrapped.len() > 2
+        || wrapped
+            .iter()
+            .any(|line| Line::from(line.as_str()).width() > room)
+    {
+        wrapped = vec!["widen terminal".to_string()];
     }
-    // Do not render part of a number as if it were a complete amount.
-    if too_wide || wrapped.len() > 3 {
-        let mut words = text.split_whitespace();
-        let provider = words.next().unwrap_or("vercel");
-        let scope = words.next().unwrap_or("");
-        wrapped = vec![format!("{provider} {scope}: widen terminal")];
+    let style = Style::default().fg(quota_detail_color(row));
+    let mut lines = vec![Line::from(first)];
+    lines.extend(
+        wrapped
+            .into_iter()
+            .map(|text| Line::from(Span::styled(format!("{:indent$}{text}", ""), style))),
+    );
+    lines
+}
+
+/// Detail text turns red when the reading means work is stopped.
+fn quota_detail_color(row: &mindplayer_core::limits::QuotaRow) -> Color {
+    if row.blocked || (row.used_percent.is_some_and(|used| used >= 100.0) && !row.spend_cap) {
+        ERROR
+    } else {
+        DIM
     }
-    wrapped
-        .into_iter()
-        .map(|line| Line::from(Span::styled(line, Style::default().fg(color))))
-        .collect()
 }
 
 /// One footer row per account window: name, gauge, percentage, then the figure
@@ -221,15 +248,7 @@ fn quota_row_spans(
     } else if !row.detail.is_empty() {
         spans.push(Span::styled(
             format!("  {}", row.detail),
-            Style::default().fg(
-                if row.blocked
-                    || (row.used_percent.is_some_and(|used| used >= 100.0) && !row.spend_cap)
-                {
-                    ERROR
-                } else {
-                    DIM
-                },
-            ),
+            Style::default().fg(quota_detail_color(row)),
         ));
     }
     if let Some(resets) = row.resets.as_deref() {
@@ -1207,17 +1226,20 @@ fn main_view(f: &mut Frame, app: &mut App) {
         }
         row.label = rest;
     }
+    let vercel_row = vercel_quota_row(app);
     let name_width = quota_rows
         .iter()
+        .chain(std::iter::once(&vercel_row))
         .map(|r| r.label.chars().count())
         .max()
         .unwrap_or(0);
     let platform_width = quota_rows
         .iter()
         .map(|r| r.agent.as_str().chars().count())
+        .chain(std::iter::once(VERCEL_HEAD.chars().count()))
         .max()
         .unwrap_or(0);
-    let vercel_lines = vercel_footer_lines(app, f.area().width);
+    let vercel_lines = vercel_footer_lines(&vercel_row, platform_width, name_width, f.area().width);
     let quota_h = (quota_rows.len() + vercel_lines.len()).min(u16::MAX as usize) as u16;
     let footer_h: u16 = status_h + quota_h + 1 + u16::from(show_more_keys);
     let outer = Layout::default()
@@ -4606,6 +4628,16 @@ mod tests {
         }
     }
 
+    /// The footer's one Vercel row with its column padding collapsed to single spaces.
+    fn vercel_line(frame: &str) -> String {
+        let rows: Vec<_> = frame
+            .lines()
+            .filter(|line| line.trim_start().starts_with(super::VERCEL_HEAD))
+            .collect();
+        assert_eq!(rows.len(), 1, "{frame}");
+        rows[0].split_whitespace().collect::<Vec<_>>().join(" ")
+    }
+
     #[test]
     fn vercel_usage_renders_local_target_for_only_the_key() {
         use mindplayer_core::vercel_usage::{VercelBudget, VercelUsage};
@@ -4623,12 +4655,13 @@ mod tests {
 
         for width in [40, 88, 140] {
             let frame = frame_text(&startup_frame(&mut app, width, 29));
-            assert_eq!(frame.matches("vercel key").count(), 1, "{frame}");
+            assert!(
+                vercel_line(&frame).starts_with("vercel key monthly ▰▱▱▱▱▱ 16.5%"),
+                "{frame}"
+            );
+            assert!(frame.contains("$33.00/$200 local target"), "{frame}");
             assert!(!frame.contains("vercel user"), "{frame}");
             assert!(!frame.contains("vercel team"), "{frame}");
-            for text in ["16.5%", "$33", "$200", "local target", "monthly"] {
-                assert!(frame.contains(text), "{frame}");
-            }
             assert!(!frame.contains("API key limit"), "{frame}");
             assert!(!frame.contains("$1000"), "{frame}");
         }
@@ -4649,9 +4682,9 @@ mod tests {
             target: None,
         }));
         let frame = frame_text(&startup_frame(&mut app, 140, 29));
-        assert_eq!(frame.matches("vercel key").count(), 1, "{frame}");
-        assert!(
-            frame.contains("3.3% used $33 / $1000 API key limit monthly"),
+        assert_eq!(
+            vercel_line(&frame),
+            "vercel key monthly ▱▱▱▱▱▱ 3.3% $33.00/$1000 API key limit",
             "{frame}"
         );
         assert!(!frame.contains("local target"), "{frame}");
@@ -4666,8 +4699,9 @@ mod tests {
             });
         }
         let frame = frame_text(&startup_frame(&mut app, 140, 29));
-        assert!(
-            frame.contains("vercel key ▰▰▰▰▰▰ 123.8% used $123.75 / $100 API key limit weekly"),
+        assert_eq!(
+            vercel_line(&frame),
+            "vercel key weekly ▰▰▰▰▰▰ 123.8% $123.75/$100 API key limit",
             "{frame}"
         );
     }
@@ -4679,15 +4713,15 @@ mod tests {
         app.startup_routing = StartupRouting::confirmed(RoutingMode::Native);
         app.vercel_cwd = Some(app.cwd.clone());
         for (error, expected) in [
-            (VercelUsageError::Unavailable, "vercel key unavailable"),
-            (VercelUsageError::NoBudget, "vercel key no active budget"),
+            (VercelUsageError::Unavailable, "vercel key — unavailable"),
+            (VercelUsageError::NoBudget, "vercel key — no active budget"),
         ] {
             app.vercel_budget = Some(Ok(VercelUsage {
                 key: Err(error),
                 target: None,
             }));
             let frame = frame_text(&startup_frame(&mut app, 140, 29));
-            assert!(frame.contains(expected), "{frame}");
+            assert_eq!(vercel_line(&frame), expected, "{frame}");
             assert!(!frame.contains('$'), "{frame}");
         }
 
@@ -4700,13 +4734,12 @@ mod tests {
         ] {
             app.vercel_budget = Some(Err(error));
             let frame = frame_text(&startup_frame(&mut app, 140, 29));
-            assert!(frame.contains("vercel unavailable"), "{frame}");
-            assert!(!frame.contains("vercel key"), "{frame}");
+            assert_eq!(vercel_line(&frame), "vercel — unavailable", "{frame}");
             assert!(!frame.contains('$'), "{frame}");
         }
         app.cwd.push("different-workspace");
         let frame = frame_text(&startup_frame(&mut app, 140, 29));
-        assert!(frame.contains("vercel loading"), "{frame}");
+        assert_eq!(vercel_line(&frame), "vercel — loading", "{frame}");
     }
 
     #[test]
@@ -4724,10 +4757,91 @@ mod tests {
             target: None,
         }));
         let frame = frame_text(&startup_frame(&mut app, 88, 29));
-        assert!(frame.contains("percentage unavailable"), "{frame}");
-        assert!(frame.contains("$1234567890123456 / $0"), "{frame}");
+        assert_eq!(
+            vercel_line(&frame),
+            "vercel key monthly — $1234567890123456.00/$0 API key limit",
+            "{frame}"
+        );
+        let frame = frame_text(&startup_frame(&mut app, 40, 29));
+        assert!(frame.contains("$1234567890123456.00/$0"), "{frame}");
         let frame = frame_text(&startup_frame(&mut app, 12, 29));
         assert!(!frame.contains('$'), "{frame}");
+    }
+
+    #[test]
+    fn vercel_row_shares_the_provider_rows_columns_and_rounds_dollars() {
+        use mindplayer_core::limits::QuotaRow;
+        use mindplayer_core::vercel_usage::{VercelBudget, VercelUsage};
+        let mut app = startup_app();
+        app.startup_routing = StartupRouting::confirmed(RoutingMode::Native);
+        app.limits = Some(vec![
+            QuotaRow {
+                label: "codex weekly".into(),
+                agent: Agent::Codex,
+                used_percent: Some(43.0),
+                resets: Some("11-04 17:02".into()),
+                ..Default::default()
+            },
+            QuotaRow {
+                label: "claude 5h".into(),
+                agent: Agent::Claude,
+                used_percent: Some(3.0),
+                resets: Some("14:30".into()),
+                ..Default::default()
+            },
+        ]);
+        app.vercel_cwd = Some(app.cwd.clone());
+        app.vercel_budget = Some(Ok(VercelUsage {
+            key: Ok(VercelBudget {
+                used: 34.336196356,
+                limit: 1000.0,
+                refresh_period: "monthly".into(),
+            }),
+            target: Some(200.0),
+        }));
+
+        for width in [88, 140] {
+            let buffer = startup_frame(&mut app, width, 29);
+            let frame = frame_text(&buffer);
+            let quota_line = |provider: &str| {
+                frame
+                    .lines()
+                    .find(|line| {
+                        line.trim_start().starts_with(provider)
+                            && line.chars().any(|c| matches!(c, '▰' | '▱'))
+                    })
+                    .unwrap_or_else(|| panic!("no {provider} quota row: {frame}"))
+                    .to_string()
+            };
+            let column = |line: &str, mark: fn(char) -> bool| line.chars().position(mark).unwrap();
+            let gauge = |c: char| matches!(c, '▰' | '▱');
+            let percent = |c: char| c == '%';
+            let rows = ["codex", "claude", "vercel"].map(quota_line);
+            for row in &rows[1..] {
+                assert_eq!(column(row, gauge), column(&rows[0], gauge), "{frame}");
+                assert_eq!(column(row, percent), column(&rows[0], percent), "{frame}");
+            }
+            assert_eq!(
+                vercel_line(&frame),
+                "vercel key monthly ▰▱▱▱▱▱ 17.2% $34.34/$200 local target",
+                "{frame}"
+            );
+            assert!(!frame.contains("34.336"), "{frame}");
+
+            let y = (buffer.area.y..buffer.area.bottom())
+                .find(|&y| {
+                    rendered_row(&buffer, y)
+                        .trim_start()
+                        .starts_with(super::VERCEL_HEAD)
+                })
+                .unwrap();
+            let line = rendered_row(&buffer, y);
+            let fg = |mark: fn(char) -> bool| buffer[(column(&line, mark) as u16, y)].fg;
+            assert_eq!(fg(|c| c == 'v'), Color::White, "{frame}");
+            assert_eq!(fg(gauge), quota_tier(17.2), "{frame}");
+            assert_eq!(fg(percent), quota_tier(17.2), "{frame}");
+            assert_eq!(fg(|c| c == '$'), DIM, "{frame}");
+        }
     }
 
     #[test]

@@ -2461,10 +2461,20 @@ fn startup_scope_scan_opens_the_list_without_a_routing_choice() {
 fn completed_vercel_probe_does_not_recreate_fixture_after_cleanup() {
     let mut mp = Mp::launch();
     mp.start_into_main_list();
-    mp.expect(
-        "vercel unavailable",
-        STARTUP_TIMEOUT,
-        "the asynchronous Vercel probe completed",
+    // The row is column-aligned, so compare it with its padding collapsed.
+    let vercel_unavailable = |screen: &str| {
+        screen.lines().any(|line| {
+            line.split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
+                .starts_with("vercel — unavailable")
+        })
+    };
+    assert!(
+        mp.wait_until(STARTUP_TIMEOUT, vercel_unavailable),
+        "the asynchronous Vercel probe completed: expected the vercel row to read unavailable.\n\
+         ---- screen ----\n{}\n----------------",
+        mp.screen()
     );
     assert!(
         mp._tmp.join("home/.mindplayer/omp-token-probe").exists(),

@@ -953,7 +953,7 @@ fn codex_credit_cap_reached(c: &CodexLimits) -> bool {
         || c.rate_limit_reached.as_deref() == Some("workspace_member_usage_limit_reached")
 }
 
-fn compact_decimal(value: f64) -> String {
+pub fn compact_decimal(value: f64) -> String {
     let precision = if value >= 1000.0 {
         0
     } else if value >= 10.0 {

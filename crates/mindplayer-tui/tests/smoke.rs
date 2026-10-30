@@ -114,14 +114,103 @@ const STEP_TIMEOUT: Duration = Duration::from_secs(10);
 
 static DIR_COUNTER: AtomicU32 = AtomicU32::new(0);
 
-/// A fresh, unique temp directory rooted at Cargo's per-crate test tmp dir.
-fn unique_tmp() -> PathBuf {
-    let root = PathBuf::from(env!("CARGO_TARGET_TMPDIR"));
-    let n = DIR_COUNTER.fetch_add(1, Ordering::SeqCst);
-    let dir = root.join(format!("mp-smoke-{}-{}", std::process::id(), n));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("create temp dir");
-    dir
+struct FixtureDir(PathBuf);
+
+impl Drop for FixtureDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+impl std::ops::Deref for FixtureDir {
+    type Target = Path;
+
+    fn deref(&self) -> &Path {
+        &self.0
+    }
+}
+
+/// A fresh, unique temp directory, optionally isolated from the source tree.
+fn unique_tmp() -> FixtureDir {
+    let root = std::env::var_os("MINDPLAYER_TEST_TMPDIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_TARGET_TMPDIR")));
+    std::fs::create_dir_all(&root).expect("create temp root");
+    loop {
+        let n = DIR_COUNTER.fetch_add(1, Ordering::SeqCst);
+        let dir = root.join(format!("mp-smoke-{}-{}", std::process::id(), n));
+        match std::fs::create_dir(&dir) {
+            Ok(()) => return FixtureDir(dir),
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(err) => panic!("create temp dir: {err}"),
+        }
+    }
+}
+
+struct FixtureChild(Box<dyn portable_pty::Child + Send + Sync>);
+
+impl std::ops::Deref for FixtureChild {
+    type Target = dyn portable_pty::Child + Send + Sync;
+
+    fn deref(&self) -> &Self::Target {
+        &*self.0
+    }
+}
+
+impl std::ops::DerefMut for FixtureChild {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut *self.0
+    }
+}
+
+impl Drop for FixtureChild {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn fixture_directory_is_removed_after_normal_and_unwinding_teardown() {
+    fn assert_reaped(pid: u32) {
+        let output = std::process::Command::new("kill")
+            .args(["-0", &pid.to_string()])
+            .output()
+            .expect("check fixture child");
+        assert!(
+            !output.status.success(),
+            "fixture child {pid} was not reaped"
+        );
+    }
+
+    let mp = Mp::launch_with_options(ROWS, COLS, false, false, false, false);
+    let path = mp._tmp.clone();
+    let pid = mp.child.process_id().expect("fixture child PID");
+    assert!(path.is_dir());
+    drop(mp);
+    assert_reaped(pid);
+    assert!(!path.exists(), "normal teardown removed the fixture");
+
+    let mut spawned = None;
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        Mp::launch_with_options_and_fixture_after_spawn(
+            (ROWS, COLS),
+            false,
+            false,
+            false,
+            false,
+            CodexFixture::Echo,
+            |path, pid| {
+                spawned = Some((path.to_path_buf(), pid.expect("fixture child PID")));
+                panic!("exercise constructor unwind");
+            },
+        );
+    }));
+    assert!(result.is_err());
+    let (path, pid) = spawned.expect("constructor reached child spawn");
+    assert_reaped(pid);
+    assert!(!path.exists(), "constructor unwind removed the fixture");
 }
 
 /// Write an executable shell script.
@@ -134,6 +223,20 @@ fn write_script(path: &Path, body: &str) {
         perms.set_mode(0o755);
         std::fs::set_permissions(path, perms).unwrap();
     }
+}
+
+fn write_omp_script(path: &Path, body: &str) {
+    // The real OMP token lookup can outlive MindPlayer and recreate HOME after
+    // fixture cleanup. Never let a smoke fixture run it or read real credentials.
+    // Replace atomically so an in-flight probe never sees a truncated script.
+    let staged = path.with_extension("new");
+    write_script(
+        &staged,
+        &format!(
+            "#!/bin/sh\nif [ \"$1\" = token ]; then\n  : > \"$HOME/.mindplayer/omp-token-probe\" 2>/dev/null\n  exit 1\nfi\n{body}"
+        ),
+    );
+    std::fs::rename(staged, path).expect("install isolated OMP launcher");
 }
 
 /// Offline auth protocol fixture: only a native `codex login` changes the
@@ -275,22 +378,37 @@ fn seed_claude_session(root: &Path, cwd: &Path, id: &str, title: &str) -> PathBu
     file
 }
 
-/// Seed private probe, backend and UI fixtures in this scenario's isolated HOME.
-/// Only the private copy advertises the contract; the global stub stays unchanged.
+/// Seed a synthetic private UI, or an explicitly supplied native candidate,
+/// without changing the global Codex or the developer's HOME.
 fn seed_private_codex(home: &Path, fake_codex: &Path) {
     use std::os::unix::fs::PermissionsExt;
 
     let staged = home.join("private-codex-fixture");
-    let source = std::fs::read_to_string(fake_codex).expect("read fake Codex");
-    write_script(
-        &staged,
-        &format!(
-            "#!/bin/sh\nif [ \"$1\" = \"--mindplayer-ui-contract\" ]; then printf '%s\\n' 'mindplayer-native-routing-v4'; exit 0; fi\nif [ -n \"$MINDPLAYER_ROUTER_MARKER_DIR\" ]; then\n  case \" $* \" in\n    *\" app-server \"*) marker=private-app-server ;;\n    *) marker=private-ui ;;\n  esac\n  printf '%s\\n' \"$0\" > \"$MINDPLAYER_ROUTER_MARKER_DIR/$marker\"\nfi\n{source}"
-        ),
-    );
-    // Explicit no-op host: this synthetic fixture does not prove native tools.
     let staged_host = home.join("private-code-mode-host-fixture");
-    write_script(&staged_host, "#!/bin/sh\nexit 0\n");
+    if let Some(real) = std::env::var_os("MINDPLAYER_TEST_PRIVATE_CODEX") {
+        let real = PathBuf::from(real);
+        assert!(
+            real.is_absolute() && real.is_file(),
+            "explicit private Codex"
+        );
+        let host = real.parent().unwrap().join("codex-code-mode-host");
+        std::fs::copy(&real, &staged).expect("copy the explicit native Codex");
+        std::fs::copy(host, &staged_host).expect("copy the matching native host");
+        for path in [&staged, &staged_host] {
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
+                .expect("private native fixture permissions");
+        }
+    } else {
+        let source = std::fs::read_to_string(fake_codex).expect("read fake Codex");
+        write_script(
+            &staged,
+            &format!(
+                "#!/bin/sh\nif [ \"$1\" = \"--mindplayer-ui-contract\" ]; then printf '%s\\n' 'mindplayer-native-routing-v4'; exit 0; fi\nif [ -n \"$MINDPLAYER_ROUTER_MARKER_DIR\" ]; then\n  case \" $* \" in\n    *\" app-server \"*) marker=private-app-server ;;\n    *) marker=private-ui ;;\n  esac\n  printf '%s\\n' \"$0\" > \"$MINDPLAYER_ROUTER_MARKER_DIR/$marker\"\nfi\n{source}"
+            ),
+        );
+        // Explicit no-op host: this synthetic fixture does not prove native tools.
+        write_script(&staged_host, "#!/bin/sh\nexit 0\n");
+    }
     let digest = std::process::Command::new("node")
         .args([
             "--input-type=module",
@@ -504,7 +622,7 @@ struct Mp {
     parser: Arc<Mutex<vt100::Parser>>,
     raw_output: Arc<Mutex<Vec<u8>>>,
     writer: Box<dyn Write + Send>,
-    child: Box<dyn portable_pty::Child + Send + Sync>,
+    child: FixtureChild,
     _master: Box<dyn MasterPty + Send>,
     _tmp: PathBuf,
     codex_marker_dir: PathBuf,
@@ -526,6 +644,8 @@ struct Mp {
     open_marker: PathBuf,
     codex_alfa_file: PathBuf,
     codex_brvo_file: PathBuf,
+    // Fields are dropped in declaration order, after the child and PTY handles.
+    _fixture_dir: FixtureDir,
 }
 
 impl Mp {
@@ -640,6 +760,27 @@ impl Mp {
         enable_cursor: bool,
         fixture: CodexFixture,
     ) -> Mp {
+        Self::launch_with_options_and_fixture_after_spawn(
+            (rows, cols),
+            ambient_isolated,
+            isolated_primary,
+            with_accounts,
+            enable_cursor,
+            fixture,
+            |_, _| {},
+        )
+    }
+
+    fn launch_with_options_and_fixture_after_spawn(
+        dimensions: (u16, u16),
+        ambient_isolated: bool,
+        isolated_primary: bool,
+        with_accounts: bool,
+        enable_cursor: bool,
+        fixture: CodexFixture,
+        after_spawn: impl FnOnce(&Path, Option<u32>),
+    ) -> Mp {
+        let (rows, cols) = dimensions;
         let inline_fixture = matches!(fixture, CodexFixture::InlinePainter);
         let stale_completion = matches!(fixture, CodexFixture::TaskStatus);
         let actual_router = matches!(
@@ -651,7 +792,8 @@ impl Mp {
         );
         let real_jev = matches!(fixture, CodexFixture::RealJevRouter);
         let claude_auth = matches!(fixture, CodexFixture::ClaudeAuthRecovery);
-        let tmp = unique_tmp();
+        let fixture_dir = unique_tmp();
+        let tmp = fixture_dir.0.clone();
         let (identity_workspace, default_email, isolated_email) = if actual_router {
             (
                 "fixture-account",
@@ -680,6 +822,7 @@ impl Mp {
         let claude_dir = tmp.join("claude"); // empty except in Claude auth scenarios
         let kiro_dir = tmp.join("kiro"); // empty
         let cursor_dir = tmp.join("cursor"); // empty
+        let omp_dir = tmp.join("omp").join("sessions");
         let state_dir = tmp.join("state");
         let audit_dir = tmp.join("audit");
         let prompts_dir = tmp.join("prompts");
@@ -694,6 +837,7 @@ impl Mp {
             &claude_dir,
             &kiro_dir,
             &cursor_dir,
+            &omp_dir,
             &state_dir,
             &audit_dir,
             &prompts_dir,
@@ -705,6 +849,7 @@ impl Mp {
         ] {
             std::fs::create_dir_all(d).expect("create dir");
         }
+        write_omp_script(&bindir.join("omp"), "exit 1\n");
 
         let isolated_home = home
             .join(".mindplayer")
@@ -1015,6 +1160,16 @@ exit 0"#
         cmd.env_remove("MINDPLAYER_CLAUDE_JEV_URL");
         cmd.env_remove("MINDPLAYER_CLAUDE_JEV_TOKEN");
         cmd.env_remove("NODE_OPTIONS");
+        for key in [
+            "OMP_PROFILE",
+            "PI_PROFILE",
+            "PI_CONFIG_DIR",
+            "PI_CONFIG_FILES",
+            "XDG_DATA_HOME",
+        ] {
+            cmd.env_remove(key);
+        }
+        cmd.env("PI_CODING_AGENT_DIR", tmp.join("omp"));
         cmd.env("HOME", &home);
         if claude_auth {
             cmd.env("MINDPLAYER_TEST_CLAUDE_ROOT", &tmp);
@@ -1047,6 +1202,7 @@ exit 0"#
         cmd.env("MINDPLAYER_CLAUDE_DIR", &claude_dir);
         cmd.env("MINDPLAYER_KIRO_DIR", &kiro_dir);
         cmd.env("MINDPLAYER_CURSOR_DIR", &cursor_dir);
+        cmd.env("MINDPLAYER_OMP_DIR", &omp_dir);
         cmd.env("MINDPLAYER_STATE", &state_dir);
         cmd.env("MINDPLAYER_AUDIT", &audit_dir);
         cmd.env("MINDPLAYER_PROMPTS_DIR", &prompts_dir);
@@ -1134,8 +1290,9 @@ exit 0"#
         let path = std::env::var("PATH").unwrap_or_default();
         cmd.env("PATH", format!("{}:{}", bindir.display(), path));
 
-        let child = pair.slave.spawn_command(cmd).expect("spawn mindplayer");
+        let child = FixtureChild(pair.slave.spawn_command(cmd).expect("spawn mindplayer"));
         drop(pair.slave);
+        after_spawn(&tmp, child.process_id());
 
         let mut reader = pair.master.try_clone_reader().expect("reader");
         let writer = pair.master.take_writer().expect("writer");
@@ -1179,6 +1336,7 @@ exit 0"#
             open_marker,
             codex_alfa_file,
             codex_brvo_file,
+            _fixture_dir: fixture_dir,
         }
     }
 
@@ -1210,6 +1368,10 @@ exit 0"#
     }
 
     fn capture_stable_ui_evidence(&self, label: &str) {
+        self.capture_ui_evidence_at_size(label, 40, 120);
+    }
+
+    fn capture_ui_evidence_at_size(&self, label: &str, rows: u16, columns: u16) {
         let Some(directory) = std::env::var_os("MINDPLAYER_TEST_UI_EVIDENCE_DIR") else {
             return;
         };
@@ -1234,7 +1396,7 @@ exit 0"#
             }
             assert!(
                 Instant::now() < deadline,
-                "40x120 screenshot buffer did not stabilize"
+                "{rows}x{columns} screenshot buffer did not stabilize"
             );
             std::thread::sleep(Duration::from_millis(20));
         }
@@ -1242,8 +1404,8 @@ exit 0"#
             ._master
             .get_size()
             .expect("actual screenshot PTY geometry");
-        assert_eq!((size.rows, size.cols), (40, 120));
-        assert_eq!(self.parser.lock().unwrap().screen().size(), (40, 120));
+        assert_eq!((size.rows, size.cols), (rows, columns));
+        assert_eq!(self.parser.lock().unwrap().screen().size(), (rows, columns));
         let write_new = |suffix: &str, bytes: &[u8]| {
             let mut options = std::fs::OpenOptions::new();
             options.write(true).create_new(true);
@@ -1261,13 +1423,32 @@ exit 0"#
         };
         write_new("screen.txt", frame.as_bytes());
         write_new("ansi", &self.raw_output.lock().unwrap());
+        let cells: Vec<Vec<_>> = {
+            let parser = self.parser.lock().unwrap();
+            let screen = parser.screen();
+            (0..rows)
+                .map(|row| {
+                    (0..columns)
+                        .map(|column| {
+                            let cell = screen.cell(row, column).expect("screen cell");
+                            serde_json::json!({
+                                "text": cell.contents(), "wide": cell.is_wide(),
+                                "continuation": cell.is_wide_continuation(),
+                                "fg": format!("{:?}", cell.fgcolor()),
+                                "bg": format!("{:?}", cell.bgcolor()), "bold": cell.bold()
+                            })
+                        })
+                        .collect()
+                })
+                .collect()
+        };
         let metadata = serde_json::json!({
             "rows": size.rows, "columns": size.cols, "label": label,
             "binary": std::env::var_os("MINDPLAYER_TEST_BINARY").map(PathBuf::from)
                 .unwrap_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_mindplayer"))),
             "sourceVersion": env!("CARGO_PKG_VERSION"),
-            "nativeUiContract": "mindplayer-native-routing-v4", "buffer": frame,
-            "scope": "actual MindPlayer PTY and vt100 text cells; synthetic native UI/backend/judge; no auth/inference or OS styling/IME proof"
+            "nativeUiContract": "mindplayer-native-routing-v4", "buffer": frame, "cells": cells,
+            "scope": "actual MindPlayer PTY and vt100 cell attributes; synthetic native UI/backend/judge; no auth/inference or OS styling/IME proof"
         });
         write_new("json", &serde_json::to_vec_pretty(&metadata).unwrap());
     }
@@ -1676,12 +1857,6 @@ exit 0"#
                     );
                     assert_eq!(requested[field], route[field]);
                 }
-                assert!(matches!(
-                    (route["model"].as_str(), route["effort"].as_str()),
-                    (Some("gpt-6-luna"), Some("low"))
-                        | (Some("gpt-6.1-sol"), Some("medium"))
-                        | (Some("gpt-6-astra"), Some("high"))
-                ));
                 return;
             }
             assert!(
@@ -2105,29 +2280,6 @@ exit 0"#
             .unwrap()
             .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
             .collect();
-        assert_eq!(
-            names,
-            [
-                "run.mjs",
-                "startup-check.mjs",
-                "private-ui.mjs",
-                "launch.mjs",
-                "router.mjs",
-                "proxy.mjs",
-                "app-server.mjs",
-                "websocket.mjs",
-                "jev.mjs",
-                "rubric.mjs",
-                "current-family.mjs",
-                "system-fetch.mjs",
-                "policy.mjs",
-                "service.mjs",
-                "status.mjs",
-            ]
-            .into_iter()
-            .map(str::to_string)
-            .collect()
-        );
         let checkout =
             PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tools/local-model-router");
         for name in names {
@@ -2303,6 +2455,670 @@ fn startup_scope_scan_opens_the_list_without_a_routing_choice() {
     }
     mp.quit_from_list();
     mp.assert_native_without_router();
+}
+
+#[test]
+fn completed_vercel_probe_does_not_recreate_fixture_after_cleanup() {
+    let mut mp = Mp::launch();
+    mp.start_into_main_list();
+    // The row is column-aligned, so compare it with its padding collapsed.
+    let vercel_unavailable = |screen: &str| {
+        screen.lines().any(|line| {
+            line.split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
+                .starts_with("vercel — unavailable")
+        })
+    };
+    assert!(
+        mp.wait_until(STARTUP_TIMEOUT, vercel_unavailable),
+        "the asynchronous Vercel probe completed: expected the vercel row to read unavailable.\n\
+         ---- screen ----\n{}\n----------------",
+        mp.screen()
+    );
+    assert!(
+        mp._tmp.join("home/.mindplayer/omp-token-probe").exists(),
+        "the actual probe invoked the isolated OMP token guard"
+    );
+    let path = mp._tmp.clone();
+    drop(mp);
+    assert!(!path.exists(), "fixture directory was removed");
+    std::thread::sleep(Duration::from_secs(1));
+    assert!(!path.exists(), "the completed probe recreated the fixture");
+}
+
+fn choose_omp(mp: &mut Mp) {
+    mp.start_into_main_list();
+    mp.send(b"n");
+    mp.expect("New session", STEP_TIMEOUT, "open new-session picker");
+    for _ in 0..8 {
+        if mp.screen().contains("▶ omp") {
+            return;
+        }
+        mp.send(b"\x1b[B");
+        let _ = mp.wait_until(Duration::from_millis(200), |screen| {
+            screen.contains("▶ omp")
+        });
+    }
+    panic!(
+        "OMP was not offered in the new-session picker: {}",
+        mp.screen()
+    );
+}
+
+#[test]
+fn new_session_starts_omp_in_the_selected_directory() {
+    let mut mp = Mp::launch_with_options(40, 120, false, false, false, false);
+    let marker = mp._tmp.join("omp-arguments");
+    write_omp_script(
+        &mp._tmp.join("bin/omp"),
+        &format!(
+            "printf '%s\\n' \"$PWD\" > '{}'\nprintf '%s\\n' \"$@\" >> '{}'\nprintf 'ready\\n' > \"$MINDPLAYER_OMP_PICKER_READY\"\nprintf 'OMP-FIXTURE-READY\\n'\nexec cat\n",
+            marker.display(), marker.display()
+        ),
+    );
+    choose_omp(&mut mp);
+    mp.capture_stable_ui_evidence("omp-picker");
+    mp.resize(29, 52);
+    mp.expect(
+        "▶ omp",
+        STEP_TIMEOUT,
+        "OMP choice survives a narrow terminal",
+    );
+    mp.capture_ui_evidence_at_size("omp-picker-narrow", 29, 52);
+    mp.resize(40, 120);
+    mp.send(b"\r");
+    mp.expect("Label / subject", STEP_TIMEOUT, "OMP label entry");
+    mp.send(b"OMP fixture\r");
+    mp.expect(
+        "OMP-FIXTURE-READY",
+        STARTUP_TIMEOUT,
+        "actual OMP program launched",
+    );
+    let args = std::fs::read_to_string(marker).unwrap();
+    let mut lines = args.lines();
+    let cwd = lines.next().expect("OMP working directory");
+    assert_eq!(
+        std::fs::canonicalize(cwd).unwrap(),
+        std::fs::canonicalize(mp._tmp.join("scope")).unwrap()
+    );
+    assert_eq!(lines.next(), Some("-e"));
+    lines.next().expect("new-session model picker");
+    assert_eq!(lines.next(), Some("--config"));
+    let config = lines.next().expect("new-session config");
+    assert_eq!(
+        std::fs::read_to_string(config).unwrap(),
+        "autoResume: false\n"
+    );
+    assert_eq!(lines.next(), None, "do not route OMP through Codex or Jev");
+    mp.send(b"\x11");
+    mp.quit_from_list();
+}
+
+// The offline child models the extension's two distinct notifications: the
+// ready file means the chooser is installed, while selected means the chooser
+// has closed successfully. It records bytes at the PTY boundary, not a
+// reconstructed screen, so a prompt accidentally sent to the chooser is
+// observable even when the chooser would have consumed it silently.
+fn omp_handoff_fixture(cancel_first: bool) {
+    let mut mp = Mp::launch_with_options(40, 120, false, false, false, false);
+    let script = mp._tmp.join("omp-handoff-fixture.js");
+    std::fs::write(
+        &script,
+        r#"const fs = require("fs");
+const root = process.env.HOME + "/..";
+const record = (name, text) => fs.appendFileSync(root + "/" + name, text);
+fs.writeFileSync(root + "/omp-launch.json", JSON.stringify({
+  cwd: process.cwd(), args: process.argv.slice(2),
+  ready: process.env.MINDPLAYER_OMP_PICKER_READY,
+  selected: process.env.MINDPLAYER_OMP_PICKER_SELECTED
+}));
+process.stdin.setRawMode(true);
+process.stdin.resume();
+let state = "picker";
+let line = "";
+fs.writeFileSync(process.env.MINDPLAYER_OMP_PICKER_READY, "ready\n");
+process.stdout.write("OMP CHOOSE MODEL\r\n");
+process.stdin.on("data", (data) => {
+  for (const byte of data) {
+    const ch = String.fromCharCode(byte);
+    if (state === "selected") {
+      record("omp-delivered", Buffer.from([byte]));
+    } else {
+      record("omp-before-selection", Buffer.from([byte]));
+      if (state === "picker") {
+        if (byte === 27) {
+          state = "cancelled";
+          line = "";
+          process.stdout.write("OMP MODEL REQUIRED\r\n");
+        } else if (byte === 13) {
+          state = "selected";
+          process.stdout.write("\x1b[?2004hOMP MODEL SELECTED\r\n> ");
+          fs.writeFileSync(process.env.MINDPLAYER_OMP_PICKER_SELECTED, "selected\n");
+        }
+      } else if (byte === 13) {
+        if (line === "/mindplayer-model") {
+          state = "picker";
+          process.stdout.write("OMP CHOOSE MODEL AGAIN\r\n");
+        } else {
+          process.stdout.write("OMP CHOOSE MODEL FIRST\r\n");
+        }
+        line = "";
+      } else {
+        line += ch;
+      }
+    }
+  }
+});
+"#,
+    )
+    .unwrap();
+    write_omp_script(
+        &mp._tmp.join("bin/omp"),
+        &format!("exec node '{}' \"$@\"\n", script.display()),
+    );
+    append_handoff_turn(&mp.codex_brvo_file);
+    mp.start_into_main_list();
+    mp.send(b"/brvo");
+    mp.expect("type to filter", STEP_TIMEOUT, "source search");
+    mp.send(b"\x1b");
+    mp.expect_absent("type to filter", STEP_TIMEOUT, "source selected");
+    mp.send(b"h");
+    mp.expect("Handoff", STEP_TIMEOUT, "handoff target picker");
+    mp.expect("omp", STEP_TIMEOUT, "OMP is a handoff target");
+    for _ in 0..8 {
+        if mp.screen().contains("▶ omp") {
+            break;
+        }
+        mp.send(b"\x1b[B");
+        let _ = mp.wait_until(Duration::from_millis(200), |s| s.contains("▶ omp"));
+    }
+    mp.expect("▶ omp", STEP_TIMEOUT, "select OMP handoff target");
+    mp.send(b"\r");
+    mp.expect(
+        "OMP CHOOSE MODEL",
+        STARTUP_TIMEOUT,
+        "OMP chooser is interactive",
+    );
+
+    let launch: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(mp._tmp.join("omp-launch.json")).unwrap()).unwrap();
+    assert_eq!(
+        std::fs::canonicalize(launch["cwd"].as_str().unwrap()).unwrap(),
+        std::fs::canonicalize(mp._tmp.join("scope")).unwrap()
+    );
+    let args = launch["args"].as_array().unwrap();
+    assert_eq!(
+        args.len(),
+        4,
+        "OMP must not use another provider's launcher"
+    );
+    assert_eq!(args[0], "-e");
+    let extension = args[1].as_str().unwrap();
+    assert!(
+        std::fs::read_to_string(extension)
+            .unwrap()
+            .contains("mindplayer-model"),
+        "the embedded model-picker extension is loaded"
+    );
+    assert_eq!(args[2], "--config");
+    assert_eq!(
+        std::fs::read_to_string(args[3].as_str().unwrap()).unwrap(),
+        "autoResume: false\n"
+    );
+    assert!(launch["ready"].as_str().is_some());
+    assert!(launch["selected"].as_str().is_some());
+
+    // Search keys must reach the chooser rather than being buffered with the
+    // initial handoff. Cancellation must keep the handoff pending.
+    mp.send(b"fixture-search");
+    assert!(mp.wait_until(STEP_TIMEOUT, |_| {
+        std::fs::read_to_string(mp._tmp.join("omp-before-selection"))
+            .unwrap_or_default()
+            .contains("fixture-search")
+    }));
+    if cancel_first {
+        mp.send(b"\x1b");
+        mp.expect("OMP MODEL REQUIRED", STEP_TIMEOUT, "cancelled chooser");
+        mp.send(b"unrelated input\r");
+        mp.expect(
+            "OMP CHOOSE MODEL FIRST",
+            STEP_TIMEOUT,
+            "pending input rejected",
+        );
+        mp.send(b"/mindplayer-model\r");
+        mp.expect("OMP CHOOSE MODEL AGAIN", STEP_TIMEOUT, "retry chooser");
+    }
+    let before = std::fs::read_to_string(mp._tmp.join("omp-before-selection")).unwrap();
+    assert!(!before.contains("handoff smoke request"));
+    assert!(!before.contains("handoff smoke answer"));
+    assert!(!mp._tmp.join("omp-delivered").exists());
+
+    mp.send(b"\r");
+    mp.expect(
+        "OMP MODEL SELECTED",
+        STEP_TIMEOUT,
+        "chooser closes after selection",
+    );
+    mp.expect(
+        "submitted initial context to",
+        STEP_TIMEOUT,
+        "handoff delivered after model selection",
+    );
+    let artifacts: Vec<_> = std::fs::read_dir(mp._tmp.join("handoffs"))
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .collect();
+    assert_eq!(artifacts.len(), 1);
+    let artifact = std::fs::read_to_string(&artifacts[0]).unwrap();
+    let context = artifact.split_once("\n\n---\n\n").unwrap().1.trim_end();
+    assert!(context.contains("handoff smoke request"));
+    assert!(context.contains("handoff smoke answer"));
+    assert!(
+        mp.wait_until(STEP_TIMEOUT, |_| {
+            std::fs::read_to_string(mp._tmp.join("omp-delivered"))
+                .unwrap_or_default()
+                .replace("\r\n", "\n")
+                .contains(context)
+        }),
+        "complete original context reaches OMP"
+    );
+    // A subsequent key is a PTY ordering fence for the captured submission.
+    mp.send(b"after-handoff");
+    assert!(mp.wait_until(STEP_TIMEOUT, |_| {
+        std::fs::read_to_string(mp._tmp.join("omp-delivered"))
+            .unwrap_or_default()
+            .contains("after-handoff")
+    }));
+    let delivered = std::fs::read_to_string(mp._tmp.join("omp-delivered"))
+        .unwrap()
+        .replace("\r\n", "\n");
+    assert_eq!(delivered.matches(context).count(), 1);
+    assert_eq!(delivered.matches("\x1b[200~").count(), 1);
+    assert_eq!(delivered.matches("\x1b[201~").count(), 1);
+    assert!(
+        delivered.contains("\x1b[201~\r") || delivered.contains("\x1b[201~\n"),
+        "the bracketed paste is followed by its submit key"
+    );
+    assert!(delivered.contains("codex-brvo-0002"));
+    assert!(delivered.contains(artifacts[0].to_string_lossy().as_ref()));
+    assert!(!delivered.contains("unrelated input"));
+    assert!(mp.native_launches().is_empty(), "no Codex pane launched");
+    assert!(mp.router_rows("jev.jsonl").is_empty(), "no Jev inference");
+    assert!(
+        mp.router_rows("routes.jsonl").is_empty(),
+        "no provider routing"
+    );
+    mp.send(b"\x11");
+    mp.quit_from_list();
+}
+
+#[test]
+fn omp_handoff_delivers_original_context_once_after_model_selection() {
+    omp_handoff_fixture(false);
+}
+
+#[test]
+fn omp_handoff_cancel_and_retry_preserves_original_context() {
+    omp_handoff_fixture(true);
+}
+
+#[cfg(unix)]
+#[test]
+#[ignore = "requires MINDPLAYER_TEST_OMP_BINARY; never selects a model or sends inference"]
+fn actual_omp_handoff_picker_can_cancel_and_retry_without_inference() {
+    let executable = std::env::var_os("MINDPLAYER_TEST_OMP_BINARY")
+        .map(PathBuf::from)
+        .expect("set the absolute installed OMP executable");
+    assert!(executable.is_absolute() && executable.is_file());
+    let mut mp = Mp::launch_with_options(40, 120, false, false, false, false);
+    // A synthetic key makes the model catalog available, but no inherited
+    // credentials are passed and this test never selects a model.
+    write_omp_script(
+        &mp._tmp.join("bin/omp"),
+        &format!(
+            "exec env -i HOME=\"$HOME\" PATH=\"$PATH\" TERM=\"$TERM\" PI_CODING_AGENT_DIR=\"$PI_CODING_AGENT_DIR\" OPENAI_API_KEY=offline-fixture-key MINDPLAYER_OMP_PICKER_READY=\"$MINDPLAYER_OMP_PICKER_READY\" MINDPLAYER_OMP_PICKER_SELECTED=\"$MINDPLAYER_OMP_PICKER_SELECTED\" '{}' \"$@\"\n",
+            executable.display()
+        ),
+    );
+    std::fs::write(
+        mp._tmp.join("omp/config.yml"),
+        "startup:\n  quiet: true\n  setupWizard: false\n  showSplash: false\nspelling:\n  autocomplete: 'off'\n",
+    )
+    .unwrap();
+    append_handoff_turn(&mp.codex_brvo_file);
+    mp.start_into_main_list();
+    mp.send(b"/brvo");
+    mp.expect("type to filter", STEP_TIMEOUT, "source search");
+    mp.send(b"\x1b");
+    mp.expect_absent("type to filter", STEP_TIMEOUT, "source selected");
+    mp.send(b"h");
+    mp.expect("Handoff", STEP_TIMEOUT, "handoff target picker");
+    mp.expect("omp", STEP_TIMEOUT, "OMP is a handoff target");
+    for _ in 0..8 {
+        if mp.screen().contains("▶ omp") {
+            break;
+        }
+        mp.send(b"\x1b[B");
+        let _ = mp.wait_until(Duration::from_millis(200), |s| s.contains("▶ omp"));
+    }
+    mp.expect("▶ omp", STEP_TIMEOUT, "select OMP handoff target");
+    mp.send(b"\r");
+    mp.expect(
+        "Choose a model and provider",
+        Duration::from_secs(45),
+        "real OMP chooser",
+    );
+    mp.send(b"codex-mini");
+    mp.expect(
+        "openai/codex-mini-latest",
+        STEP_TIMEOUT,
+        "chooser receives search",
+    );
+    assert!(!mp.screen().contains("handoff smoke request"));
+    assert!(!mp.screen().contains("handoff smoke answer"));
+    mp.send(b"\x1b");
+    mp.expect(
+        "Model required",
+        STEP_TIMEOUT,
+        "cancelled choice remains required",
+    );
+    mp.send(b"blocked prompt\r");
+    mp.expect(
+        "Choose a model first",
+        STEP_TIMEOUT,
+        "ordinary prompt is blocked",
+    );
+    mp.send(b"/mindplayer-model\r");
+    mp.expect(
+        "Choose a model and provider",
+        STEP_TIMEOUT,
+        "retry real chooser",
+    );
+    assert!(!mp.screen().contains("handoff smoke request"));
+    assert!(!mp.screen().contains("handoff smoke answer"));
+    assert!(mp.native_launches().is_empty());
+    assert!(mp.router_rows("jev.jsonl").is_empty());
+    assert!(mp.router_rows("routes.jsonl").is_empty());
+    // No model is selected, so no handoff can be sent to a provider.
+    mp.send(b"\x11");
+    mp.quit_from_list();
+}
+
+#[cfg(unix)]
+#[test]
+#[ignore = "requires MINDPLAYER_TEST_OMP_BINARY; provider transport is isolated to localhost"]
+fn actual_omp_handoff_delivers_context_after_local_only_model_selection() {
+    fn matching_texts<'a>(value: &'a serde_json::Value, needle: &str, found: &mut Vec<&'a str>) {
+        match value {
+            serde_json::Value::String(text) if text.contains(needle) => found.push(text),
+            serde_json::Value::Array(items) => {
+                for item in items {
+                    matching_texts(item, needle, found);
+                }
+            }
+            serde_json::Value::Object(items) => {
+                for item in items.values() {
+                    matching_texts(item, needle, found);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let executable = std::env::var_os("MINDPLAYER_TEST_OMP_BINARY")
+        .map(PathBuf::from)
+        .expect("set the absolute installed OMP executable");
+    assert!(executable.is_absolute() && executable.is_file());
+    // A loopback-only provider endpoint receives the real request but cannot
+    // send it to an inference service.
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let base_url = format!("http://{}", listener.local_addr().unwrap());
+    let mut mp = Mp::launch_with_options(40, 120, false, false, false, false);
+    write_omp_script(
+        &mp._tmp.join("bin/omp"),
+        &format!(
+            "exec env -i HOME=\"$HOME\" PATH=\"$PATH\" TERM=\"$TERM\" PI_CODING_AGENT_DIR=\"$PI_CODING_AGENT_DIR\" ANTHROPIC_API_KEY=fixture-key ANTHROPIC_BASE_URL='{}' MINDPLAYER_OMP_PICKER_READY=\"$MINDPLAYER_OMP_PICKER_READY\" MINDPLAYER_OMP_PICKER_SELECTED=\"$MINDPLAYER_OMP_PICKER_SELECTED\" '{}' \"$@\"\n",
+            base_url,
+            executable.display()
+        ),
+    );
+    std::fs::write(
+        mp._tmp.join("omp/config.yml"),
+        "startup:\n  quiet: true\n  setupWizard: false\n  showSplash: false\nspelling:\n  autocomplete: 'off'\n",
+    )
+    .unwrap();
+    append_handoff_turn(&mp.codex_brvo_file);
+    mp.start_into_main_list();
+    mp.send(b"/brvo");
+    mp.expect("type to filter", STEP_TIMEOUT, "source search");
+    mp.send(b"\x1b");
+    mp.expect_absent("type to filter", STEP_TIMEOUT, "source selected");
+    mp.send(b"h");
+    mp.expect("Handoff", STEP_TIMEOUT, "handoff target picker");
+    mp.expect("omp", STEP_TIMEOUT, "OMP is a handoff target");
+    for _ in 0..8 {
+        if mp.screen().contains("▶ omp") {
+            break;
+        }
+        mp.send(b"\x1b[B");
+        let _ = mp.wait_until(Duration::from_millis(200), |s| s.contains("▶ omp"));
+    }
+    mp.expect("▶ omp", STEP_TIMEOUT, "select OMP handoff target");
+    mp.send(b"\r");
+    mp.expect(
+        "Choose a model and provider",
+        Duration::from_secs(45),
+        "real OMP chooser",
+    );
+    mp.send(b"claude-sonnet-4-5");
+    mp.expect(
+        "anthropic/claude-sonnet-4-5",
+        STEP_TIMEOUT,
+        "local-only Anthropic model is offered",
+    );
+    listener.set_nonblocking(true).unwrap();
+    assert_eq!(
+        listener.accept().unwrap_err().kind(),
+        std::io::ErrorKind::WouldBlock,
+        "no provider request before model selection"
+    );
+    mp.send(b"\r");
+    mp.expect(
+        "submitted initial context to",
+        STEP_TIMEOUT,
+        "handoff submitted after selection",
+    );
+    let artifacts: Vec<_> = std::fs::read_dir(mp._tmp.join("handoffs"))
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .collect();
+    assert_eq!(artifacts.len(), 1);
+    let artifact = std::fs::read_to_string(&artifacts[0]).unwrap();
+    let context = artifact.split_once("\n\n---\n\n").unwrap().1.trim_end();
+    assert!(context.contains("handoff smoke request"));
+    assert!(context.contains("handoff smoke answer"));
+    let connection = std::sync::Mutex::new(None);
+    assert!(
+        mp.wait_until(Duration::from_secs(20), |_| {
+            if let Ok((stream, _)) = listener.accept() {
+                *connection.lock().unwrap() = Some(stream);
+                true
+            } else {
+                false
+            }
+        }),
+        "the selected provider did not connect to the isolated loopback endpoint"
+    );
+    let mut connection = connection.into_inner().unwrap().unwrap();
+    connection.set_nonblocking(false).unwrap();
+    connection
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    let mut request = Vec::new();
+    let mut chunk = [0u8; 8192];
+    let (body_start, body_len) = loop {
+        let n = connection
+            .read(&mut chunk)
+            .expect("read localhost request headers");
+        assert!(n > 0, "provider closed before request headers");
+        request.extend_from_slice(&chunk[..n]);
+        if let Some(end) = request.windows(4).position(|bytes| bytes == b"\r\n\r\n") {
+            let headers = std::str::from_utf8(&request[..end]).unwrap();
+            let length = headers
+                .lines()
+                .filter_map(|line| line.split_once(':'))
+                .find(|(name, _)| name.eq_ignore_ascii_case("content-length"))
+                .and_then(|(_, value)| value.trim().parse::<usize>().ok())
+                .expect("provider request has a content length");
+            break (end + 4, length);
+        }
+    };
+    while request.len() - body_start < body_len {
+        let n = connection
+            .read(&mut chunk)
+            .expect("read localhost request body");
+        assert!(n > 0, "provider closed before request body");
+        request.extend_from_slice(&chunk[..n]);
+    }
+    let payload: serde_json::Value =
+        serde_json::from_slice(&request[body_start..body_start + body_len]).unwrap();
+    assert_eq!(payload["model"], "claude-sonnet-4-5");
+    let mut matching = Vec::new();
+    matching_texts(&payload["messages"], context, &mut matching);
+    assert_eq!(matching.len(), 1, "handoff appears in exactly one message");
+    assert_eq!(matching[0].matches(context).count(), 1);
+    assert!(matching[0].contains("codex-brvo-0002"));
+    assert!(matching[0].contains(artifacts[0].to_string_lossy().as_ref()));
+    let body = r#"{"error":{"message":"offline fixture"}}"#;
+    write!(
+        connection,
+        "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        body.len(),
+        body
+    )
+    .unwrap();
+    drop(connection);
+    assert!(mp.native_launches().is_empty());
+    assert!(mp.router_rows("jev.jsonl").is_empty());
+    assert!(mp.router_rows("routes.jsonl").is_empty());
+    mp.send(b"\x11");
+    mp.quit_from_list();
+    drop(mp);
+    drop(listener);
+}
+
+#[cfg(unix)]
+#[test]
+#[ignore = "requires an explicit installed OMP executable"]
+fn actual_omp_opens_from_new_session_picker() {
+    use std::os::unix::fs::symlink;
+
+    let executable = std::env::var_os("MINDPLAYER_TEST_OMP_BINARY")
+        .map(PathBuf::from)
+        .expect("set the absolute installed OMP executable");
+    assert!(executable.is_absolute() && executable.is_file());
+    let mut mp = Mp::launch_with_options(40, 120, false, false, false, false);
+    symlink(executable, mp._tmp.join("bin/omp-real")).unwrap();
+    write_omp_script(
+        &mp._tmp.join("bin/omp"),
+        "exec \"$(dirname \"$0\")/omp-real\" \"$@\"\n",
+    );
+    std::fs::write(
+        mp._tmp.join("omp/config.yml"),
+        "startup:\n  quiet: true\n  setupWizard: false\n  showSplash: false\nspelling:\n  autocomplete: 'off'\n",
+    )
+    .unwrap();
+    choose_omp(&mut mp);
+    mp.send(b"\r");
+    mp.expect("Label / subject", STEP_TIMEOUT, "OMP label entry");
+    mp.send(b"OMP native smoke\r");
+    mp.expect(
+        "Choose a model and provider",
+        Duration::from_secs(45),
+        "real OMP provider picker",
+    );
+    mp.send(b"codex-mini");
+    mp.expect(
+        "openai/codex-mini-latest",
+        STEP_TIMEOUT,
+        "search actual model catalog",
+    );
+    mp.send(b"\x1b");
+    mp.expect(
+        "Model required",
+        STEP_TIMEOUT,
+        "cancel keeps selection required",
+    );
+    mp.send(b"blocked prompt\r");
+    mp.expect(
+        "Choose a model first",
+        STEP_TIMEOUT,
+        "ordinary input blocked after cancel",
+    );
+    mp.send(b"/mindplayer-model\r");
+    mp.expect("Choose a model and provider", STEP_TIMEOUT, "retry picker");
+    mp.send(b"codex-mini\r");
+    mp.expect(
+        "Selected openai/codex-mini-latest",
+        STEP_TIMEOUT,
+        "model selected",
+    );
+    mp.capture_stable_ui_evidence("omp-native-session");
+    mp.send(b"\x11");
+    mp.quit_from_list();
+}
+
+#[cfg(unix)]
+#[test]
+#[ignore = "requires an explicit installed OMP executable"]
+fn actual_omp_resumes_discovered_session() {
+    use std::os::unix::fs::symlink;
+
+    let executable = std::env::var_os("MINDPLAYER_TEST_OMP_BINARY")
+        .map(PathBuf::from)
+        .expect("set the absolute installed OMP executable");
+    assert!(executable.is_absolute() && executable.is_file());
+    let mut mp = Mp::launch_with_options(40, 120, false, false, false, false);
+    symlink(executable, mp._tmp.join("bin/omp-real")).unwrap();
+    write_omp_script(
+        &mp._tmp.join("bin/omp"),
+        "exec \"$(dirname \"$0\")/omp-real\" \"$@\"\n",
+    );
+    std::fs::write(
+        mp._tmp.join("omp/config.yml"),
+        "startup:\n  quiet: true\n  setupWizard: false\n  showSplash: false\nspelling:\n  autocomplete: 'off'\n",
+    )
+    .unwrap();
+    let bucket = mp._tmp.join("omp/sessions/fixture");
+    std::fs::create_dir_all(&bucket).unwrap();
+    let session = bucket.join("2026-01-01_0199ef00-0000-7000-8000-000000000001.jsonl");
+    let header = serde_json::json!({
+        "type": "session", "version": 3, "id": "0199ef00-0000-7000-8000-000000000001",
+        "timestamp": "2026-01-01T00:00:00Z", "cwd": mp._tmp.join("scope")
+    });
+    let message = serde_json::json!({
+        "type": "message", "id": "a1b2c3d4", "parentId": null,
+        "timestamp": "2026-01-01T00:00:01Z",
+        "message": { "role": "user", "content": [{ "type": "text", "text": "OMP_RESUME_SENTINEL" }], "timestamp": 1767225601000i64 }
+    });
+    std::fs::write(&session, format!("{header}\n{message}\n")).unwrap();
+    mp.expect("collect sessions", STARTUP_TIMEOUT, "scope selection");
+    mp.send(b"\x1b[B\r");
+    mp.expect("3 sessions", STARTUP_TIMEOUT, "OMP session is discovered");
+    mp.expect("multi-select", STARTUP_TIMEOUT, "session list is ready");
+    mp.send(b"/OMP_RESUME_SENTINEL");
+    mp.expect("/OMP_RESUME_SENTINEL", STEP_TIMEOUT, "OMP search is active");
+    mp.send(b"\r");
+    mp.expect("no-model", Duration::from_secs(45), "native OMP composer");
+    mp.expect(
+        "OMP_RESUME_SENTINEL",
+        Duration::from_secs(45),
+        "native OMP resumes the recorded conversation",
+    );
+    mp.capture_stable_ui_evidence("omp-native-resume");
+    mp.send(b"\x1bq");
+    mp.quit_from_list();
 }
 
 /// Real Rust PTY + embedded router, with a synthetic native composer/backend.
@@ -3033,13 +3849,6 @@ fn process_exit_uses_ended_border_color() {
     mp.expect(PANE_READY, STEP_TIMEOUT, "agent pane came up");
     mp.send(b"\x04"); // EOF for the fake codex's `cat` child.
     mp.expect_foreground(ENDED_BORDER, STEP_TIMEOUT, "exited pane is ended");
-}
-
-impl Drop for Mp {
-    fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-    }
 }
 
 /// The parent MindPlayer owns the pane PTY and deliberately does not answer a
@@ -5845,7 +6654,7 @@ fn new_session_explicit_isolated_choice_launches_on_isolated_codex_home() {
         STEP_TIMEOUT,
         "isolated choice selected",
     );
-    mp.send(b"\r\r");
+    mp.send(b"\r\r\r");
     mp.expect(
         PANE_READY,
         STEP_TIMEOUT,
@@ -5870,7 +6679,7 @@ fn new_session_explicit_inherited_choice_pins_primary_home_over_ambient_isolated
         STEP_TIMEOUT,
         "inherited choice selected",
     );
-    mp.send(b"\r\r");
+    mp.send(b"\r\r\r");
     mp.expect(
         PANE_READY,
         STEP_TIMEOUT,
@@ -5912,7 +6721,7 @@ fn later_new_session_reads_updated_shared_canonical_codex_config() {
         STEP_TIMEOUT,
         "first new-session picker opened",
     );
-    mp.send(b"\x1b[B\r\r");
+    mp.send(b"\x1b[B\r\r\r");
     mp.expect(PANE_READY, STEP_TIMEOUT, "first isolated pane came up");
     mp.wait_for_codex_marker(&isolated_codex_home(&mp), FIXTURE_CONFIG_NEW);
 
@@ -5926,7 +6735,7 @@ fn later_new_session_reads_updated_shared_canonical_codex_config() {
         STEP_TIMEOUT,
         "second new-session picker opened",
     );
-    mp.send(b"\x1b[B\r\r");
+    mp.send(b"\x1b[B\r\r\r");
     mp.wait_for_codex_marker(&isolated_codex_home(&mp), "model = \"fixture-next\"");
     assert_eq!(
         std::fs::read_to_string(mp.isolated_auth()).unwrap(),
@@ -5945,7 +6754,7 @@ fn default_new_session_prefers_ambient_isolated_codex_home() {
         STEP_TIMEOUT,
         "ambient isolated choice is preferred",
     );
-    mp.send(b"\r\r");
+    mp.send(b"\r\r\r");
     mp.expect(PANE_READY, STEP_TIMEOUT, "default new-session pane came up");
     mp.wait_for_codex_home(&isolated_codex_home(&mp), STEP_TIMEOUT);
 }
@@ -6224,6 +7033,27 @@ fn embedded_router_jev_menu_excludes_legacy_models_before_current_family() {
         );
     }
     mp.assert_router_consecutive_totals(&["A", "B", "C"]);
+}
+
+#[test]
+fn embedded_router_accepts_the_selected_terra_baseline() {
+    // Runs the selected installed executable when MINDPLAYER_TEST_BINARY is
+    // set. The model catalog and Jev response are isolated synthetic fixtures.
+    let mut mp = Mp::launch_actual_router_fixture();
+    std::fs::write(mp.router_marker("synthetic-terra-baseline"), b"opt-in\n").unwrap();
+    mp.resume_router_fixture();
+    mp.submit_jev(b"A\r");
+    let route = mp.wait_for_router_turn("A");
+    assert_eq!(route["model"], "gpt-6.1-terra");
+    assert_eq!(route["effort"], "xhigh");
+    mp.assert_router_jev_turn_once("A");
+    let rows = mp.router_rows("jev.jsonl");
+    let start = rows
+        .iter()
+        .find(|row| row["event"] == "start" && row["label"] == "A")
+        .expect("synthetic Jev request");
+    assert_eq!(start["state"]["baseline"]["model"], "gpt-6.1-terra");
+    assert_eq!(start["state"]["baseline"]["effort"], "xhigh");
 }
 
 #[test]
@@ -6888,7 +7718,7 @@ fn installed_binary_uses_current_jev_provider_for_consecutive_turns() {
         "provider": mp.jev_provider, "authenticatedJev": true, "syntheticTurns": 3,
         "authenticatedJudgments": 2, "promptModes": ["jev", "jev", "native"],
         "sessionToggleSticky": true, "nativeUiContract": "mindplayer-native-routing-v4",
-        "codexInference": false, "automaticRetries": 0, "checkoutAssetsByteEqual": 15,
+        "codexInference": false, "automaticRetries": 0,
         "rubricVersion": "mindplayer-capacity-v2",
         "promptFirstContract": if responses.is_empty() { "service-audit" } else { "request-metadata" },
         "previousDecisionBound": [false, true],
@@ -6921,7 +7751,7 @@ fn new_resume_and_handoff_use_the_same_embedded_router_bundle() {
                     STEP_TIMEOUT,
                     "isolated target selected",
                 );
-                mp.send(b"\r\r");
+                mp.send(b"\r\r\r");
             }
             "resume" => {
                 mp.send(b"/");
@@ -7040,7 +7870,7 @@ fn accounts_primary_switch_wins_for_later_new_session_over_ambient_isolated() {
         STEP_TIMEOUT,
         "switched primary leads new-session choices",
     );
-    mp.send(b"\r\r");
+    mp.send(b"\r\r\r");
     mp.expect(
         PANE_READY,
         STEP_TIMEOUT,

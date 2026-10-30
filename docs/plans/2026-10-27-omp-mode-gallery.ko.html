@@ -1,0 +1,508 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <meta name="description" content="MindPlayer의 Codex 선택 뒤 Flow 모드로 진입하고 OMP의 터미널 출력 방식을 참고한 세션 화면을 살펴보는 UI 시안">
+  <title>MindPlayer Flow · 모드 진입과 세션 UI</title>
+  <style>
+    :root {
+      --page: #0d1118; --term: #10131b; --line: #303b4c; --text: #e2e7ef; --muted: #a8b2c0;
+      --blue: #7ea2f7; --selected: #394765; --amber: #febc38; --green: #89d281; --cyan: #178fb9;
+      --mono: Menlo, Consolas, "Apple SD Gothic Neo", monospace;
+      --sans: -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", sans-serif;
+    }
+    * { box-sizing: border-box; }
+    [hidden] { display: none !important; }
+    body { margin: 0; background: var(--page); color: var(--text); font-family: var(--sans); }
+    button, textarea { font: inherit; }
+    button { color: inherit; cursor: pointer; }
+    button:focus-visible, textarea:focus-visible, a:focus-visible, summary:focus-visible, .term-scroll:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+    a { color: #b7c9f8; text-underline-offset: 3px; }
+    .page { max-width: 1060px; margin: 0 auto; padding: 28px 24px 48px; }
+    .topline { display: flex; justify-content: space-between; gap: 16px; color: var(--muted); font: 12px var(--mono); }
+    .topline strong { color: var(--blue); }
+    .intro { display: flex; justify-content: space-between; align-items: end; gap: 30px; margin: 38px 0 30px; }
+    .eyebrow { color: var(--blue); font: 11px var(--mono); letter-spacing: .07em; }
+    h1 { margin: 9px 0 11px; font-size: clamp(29px, 3.8vw, 41px); line-height: 1.15; letter-spacing: -.04em; }
+    .intro p { max-width: 720px; margin: 0; color: #bfc8d4; font-size: 14px; line-height: 1.8; word-break: keep-all; }
+    .jump { flex: 0 0 auto; color: #bac9e2; font-size: 12px; }
+    .section-head { display: flex; justify-content: space-between; align-items: end; gap: 18px; margin: 30px 0 10px; }
+    .section-head h2 { margin: 0; font-size: 18px; letter-spacing: -.025em; }
+    .section-head p { margin: 5px 0 0; color: var(--muted); font-size: 12px; line-height: 1.6; word-break: keep-all; }
+    .section-tag { color: var(--blue); font: 11px var(--mono); white-space: nowrap; }
+    .screen-hint { display: none; margin: 0 0 8px; color: #b6c2d4; font-size: 11px; line-height: 1.5; }
+    .term-scroll { max-width: 960px; overflow-x: auto; border: 1px solid #303846; background: var(--term); }
+    .tui { width: 958px; padding: 8px 9px 9px; background: var(--term); color: #d7dce6; font: 12px/16px var(--mono); }
+    .tui button { border: 0; border-radius: 0; background: none; font: inherit; text-align: left; }
+    .tui-head { display: flex; align-items: baseline; gap: 7px; height: 21px; white-space: nowrap; }
+    .tui-head strong { color: var(--blue); }
+    .tui-head .subtle { color: #a4acba; }
+    .tui-head .right { margin-left: auto; color: #f5b45a; }
+    .list-frame, .pane-frame { position: relative; }
+    .list-frame { height: 440px; border: 1px solid var(--blue); }
+    .box-label { position: absolute; z-index: 2; top: -9px; left: 8px; padding: 0 5px; background: var(--term); color: var(--blue); white-space: nowrap; }
+    .session-group { margin: 5px 0 0 38px; color: #b9c4d8; }
+    .session-group strong, .provider, .pointer { color: var(--blue); }
+    .session-row { display: grid; grid-template-columns: 100px 64px 50px 175px 85px 80px; height: 16px; padding: 0 4px; white-space: nowrap; }
+    .session-row.selected { background: var(--selected); }
+    .age, .tokens { color: #a3acb8; }
+    .sid { color: var(--green); }
+    .claude { color: #cc9dd4; }
+    .list-center { position: absolute; right: 0; bottom: 84px; left: 0; color: #a7afbd; text-align: center; white-space: nowrap; }
+    .status-legend { color: #a4adbb; }
+    .status-legend .blocked { color: #f5b45a; }
+    .status-legend .working { color: #e5d565; }
+    .status-legend .done { color: var(--green); }
+    .ground { position: absolute; right: 0; bottom: 11px; left: 0; border-top: 1px solid #3c4658; }
+    .walker { position: absolute; bottom: 11px; left: 24%; width: 72px; height: 48px; }
+    .tui-foot { min-height: 38px; padding-top: 4px; color: #9fa9b8; }
+    .tui-foot-line { display: flex; justify-content: space-between; gap: 16px; white-space: nowrap; }
+    .tui-foot button { padding: 0; color: #bdc9da; }
+    .popup { position: absolute; z-index: 3; top: 52%; left: 50%; width: 316px; padding: 8px 9px 7px; border: 1px solid var(--blue); background: var(--term); transform: translate(-50%, -50%); }
+    .popup .box-label { left: 4px; }
+    .popup-row { display: block; width: 100%; height: 16px; padding: 0; white-space: nowrap; }
+    .popup-row.active { color: #d4e1ff; font-weight: 700; }
+    .popup-row .arrow, .popup-foot, .popup-foot button { color: var(--blue); }
+    .popup-foot { margin-top: 3px; white-space: nowrap; }
+    .popup-foot button { padding: 0; }
+    .mode-note { color: #a8b4c5; }
+    .pane-frame { height: 650px; border: 3px solid #8c929e; }
+    .pane-title { position: absolute; top: -11px; left: 5px; z-index: 2; padding-right: 6px; background: var(--term); color: var(--blue); font-weight: 700; white-space: nowrap; }
+    .pane-title .dot { color: #6f9a95; }
+    .pane-title .chip { padding: 0 3px; background: #8c929e; color: var(--term); }
+    .pane-account { position: absolute; bottom: -11px; left: 9px; z-index: 2; padding: 0 5px; background: var(--term); color: var(--blue); font-weight: 700; }
+    .pane-content { display: flex; flex-direction: column; height: 100%; padding: 8px 9px 5px; font-size: 13px; line-height: 16px; }
+    /* Default OMP 18.12.6 ANSI transcript and band composer, inside MindPlayer's pane. */
+    .flow-feed { flex: 1; min-height: 0; overflow-y: auto; padding-right: 2px; }
+    .user-bubble { margin: 0 0 16px; padding: 16px 8px; background: #1c1c1c; color: #e5e5e5; }
+    .assistant-text { margin: 15px 4px; color: #e0e3e8; }
+    .assistant-text strong { color: #e7e9ee; }
+    .omp-dim { color: #858a92; }
+    .omp-link, .omp-title { color: #00afff; }
+    .omp-success { color: #5fd787; }
+    .omp-error { color: #fc5865; }
+    .omp-warning { color: #e7bd69; }
+    .omp-branch { color: #71777f; }
+    .omp-inline { margin: 15px 4px; white-space: pre-wrap; overflow-wrap: anywhere; }
+    .omp-plain { margin: 15px 0; padding: 8px 5px; background: #111111; color: #c8c8c8; }
+    .omp-plain .hint { display: block; padding: 0; color: #858a92; }
+    .omp-extra { padding-left: 16px; color: #aeb3ba; }
+    .omp-box { position: relative; margin: 17px 0; border: 1px solid #50545a; border-radius: 2px; background: #111111; }
+    .omp-box-title { position: absolute; top: -9px; left: 25px; padding: 0 5px; background: #111111; color: #00afff; white-space: nowrap; }
+    .omp-box-title:hover, .omp-plain .hint:hover { color: #dce7ef; }
+    .omp-box-body { padding: 8px 10px 4px; color: #c9c9c9; white-space: pre-wrap; overflow-wrap: anywhere; }
+    .omp-bash .omp-box-body { padding-bottom: 8px; }
+    .omp-separator { position: relative; border-top: 1px solid #50545a; }
+    .omp-section-label { position: absolute; top: -9px; left: 22px; padding: 0 4px; background: #111111; color: #e0e3e8; }
+    .omp-box-footer { position: absolute; bottom: -9px; left: 22px; padding: 0 4px; background: #111111; color: #858a92; }
+    .omp-command { padding: 4px 10px; color: #c8c8c8; }
+    .omp-command code { color: #5fd787; font: inherit; }
+    .working-line { margin: 12px 4px 5px; color: #a4acb8; }
+    .working-line .spark { color: var(--amber); }
+    .flow-compose { flex: 0 0 auto; margin: 9px 2px 0; }
+    .flow-session-name { color: #81878f; text-align: right; }
+    .flow-status { display: flex; align-items: center; min-width: 0; color: #d0d1d4; white-space: nowrap; }
+    .flow-status .brand, .flow-status .model { color: #00d7d7; }
+    .flow-status .path { color: #d5d8dc; }
+    .flow-status .sep { padding: 0 6px; color: #50565e; }
+    .flow-status .track { display: flex; flex: 1; align-items: center; min-width: 55px; margin-left: 12px; color: #72bfc6; }
+    .flow-status .track::before { content: ''; flex: 1; border-top: 1px solid #178fb9; }
+    .flow-status .track span { padding-left: 5px; background: var(--term); }
+    .flow-prompt { display: flex; align-items: start; min-height: 16px; }
+    .flow-prompt .gutter { color: #00afff; white-space: pre; }
+    .flow-prompt textarea { flex: 1; width: 1px; height: 16px; padding: 0; resize: none; border: 0; outline: 0; background: transparent; color: #e5e9ef; font: inherit; }
+    .flow-prompt textarea::placeholder { color: #d1d5dc; opacity: 1; }
+    .flow-prompt textarea:focus-visible { outline: 1px solid var(--blue); }
+    .flow-prompt-hint { color: #858a92; white-space: nowrap; }
+    .native-placeholder { margin: 8px; color: #aeb9c7; }
+    /* Feature previews reproduce observed OMP surfaces; all data remains synthetic. */
+    .command-menu { margin: 0 0 3px; color: #cbd3dd; }
+    .command-row { display: grid; grid-template-columns: 180px 1fr; width: 100%; padding: 0 4px; line-height: 16px; }
+    .command-row .name, .command-row.active { color: #00afff; }
+    .command-row:hover { background: #22313c; }
+    .feature-screen, .inline-selector { position: relative; min-height: 0; margin: 9px 0 3px; border: 1px solid #50545a; }
+    .feature-screen { display: flex; flex: 1; flex-direction: column; }
+    .feature-title { position: absolute; top: -9px; left: 12px; padding: 0 5px; background: var(--term); color: #00afff; font-weight: 700; }
+    .feature-body { flex: 1; min-height: 0; overflow: auto; padding: 8px 12px; }
+    .feature-footer { flex: 0 0 auto; padding: 4px 10px; border-top: 1px solid #383d45; color: #a2a8b0; }
+    .feature-footer button { padding: 0; color: #a2a8b0; }
+    .feature-split { display: grid; grid-template-columns: 58% 42%; height: 100%; padding: 0; }
+    .feature-pane { min-width: 0; overflow: auto; padding: 8px 12px; }
+    .feature-pane + .feature-pane { border-left: 1px solid #383d45; }
+    .feature-pane h3 { margin: 0 0 4px; color: #e2e7ef; font: inherit; font-weight: 700; }
+    .feature-pane p { margin: 8px 0; }
+    .feature-row { display: block; width: 100%; padding: 2px 4px; white-space: nowrap; }
+    .feature-row.active { color: #00afff; background: #1c3040; }
+    .feature-row:hover, .feature-footer button:hover { color: #00afff; }
+    .feature-table { width: 100%; border-collapse: collapse; color: #d4d8de; }
+    .feature-table th, .feature-table td { padding: 4px 8px; border: 1px solid #777d87; text-align: left; vertical-align: top; }
+    .feature-table th { color: #e4e8ef; }
+    .feature-table td:first-child { width: 135px; color: #5fd787; }
+    .inline-selector { flex: 0 0 auto; padding: 8px 10px 5px; }
+    .inline-selector .feature-row { display: grid; grid-template-columns: 180px 1fr; padding: 0 4px; }
+    .inline-selector .feature-footer { margin-top: 6px; padding: 3px 0 0; }
+    .feature-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; max-width: 960px; margin-top: 12px; }
+    .feature-bar strong { margin-right: 4px; font-size: 12px; }
+    .feature-bar button { padding: 7px 9px; border: 1px solid #536987; background: #1c2b40; font-size: 12px; }
+    .feature-bar button:disabled { opacity: .45; cursor: not-allowed; }
+    .feature-explainer { max-width: 960px; margin: 10px 0 0; color: #b9c5d4; font-size: 12px; line-height: 1.75; word-break: keep-all; }
+    .controls { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; max-width: 960px; margin-top: 12px; padding: 12px 14px; border: 1px solid var(--line); background: #151e2a; }
+    .controls strong { font-size: 12px; }
+    .controls span { color: var(--muted); font-size: 12px; }
+    .controls-actions { display: flex; gap: 7px; }
+    .controls-actions button { padding: 7px 10px; border: 1px solid #536987; background: #1c2b40; font-size: 12px; }
+    .controls-actions button:disabled { opacity: .45; cursor: not-allowed; }
+    .notice { max-width: 960px; margin: 20px 0 0; color: #aeb8c7; font-size: 12px; line-height: 1.75; word-break: keep-all; }
+    .notice strong { color: #e2e8f2; }
+    .references { max-width: 960px; margin-top: 21px; padding: 14px 0; border-block: 1px solid var(--line); color: #b7c2d0; font-size: 12px; line-height: 1.75; }
+    .references summary { color: #d6deea; cursor: pointer; font-weight: 600; }
+    .references p { margin: 10px 0 0; }
+    footer { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 12px; margin-top: 24px; color: var(--muted); font-size: 11px; line-height: 1.6; }
+    .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; }
+    @media (max-width: 1008px) { .screen-hint { display: block; } }
+    @media (max-width: 700px) {
+      .page { padding: 22px 14px 40px; }
+      .intro { display: block; margin-top: 32px; }
+      .jump { display: inline-block; margin-top: 14px; }
+      .section-head { align-items: start; }
+      .section-head h2 { font-size: 16px; }
+      .controls { align-items: start; }
+    }
+    @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <header class="topline"><span><strong>◆ MindPlayer</strong> / Flow</span><span>UI 시안 · 실제 실행 없음</span></header>
+    <div class="intro">
+      <div><div class="eyebrow">CODEX SESSION / FLOW MODE</div><h1>MindPlayer Flow</h1><p>Codex를 선택한 뒤 <strong>Flow</strong>로 들어갑니다. 대화, 도구 실행, 작업자 결과가 한 흐름으로 이어지는 모드 제안입니다. MindPlayer의 기존 터미널 틀 안에 OMP의 출력 방식을 참고했습니다.</p></div>
+      <a class="jump" href="#flow-session">진입 후 화면 보기 ↓</a>
+    </div>
+
+    <section aria-labelledby="entry-title">
+      <div class="section-head"><div><h2 id="entry-title">01 · Codex를 고른 뒤 Flow 선택</h2><p>기존 새 세션 선택 다음에 실행 방식을 고릅니다. 항목과 enter start를 눌러 볼 수 있습니다.</p></div><span class="section-tag">MODE PICKER</span></div>
+      <p class="screen-hint">터미널을 좌우로 밀어 가운데 선택창을 볼 수 있습니다.</p>
+      <div class="term-scroll" tabindex="0" role="region" aria-label="Flow 모드 진입 시안, 가로로 스크롤 가능"><div class="tui" id="entry-screen"></div></div>
+    </section>
+
+    <section id="flow-session" aria-labelledby="session-title">
+      <div class="section-head"><div><h2 id="session-title">02 · Flow 세션</h2><p>OMP 18.12.6에서 관찰한 출력과 기능 화면을 MindPlayer pane 안에 재구성한 예시입니다.</p></div><span class="section-tag" id="preview-label">FLOW PREVIEW</span></div>
+      <p class="screen-hint">터미널을 좌우로 밀어 전체 세션을 볼 수 있습니다.</p>
+      <div class="term-scroll" tabindex="0" role="region" aria-label="Flow 세션 화면 시안, 가로로 스크롤 가능"><div class="tui" id="session-screen"></div></div>
+      <div class="feature-bar" id="feature-bar" role="group" aria-label="OMP 기능 화면 예시 열기">
+        <strong>기능 화면 열어보기</strong>
+        <button type="button" data-feature="commands">/ 명령</button>
+        <button type="button" data-feature="tools">도구 · /tools</button>
+        <button type="button" data-feature="skills">스킬 · /skill:</button>
+        <button type="button" data-feature="agents">에이전트 · Alt+A</button>
+        <button type="button" data-feature="models">모델 · Alt+M</button>
+        <button type="button" data-feature="effort">사고 수준 · /effort</button>
+        <button type="button" data-feature="tree">세션 트리 · /tree</button>
+        <button type="button" data-feature="plan">계획 모드 · /plan</button>
+        <button type="button" data-action="expand">도구 출력 · Ctrl+O</button>
+      </div>
+      <p class="feature-explainer"><strong>도구</strong>는 에이전트가 호출하는 실행 수단이고, <strong>스킬</strong>은 필요할 때 읽는 작업 지침입니다. <strong>명령</strong>은 사용자가 기능에 들어가는 방법이며, <strong>에이전트</strong>는 위임받은 작업을 수행합니다. 예시 스킬·작업자와 아래 상호작용은 실제 실행이 아닙니다.</p>
+      <div class="controls" role="group" aria-label="합성 작업 흐름 단계">
+        <div><strong>합성 실행 예시</strong> <span id="stage-label"></span><br><span>요청 → 탐색 → 작업자 → 검증 → 응답</span></div>
+        <div class="controls-actions"><button type="button" id="restart" data-action="restart">처음부터</button><button type="button" id="next" data-action="next">다음 상황 →</button></div>
+      </div>
+      <p class="notice"><strong>실행 가능한 제품이 아닌 UI 시안입니다.</strong> 표시된 대화·스킬·도구 결과·작업자·모델·계정과 사용량은 합성 예시입니다. 선택과 입력은 화면에만 반영되며 전송하거나 도구를 실행하지 않습니다. OMP를 여는 대신 MindPlayer에 유사한 흐름을 만드는 제안이며, 실제 Codex 인증·구독 사용과 도구 권한, 세션 연결 및 기능 구현은 별도로 필요합니다.</p>
+    </section>
+
+    <details class="references">
+      <summary>OMP에서 참고한 실제 화면과 코드</summary>
+      <p>네트워크를 차단한 OMP 18.12.6에서 합성 세션과 임시 스킬로 대화, 슬래시 자동완성, 스킬 검색, <code>/tools</code>, Agent Hub, <code>/model</code>, <code>/effort</code>, <code>/tree</code>, <code>/plan</code> 화면을 직접 확인했습니다. Flow 이름과 MindPlayer 외곽·도구 설명은 제안이며, 설정과 테마에 따라 실제 OMP 화면과 활성 기능은 다릅니다. 좁은 터미널에서 OMP는 Agent Hub의 roster와 inspector를 전환하지만, 이 시안은 고정 폭 화면을 가로로 스크롤합니다.</p>
+      <p>OMP에서는 <code>/skills</code>가 스킬 관리를, <code>/agents</code>가 에이전트 설정을 열고, <code>/hub</code>는 실시간 Agent Hub를 엽니다. <code>/mcp</code>, <code>/git</code>, <code>/settings</code>, <code>/hotkeys</code> 등도 있지만 이 시안에서 모든 기능을 재현한 것은 아닙니다. 목록의 <code>review-auth</code>는 확인용으로 만든 예시 스킬이며 기본 제공 스킬이 아닙니다.</p>
+      <p><strong>키 충돌:</strong> MindPlayer는 <code>Ctrl+P</code>를 HTML 미리보기에 쓰고, pane이 둘 이상이면 <code>Shift+Tab</code>을 pane 전환에 사용합니다. OMP의 대안인 <code>Alt+M</code>과 <code>/effort</code>를 이 시안에 사용했습니다. <code>Ctrl+Q</code>는 pane 닫기이며, <code>Ctrl+Enter</code>와 <code>Ctrl+Shift+O</code>도 PTY 전달 시 수정자가 구별되지 않습니다. 실제 통합 전에는 키 소유권과 터미널별 입력을 검증해야 합니다.</p>
+      <p><a href="https://github.com/can1357/oh-my-pi/blob/v18.12.6/docs/skills.md" target="_blank" rel="noopener noreferrer">스킬과 호출</a> · <a href="https://github.com/can1357/oh-my-pi/blob/v18.12.6/docs/agent-hub.md" target="_blank" rel="noopener noreferrer">Agent Hub</a> · <a href="https://github.com/can1357/oh-my-pi/blob/v18.12.6/docs/keybindings.md" target="_blank" rel="noopener noreferrer">OMP 키</a> · <a href="../../crates/mindplayer-tui/src/main.rs" target="_blank" rel="noopener noreferrer">MindPlayer 키 처리</a> · <a href="https://github.com/can1357/oh-my-pi/blob/v18.12.6/packages/tui/src/components/composer/band.ts" target="_blank" rel="noopener noreferrer">기본 입력기</a></p>
+    </details>
+    <footer><span>1안 · Codex 선택 → 실행 방식 선택 → 세션</span><a href="https://github.com/can1357/oh-my-pi" target="_blank" rel="noopener noreferrer">OMP GitHub ↗</a></footer>
+    <div class="sr-only" id="announcement" role="status" aria-live="polite"></div>
+  </main>
+  <script>
+    'use strict';
+    // Self-contained UI simulation; no model, tool, credential, network, or process calls.
+    const phases = [
+      { label: '요청 접수' },
+      { label: '탐색' },
+      { label: '병렬 작업' },
+      { label: '검증' },
+      { label: '완료' }
+    ];
+    const state = { mode: 'flow', preview: 'flow', view: 'mode', step: 3, expanded: false, stopped: false, draft: '', savedDraft: null, menuOpen: false, commandIndex: 0, feature: null, model: 0, effort: 'high', choice: 0, plan: false, hubTab: 'agents', agent: 0, agentView: false, treeItem: 1 };
+    const announce = text => { document.getElementById('announcement').textContent = text; };
+    const header = () => '<div class="tui-head"><strong>◆ MindPlayer</strong><span class="subtle">v0.57.6&nbsp; Codex / Claude / Kiro / Cursor session manager</span><span class="right">Codex · F6 세션 유지</span></div>';
+    const rows = () => `<div class="session-group">── <strong>recent</strong> 3 sessions</div>
+      <div class="session-row selected"><span class="pointer">▶</span><span class="provider">│ codex</span><span class="age">2m</span><span>로그인 복구 경로 점검</span><span class="sid">c7e3a1b2</span><span class="tokens">0 tok</span></div>
+      <div class="session-row"><span></span><span class="provider">│ codex</span><span class="age">12m</span><span>계정 전환 경계 확인</span><span class="sid">9e8a021c</span><span class="tokens">0 tok</span></div>
+      <div class="session-row"><span></span><span class="provider claude">│ claude</span><span class="age">1h</span><span>릴리스 문서 정리</span><span class="sid">3f4b710a</span><span class="tokens">0 tok</span></div>`;
+    const ambient = () => `<div class="list-center">Run many Codex · Claude · Kiro · Cursor sessions like tabs<div class="status-legend"><span class="blocked">! blocked</span>　<span class="working">● working</span>　○ idle　<span class="done">✓ done</span>　○ ended</div></div><div class="ground"></div><svg class="walker" viewBox="0 0 12 8" shape-rendering="crispEdges" aria-hidden="true"><path fill="#ffd23f" d="M4 0h4v1H4zM2 1h8v4H2zM3 5h6v2H3z"/><path fill="#2a2320" d="M3 3h2v1H3zM7 3h2v1H7z"/><path fill="#f5762b" d="M3 4h6v1H3zM3 7h1v1H3zM8 7h1v1H8z"/></svg>`;
+    const listFoot = () => `<div class="tui-foot"><div class="tui-foot-line"><span>3 sessions · 0 tok · working dir (mindplayer)</span><span></span></div><div class="tui-foot-line"><span></span><span>enter open · v multi-select · <button type="button" data-action="show-picker">n new</button> · h handoff　 View: / search · ? help</span></div><div class="tui-foot-line"><span></span><span>i in progress · c catch-up · t category · ↔ fold　 ctrl-r usage · ? help</span></div></div>`;
+    const providerPopup = () => `<div class="popup"><span class="box-label">New session</span><button type="button" class="popup-row active" data-action="choose-provider"><span class="arrow">▶</span> codex</button><div class="popup-row">&nbsp; claude</div><div class="popup-row">&nbsp; kiro</div><div class="popup-row">&nbsp; cursor</div><div class="popup-foot"><button type="button" data-action="choose-provider">enter next</button> · <button type="button" data-action="close-picker">esc back</button></div></div>`;
+    const modePopup = () => `<div class="popup"><span class="box-label">Codex mode · 제안</span>${[['native','Codex 기본'],['flow','Flow']].map(([value,label]) => `<button type="button" class="popup-row ${state.mode === value ? 'active' : ''}" data-mode="${value}" aria-pressed="${state.mode === value}"><span class="arrow">${state.mode === value ? '▶' : '&nbsp;'}</span> ${label}</button>`).join('')}<div class="mode-note">&nbsp; MindPlayer의 새로운 작업 흐름</div><div class="popup-foot"><button type="button" data-action="start">enter start</button> · <button type="button" data-action="close-picker">esc back</button></div></div>`;
+    function entryScreen() {
+      const popup = state.view === 'mode' ? modePopup() : state.view === 'picker' ? providerPopup() : '';
+      return `${header()}<div class="list-frame"><span class="box-label">Sessions · recent first · active (3)</span>${rows()}${ambient()}${popup}</div>${listFoot()}`;
+    }
+    function transcript() {
+      const find = `<div class="omp-plain"><span class="omp-success">•</span> <span class="omp-title">find</span><br><span class="omp-dim"> └─ query="인증 세션 재개 경로", path="crates/mindplayer-tui/src"</span><br>crates/mindplayer-tui/src/app/account_auth.rs:120-180<br>crates/mindplayer-tui/src/app/pane.rs:746-799<br><button type="button" class="hint" data-action="expand" aria-expanded="${state.expanded}">⟦⌃O: ${state.expanded ? 'Collapse' : 'Expand'}⟧</button><div class="omp-extra" ${state.expanded ? '' : 'hidden'}>인증 확인과 세션 재개 경로를 찾았습니다.</div></div>`;
+      const read = `<div class="omp-inline"><strong>• Read</strong> <span class="omp-dim">(2)</span><br><span class="omp-branch">  ├─</span> <span class="omp-link">crates/mindplayer-tui/src/app/account_auth.rs:120-180</span><br><span class="omp-branch">  └─</span> <span class="omp-link">crates/mindplayer-tui/src/app/pane.rs:746-799</span></div>`;
+      const taskStatus = state.step >= 3 ? 'done' : state.stopped ? 'aborted' : 'running';
+      const task = `<div class="omp-box"><button type="button" class="omp-box-title" data-action="expand" aria-expanded="${state.expanded}">${taskStatus === 'running' ? '⇶ Task: task' : taskStatus === 'aborted' ? '✘ Task 2 agents' : '• Task 2 agents'}</button><div class="omp-box-body">인증 흐름과 계정 경계를 각각 확인합니다.</div><div class="omp-separator"><div class="omp-box-body">• AuthFlow: 인증 흐름 확인 <span class="${taskStatus === 'done' ? 'omp-success' : taskStatus === 'aborted' ? 'omp-error' : 'omp-warning'}">⟦${taskStatus}⟧</span> <span class="omp-dim">· 2 req · 3.2s</span><br>  <span class="omp-dim">${taskStatus === 'running' ? '↳ read: account_auth.rs' : taskStatus === 'aborted' ? '중단됨' : 'Output: 인증 복구 경로 확인'}</span><br>• AccountBoundary: 계정 경계 검토 <span class="omp-success">⟦done⟧</span> <span class="omp-dim">· 1 req · 2.1s</span><br><span class="omp-dim">⟦${taskStatus === 'done' ? '2 succeeded' : taskStatus === 'aborted' ? '1 aborted · 1 succeeded' : '1 running · 1 succeeded'} · 3 req⟧</span><div class="omp-extra" ${state.expanded ? '' : 'hidden'}>AuthFlow: 인증 만료 뒤 재개 경로 확인<br>AccountBoundary: 선택 계정 유지 여부 검토</div></div></div></div>`;
+      const bashStatus = state.step >= 4 ? 'done' : state.stopped ? 'aborted' : 'running';
+      const bash = `<div class="omp-box omp-bash"><div class="omp-command"><span class="omp-dim">$</span> <code>cargo test -p mindplayer-tui account_auth</code></div><div class="omp-separator"><span class="omp-section-label">Output</span><div class="omp-box-body">${bashStatus === 'done' ? 'running 2 tests<br>test account_auth::resume ... ok<br>test result: ok. 2 passed; 0 failed' : bashStatus === 'aborted' ? '<span class="omp-error">(cancelled)</span>' : 'running 2 tests<br><span class="omp-dim">Running…</span>'}</div></div><span class="omp-box-footer">Timeout: 300s</span></div>`;
+      const answer = state.step >= 4 ? '<div class="assistant-text"><strong>완료:</strong> 인증 경로와 계정 경계를 확인했습니다.<br><br><span class="omp-link">-</span> 세션 재개 경로를 검토했습니다.<br><span class="omp-link">-</span> 검증 결과를 확인했습니다.</div>' : '';
+      const progress = state.stopped ? '<div class="working-line">중단됨</div>' : state.step < 4 ? '<div class="working-line"><span class="spark">✳</span> Working… (esc to interrupt)</div>' : '';
+      return `<div class="user-bubble">인증이 만료됐을 때 세션 복구 경로를 확인하고 검증해줘.</div><div class="assistant-text">먼저 인증 경로와 세션 재개 흐름을 살펴보겠습니다.</div>${state.step >= 1 ? find + read : ''}${state.step >= 2 ? `<div class="assistant-text">인증 흐름과 계정 경계를 각각 확인하겠습니다.</div>${task}` : ''}${state.step >= 3 ? `<div class="assistant-text">검증 명령을 실행합니다.</div>${bash}` : ''}${answer}${progress}`;
+    }
+    const models = ['GPT-5.3 Codex', 'GPT-5.6'];
+    const levels = ['off', 'auto', 'low', 'medium', 'high', 'xhigh'];
+    const commands = [
+      { name: 'skill:', description: '1 skill · 합성 예시', feature: 'skills' },
+      { name: 'tools', description: '사용 가능한 도구 목록', feature: 'tools' },
+      { name: 'hub', description: '에이전트 활동과 상세 보기', feature: 'agents' },
+      { name: 'model', description: '모델과 역할 선택', feature: 'models' },
+      { name: 'effort', description: '사고 수준 선택', feature: 'effort' },
+      { name: 'tree', description: '세션 트리 살펴보기', feature: 'tree' },
+      { name: 'plan', description: '계획 모드 전환', feature: 'plan' }
+    ];
+    const exampleSkill = { name: 'skill:review-auth', description: '예시 스킬 · 인증 경로 점검', feature: 'skill-example' };
+    function matchingCommands() {
+      if (!state.menuOpen || !state.draft.startsWith('/') || /\s/.test(state.draft)) return [];
+      const query = state.draft.slice(1).toLowerCase();
+      return (query.startsWith('skill:') ? [exampleSkill] : commands).filter(command => command.name.startsWith(query));
+    }
+    function commandMenu() {
+      return matchingCommands().map((command, index) => `<button type="button" class="command-row ${index === state.commandIndex ? 'active' : ''}" data-command="${index}"><span class="name">${index === state.commandIndex ? '›' : '&nbsp;'} /${command.name}</span><span>${command.description}</span></button>`).join('');
+    }
+    function composer() {
+      return `<div class="flow-compose"><div class="flow-session-name">인증 복구 경로 점검</div><div class="flow-status"><span class="brand">◆ Flow</span><span class="sep">›</span><span class="model">● ${models[state.model]}</span><span class="sep">›</span><span class="model">◒ ${state.effort}</span>${state.plan ? '<span class="sep">›</span><span class="omp-title">▤ Plan</span>' : ''}<span class="sep">›</span><span class="path">mindplayer</span><span class="sep">›</span><span class="model">3%</span><span class="track"><span>272K</span></span></div><div class="flow-prompt"><span class="gutter">╰─ </span><textarea id="draft" rows="1" aria-label="Flow 메시지 입력 시안, 실제 전송 없음" placeholder="▌"></textarea><span class="flow-prompt-hint">/ 명령 · /effort 사고 수준</span></div><div class="command-menu" id="command-menu">${commandMenu()}</div></div>`;
+    }
+    const closeFooter = text => `<div class="feature-footer">${text} · <button type="button" data-action="close-feature">esc close</button></div>`;
+    function featureScreen() {
+      if (state.feature === 'tools') {
+        const items = [['read','파일과 문서를 읽습니다.'],['find / grep / glob','코드와 파일을 검색합니다.'],['edit / write','파일을 수정하거나 생성합니다.'],['bash / eval','명령이나 코드를 실행합니다.'],['task / wait','작업을 위임하고 결과를 기다립니다.'],['lsp','코드 심볼과 진단을 확인합니다.'],['browser / web_search','웹을 탐색하고 검색합니다.']];
+        return `<div class="feature-screen" role="region" aria-label="Available Tools 예시" tabindex="-1"><span class="feature-title">Available Tools</span><div class="feature-body"><table class="feature-table"><thead><tr><th>Tool</th><th>Description · 예시</th></tr></thead><tbody>${items.map(([name,description]) => `<tr><td>${name}</td><td>${description}</td></tr>`).join('')}</tbody></table><p class="omp-dim">실제 활성 도구는 설치·설정·권한에 따라 다릅니다.</p></div>${closeFooter('PgUp/PgDn scroll')}</div>`;
+      }
+      if (state.feature === 'agents') {
+        const status = state.step >= 3 ? 'idle' : state.stopped ? 'aborted' : 'running';
+        const agents = [['AuthFlow','인증 흐름 확인','account_auth.rs'],['AccountBoundary','계정 경계 검토','pane.rs']];
+        const agent = agents[state.agent];
+        const roster = state.step < 2 ? '<p>○ No agents in this session</p><p class="omp-dim">예시 작업이 위임되기 전입니다.</p>' : agents.map(([name,task], index) => `<button type="button" class="feature-row ${state.agent === index ? 'active' : ''}" data-agent="${index}">${state.agent === index ? '›' : ' '} ○ ${name}　<span class="omp-dim">${status}</span><br>&nbsp;&nbsp; ${task}</button>`).join('');
+        const inspector = state.step < 2 ? '<span class="omp-dim">Select an agent to inspect</span>' : `<h3>${agent[0]} <span class="omp-dim">· ${status} · 예시</span></h3><p>Task: ${agent[1]}<br>Current: ${state.step >= 3 ? '작업 완료' : `read: ${agent[2]}`}<br><span class="omp-dim">Usage —</span></p><button type="button" class="feature-row" data-action="agent-open">↵ 예시 대화 보기</button>`;
+        const activity = state.step < 2 ? '<p class="omp-dim">No activity in this session</p>' : `<p><span class="omp-title">AuthFlow</span> · read ${agents[0][2]}<br><span class="omp-title">AccountBoundary</span> · read ${agents[1][2]}<br><span class="omp-dim">합성 활동 예시 · 실제 실행 없음</span></p>`;
+        const body = state.agentView ? `<div class="feature-body"><h3 class="omp-title">${agent[0]} · transcript 예시</h3><p>${agent[1]} 작업을 위임받았습니다.</p><p>• Read <span class="omp-link">${agent[2]}</span></p><p class="omp-dim">${state.step >= 3 ? '예시 결과: 관련 경로를 확인했습니다.' : '예시 작업 중'}</p><button type="button" class="feature-row" data-action="agent-back">← Agent Hub로 돌아가기</button></div>` : state.hubTab === 'activity' ? `<div class="feature-body"><h3>Activity · 예시</h3>${activity}</div>` : `<div class="feature-body feature-split"><div class="feature-pane"><h3>Roster · <span class="omp-title">Flat</span> / By parent</h3><span class="omp-dim">Usage — · 합성 데이터</span>${roster}</div><div class="feature-pane">${inspector}</div></div>`;
+        return `<div class="feature-screen" role="region" aria-label="Agent Hub 예시" tabindex="-1"><span class="feature-title">Agent Hub</span>${body}${closeFooter('<button type="button" data-hub="agents">1:agents</button>　<button type="button" data-hub="activity">2:activity</button>　↑/↓:select　↵:open')}</div>`;
+      }
+      if (state.feature === 'models') {
+        return `<div class="feature-screen" role="region" aria-label="Models 예시" tabindex="-1"><span class="feature-title">Models</span><div class="feature-body feature-split"><div class="feature-pane"><h3>› All models</h3><p><span class="omp-success">●</span> openai <span class="omp-dim">· 예시</span></p></div><div class="feature-pane"><h3>All available models · 예시</h3><p class="omp-dim">실제 사용 가능 모델은 계정과 설정에 따릅니다.</p>${models.map((name,index) => `<button type="button" class="feature-row ${state.choice === index ? 'active' : ''}" data-model="${index}">${state.choice === index ? '›' : ' '} openai/${name}</button>`).join('')}</div></div>${closeFooter('↑/↓ select · ↵ choose')}</div>`;
+      }
+      if (state.feature === 'effort') {
+        const descriptions = ['No reasoning','Auto-detect per prompt','Light reasoning','Moderate reasoning','Deep reasoning','Extended reasoning'];
+        return `<div class="inline-selector" role="region" aria-label="Thinking Level 예시" tabindex="-1"><span class="feature-title">Thinking Level</span>${levels.map((level,index) => `<button type="button" class="feature-row ${state.choice === index ? 'active' : ''}" data-effort="${level}"><span>${state.choice === index ? '›' : '&nbsp;'} ${level}</span><span>${descriptions[index]}</span></button>`).join('')}${closeFooter('↑/↓ select · ↵ choose · 모델별 지원 수준은 다름')}</div>`;
+      }
+      if (state.feature === 'tree') {
+        const nodes = ['user: 인증이 만료됐을 때 세션 복구 경로를 확인하고 검증해줘.', 'assistant: 먼저 인증 경로와 세션 재개 흐름을 살펴보겠습니다.', ...(state.step >= 1 ? ['tool: find · 인증 세션 재개 경로'] : [])];
+        return `<div class="inline-selector" role="region" aria-label="Session Tree 예시" tabindex="-1"><span class="feature-title">Session Tree</span><span class="omp-dim">합성 대화의 이동 지점 · 실제 세션 전환 없음</span>${nodes.map((node,index) => `<button type="button" class="feature-row ${state.treeItem === index ? 'active' : ''}" data-tree="${index}">• ${node}</button>`).join('')}${closeFooter('↑/↓ select')}</div>`;
+      }
+      return '';
+    }
+    function sessionScreen() {
+      const native = state.preview === 'native';
+      const fullscreen = ['tools','agents','models'].includes(state.feature);
+      const inline = ['effort','tree'].includes(state.feature);
+      const content = native ? '<div class="flow-feed"><div class="native-placeholder">Codex 기본 실행 화면은 실제 CLI 환경에 따라 표시됩니다.<br>이 시안은 기본 Codex CLI를 재현하지 않습니다.</div></div>' : fullscreen ? featureScreen() : `<div class="flow-feed" id="flow-feed">${transcript()}${state.plan ? '<div class="omp-dim">Plan mode enabled · 예시</div>' : ''}</div>${inline ? featureScreen() : composer()}`;
+      return `${header()}<div class="pane-frame"><div class="pane-title">▸ <span class="dot">○</span> 1/1 <span class="chip">${native ? '새 Codex 작업' : 'Flow · 로그인 복구 경로 점검'}</span></div><div class="pane-content">${content}</div><span class="pane-account">codex · work</span></div><div class="tui-foot"><div class="tui-foot-line"><span>${native ? 'Codex 기본 · 예시' : 'Flow · ' + (state.stopped ? '중단' : phases[state.step].label) + ' · 예시'}　·　3 sessions · 0 tok · working dir (mindplayer)</span><span></span></div><div class="tui-foot-line"><span></span><span>ctrl-g trace · ctrl-x list · tab pane · ctrl-z zoom · ctrl-q close</span></div></div>`;
+    }
+    function render(scrollLatest = false) {
+      const priorDraft = document.getElementById('draft');
+      const focusedDraft = priorDraft && document.activeElement === priorDraft;
+      const cursor = focusedDraft ? priorDraft.selectionStart : 0;
+      const priorFeed = document.getElementById('flow-feed');
+      const priorScroll = priorFeed ? priorFeed.scrollTop : null;
+      document.getElementById('entry-screen').innerHTML = entryScreen();
+      document.getElementById('session-screen').innerHTML = sessionScreen();
+      const draft = document.getElementById('draft');
+      if (draft) draft.value = state.draft;
+      document.getElementById('preview-label').textContent = state.preview === 'flow' ? 'FLOW PREVIEW' : 'CODEX PREVIEW';
+      document.getElementById('stage-label').textContent = state.preview === 'flow' ? (state.stopped ? '중단 · 실제 실행 없음' : `${state.step + 1} / ${phases.length} · ${phases[state.step].label} · 실제 실행 없음`) : 'Codex 기본 선택 · 합성 화면';
+      document.getElementById('restart').disabled = state.preview !== 'flow' || state.step === 0 && !state.stopped;
+      document.getElementById('next').disabled = state.preview !== 'flow' || state.step === phases.length - 1 || state.stopped;
+      document.querySelectorAll('#feature-bar button').forEach(button => { button.disabled = state.preview !== 'flow'; });
+      if (scrollLatest) {
+        const feed = document.getElementById('flow-feed');
+        if (feed) {
+          feed.scrollTop = feed.scrollHeight;
+          const bounds = feed.getBoundingClientRect();
+          const partial = Array.from(feed.children).find(child => {
+            const rect = child.getBoundingClientRect();
+            return rect.top < bounds.top && rect.bottom > bounds.top;
+          });
+          if (partial && feed.lastElementChild) {
+            const offset = bounds.top - partial.getBoundingClientRect().top;
+            const room = bounds.bottom - feed.lastElementChild.getBoundingClientRect().bottom;
+            if (offset <= room) feed.scrollTop -= offset;
+          }
+        }
+      }
+      else if (priorScroll !== null) {
+        const feed = document.getElementById('flow-feed');
+        if (feed) feed.scrollTop = priorScroll;
+      }
+      if (focusedDraft && draft) { draft.focus({preventScroll:true}); draft.setSelectionRange(Math.min(cursor, draft.value.length), Math.min(cursor, draft.value.length)); }
+    }
+    function focusDraft() {
+      const draft = document.getElementById('draft');
+      if (draft) { draft.focus({preventScroll:true}); draft.setSelectionRange(draft.value.length, draft.value.length); }
+    }
+    function focusFeature() { document.querySelector('#session-screen .feature-screen, #session-screen .inline-selector')?.focus({preventScroll:true}); }
+    function openFeature(feature, fromCommand = false) {
+      if (state.preview !== 'flow') return;
+      if (feature === 'commands' || feature === 'skills') {
+        if (!state.menuOpen) state.savedDraft = state.draft;
+        state.feature = null; state.menuOpen = true; state.commandIndex = 0;
+        state.draft = feature === 'skills' ? '/skill:' : '/';
+        render(true); focusDraft(); announce('명령 자동완성 예시. 실제 실행 없음.');
+        return;
+      }
+      if (state.menuOpen) {
+        state.draft = state.savedDraft !== null ? state.savedDraft : fromCommand ? '' : state.draft;
+        state.savedDraft = null; state.menuOpen = false;
+      }
+      if (feature === 'plan') {
+        state.feature = null; state.plan = !state.plan; render(true); focusDraft();
+        announce(`계획 모드 예시 ${state.plan ? '켜짐' : '꺼짐'}. 실제 세션은 변경되지 않았습니다.`);
+        return;
+      }
+      state.feature = feature; state.agentView = false;
+      if (feature === 'models') state.choice = state.model;
+      if (feature === 'effort') state.choice = levels.indexOf(state.effort);
+      if (feature === 'tree') state.treeItem = Math.min(state.treeItem, state.step >= 1 ? 2 : 1);
+      render(true); focusFeature(); announce(`${feature} 화면 예시. 실제 실행 없음.`);
+    }
+    function closeFeature() {
+      state.feature = null; state.agentView = false; render(true); focusDraft();
+      announce('기능 화면 예시 닫힘.');
+    }
+    function chooseCommand(index) {
+      const command = matchingCommands()[index];
+      if (!command) return;
+      if (command.feature === 'skills') {
+        state.draft = '/skill:'; state.commandIndex = 0; render(); focusDraft();
+      } else if (command.feature === 'skill-example') {
+        state.draft = '/skill:review-auth '; state.menuOpen = false; state.savedDraft = null;
+        render(); focusDraft(); announce('예시 스킬 명령 입력. 실행하거나 전송하지 않았습니다.');
+      } else {
+        openFeature(command.feature, true);
+      }
+    }
+    function chooseModel(index) {
+      state.model = index; closeFeature(); announce(`${models[index]} 모델 선택 예시. 실제 계정이나 모델은 변경되지 않았습니다.`);
+    }
+    function chooseEffort(level) {
+      state.effort = level; closeFeature(); announce(`${level} 사고 수준 선택 예시. 실제 세션은 변경되지 않았습니다.`);
+    }
+    document.getElementById('session-screen').addEventListener('input', event => {
+      if (event.target.id !== 'draft') return;
+      const feed = document.getElementById('flow-feed');
+      const wasAtEnd = feed && feed.scrollHeight - feed.clientHeight - feed.scrollTop <= 1;
+      state.draft = event.target.value;
+      state.menuOpen = state.draft.startsWith('/') && !/\s/.test(state.draft);
+      state.commandIndex = 0;
+      const menu = document.getElementById('command-menu');
+      if (menu) menu.innerHTML = commandMenu();
+      if (wasAtEnd) feed.scrollTop = feed.scrollHeight;
+    });
+    document.addEventListener('click', event => {
+      const button = event.target.closest('button');
+      if (!button) return;
+      if (button.dataset.feature) {
+        openFeature(button.dataset.feature);
+      } else if (button.dataset.command !== undefined) {
+        chooseCommand(Number(button.dataset.command));
+      } else if (button.dataset.agent !== undefined) {
+        state.agent = Number(button.dataset.agent); state.agentView = false; render(); focusFeature();
+      } else if (button.dataset.hub) {
+        state.hubTab = button.dataset.hub; state.agentView = false; render(); focusFeature();
+      } else if (button.dataset.model !== undefined) {
+        chooseModel(Number(button.dataset.model));
+      } else if (button.dataset.effort) {
+        chooseEffort(button.dataset.effort);
+      } else if (button.dataset.tree !== undefined) {
+        state.treeItem = Number(button.dataset.tree); render(); focusFeature();
+      } else if (button.dataset.action === 'close-feature') {
+        closeFeature();
+      } else if (button.dataset.action === 'agent-open') {
+        state.agentView = true; render(); focusFeature();
+      } else if (button.dataset.action === 'agent-back') {
+        state.agentView = false; render(); focusFeature();
+      } else if (button.dataset.mode) {
+        state.mode = button.dataset.mode; render(); document.querySelector(`#entry-screen [data-mode="${state.mode}"]`)?.focus({preventScroll:true}); announce(state.mode === 'flow' ? 'Flow 선택' : 'Codex 기본 선택');
+      } else if (button.dataset.action === 'show-picker') {
+        state.view = 'picker'; render(); document.querySelector('#entry-screen [data-action="choose-provider"]')?.focus({preventScroll:true}); announce('새 세션 선택 예시');
+      } else if (button.dataset.action === 'choose-provider') {
+        state.view = 'mode'; render(); document.querySelector(`#entry-screen [data-mode="${state.mode}"]`)?.focus({preventScroll:true}); announce('Codex 실행 방식 선택 예시');
+      } else if (button.dataset.action === 'close-picker') {
+        state.view = state.view === 'mode' ? 'picker' : 'list'; render(); document.querySelector(state.view === 'picker' ? '#entry-screen [data-action="choose-provider"]' : '#entry-screen [data-action="show-picker"]')?.focus({preventScroll:true}); announce(state.view === 'picker' ? '새 세션 선택으로 돌아감' : '선택창 닫힘');
+      } else if (button.dataset.action === 'start') {
+        state.preview = state.mode; state.stopped = false; state.feature = null; state.menuOpen = false; state.savedDraft = null; render(); announce(`${state.preview === 'flow' ? 'Flow' : 'Codex 기본'} 화면 예시. 실제 세션은 실행되지 않았습니다.`); document.getElementById('flow-session').scrollIntoView({behavior:'smooth',block:'start'});
+      } else if (button.dataset.action === 'expand') {
+        state.feature = null; state.expanded = !state.expanded; render(true); document.querySelector('#session-screen [data-action="expand"]')?.focus({preventScroll:true}); announce(state.expanded ? '도구 출력 예시 펼침' : '도구 출력 예시 접힘');
+      } else if (button.dataset.action === 'restart' || button.dataset.action === 'next') {
+        state.step = button.dataset.action === 'restart' ? 0 : Math.min(state.step + 1, phases.length - 1); state.stopped = false; render(true); document.getElementById(state.step === phases.length - 1 ? 'restart' : 'next').focus({preventScroll:true}); announce(`합성 흐름: ${phases[state.step].label}. 실제 실행 없음.`);
+      }
+    });
+    document.getElementById('entry-screen').addEventListener('keydown', event => {
+      if (state.view === 'mode' && ['ArrowUp','ArrowDown'].includes(event.key)) { event.preventDefault(); document.querySelector(`#entry-screen [data-mode="${state.mode === 'flow' ? 'native' : 'flow'}"]`)?.click(); }
+      else if (state.view === 'mode' && event.key === 'Enter' && event.target.matches('[data-mode]')) { event.preventDefault(); document.querySelector('#entry-screen [data-action="start"]')?.click(); }
+      else if (state.view === 'list' && event.key.toLowerCase() === 'n') { event.preventDefault(); document.querySelector('#entry-screen [data-action="show-picker"]')?.click(); }
+      else if (state.view !== 'list' && event.key === 'Escape') { event.preventDefault(); document.querySelector('#entry-screen [data-action="close-picker"]')?.click(); }
+    });
+    document.getElementById('session-screen').addEventListener('keydown', event => {
+      if (state.preview !== 'flow') return;
+      if (event.key === 'Escape' && state.feature) {
+        event.preventDefault();
+        if (state.feature === 'agents' && state.agentView) { state.agentView = false; render(); focusFeature(); }
+        else closeFeature();
+      } else if (event.key === 'Escape' && state.menuOpen) {
+        event.preventDefault(); state.menuOpen = false;
+        if (state.savedDraft !== null) state.draft = state.savedDraft;
+        state.savedDraft = null; render(); focusDraft(); announce('명령 목록 닫힘.');
+      } else if (event.altKey && event.key.toLowerCase() === 'a') {
+        event.preventDefault(); openFeature('agents');
+      } else if (event.altKey && event.key.toLowerCase() === 'm') {
+        event.preventDefault(); openFeature('models');
+      } else if (!state.feature && event.ctrlKey && event.key.toLowerCase() === 'o') {
+        event.preventDefault(); state.expanded = !state.expanded; render(); focusDraft(); announce(state.expanded ? '도구 출력 예시 펼침' : '도구 출력 예시 접힘');
+      } else if (event.target.id === 'draft' && state.menuOpen && ['ArrowUp','ArrowDown'].includes(event.key) && matchingCommands().length) {
+        event.preventDefault(); const count = matchingCommands().length;
+        state.commandIndex = (state.commandIndex + (event.key === 'ArrowDown' ? 1 : -1) + count) % count;
+        document.getElementById('command-menu').innerHTML = commandMenu();
+      } else if (event.target.id === 'draft' && event.key === 'Enter') {
+        event.preventDefault();
+        if (state.menuOpen && matchingCommands().length) chooseCommand(state.commandIndex);
+        else announce('입력 예시입니다. 전송하지 않았습니다.');
+      } else if (state.feature === 'agents' && ['1','2'].includes(event.key)) {
+        event.preventDefault(); state.hubTab = event.key === '1' ? 'agents' : 'activity'; state.agentView = false; render(); focusFeature();
+      } else if (state.feature === 'agents' && state.hubTab === 'agents' && !state.agentView && state.step >= 2 && ['ArrowUp','ArrowDown'].includes(event.key)) {
+        event.preventDefault(); state.agent = state.agent === 0 ? 1 : 0; render(); focusFeature();
+      } else if (state.feature === 'agents' && state.hubTab === 'agents' && !state.agentView && state.step >= 2 && event.key === 'Enter' && !event.target.matches('button')) {
+        event.preventDefault(); state.agentView = true; render(); focusFeature();
+      } else if (['models','effort'].includes(state.feature) && ['ArrowUp','ArrowDown'].includes(event.key)) {
+        event.preventDefault(); const count = state.feature === 'models' ? models.length : levels.length;
+        state.choice = (state.choice + (event.key === 'ArrowDown' ? 1 : -1) + count) % count; render(); focusFeature();
+      } else if (['models','effort'].includes(state.feature) && event.key === 'Enter' && !event.target.matches('button')) {
+        event.preventDefault(); state.feature === 'models' ? chooseModel(state.choice) : chooseEffort(levels[state.choice]);
+      } else if (state.feature === 'tree' && ['ArrowUp','ArrowDown'].includes(event.key)) {
+        event.preventDefault(); const count = state.step >= 1 ? 3 : 2;
+        state.treeItem = (state.treeItem + (event.key === 'ArrowDown' ? 1 : -1) + count) % count; render(); focusFeature();
+      } else if (event.key === 'Escape' && state.step < phases.length - 1) {
+        event.preventDefault(); state.stopped = true; render(true); announce('합성 흐름 중단. 실제 실행은 없었습니다.');
+      }
+    });
+    render(true);
+  </script>
+</body>
+</html>

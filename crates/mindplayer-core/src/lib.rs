@@ -16,6 +16,7 @@ pub mod resume;
 pub mod session;
 pub mod state;
 pub mod tokens;
+pub mod vercel_usage;
 
 pub use audit::{
     compute_stats, default_audit_path, log_event, log_event_to, read_events, AgentCounts,

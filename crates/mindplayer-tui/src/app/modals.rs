@@ -6,6 +6,7 @@ impl App {
     pub fn choose_new_account(&mut self, account: &mindplayer_core::accounts::Account) {
         self.new_agent = Some(account.provider);
         self.new_account = Some(account.clone());
+        self.new_fresh_login = false;
         self.new_label = Some(String::new());
         self.new_picker = None;
     }

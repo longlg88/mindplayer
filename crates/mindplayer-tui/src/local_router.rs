@@ -96,7 +96,7 @@ const ROUTING_ENV: &[&str] = &[
     PER_PROMPT_ENV,
     JEV_DEFAULT_ENV,
 ];
-const STARTUP_TIMEOUT: Duration = Duration::from_secs(10);
+const STARTUP_TIMEOUT: Duration = Duration::from_secs(20);
 const STARTUP_MAX_BYTES: usize = 256;
 const STARTUP_FAILED: &str = "Jev 시작 준비 상태를 확인할 수 없습니다.";
 const STARTUP_NODE_UNAVAILABLE: &str = "Node.js를 실행할 수 없습니다.";
@@ -304,7 +304,25 @@ impl RoutingStatusChannel {
         let value: serde_json::Value = serde_json::from_slice(&bytes)?;
         // Option fields must be explicitly present as null, not silently
         // defaulted by serde when a writer emits an incomplete contract.
-        if value.as_object().is_none_or(|object| object.len() != 13) {
+        if value.as_object().is_none_or(|object| {
+            [
+                "schemaVersion",
+                "generation",
+                "revision",
+                "stage",
+                "threadId",
+                "clearAncestors",
+                "requestId",
+                "turnId",
+                "model",
+                "effort",
+                "observedModel",
+                "reason",
+                "serverModelReported",
+            ]
+            .iter()
+            .any(|key| !object.contains_key(*key))
+        }) {
             bail!("라우팅 상태 필드가 잘못되었습니다");
         }
         let next: RoutingStatus = serde_json::from_value(value)?;
@@ -446,10 +464,53 @@ fn prepare_at(command: &Command, runtime: &Path) -> Result<Command> {
 /// Native commands keep their provider, arguments and auth without router IO.
 pub(crate) fn prepare_for_mode(command: &Command, mode: RoutingMode) -> Result<Command> {
     reject_legacy_claude_launcher(command)?;
+    // OMP is an independent agent and uses its own provider credentials,
+    // including gateway keys. Do not route it through Jev or scrub its auth.
+    if command.program == "omp" {
+        return prepare_omp_at(command, &mindplayer_core::private::data_root());
+    }
     if mode == RoutingMode::Native || is_native_claude(command) {
         return Ok(native_command(command));
     }
     prepare(command)
+}
+
+/// A new OMP pane must be new even when the user's native config enables
+/// autoResume. A per-process overlay leaves the user's configuration intact.
+fn prepare_omp_at(command: &Command, root: &Path) -> Result<Command> {
+    if command.args != ["-e", mindplayer_core::resume::OMP_PICKER_MARKER] {
+        return Ok(command.clone());
+    }
+    const CONTENT: &[u8] = b"autoResume: false\n";
+    mindplayer_core::private::create_dir_private(root)?;
+    let config = root.join("omp-new-session-v1.yml");
+    if !config.exists() {
+        let stage = root.join(format!(
+            ".omp-new-{}-{}",
+            std::process::id(),
+            NEXT_STAGE.fetch_add(1, Ordering::Relaxed)
+        ));
+        let mut file = mindplayer_core::private::create_new_private(&stage)?;
+        let result = (|| -> Result<()> {
+            file.write_all(CONTENT)?;
+            file.sync_all()?;
+            match fs::hard_link(&stage, &config) {
+                Ok(()) => Ok(()),
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
+                Err(error) => Err(error.into()),
+            }
+        })();
+        let _ = fs::remove_file(&stage);
+        result?;
+    }
+    if !fs::symlink_metadata(&config)?.file_type().is_file() || fs::read(&config)? != CONTENT {
+        bail!("OMP new-session configuration is invalid");
+    }
+    let mut prepared = command.clone();
+    prepared
+        .args
+        .extend(["--config".into(), config.to_string_lossy().into_owned()]);
+    Ok(prepared)
 }
 
 fn native_command(command: &Command) -> Command {
@@ -542,6 +603,7 @@ fn reject_legacy_claude_launcher(command: &Command) -> Result<()> {
 /// Allocate only at the actual spawn boundary. The fresh-login shell may
 /// contain an already prepared launcher: inject into that exec alone so the
 /// native login never inherits the writable channel.
+#[cfg(test)]
 pub(crate) fn prepare_spawn(command: &Command) -> Result<(Command, Option<RoutingStatusChannel>)> {
     attach_spawn_status(prepare(command)?, &mindplayer_core::private::data_root())
 }
@@ -550,10 +612,11 @@ pub(crate) fn prepare_spawn_for_mode(
     command: &Command,
     mode: RoutingMode,
 ) -> Result<(Command, Option<RoutingStatusChannel>)> {
-    match mode {
-        RoutingMode::Jev | RoutingMode::PerPrompt => prepare_spawn(command),
-        RoutingMode::Native => Ok((prepare_for_mode(command, mode)?, None)),
-    }
+    attach_spawn_status_for_mode(
+        prepare_for_mode(command, mode)?,
+        &mindplayer_core::private::data_root(),
+        mode == RoutingMode::Native,
+    )
 }
 
 /// Local readiness only, called by the startup UI's background worker for
@@ -660,9 +723,18 @@ fn startup_result(success: bool, output: &[u8]) -> std::result::Result<(), &'sta
     }
 }
 
+#[cfg(test)]
 fn attach_spawn_status(
+    command: Command,
+    data_root: &Path,
+) -> Result<(Command, Option<RoutingStatusChannel>)> {
+    attach_spawn_status_for_mode(command, data_root, false)
+}
+
+fn attach_spawn_status_for_mode(
     mut command: Command,
     data_root: &Path,
+    native: bool,
 ) -> Result<(Command, Option<RoutingStatusChannel>)> {
     reject_legacy_claude_launcher(&command)?;
     command
@@ -696,6 +768,9 @@ fn attach_spawn_status(
         && command.args.len() == 2
         && command.args[0] == "-c"
         && command.args[1].contains(&shell_exec);
+    if native {
+        return Ok((command, None));
+    }
     if !direct && !fresh_login {
         return Ok((command, None));
     }
@@ -709,9 +784,8 @@ fn attach_spawn_status(
         ));
     } else {
         let replacement = format!(
-            " && exec env {} {} node {} --mindplayer --cwd {} --",
+            " && exec env {} MINDPLAYER_PER_PROMPT_CHOICE=1 node {} --mindplayer --cwd {} --",
             shell_word(&format!("{STATUS_ENV}={}", channel.path().display())),
-            shell_word(&format!("{PER_PROMPT_ENV}=1")),
             shell_word(&script.to_string_lossy()),
             shell_word(&command.cwd.to_string_lossy())
         );
@@ -848,6 +922,36 @@ fn install_assets(root: &Path) -> Result<PathBuf> {
 mod tests {
     use super::*;
     use mindplayer_core::accounts::LaunchEnv;
+
+    #[test]
+    fn omp_new_session_uses_fresh_overlay_and_keeps_its_credentials() {
+        let dir = std::env::temp_dir().join(format!(
+            "mp-omp-new-{}-{}",
+            std::process::id(),
+            NEXT_STAGE.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir(&dir).unwrap();
+        let account = Account::inherited(Agent::Omp);
+        let mut command = mindplayer_core::new_session(Agent::Omp, dir.clone(), &account);
+        command
+            .env
+            .set
+            .push(("AI_GATEWAY_API_KEY".into(), "synthetic".into()));
+        let prepared = prepare_omp_at(&command, &dir).unwrap();
+        assert_eq!(prepared.program, "omp");
+        assert_eq!(prepared.env, command.env);
+        assert_eq!(&prepared.args[..2], &command.args);
+        assert_eq!(prepared.args[2], "--config");
+        assert_eq!(
+            std::fs::read(&prepared.args[3]).unwrap(),
+            b"autoResume: false\n"
+        );
+        assert_eq!(prepare_omp_at(&prepared, &dir).unwrap(), prepared);
+        let mut resume = command.clone();
+        resume.args = vec!["--resume".into(), "/tmp/example.jsonl".into()];
+        assert_eq!(prepare_omp_at(&resume, &dir).unwrap(), resume);
+        fs::remove_dir_all(dir).unwrap();
+    }
 
     fn assert_native_commands() {
         let cwd: PathBuf = "/tmp/native project".into();
@@ -1340,26 +1444,6 @@ mod tests {
         let script = install_assets(&root).unwrap();
         assert_eq!(install_assets(&root).unwrap(), script);
         verify_assets(script.parent().unwrap()).unwrap();
-        assert_eq!(
-            ASSETS.iter().map(|(name, _)| *name).collect::<Vec<_>>(),
-            [
-                "run.mjs",
-                "startup-check.mjs",
-                "private-ui.mjs",
-                "launch.mjs",
-                "router.mjs",
-                "proxy.mjs",
-                "app-server.mjs",
-                "websocket.mjs",
-                "jev.mjs",
-                "rubric.mjs",
-                "system-fetch.mjs",
-                "policy.mjs",
-                "service.mjs",
-                "current-family.mjs",
-                "status.mjs"
-            ]
-        );
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;

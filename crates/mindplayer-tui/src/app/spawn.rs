@@ -740,13 +740,21 @@ impl App {
                 if self.ended.contains(id) {
                     return None;
                 }
-                let ready = match input.readiness {
-                    DeferredInputReadiness::Startup => should_send_initial_input(
-                        pty.looks_idle(),
-                        pty.output_seq(),
-                        now.saturating_duration_since(input.queued_at),
-                    ),
-                    DeferredInputReadiness::AfterIdle => self.ready_for_peer_input(id),
+                let ready = match pty.omp_model_selected() {
+                    Some(selected) => {
+                        selected
+                            && pty.bracketed_paste_enabled()
+                            && (input.readiness != DeferredInputReadiness::AfterIdle
+                                || self.ready_for_peer_input(id))
+                    }
+                    None => match input.readiness {
+                        DeferredInputReadiness::Startup => should_send_initial_input(
+                            pty.looks_idle(),
+                            pty.output_seq(),
+                            now.saturating_duration_since(input.queued_at),
+                        ),
+                        DeferredInputReadiness::AfterIdle => self.ready_for_peer_input(id),
+                    },
                 };
                 ready.then(|| id.clone())
             })
@@ -788,6 +796,11 @@ impl App {
         let Some(id) = self.focused_pane().map(str::to_string) else {
             return false;
         };
+        // The chooser (including recovery commands after cancellation) must
+        // receive input until the extension acknowledges a model selection.
+        if self.ptys.get(&id).and_then(|pty| pty.omp_model_selected()) == Some(false) {
+            return false;
+        }
         let Some(entry) = self.pending_initial_inputs.get_mut(&id) else {
             return false;
         };

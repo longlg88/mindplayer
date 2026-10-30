@@ -1077,7 +1077,56 @@ impl App {
     /// Refresh the rate-limit readout on a worker thread. Skipped when one is
     /// already in flight; the popup shows the previous values until it lands.
     pub(crate) fn spawn_limits_fetch(&mut self) {
+        self.spawn_vercel_fetch(false);
         self.spawn_limits_fetch_from(super::limits_home_for_app());
+    }
+
+    fn spawn_vercel_fetch(&mut self, force: bool) {
+        let cwd_changed = self.vercel_cwd.as_ref() != Some(&self.cwd);
+        if !force
+            && !cwd_changed
+            && self
+                .vercel_started
+                .is_some_and(|at| at.elapsed() < LIMITS_REFRESH_INTERVAL)
+        {
+            return;
+        }
+
+        // Dropping the old receiver prevents a previous directory or credential
+        // from publishing after a newer request.
+        self.vercel_budget = None;
+        self.vercel_rx = None;
+        self.vercel_cwd = Some(self.cwd.clone());
+        self.vercel_started = Some(Instant::now());
+        let cwd = self.cwd.clone();
+        let (tx, rx) = mpsc::channel();
+        thread::spawn(move || {
+            let _ = tx.send(mindplayer_core::vercel_usage::fetch_vercel_usage(&cwd));
+        });
+        self.vercel_rx = Some(rx);
+    }
+
+    fn poll_vercel_budget(&mut self) -> bool {
+        if self.vercel_cwd.as_ref().is_some_and(|cwd| cwd != &self.cwd) {
+            self.vercel_budget = None;
+            self.vercel_rx = None;
+            self.vercel_cwd = None;
+            self.vercel_started = None;
+            return true;
+        }
+        let Some(rx) = &self.vercel_rx else {
+            return false;
+        };
+        let result = match rx.try_recv() {
+            Ok(result) => result,
+            Err(mpsc::TryRecvError::Empty) => return false,
+            Err(mpsc::TryRecvError::Disconnected) => {
+                Err(mindplayer_core::vercel_usage::VercelUsageError::Unavailable)
+            }
+        };
+        self.vercel_rx = None;
+        self.vercel_budget = Some(result);
+        true
     }
 
     /// The fetch path with its cache home explicit, so the cross-process gate
@@ -1260,6 +1309,7 @@ impl App {
     /// five-minute cache and rate-limit backoff are bypassed once; an existing
     /// request is allowed to finish instead of starting a duplicate.
     pub fn refresh_limits_now(&mut self) {
+        self.spawn_vercel_fetch(true);
         self.status = "refreshing account usage".to_string();
         if self.limits_rx.is_some()
             && self
@@ -1275,11 +1325,12 @@ impl App {
 
     /// Adopt a finished rate-limit fetch. True when the popup needs redrawing.
     pub fn poll_limits(&mut self) -> bool {
+        let vercel_changed = self.poll_vercel_budget();
         let Some(rx) = &self.limits_rx else {
-            return false;
+            return vercel_changed;
         };
         let Ok(reading) = rx.try_recv() else {
-            return false;
+            return vercel_changed;
         };
         let rows = reading.rows;
         self.limits_rx = None;

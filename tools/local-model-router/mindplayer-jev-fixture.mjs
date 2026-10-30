@@ -130,8 +130,10 @@ globalThis.fetch = async function (...args) {
   } else {
     const capability = ['A', 'C'].includes(label) ? 'bounded_routine' : label === 'B' ? 'open_problem' : 'multistep_coordination';
     const entries = Object.entries(criteria ?? {});
-    const chosen = candidates.find(([, value]) => value.model === (label === 'B' ? 'gpt-6-astra' : 'gpt-6-luna')
-      && value.effort === (label === 'B' ? 'high' : 'low'))?.[0]
+    const chosen = (existsSync(join(markerDir, 'synthetic-terra-baseline'))
+      ? candidates.find(([, value]) => value.model === 'gpt-6.1-terra' && value.effort === 'xhigh') : undefined)?.[0]
+      ?? candidates.find(([, value]) => value.model === (label === 'B' ? 'gpt-6-astra' : 'gpt-6-luna')
+        && value.effort === (label === 'B' ? 'high' : 'low'))?.[0]
       ?? (syntheticCapacity ? candidates.find(([, value]) => value.model === 'gpt-6.1-sol' && value.effort === 'medium')?.[0] : undefined);
     response = Response.json({
       model: 'jev-1.13.0',

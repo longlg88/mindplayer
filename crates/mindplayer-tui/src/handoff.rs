@@ -430,6 +430,10 @@ fn extract_transcript(source: &Session) -> Result<String, String> {
             source,
             "Cursor's local meta.json contains no transcript; resume remains available by chat ID",
         )),
+        Agent::Omp => Ok(metadata_only_transcript(
+            source,
+            "OMP transcript branches are not reconstructed by MindPlayer; resume the native session for its full context",
+        )),
     }
 }
 
@@ -463,8 +467,8 @@ pub fn extract_transcript_delta(source: &Session, mark: u64) -> Option<PeerDelta
     if source.file.as_os_str().is_empty() {
         return None;
     }
-    if source.agent == Agent::Cursor {
-        return None; // Listing metadata is not an incremental conversation.
+    if matches!(source.agent, Agent::Cursor | Agent::Omp) {
+        return None; // No verified incremental active-branch transcript.
     }
     let mut transcript = source.clone();
     transcript.file = transcript_source(source);
@@ -999,6 +1003,9 @@ pub(crate) fn parse_turn_for(agent: Agent) -> fn(&Value) -> Option<(String, Stri
         Agent::Codex => parse_codex_turn,
         Agent::Kiro => parse_kiro_turn,
         Agent::Cursor => parse_cursor_turn,
+        // OMP's append-only tree can contain abandoned branches; do not
+        // present its physical record order as the active conversation.
+        Agent::Omp => parse_cursor_turn,
     }
 }
 

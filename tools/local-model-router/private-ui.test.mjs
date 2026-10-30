@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, truncateSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, truncateSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -102,7 +102,7 @@ function resolve(f, integrated = true) {
     import { resolveUiBinary, privateUiFailureReason } from ${JSON.stringify(resolverUrl)};
     try { console.log(JSON.stringify({ binary: resolveUiBinary({ integrated: ${integrated} }) })); }
     catch (error) { console.log(JSON.stringify({ code: error.code, reason: privateUiFailureReason(error), stack: error.stack })); }
-  `], { env: f.env, encoding: 'utf8', timeout: 10_000 });
+  `], { env: f.env, encoding: 'utf8', timeout: 20_000 });
   assert.equal(result.status, 0);
   assert.equal(result.stderr, '');
   assert.ok(!result.stdout.includes(SECRET), 'resolver diagnostics must not retain credential payloads');
@@ -122,7 +122,7 @@ function launch(f, integrated, { tty = false, extraEnv = {}, preload } = {}) {
   const nodeArgs = script ? ['--input-type=module', '--eval', script] : [fileURLToPath(runUrl), ...args, '--list-models'];
   if (preload) nodeArgs.unshift('--import', `data:text/javascript,${encodeURIComponent(preload)}`);
   const result = spawnSync(process.execPath, nodeArgs, {
-    env: { ...f.env, ...extraEnv }, encoding: 'utf8', timeout: 10_000,
+    env: { ...f.env, ...extraEnv }, encoding: 'utf8', timeout: 20_000,
   });
   assert.equal(result.error, undefined, 'launcher must finish within its bound');
   assert.ok(!`${result.stdout}${result.stderr}`.includes(SECRET), 'launcher diagnostics must not print credentials');
@@ -257,7 +257,13 @@ for (const [item, mode] of [
 ]) {
   test(`rejects unsafe ${item} permissions ${mode.toString(8)}`, t => {
     const f = fixture(t);
-    chmodSync({ manifest: f.manifestPath, binary: f.binary, codeModeHost: f.codeModeHost, build: f.build }[item], mode);
+    const path = { manifest: f.manifestPath, binary: f.binary, codeModeHost: f.codeModeHost, build: f.build }[item];
+    chmodSync(path, mode);
+    const observed = statSync(path).mode & 0o7777;
+    if (observed !== mode) {
+      t.skip(`filesystem changed requested mode ${mode.toString(8)} to ${observed.toString(8)}`);
+      return;
+    }
     assertFailure(f, 'ERR_PRIVATE_UI_PATH');
   });
 }
@@ -286,7 +292,12 @@ for (const size of [0, 512 * 1024 * 1024 + 1]) {
   });
 }
 
-test('contract output, exit status and execution time are bounded', { timeout: 15_000 }, t => {
+test('a slow but valid private UI contract can complete its first startup', { timeout: 18_000 }, t => {
+  const f = fixture(t, `#!/bin/sh\nexec node -e 'setTimeout(() => console.log("${CONTRACT}"), 6000)'\n`);
+  assert.equal(resolve(f).binary, f.binary);
+});
+
+test('contract output, exit status and execution time are bounded', { timeout: 22_000 }, t => {
   for (const body of [
     `#!/bin/sh\nprintf '%s\\n' '${CONTRACT}'; exit 1\n`,
     `#!/bin/sh\nprintf '%s\\n' '${CONTRACT}'; printf '%s' '${SECRET}' >&2\n`,

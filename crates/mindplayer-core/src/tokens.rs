@@ -11,10 +11,12 @@ pub struct Aggregate {
     pub claude: TokenUsage,
     pub kiro: TokenUsage,
     pub cursor: TokenUsage,
+    pub omp: TokenUsage,
     pub codex_count: usize,
     pub claude_count: usize,
     pub kiro_count: usize,
     pub cursor_count: usize,
+    pub omp_count: usize,
 }
 
 impl Aggregate {
@@ -47,13 +49,17 @@ impl Aggregate {
                     a.cursor.add(&s.tokens);
                     a.cursor_count += 1;
                 }
+                Agent::Omp => {
+                    a.omp.add(&s.tokens);
+                    a.omp_count += 1;
+                }
             }
         }
         a
     }
 
     pub fn session_count(&self) -> usize {
-        self.codex_count + self.claude_count + self.kiro_count + self.cursor_count
+        self.codex_count + self.claude_count + self.kiro_count + self.cursor_count + self.omp_count
     }
 }
 
@@ -148,14 +154,17 @@ mod tests {
             session(Agent::Codex, 100),
             session(Agent::Codex, 50),
             session(Agent::Claude, 25),
+            session(Agent::Omp, 30),
         ];
         let a = Aggregate::of(&s);
         assert_eq!(a.codex.total, 150);
         assert_eq!(a.claude.total, 25);
-        assert_eq!(a.total.total, 175);
+        assert_eq!(a.omp.total, 30);
+        assert_eq!(a.total.total, 205);
         assert_eq!(a.codex_count, 2);
         assert_eq!(a.claude_count, 1);
-        assert_eq!(a.session_count(), 3);
+        assert_eq!(a.omp_count, 1);
+        assert_eq!(a.session_count(), 4);
     }
 
     #[test]

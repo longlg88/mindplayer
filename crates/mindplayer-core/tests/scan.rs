@@ -124,6 +124,7 @@ fn fixture() -> (tempfile::TempDir, ScanConfig) {
             r#"{"schemaVersion":1,"createdAtMs":1767514200000,"hasConversation":true,"updatedAtMs":1767514300000,"cwd":"/other","isSubagent":true}"#,
         ],
     );
+    let omp_dir = dir.path().join("omp");
 
     (
         dir,
@@ -132,6 +133,7 @@ fn fixture() -> (tempfile::TempDir, ScanConfig) {
             claude_dir,
             kiro_dir,
             cursor_dir,
+            omp_dir,
         },
     )
 }
@@ -317,6 +319,7 @@ fn codex_tail_finds_token_after_huge_line() {
         claude_dir,
         kiro_dir: dir.path().join("kiro"),
         cursor_dir: dir.path().join("cursor"),
+        omp_dir: dir.path().join("omp"),
     };
     let sessions = scan(&Scope::WorkingDir("/work".into()), &cfg);
     let s = sessions
@@ -441,6 +444,7 @@ fn claude_subagent_transcript_gets_its_own_id_not_the_parents() {
         claude_dir,
         kiro_dir: dir.path().join("kiro"),
         cursor_dir: dir.path().join("cursor"),
+        omp_dir: dir.path().join("omp"),
     };
     let sessions = scan(&Scope::Global, &cfg);
     assert_eq!(
@@ -493,6 +497,7 @@ fn claude_agent_name_marks_an_externally_orchestrated_subagent_with_a_novel_titl
         claude_dir,
         kiro_dir: dir.path().join("kiro"),
         cursor_dir: dir.path().join("cursor"),
+        omp_dir: dir.path().join("omp"),
     };
     let sessions = scan(&Scope::Global, &cfg);
     let worker = sessions
@@ -534,6 +539,7 @@ fn codex_last_prompt_at_ignores_the_tool_round_trip_that_follows_it() {
         claude_dir: dir.path().join("claude"),
         kiro_dir: dir.path().join("kiro"),
         cursor_dir: dir.path().join("cursor"),
+        omp_dir: dir.path().join("omp"),
     };
     let sessions = scan(&Scope::WorkingDir("/work".into()), &cfg);
     let s = sessions.iter().find(|s| s.id == ID).expect("session found");
@@ -571,6 +577,7 @@ fn claude_last_prompt_at_ignores_tool_result_feedback() {
         claude_dir,
         kiro_dir: dir.path().join("kiro"),
         cursor_dir: dir.path().join("cursor"),
+        omp_dir: dir.path().join("omp"),
     };
     let sessions = scan(&Scope::WorkingDir("/work".into()), &cfg);
     let s = sessions.iter().find(|s| s.id == ID).expect("session found");

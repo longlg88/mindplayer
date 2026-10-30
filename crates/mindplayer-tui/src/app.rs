@@ -3,6 +3,7 @@
 
 use crate::{handoff, pty::PtySession, text_input};
 use chrono::{DateTime, Utc};
+use mindplayer_core::vercel_usage::{VercelUsage, VercelUsageError};
 use mindplayer_core::{
     refresh_activity_and_usage, resume, sort_by_recency, tokens::human_tokens, touched_recently,
     Agent, Aggregate, ScanConfig, Scope, Session, State, TokenUsage,
@@ -234,6 +235,7 @@ fn agent_rank(agent: Agent) -> u8 {
         Agent::Claude => 1,
         Agent::Kiro => 2,
         Agent::Cursor => 3,
+        Agent::Omp => 4,
     }
 }
 
@@ -527,7 +529,7 @@ pub struct App {
     /// Additional PTY spawns queued behind `pending`, e.g. multi-select launch.
     pending_queue: VecDeque<PendingSpawn>,
     account_auth: account_auth::AccountAuth,
-    /// codex/claude picker for a new session; None when hidden.
+    /// Agent and account picker for a new session; None when hidden.
     pub new_picker: Option<usize>,
     /// Target-agent picker for a cross-agent handoff.
     pub handoff_picker: Option<usize>,
@@ -579,6 +581,11 @@ pub struct App {
     /// Start time of the last completed live fetch; disk fallback never stamps it.
     pub(crate) limits_observed_at: Option<DateTime<Utc>>,
     pub(crate) limits_rx: Option<Receiver<UsageReading>>,
+    /// Usage is local to this working directory and never enters the account cache.
+    pub(crate) vercel_budget: Option<Result<VercelUsage, VercelUsageError>>,
+    pub(crate) vercel_cwd: Option<PathBuf>,
+    pub(crate) vercel_rx: Option<Receiver<Result<VercelUsage, VercelUsageError>>>,
+    pub(crate) vercel_started: Option<Instant>,
     /// The account a prompt is currently asking about, and the ones already
     /// asked this run so the question is put once rather than every refresh.
     pub(crate) unusable_prompt: Option<mindplayer_core::accounts::Account>,
@@ -810,6 +817,10 @@ impl App {
             limits: None,
             limits_observed_at: None,
             limits_rx: None,
+            vercel_budget: None,
+            vercel_cwd: None,
+            vercel_rx: None,
+            vercel_started: None,
             unusable_prompt: None,
             unusable_asked: HashSet::new(),
             pane_accounts: HashMap::new(),
@@ -1092,6 +1103,9 @@ impl App {
                     .cloned(),
             );
         }
+        // OMP owns its provider credentials and model choice. It is a single
+        // native CLI entry, not a managed Codex account.
+        out.push(self.account_for(Agent::Omp));
         out
     }
 

@@ -54,6 +54,7 @@ fn agent_tag(agent: Agent) -> (&'static str, Color) {
         Agent::Claude => ("claude", Color::Magenta),
         Agent::Kiro => ("kiro  ", Color::Cyan),
         Agent::Cursor => ("cursor", Color::Rgb(242, 170, 76)),
+        Agent::Omp => ("omp   ", Color::Green),
     }
 }
 
@@ -77,7 +78,124 @@ fn quota_label_color(label: &str) -> Color {
         "codex" => ACCENT,
         "claude" => Color::Magenta,
         "kiro" => Color::Cyan,
+        VERCEL_HEAD => Color::White,
         _ => Color::Rgb(180, 142, 240),
+    }
+}
+
+/// Provider column text for the Vercel key's budget row.
+const VERCEL_HEAD: &str = "vercel";
+
+/// The Vercel key's budget as a quota row, so it shares the provider rows' columns.
+fn vercel_quota_row(app: &App) -> mindplayer_core::limits::QuotaRow {
+    use mindplayer_core::limits::{compact_decimal, QuotaRow};
+    use mindplayer_core::vercel_usage::VercelUsageError;
+
+    let reading = if app.vercel_cwd.as_ref() == Some(&app.cwd) {
+        app.vercel_budget.as_ref()
+    } else {
+        None
+    };
+    let (label, used_percent, detail) = match reading {
+        Some(Ok(usage)) => match &usage.key {
+            Ok(budget) => {
+                let limit = usage.target.unwrap_or(budget.limit);
+                let limit_label = if usage.target.is_some() {
+                    "local target"
+                } else {
+                    "API key limit"
+                };
+                let used = budget.used / limit * 100.0;
+                (
+                    format!("key {}", budget.refresh_period)
+                        .trim_end()
+                        .to_string(),
+                    (limit > 0.0 && used.is_finite()).then_some(used),
+                    format!(
+                        "${:.2}/${} {limit_label}",
+                        budget.used,
+                        compact_decimal(limit)
+                    ),
+                )
+            }
+            Err(VercelUsageError::NoBudget) => {
+                ("key".to_string(), None, "no active budget".to_string())
+            }
+            Err(_) => ("key".to_string(), None, "unavailable".to_string()),
+        },
+        Some(Err(_)) => (String::new(), None, "unavailable".to_string()),
+        None => (String::new(), None, "loading".to_string()),
+    };
+    QuotaRow {
+        label,
+        used_percent,
+        detail,
+        ..Default::default()
+    }
+}
+
+/// The Vercel row in the provider rows' columns; a figure that would run past the edge moves to its own lines so no amount is cut short.
+fn vercel_footer_lines(
+    row: &mindplayer_core::limits::QuotaRow,
+    platform_width: usize,
+    name_width: usize,
+    width: u16,
+) -> Vec<Line<'static>> {
+    let head = Span::styled(
+        format!(" {VERCEL_HEAD:<platform_width$} "),
+        Style::default()
+            .fg(quota_label_color(VERCEL_HEAD))
+            .add_modifier(Modifier::BOLD),
+    );
+    let width = usize::from(width.max(1));
+    let mut full = vec![head.clone()];
+    full.extend(quota_row_spans(row, name_width, None));
+    if Line::from(full.clone()).width() <= width {
+        return vec![Line::from(full)];
+    }
+
+    let bare = mindplayer_core::limits::QuotaRow {
+        detail: String::new(),
+        ..row.clone()
+    };
+    let mut first = vec![head];
+    first.extend(quota_row_spans(&bare, name_width, None));
+    let indent = platform_width + 4;
+    let room = width.saturating_sub(indent);
+    let mut wrapped: Vec<String> = Vec::new();
+    for word in row.detail.split_whitespace() {
+        let word_width = Line::from(word).width();
+        match wrapped.last_mut() {
+            Some(line) if Line::from(line.as_str()).width() + 1 + word_width <= room => {
+                line.push(' ');
+                line.push_str(word);
+            }
+            _ => wrapped.push(word.to_string()),
+        }
+    }
+    if wrapped.len() > 2
+        || wrapped
+            .iter()
+            .any(|line| Line::from(line.as_str()).width() > room)
+    {
+        wrapped = vec!["widen terminal".to_string()];
+    }
+    let style = Style::default().fg(quota_detail_color(row));
+    let mut lines = vec![Line::from(first)];
+    lines.extend(
+        wrapped
+            .into_iter()
+            .map(|text| Line::from(Span::styled(format!("{:indent$}{text}", ""), style))),
+    );
+    lines
+}
+
+/// Detail text turns red when the reading means work is stopped.
+fn quota_detail_color(row: &mindplayer_core::limits::QuotaRow) -> Color {
+    if row.blocked || (row.used_percent.is_some_and(|used| used >= 100.0) && !row.spend_cap) {
+        ERROR
+    } else {
+        DIM
     }
 }
 
@@ -130,15 +248,7 @@ fn quota_row_spans(
     } else if !row.detail.is_empty() {
         spans.push(Span::styled(
             format!("  {}", row.detail),
-            Style::default().fg(
-                if row.blocked
-                    || (row.used_percent.is_some_and(|used| used >= 100.0) && !row.spend_cap)
-                {
-                    ERROR
-                } else {
-                    DIM
-                },
-            ),
+            Style::default().fg(quota_detail_color(row)),
         ));
     }
     if let Some(resets) = row.resets.as_deref() {
@@ -238,7 +348,7 @@ fn title_bar(area: Rect, f: &mut Frame) {
             Style::default().fg(DIM),
         ),
         Span::styled(
-            "  Codex / Claude / Kiro / Cursor session manager",
+            "  Codex / Claude / Kiro / Cursor / OMP session manager",
             Style::default().fg(DIM),
         ),
     ]);
@@ -280,7 +390,7 @@ fn main_title_bar(area: Rect, f: &mut Frame, app: &App) {
     f.render_widget(Paragraph::new(mode).alignment(Alignment::Right), columns[1]);
 }
 
-fn pane_provider(app: &App, sid: &str) -> Option<Agent> {
+pub(crate) fn pane_provider(app: &App, sid: &str) -> Option<Agent> {
     app.pane_accounts
         .get(sid)
         .map(|(agent, _)| *agent)
@@ -989,6 +1099,8 @@ fn scan_summary(f: &mut Frame, app: &App) {
             Span::raw(format!("{:>3}", a.kiro_count)),
             Span::styled("   cursor  ", Style::default().fg(Color::Rgb(242, 170, 76))),
             Span::raw(format!("{:>3}", a.cursor_count)),
+            Span::styled("   omp  ", Style::default().fg(Color::Green)),
+            Span::raw(format!("{:>3}", a.omp_count)),
         ])),
         rows[2],
     );
@@ -1008,11 +1120,12 @@ fn scan_summary(f: &mut Frame, app: &App) {
             ),
             Span::styled(
                 format!(
-                    "   (codex {} · claude {} · kiro {} · cursor {})",
+                    "   (codex {} · claude {} · kiro {} · cursor {} · omp {})",
                     human_tokens(a.codex.total),
                     human_tokens(a.claude.total),
                     if a.kiro_count > 0 { "—" } else { "0" },
                     if a.cursor_count > 0 { "—" } else { "0" },
+                    human_tokens(a.omp.total),
                 ),
                 Style::default().fg(DIM),
             ),
@@ -1113,17 +1226,21 @@ fn main_view(f: &mut Frame, app: &mut App) {
         }
         row.label = rest;
     }
+    let vercel_row = vercel_quota_row(app);
     let name_width = quota_rows
         .iter()
+        .chain(std::iter::once(&vercel_row))
         .map(|r| r.label.chars().count())
         .max()
         .unwrap_or(0);
     let platform_width = quota_rows
         .iter()
         .map(|r| r.agent.as_str().chars().count())
+        .chain(std::iter::once(VERCEL_HEAD.chars().count()))
         .max()
         .unwrap_or(0);
-    let quota_h = quota_rows.len() as u16;
+    let vercel_lines = vercel_footer_lines(&vercel_row, platform_width, name_width, f.area().width);
+    let quota_h = (quota_rows.len() + vercel_lines.len()).min(u16::MAX as usize) as u16;
     let footer_h: u16 = status_h + quota_h + 1 + u16::from(show_more_keys);
     let outer = Layout::default()
         .direction(Direction::Vertical)
@@ -1176,6 +1293,13 @@ fn main_view(f: &mut Frame, app: &mut App) {
                 };
                 format!("{live}enter open · v multi-select · n new · h handoff   View: / search · ? help")
             }
+            Focus::Terminal
+                if app.focused_pane().and_then(|sid| pane_provider(app, sid))
+                    == Some(Agent::Omp) =>
+            {
+                "ctrl-x list · alt-w pane · ctrl-z zoom · ctrl-q close · other keys: OMP"
+                    .to_string()
+            }
             Focus::Terminal => {
                 "ctrl-g trace · ctrl-x list · tab pane · ctrl-z zoom · ctrl-q close".to_string()
             }
@@ -1202,7 +1326,7 @@ fn main_view(f: &mut Frame, app: &mut App) {
         // The provider is named once per group. A blank there reads as "the
         // one above", which is what makes the lines a group at a glance.
         let mut previous: Option<Agent> = None;
-        let lines: Vec<Line> = quota_rows
+        let mut lines: Vec<Line> = quota_rows
             .iter()
             .map(|row| {
                 let head = if previous == Some(row.agent) {
@@ -1221,6 +1345,7 @@ fn main_view(f: &mut Frame, app: &mut App) {
                 Line::from(spans)
             })
             .collect();
+        lines.extend(vercel_lines);
         f.render_widget(Paragraph::new(lines), footer_rows[1]);
     }
     f.render_widget(
@@ -1961,7 +2086,7 @@ fn session_list(f: &mut Frame, app: &mut App, area: Rect, now: DateTime<Utc>) {
         } else {
             (
                 Line::from(Span::styled(
-                    "Run many Codex · Claude · Kiro · Cursor sessions like tabs",
+                    "Run many Codex · Claude · Kiro · Cursor · OMP sessions like tabs",
                     Style::default().fg(DIM),
                 )),
                 Line::from(vec![
@@ -2694,7 +2819,12 @@ fn render_pane(
     // stderr went to a file (sharing the PTY makes codex abort), so show that
     // instead of the empty screen.
     if let Some(reason) = app.pane_error.get(sid) {
-        render_pane_failure(f, reason, inner);
+        render_pane_failure(
+            f,
+            reason,
+            inner,
+            pane_provider(app, sid) == Some(Agent::Omp),
+        );
         return;
     }
 
@@ -3048,7 +3178,7 @@ fn pane_border_color(app: &App, sid: &str, ended: bool) -> Color {
 }
 
 /// What a pane shows instead of an empty screen when its child failed to start.
-fn render_pane_failure(f: &mut Frame, reason: &str, area: Rect) {
+fn render_pane_failure(f: &mut Frame, reason: &str, area: Rect, omp_pane: bool) {
     let mut lines = vec![
         Line::from(Span::styled(
             "this session did not start",
@@ -3065,7 +3195,11 @@ fn render_pane_failure(f: &mut Frame, reason: &str, area: Rect) {
     );
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
-        "ctrl-q closes this pane · enter on the row tries again",
+        if omp_pane {
+            "ctrl-q / alt-q closes this pane · enter on the row tries again"
+        } else {
+            "ctrl-q closes this pane · enter on the row tries again"
+        },
         Style::default().fg(DIM),
     )));
     f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), area);
@@ -3094,7 +3228,11 @@ fn new_session_popup(f: &mut Frame, choice: usize, opts: &[String]) {
         .borders(Borders::ALL)
         .border_style(Style::default().fg(ACCENT))
         .title(" New session ")
-        .title_bottom(" enter start · l another account ");
+        .title_bottom(if opts.get(choice).is_some_and(|label| label == "omp") {
+            " enter start · auth/model in OMP "
+        } else {
+            " enter start · l another account "
+        });
     let lines: Vec<Line> = opts
         .iter()
         .enumerate()
@@ -3126,6 +3264,7 @@ fn handoff_popup(f: &mut Frame, choice: usize, source: Option<&Session>, app: &A
 
     let mut lines: Vec<Line> = Vec::new();
     let mut last_provider: Option<Agent> = None;
+    let mut selected_line = 0;
     for (i, account) in targets.iter().enumerate() {
         if last_provider != Some(account.provider) {
             lines.push(Line::from(Span::styled(
@@ -3135,6 +3274,9 @@ fn handoff_popup(f: &mut Frame, choice: usize, source: Option<&Session>, app: &A
             last_provider = Some(account.provider);
         }
         let selected = i == choice;
+        if selected {
+            selected_line = lines.len();
+        }
         // Only the login it is already on is a no-op; another account of the
         // same provider is a genuine target.
         let same = source.map(|s| s.agent) == Some(account.provider)
@@ -3149,8 +3291,13 @@ fn handoff_popup(f: &mut Frame, choice: usize, source: Option<&Session>, app: &A
         if selected {
             style = style.fg(ACCENT).add_modifier(Modifier::BOLD);
         }
+        let name = if account.provider == Agent::Omp {
+            "omp"
+        } else {
+            &account.name
+        };
         lines.push(Line::from(Span::styled(
-            format!("{marker}{}{suffix}", account.name),
+            format!("{marker}{name}{suffix}"),
             style,
         )));
     }
@@ -3172,6 +3319,8 @@ fn handoff_popup(f: &mut Frame, choice: usize, source: Option<&Session>, app: &A
         width.min(f.area().width),
         (lines.len() as u16 + 2).min(f.area().height),
     );
+    let visible_rows = area.height.saturating_sub(2) as usize;
+    let scroll = selected_line.saturating_add(1).saturating_sub(visible_rows) as u16;
     f.render_widget(Clear, area);
     let block = Block::default()
         .borders(Borders::ALL)
@@ -3180,6 +3329,7 @@ fn handoff_popup(f: &mut Frame, choice: usize, source: Option<&Session>, app: &A
     f.render_widget(
         Paragraph::new(lines)
             .block(block)
+            .scroll((scroll, 0))
             .alignment(Alignment::Left),
         area,
     );
@@ -3271,21 +3421,21 @@ fn help_lines(codex_input_choice: bool) -> Vec<Line<'static>> {
         Line::from(""),
         section("Terminal / Modal"),
         item("ctrl-x", "return from terminal to session list"),
-        item("tab / shift-tab", "cycle live panes (when 2+ open)"),
-        item("ctrl-w", "cycle live panes (always)"),
+        item("tab / shift-tab", "cycle live panes when 2+ open (OMP keeps both keys)"),
+        item("ctrl-w / alt-w", "cycle live panes (alt-w in OMP)"),
         item("ctrl-z", "zoom the focused pane full-size (toggle back to split)"),
-        item("ctrl-q", "close focused pane"),
+        item("ctrl-q / alt-q", "close focused pane (alt-q also works in OMP)"),
         item(
             "ctrl-t",
-            "transition report: topic/RUNBOOK/files -> review the assembled prompt -> enter sends, e edits first",
+            "transition report outside OMP: topic/RUNBOOK/files -> review -> enter sends, e edits",
         ),
         item(
             "ctrl-p",
-            "open a local .html file in the browser: pick from detected files (badge shows the count), or tab to type a path",
+            "open a local .html file outside OMP: pick from detected files or tab to type a path",
         ),
         item(
             "ctrl-y",
-            "copy a link out of the focused pane's most recent answer that had one: a single link copies straight away, several open a picker (enter takes one, a takes all)",
+            "copy a link from the focused pane's most recent answer outside OMP",
         ),
         item("shift/alt/ctrl-enter", "insert newline in text modals"),
         item("esc", "cancel modal or close this help"),
@@ -3604,7 +3754,9 @@ fn usage_cell(s: &Session) -> String {
         },
         Agent::Cursor if s.tokens.total == 0 => "—".to_string(),
         Agent::Cursor => format!("~{} tok", human_tokens(s.tokens.total)),
-        Agent::Codex | Agent::Claude => format!("{} tok", human_tokens(s.tokens.total)),
+        Agent::Codex | Agent::Claude | Agent::Omp => {
+            format!("{} tok", human_tokens(s.tokens.total))
+        }
     }
 }
 
@@ -4473,6 +4625,222 @@ mod tests {
                     assert_eq!(app.startup_routing.mode(), Some(mode));
                 }
             }
+        }
+    }
+
+    /// The footer's one Vercel row with its column padding collapsed to single spaces.
+    fn vercel_line(frame: &str) -> String {
+        let rows: Vec<_> = frame
+            .lines()
+            .filter(|line| line.trim_start().starts_with(super::VERCEL_HEAD))
+            .collect();
+        assert_eq!(rows.len(), 1, "{frame}");
+        rows[0].split_whitespace().collect::<Vec<_>>().join(" ")
+    }
+
+    #[test]
+    fn vercel_usage_renders_local_target_for_only_the_key() {
+        use mindplayer_core::vercel_usage::{VercelBudget, VercelUsage};
+        let mut app = startup_app();
+        app.startup_routing = StartupRouting::confirmed(RoutingMode::Native);
+        app.vercel_cwd = Some(app.cwd.clone());
+        app.vercel_budget = Some(Ok(VercelUsage {
+            key: Ok(VercelBudget {
+                used: 33.0,
+                limit: 1000.0,
+                refresh_period: "monthly".into(),
+            }),
+            target: Some(200.0),
+        }));
+
+        for width in [40, 88, 140] {
+            let frame = frame_text(&startup_frame(&mut app, width, 29));
+            assert!(
+                vercel_line(&frame).starts_with("vercel key monthly ▰▱▱▱▱▱ 16.5%"),
+                "{frame}"
+            );
+            assert!(frame.contains("$33.00/$200 local target"), "{frame}");
+            assert!(!frame.contains("vercel user"), "{frame}");
+            assert!(!frame.contains("vercel team"), "{frame}");
+            assert!(!frame.contains("API key limit"), "{frame}");
+            assert!(!frame.contains("$1000"), "{frame}");
+        }
+    }
+
+    #[test]
+    fn vercel_usage_uses_real_key_limit_without_a_local_target() {
+        use mindplayer_core::vercel_usage::{VercelBudget, VercelUsage};
+        let mut app = startup_app();
+        app.startup_routing = StartupRouting::confirmed(RoutingMode::Native);
+        app.vercel_cwd = Some(app.cwd.clone());
+        app.vercel_budget = Some(Ok(VercelUsage {
+            key: Ok(VercelBudget {
+                used: 33.0,
+                limit: 1000.0,
+                refresh_period: "monthly".into(),
+            }),
+            target: None,
+        }));
+        let frame = frame_text(&startup_frame(&mut app, 140, 29));
+        assert_eq!(
+            vercel_line(&frame),
+            "vercel key monthly ▱▱▱▱▱▱ 3.3% $33.00/$1000 API key limit",
+            "{frame}"
+        );
+        assert!(!frame.contains("local target"), "{frame}");
+        assert!(!frame.contains("vercel user"), "{frame}");
+        assert!(!frame.contains("vercel team"), "{frame}");
+
+        if let Some(Ok(usage)) = &mut app.vercel_budget {
+            usage.key = Ok(VercelBudget {
+                used: 123.75,
+                limit: 100.0,
+                refresh_period: "weekly".into(),
+            });
+        }
+        let frame = frame_text(&startup_frame(&mut app, 140, 29));
+        assert_eq!(
+            vercel_line(&frame),
+            "vercel key weekly ▰▰▰▰▰▰ 123.8% $123.75/$100 API key limit",
+            "{frame}"
+        );
+    }
+
+    #[test]
+    fn vercel_usage_keeps_key_failures_and_absence_distinct() {
+        use mindplayer_core::vercel_usage::{VercelUsage, VercelUsageError};
+        let mut app = startup_app();
+        app.startup_routing = StartupRouting::confirmed(RoutingMode::Native);
+        app.vercel_cwd = Some(app.cwd.clone());
+        for (error, expected) in [
+            (VercelUsageError::Unavailable, "vercel key — unavailable"),
+            (VercelUsageError::NoBudget, "vercel key — no active budget"),
+        ] {
+            app.vercel_budget = Some(Ok(VercelUsage {
+                key: Err(error),
+                target: None,
+            }));
+            let frame = frame_text(&startup_frame(&mut app, 140, 29));
+            assert_eq!(vercel_line(&frame), expected, "{frame}");
+            assert!(!frame.contains('$'), "{frame}");
+        }
+
+        for error in [
+            VercelUsageError::NotConfigured,
+            VercelUsageError::Unavailable,
+            VercelUsageError::InvalidResponse,
+            VercelUsageError::KeyNotIdentified,
+            VercelUsageError::NoBudget,
+        ] {
+            app.vercel_budget = Some(Err(error));
+            let frame = frame_text(&startup_frame(&mut app, 140, 29));
+            assert_eq!(vercel_line(&frame), "vercel — unavailable", "{frame}");
+            assert!(!frame.contains('$'), "{frame}");
+        }
+        app.cwd.push("different-workspace");
+        let frame = frame_text(&startup_frame(&mut app, 140, 29));
+        assert_eq!(vercel_line(&frame), "vercel — loading", "{frame}");
+    }
+
+    #[test]
+    fn vercel_usage_never_displays_clipped_amounts() {
+        use mindplayer_core::vercel_usage::{VercelBudget, VercelUsage};
+        let mut app = startup_app();
+        app.startup_routing = StartupRouting::confirmed(RoutingMode::Native);
+        app.vercel_cwd = Some(app.cwd.clone());
+        app.vercel_budget = Some(Ok(VercelUsage {
+            key: Ok(VercelBudget {
+                used: 1234567890123456.0,
+                limit: 0.0,
+                refresh_period: "monthly".into(),
+            }),
+            target: None,
+        }));
+        let frame = frame_text(&startup_frame(&mut app, 88, 29));
+        assert_eq!(
+            vercel_line(&frame),
+            "vercel key monthly — $1234567890123456.00/$0 API key limit",
+            "{frame}"
+        );
+        let frame = frame_text(&startup_frame(&mut app, 40, 29));
+        assert!(frame.contains("$1234567890123456.00/$0"), "{frame}");
+        let frame = frame_text(&startup_frame(&mut app, 12, 29));
+        assert!(!frame.contains('$'), "{frame}");
+    }
+
+    #[test]
+    fn vercel_row_shares_the_provider_rows_columns_and_rounds_dollars() {
+        use mindplayer_core::limits::QuotaRow;
+        use mindplayer_core::vercel_usage::{VercelBudget, VercelUsage};
+        let mut app = startup_app();
+        app.startup_routing = StartupRouting::confirmed(RoutingMode::Native);
+        app.limits = Some(vec![
+            QuotaRow {
+                label: "codex weekly".into(),
+                agent: Agent::Codex,
+                used_percent: Some(43.0),
+                resets: Some("11-04 17:02".into()),
+                ..Default::default()
+            },
+            QuotaRow {
+                label: "claude 5h".into(),
+                agent: Agent::Claude,
+                used_percent: Some(3.0),
+                resets: Some("14:30".into()),
+                ..Default::default()
+            },
+        ]);
+        app.vercel_cwd = Some(app.cwd.clone());
+        app.vercel_budget = Some(Ok(VercelUsage {
+            key: Ok(VercelBudget {
+                used: 34.336196356,
+                limit: 1000.0,
+                refresh_period: "monthly".into(),
+            }),
+            target: Some(200.0),
+        }));
+
+        for width in [88, 140] {
+            let buffer = startup_frame(&mut app, width, 29);
+            let frame = frame_text(&buffer);
+            let quota_line = |provider: &str| {
+                frame
+                    .lines()
+                    .find(|line| {
+                        line.trim_start().starts_with(provider)
+                            && line.chars().any(|c| matches!(c, '▰' | '▱'))
+                    })
+                    .unwrap_or_else(|| panic!("no {provider} quota row: {frame}"))
+                    .to_string()
+            };
+            let column = |line: &str, mark: fn(char) -> bool| line.chars().position(mark).unwrap();
+            let gauge = |c: char| matches!(c, '▰' | '▱');
+            let percent = |c: char| c == '%';
+            let rows = ["codex", "claude", "vercel"].map(quota_line);
+            for row in &rows[1..] {
+                assert_eq!(column(row, gauge), column(&rows[0], gauge), "{frame}");
+                assert_eq!(column(row, percent), column(&rows[0], percent), "{frame}");
+            }
+            assert_eq!(
+                vercel_line(&frame),
+                "vercel key monthly ▰▱▱▱▱▱ 17.2% $34.34/$200 local target",
+                "{frame}"
+            );
+            assert!(!frame.contains("34.336"), "{frame}");
+
+            let y = (buffer.area.y..buffer.area.bottom())
+                .find(|&y| {
+                    rendered_row(&buffer, y)
+                        .trim_start()
+                        .starts_with(super::VERCEL_HEAD)
+                })
+                .unwrap();
+            let line = rendered_row(&buffer, y);
+            let fg = |mark: fn(char) -> bool| buffer[(column(&line, mark) as u16, y)].fg;
+            assert_eq!(fg(|c| c == 'v'), Color::White, "{frame}");
+            assert_eq!(fg(gauge), quota_tier(17.2), "{frame}");
+            assert_eq!(fg(percent), quota_tier(17.2), "{frame}");
+            assert_eq!(fg(|c| c == '$'), DIM, "{frame}");
         }
     }
 

@@ -14,7 +14,7 @@ const JEV_FAILURES = Object.freeze({
   'request-too-large': ['jev-request-too-large', 'Jev judgment request exceeded its size limit; nothing was sent'],
   'response-too-large': ['jev-response-too-large', 'Jev judgment response exceeded its size limit; nothing was sent'],
   'main-ownership-unverified': ['main-ownership-unverified', 'Main thread ownership is unverified; nothing was sent. Reopen the session from MindPlayer'],
-  'registry-review-required': ['registry-review-required', 'Current model-family registry requires review; nothing was sent. Update the reviewed registry before retrying'],
+  'registry-review-required': ['registry-review-required', 'Jev model registry requires review; nothing was sent. Turn F6 OFF to use the selected Codex model and submit again manually'],
   'latest-family-anchor-unavailable': ['latest-family-anchor-unavailable', 'Current model-family migration anchor is unavailable for this account; nothing was sent'],
   'latest-family-effort-unsupported': ['latest-family-effort-unsupported', 'Current model-family migration does not support the exact incoming effort; nothing was sent'],
   'latest-family-policy-conflict': ['latest-family-policy-conflict', 'Current model-family restriction conflicts with the empirical routing policy; nothing was sent'],

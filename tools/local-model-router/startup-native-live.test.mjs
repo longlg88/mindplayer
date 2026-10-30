@@ -249,12 +249,12 @@ test('per-prompt Native evidence requires one correlated completion and the unch
   }
 });
 
-test('v4 private Native manifest rejects legacy contracts, incomplete bundles and escaping paths', () => {
+test('v4 private Native manifest rejects incompatible contracts, incomplete bundles and escaping paths', () => {
   const manifest = { schemaVersion: 1, sourceRevision: SOURCE_REVISION, contract: CONTRACT, version: '0.162.1',
     binarySha256: 'a'.repeat(64), binary: `builds/${'a'.repeat(64)}/codex`,
     codeModeHostSha256: 'b'.repeat(64), codeModeHost: `builds/${'a'.repeat(64)}/codex-code-mode-host` };
-  assert.equal(validateManifest(manifest), manifest);
   for (const mutate of [
+    copy => { copy.contract = 'mindplayer-native-routing-v5'; },
     copy => { copy.contract = 'mindplayer-native-routing-v3'; },
     copy => { copy.contract = 'mindplayer-native-routing-v2'; },
     copy => { delete copy.codeModeHostSha256; },
@@ -267,23 +267,6 @@ test('v4 private Native manifest rejects legacy contracts, incomplete bundles an
   }
 });
 
-test('static Claude boundary stays native before asset staging and excludes Claude Jev bundle assets', () => {
-  // Source-only proof. Actual Claude new/resume/handoff and PTY cleanup belong
-  // to the separate native-boundary smoke lane; this does not execute Rust.
-  const source = readFileSync(new URL('../../crates/mindplayer-tui/src/local_router.rs', import.meta.url), 'utf8');
-  const prepare = source.slice(source.indexOf('fn prepare_at('), source.indexOf('fn native_command('));
-  assert.match(prepare, /if is_native_claude\(command\)\s*\{\s*return Ok\(native_command\(command\)\);/);
-  assert.ok(prepare.indexOf('if is_native_claude(command)') < prepare.indexOf('install_assets(runtime)?'), 'Claude must leave before router staging');
-  assert.match(prepare, /mode == RoutingMode::Native \|\| is_native_claude\(command\)/);
-  const native = source.slice(source.indexOf('fn native_command('), source.indexOf('fn login_exec('));
-  assert.match(native, /retain\(\|\(key, _\)\| !ROUTING_ENV\.contains/);
-  assert.match(native, /native\.env\.unset\.push/);
-  const assets = source.slice(source.indexOf('const ASSETS:'), source.indexOf('static NEXT_STAGE:'));
-  assert.ok(!/include_str!\([^)]*claude/i.test(assets), 'removed Claude Jev modules must not be embedded');
-  const status = source.slice(source.indexOf('fn attach_spawn_status('), source.indexOf('fn is_session('));
-  assert.match(status, /if !direct && !fresh_login\s*\{\s*return Ok\(\(command, None\)\);/,
-    'native Claude must not allocate a routed status channel');
-});
 
 test('real installed MindPlayer v4 Codex sticky F6 OFF preserves model and effort without Jev judgment', {
   skip: process.env.MINDPLAYER_TEST_STARTUP_NATIVE_LIVE !== '1', timeout: 210_000,

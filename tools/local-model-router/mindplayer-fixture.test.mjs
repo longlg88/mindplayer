@@ -27,6 +27,7 @@ function remoteHarness() {
   runInNewContext(`${source.slice(start, end)}\nremoteUi();`, {
     args: ['--remote', 'ws://fixture', '--remote-auth-token-env', 'TOKEN', '--cd', '/fixture'],
     markerDir: '/fixture', createPromptComposer,
+    baseline: () => ({ model: 'gpt-6-luna', effort: 'low' }),
     WebSocket: class {
       addEventListener(event, handler) { handlers.set(event, handler); }
       send(body) { sent.push(JSON.parse(body)); }

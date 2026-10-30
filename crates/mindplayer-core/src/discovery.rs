@@ -1,4 +1,4 @@
-//! Session discovery: scan the Codex, Claude, Kiro, and Cursor session stores
+//! Session discovery: scan the Codex, Claude, Kiro, Cursor, and OMP session stores
 //! and parse each provider's verified local metadata into a [`Session`].
 //!
 //! Parsing is line-by-line best-effort: a malformed or unknown line is skipped
@@ -14,6 +14,9 @@
 //!   context-window occupancy but no usable cumulative token total.
 //! - Cursor: `~/.cursor/chats/<workspace-hash>/<chat-id>/meta.json`, with cwd,
 //!   timestamps, optional title/subagent state, and no token/context/quota data.
+//! - OMP: `~/.omp/agent/sessions/<encoded-cwd>/<timestamp>_<id>.jsonl`,
+//!   with an optional title slot followed by the session header. Assistant and
+//!   model-usage records are summed within a 64 MiB read cap.
 //!
 //! Performance: the real store is multi-GB with individual Codex files up to
 //! hundreds of MB. We never read a whole file just to discover it. Codex cwd is
@@ -78,17 +81,20 @@ pub struct ScanConfig {
     pub kiro_dir: PathBuf,
     /// Cursor agent chat store: `~/.cursor/chats/<workspace-hash>/<chat-id>/meta.json`.
     pub cursor_dir: PathBuf,
+    /// OMP session store for the active native profile.
+    pub omp_dir: PathBuf,
 }
 
 impl ScanConfig {
-    /// Default locations, overridable via `MINDPLAYER_CODEX_DIR` /
-    /// `MINDPLAYER_CLAUDE_DIR` / `MINDPLAYER_KIRO_DIR` (used for manual testing).
+    /// Default locations, with `MINDPLAYER_*_DIR` overrides for manual testing.
+    /// OMP also follows its native agent directory and active profile settings.
     pub fn from_env() -> Self {
         ScanConfig {
             codex_dir: env_dir("MINDPLAYER_CODEX_DIR", &[".codex", "sessions"]),
             claude_dir: env_dir("MINDPLAYER_CLAUDE_DIR", &[".claude", "projects"]),
             kiro_dir: env_dir("MINDPLAYER_KIRO_DIR", &[".kiro", "sessions", "cli"]),
             cursor_dir: env_dir("MINDPLAYER_CURSOR_DIR", &[".cursor", "chats"]),
+            omp_dir: crate::accounts::Account::inherited(Agent::Omp).session_root(&home()),
         }
     }
 
@@ -96,16 +102,14 @@ impl ScanConfig {
     /// already had.
     pub fn roots(&self) -> Vec<SessionRoot> {
         [
-            (Agent::Codex, &self.codex_dir),
-            (Agent::Claude, &self.claude_dir),
-            (Agent::Kiro, &self.kiro_dir),
-            (Agent::Cursor, &self.cursor_dir),
+            (Agent::Codex, self.codex_dir.clone()),
+            (Agent::Claude, self.claude_dir.clone()),
+            (Agent::Kiro, self.kiro_dir.clone()),
+            (Agent::Cursor, self.cursor_dir.clone()),
+            (Agent::Omp, self.omp_dir.clone()),
         ]
         .into_iter()
-        .map(|(agent, dir)| SessionRoot {
-            agent,
-            dir: dir.clone(),
-        })
+        .map(|(agent, dir)| SessionRoot { agent, dir })
         .collect()
     }
 }
@@ -165,12 +169,22 @@ pub fn scan_roots(scope: &Scope, roots: &[SessionRoot]) -> Vec<Session> {
     let mut claude_items = Vec::new();
     let mut kiro_paths = Vec::new();
     let mut cursor_paths = Vec::new();
+    let mut omp_paths = Vec::new();
     for root in seen {
         match root.agent {
             Agent::Codex => codex_paths.extend(gather_jsonl(&root.dir)),
             Agent::Claude => claude_items.extend(gather_claude_items(&root.dir, scope)),
             Agent::Kiro => kiro_paths.extend(gather_kiro(&root.dir)),
             Agent::Cursor => cursor_paths.extend(gather_cursor(&root.dir)),
+            Agent::Omp => omp_paths.extend(
+                WalkDir::new(&root.dir)
+                    .min_depth(2)
+                    .max_depth(2)
+                    .into_iter()
+                    .filter_map(Result::ok)
+                    .map(walkdir::DirEntry::into_path)
+                    .filter(|p| is_jsonl(p)),
+            ),
         }
     }
 
@@ -183,6 +197,9 @@ pub fn scan_roots(scope: &Scope, roots: &[SessionRoot]) -> Vec<Session> {
     sessions.extend(kiro);
     let cursor = parallel_filter_map(&cursor_paths, |path| parse_cursor_file(path, scope));
     sessions.extend(cursor);
+    sessions.extend(parallel_filter_map(&omp_paths, |path| {
+        parse_omp_file(path, scope)
+    }));
     // Normalize the recency key to file mtime here (off the UI thread) — the
     // SAME source the periodic refresh uses. Parsers derive last_active from the
     // in-file transcript timestamp, which can disagree with mtime for a live
@@ -240,8 +257,11 @@ pub fn refresh_activity_and_usage(sessions: &mut [Session]) {
         s.last_active = Some(active);
 
         let changed = old_active.is_none_or(|prev| active > prev);
-        let missing_usage =
-            s.tokens.total == 0 && matches!(s.agent, Agent::Codex | Agent::Claude | Agent::Cursor);
+        let missing_usage = s.tokens.total == 0
+            && matches!(
+                s.agent,
+                Agent::Codex | Agent::Claude | Agent::Cursor | Agent::Omp
+            );
         let missing_context = s.agent == Agent::Kiro && s.context_pct.is_none();
         if !changed && !missing_usage && !missing_context {
             continue;
@@ -275,6 +295,13 @@ pub fn refresh_activity_and_usage(sessions: &mut [Session]) {
                 let estimate = cursor_token_estimate(&s.file, &s.id);
                 if estimate.total > 0 {
                     s.tokens = estimate;
+                }
+            }
+            Agent::Omp => {
+                if let Some(updated) = parse_omp_file(&s.file, &Scope::Global) {
+                    s.tokens = updated.tokens;
+                    s.last_prompt_at = updated.last_prompt_at;
+                    s.title = updated.title;
                 }
             }
         }
@@ -1239,6 +1266,129 @@ fn cursor_ms(v: &Value, key: &str) -> Option<DateTime<Utc>> {
         .flatten()
 }
 
+// --- OMP ------------------------------------------------------------------
+
+/// OMP's header, not the lossy bucket name, owns the cwd. Reads are bounded.
+fn parse_omp_file(path: &Path, scope: &Scope) -> Option<Session> {
+    let file = std::fs::canonicalize(path).ok()?;
+    let reader = BufReader::new(File::open(&file).ok()?.take(MAX_CLAUDE_BYTES));
+    let mut lines = reader.lines();
+    let first: Value = serde_json::from_str(&lines.next()?.ok()?).ok()?;
+    let (slot_title, header) = if first.get("type").and_then(Value::as_str) == Some("title") {
+        let valid = first.get("v").and_then(Value::as_u64) == Some(1)
+            && first.get("updatedAt").and_then(Value::as_str).is_some()
+            && first.get("pad").and_then(Value::as_str).is_some()
+            && first
+                .get("source")
+                .is_none_or(|source| matches!(source.as_str(), Some("auto" | "user")));
+        let title = valid
+            .then(|| first.get("title").and_then(Value::as_str))
+            .flatten()
+            .filter(|s| !s.trim().is_empty())
+            .map(clean_title);
+        let header = serde_json::from_str::<Value>(&lines.next()?.ok()?).ok()?;
+        (title, header)
+    } else {
+        (None, first)
+    };
+    if header.get("type").and_then(Value::as_str) != Some("session") {
+        return None;
+    }
+    let id = header.get("id")?.as_str()?.trim();
+    let cwd = PathBuf::from(header.get("cwd")?.as_str()?);
+    if id.is_empty() || !cwd.is_absolute() || !scope.matches(&cwd) {
+        return None;
+    }
+    let started_at = header
+        .get("timestamp")
+        .and_then(Value::as_str)
+        .and_then(parse_ts);
+    let mut last_active = started_at;
+    let mut last_prompt_at = None;
+    let mut tokens = TokenUsage::default();
+    let mut title = slot_title.or_else(|| {
+        header
+            .get("title")
+            .and_then(Value::as_str)
+            .filter(|s| !s.trim().is_empty())
+            .map(clean_title)
+    });
+    for line in lines.map_while(Result::ok) {
+        let Ok(entry) = serde_json::from_str::<Value>(&line) else {
+            continue;
+        };
+        let timestamp = entry
+            .get("timestamp")
+            .and_then(Value::as_str)
+            .and_then(parse_ts);
+        if let Some(ts) = timestamp {
+            last_active = Some(last_active.map_or(ts, |previous| previous.max(ts)));
+        }
+        let usage = match entry.get("type").and_then(Value::as_str) {
+            Some("message") => {
+                let Some(message) = entry.get("message") else {
+                    continue;
+                };
+                match message.get("role").and_then(Value::as_str) {
+                    Some("user") => {
+                        if title.is_none() {
+                            title = extract_claude_text(message)
+                                .filter(|s| !s.trim().is_empty())
+                                .map(|s| clean_title(&s));
+                        }
+                        if let Some(ts) = timestamp {
+                            last_prompt_at = Some(
+                                last_prompt_at
+                                    .map_or(ts, |previous: DateTime<Utc>| previous.max(ts)),
+                            );
+                        }
+                        None
+                    }
+                    Some("assistant") => message.get("usage"),
+                    _ => None,
+                }
+            }
+            Some("model_usage") => entry.get("usage"),
+            _ => None,
+        };
+        if let Some(usage) = usage {
+            let get = |key| usage.get(key).and_then(Value::as_u64).unwrap_or(0);
+            let input = get("input");
+            let output = get("output");
+            let cached = get("cacheRead");
+            let total = usage
+                .get("totalTokens")
+                .and_then(Value::as_u64)
+                .unwrap_or_else(|| {
+                    input
+                        .saturating_add(output)
+                        .saturating_add(cached)
+                        .saturating_add(get("cacheWrite"))
+                });
+            tokens.add(&TokenUsage {
+                input,
+                output,
+                cached,
+                total,
+            });
+        }
+    }
+    Some(Session {
+        id: id.to_string(),
+        agent: Agent::Omp,
+        cwd,
+        file,
+        started_at,
+        last_active,
+        last_prompt_at,
+        tokens,
+        title: title.unwrap_or_else(|| "(empty)".into()),
+        archived: false,
+        is_subagent: false,
+        context_pct: None,
+    })
+}
+
 // --- shared ---------------------------------------------------------------
 
 fn parse_ts(s: &str) -> Option<DateTime<Utc>> {
@@ -1278,6 +1428,82 @@ fn clean_title(raw: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn omp_discovery_and_resume_use_header_and_native_store() {
+        let dir = tempfile::tempdir().unwrap();
+        let bucket = dir.path().join("--work-project--");
+        std::fs::create_dir_all(&bucket).unwrap();
+        let file = bucket.join("2026-01-01_id.jsonl");
+        std::fs::write(&file, concat!(
+            "{\"type\":\"title\",\"v\":1,\"title\":\"Named session\",\"source\":\"user\",\"updatedAt\":\"2026-01-01T00:00:00Z\",\"pad\":\"\"}\n",
+            "{\"type\":\"session\",\"id\":\"session-id\",\"cwd\":\"/work/project\",\"timestamp\":\"2026-01-01T00:00:00Z\",\"title\":\"Old title\"}\n",
+            "{\"type\":\"message\",\"timestamp\":\"2026-01-01T00:01:00Z\",\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"First prompt\"}]}}\n",
+            "{\"type\":\"message\",\"timestamp\":\"2026-01-01T00:02:00Z\",\"message\":{\"role\":\"toolResult\",\"content\":\"not a prompt\"}}\n",
+            "{\"type\":\"message\",\"timestamp\":\"bad\",\"message\":{\"role\":\"assistant\",\"usage\":{\"input\":10,\"output\":3,\"cacheRead\":4,\"cacheWrite\":2,\"totalTokens\":19}}}\n",
+            "{\"type\":\"model_usage\",\"usage\":{\"input\":1,\"output\":2,\"cacheRead\":0,\"cacheWrite\":0,\"totalTokens\":3}}\n",
+            "{broken\n"
+        )).unwrap();
+        let root = SessionRoot {
+            agent: Agent::Omp,
+            dir: dir.path().to_path_buf(),
+        };
+        let sessions = scan_roots(
+            &Scope::WorkingDir(PathBuf::from("/work/project")),
+            std::slice::from_ref(&root),
+        );
+        assert_eq!(sessions.len(), 1);
+        let session = &sessions[0];
+        assert_eq!(session.id, "session-id");
+        assert_eq!(session.title, "Named session");
+        assert_eq!(
+            session.tokens,
+            TokenUsage {
+                input: 11,
+                output: 5,
+                cached: 4,
+                total: 22
+            }
+        );
+        assert_eq!(session.last_prompt_at, parse_ts("2026-01-01T00:01:00Z"));
+        let account = crate::accounts::Account::inherited(Agent::Omp);
+        let command = crate::resume::resume(session, &account);
+        assert_eq!(command.program, "omp");
+        assert_eq!(
+            command.args,
+            vec![
+                "--resume".to_string(),
+                std::fs::canonicalize(&file)
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned()
+            ]
+        );
+        assert_eq!(command.cwd, PathBuf::from("/work/project"));
+        assert!(command.env.is_empty());
+        assert!(scan_roots(&Scope::WorkingDir(PathBuf::from("/work/other")), &[root]).is_empty());
+    }
+
+    #[test]
+    fn omp_legacy_header_and_native_account_are_supported() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("legacy.jsonl");
+        std::fs::write(&file, concat!(
+            "{\"type\":\"session\",\"id\":\"old-id\",\"cwd\":\"/tmp/old\",\"timestamp\":\"invalid\"}\n",
+            "{\"type\":\"message\",\"timestamp\":\"2026-01-01T00:00:00Z\",\"message\":{\"role\":\"user\",\"content\":\"hello\"}}\n"
+        )).unwrap();
+        let session = parse_omp_file(&file, &Scope::Global).unwrap();
+        assert_eq!(session.title, "hello");
+        assert_eq!(session.started_at, None);
+        let account = crate::accounts::Account::inherited(Agent::Omp);
+        assert!(account.launch_env().is_empty());
+        assert!(crate::accounts::Account::isolated(dir.path(), Agent::Omp, "other").is_err());
+        let new = crate::resume::new_session(Agent::Omp, PathBuf::from("/tmp/old"), &account);
+        assert_eq!(new.program, "omp");
+        assert_eq!(new.args, ["-e", crate::resume::OMP_PICKER_MARKER]);
+        assert!(new.env.is_empty());
+        assert!(crate::resume::relogin(PathBuf::from("/tmp"), &account).is_err());
+    }
 
     /// Build a cursor chat and its transcript, and return the `meta.json` path
     /// discovery would have found. Messages are sized so the serialized

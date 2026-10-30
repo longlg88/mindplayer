@@ -82,6 +82,9 @@ the resulting minimum version.)
 
 ### Unreleased
 
+- Let Tab move to the next pane from an OMP pane too, as it does for other
+  providers, while two or more panes are open. OMP keeps Shift-Tab.
+
 - Align the Vercel key row with the provider quota rows: same columns and
   colours, and dollar amounts shown to the cent.
 

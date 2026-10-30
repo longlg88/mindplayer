@@ -256,10 +256,11 @@ available on `PATH` before choosing it. `mindplayer --help` lists the remaining
 controls.
 
 In an OMP pane, MindPlayer reserves `Ctrl-X` (list), `Ctrl-Z` (zoom),
-`Alt-W` (next pane), and `Ctrl-Q` or `Alt-Q` (close pane). As with other
-providers, closing a live pane hides it without terminating the session. OMP
-receives its native `Ctrl-P`, `Ctrl-T`, `Ctrl-G`, `Ctrl-W`, `Ctrl-Y`, Tab and
-Shift-Tab; its native `Ctrl-Q` is reserved by MindPlayer.
+`Tab` or `Alt-W` (next pane), and `Ctrl-Q` or `Alt-Q` (close pane). As with
+other providers, Tab moves panes only while two or more are open; with one
+pane, OMP receives it. Closing a live pane hides it without terminating the
+session. OMP receives its native `Ctrl-P`, `Ctrl-T`, `Ctrl-G`, `Ctrl-W`,
+`Ctrl-Y` and Shift-Tab; its native `Ctrl-Q` is reserved by MindPlayer.
 
 Handoff can also target OMP: select OMP in the handoff picker, then choose its
 conversation model and provider. The handoff context stays queued until the

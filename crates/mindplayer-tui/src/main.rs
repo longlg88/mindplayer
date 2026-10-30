@@ -68,7 +68,7 @@ selection alone never submits. Enter submits using the current mode. Jev ON send
 the bounded judgment context externally. OFF keeps the current native model and
 effort and makes no Jev call. Claude / Kiro / Cursor sessions keep their native
 input and controls. OMP runs independently; Ctrl-X returns to the list,
-Ctrl-Z zooms, Alt-W switches panes, and Ctrl-Q or Alt-Q closes its pane.";
+Ctrl-Z zooms, Tab or Alt-W switches panes, and Ctrl-Q or Alt-Q closes its pane.";
 
 const IDENTITY_HELPER_FLAG: &str = "--mindplayer-verify-codex-identity";
 const IDENTITY_HELPER_MAX_BYTES: u64 = 1024 * 1024;
@@ -1257,10 +1257,8 @@ fn handle_main_key(app: &mut App, key: KeyEvent) {
                     _ => {}
                 }
             }
-            // OMP uses Tab for completion and Shift-Tab for thinking level;
-            // its multi-pane focus shortcut is Alt-W instead.
-            if !omp_pane
-                && app.panes.len() >= 2
+            // Tab moves panes from every provider; OMP keeps Shift-Tab for its thinking level.
+            if app.panes.len() >= 2
                 && !key
                     .modifiers
                     .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER)
@@ -1270,7 +1268,7 @@ fn handle_main_key(app: &mut App, key: KeyEvent) {
                         app.cycle_focus();
                         return;
                     }
-                    KeyCode::BackTab => {
+                    KeyCode::BackTab if !omp_pane => {
                         app.cycle_focus_back();
                         return;
                     }
@@ -1690,7 +1688,7 @@ mod tests {
             program: "sh".into(),
             args: vec![
                 "-c".into(),
-                "stty raw -echo; printf KEYS_READY; od -An -tx1 -N 9".into(),
+                "stty raw -echo; printf KEYS_READY; od -An -tx1 -N 8".into(),
             ],
             cwd: std::env::temp_dir(),
             env: Default::default(),
@@ -1728,7 +1726,6 @@ mod tests {
                 KeyEvent::new(KeyCode::Char(key), KeyModifiers::CONTROL),
             );
         }
-        handle_main_key(&mut app, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
         handle_main_key(
             &mut app,
             KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT),
@@ -1740,7 +1737,7 @@ mod tests {
                 .split_once("KEYS_READY")
                 .map(|(_, hex)| hex.split_whitespace().collect())
                 .unwrap_or_default();
-            if received == ["07", "10", "14", "17", "19", "09", "1b", "5b", "5a"] {
+            if received == ["07", "10", "14", "17", "19", "1b", "5b", "5a"] {
                 break;
             }
             assert!(
@@ -1749,10 +1746,17 @@ mod tests {
             );
             std::thread::sleep(Duration::from_millis(10));
         }
-        assert_eq!(app.focused, 0, "Tab and Shift-Tab belong to OMP");
+        assert_eq!(app.focused, 0, "Shift-Tab belongs to OMP");
         assert!(!app.observer_open());
         assert!(app.transition_report_input.is_none());
         assert!(app.html_preview_input.is_none());
+        handle_main_key(&mut app, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        assert_eq!(
+            app.focused, 1,
+            "Tab changes panes from OMP like other providers"
+        );
+        app.focused = 0;
+        app.active = Some(id.clone());
         handle_main_key(
             &mut app,
             KeyEvent::new(KeyCode::Char('w'), KeyModifiers::ALT),

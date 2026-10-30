@@ -1119,6 +1119,7 @@ pub fn account_quota_rows(
                 "usage for a second Cursor login is not available",
             ))
         }
+        (_, Agent::Omp) => return Vec::new(),
     }
     let identity = limits.codex.as_ref().ok().and_then(|c| c.user.clone());
     let mut rows = limits.quota_rows();
@@ -2143,6 +2144,15 @@ fn codex_account_needs_legacy_workspace(response: &Value) -> bool {
                 .and_then(Value::as_str)
                 .is_some_and(|email| !email.trim().is_empty())
     })
+}
+
+/// Verify an app-server exchange using the same identity used for stored Codex bindings.
+pub fn codex_exchange_fingerprint(
+    account_response: &Value,
+    quota_response: Option<&Value>,
+) -> Result<String, ProbeError> {
+    codex_account_from_exchange(account_response, quota_response)
+        .map(|identity| identity.fingerprint)
 }
 
 fn codex_account_from_exchange(

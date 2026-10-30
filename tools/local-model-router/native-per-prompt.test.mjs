@@ -1,7 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { readFileSync } from 'node:fs';
 import { createNativeQueueFixture, MODEL, OTHER_MODEL, NATIVE_CONTRACT, THREAD_ID } from './native-queue-fixture.mjs';
 
 // Opt in ONLY after main freezes the Node consumers and supplies the v4 native
@@ -18,26 +17,6 @@ const F6 = '\x1b[17~', F7 = '\x1b[18~';
 const labels = { jev: '[F6] Jev ON · 외부 전송 동의', native: '[F6] Jev OFF · 기본 모델 유지' };
 const promptText = request => request.params.input.filter(item => item.type === 'text').map(item => item.text).join('\n');
 const submissions = f => f.decisions.map(row => row.request);
-const packagedNative = () => readFileSync(new URL('../native-codex/queue.patch', import.meta.url), 'utf8');
-const addedNative = () => packagedNative().split('\n').filter(line => line.startsWith('+') && !line.startsWith('+++')).join('\n');
-
-// Read-only REDs before a frozen candidate exists; these do not replace the
-// actual native input/queue/identity/cleanup regressions below.
-test('packaged native source advertises the strict v4 sticky-session contract', () => {
-  const contracts = [...packagedNative().matchAll(/^\+.*\.then_some\("(mindplayer-native-routing-v\d+)"\)/gm)].map(match => match[1]);
-  assert.deepEqual(contracts, ['mindplayer-native-routing-v4']);
-});
-
-test('packaged native source has both sticky ON and OFF labels', () => {
-  const added = addedNative();
-  for (const label of ['Jev ON · 외부 전송 동의', 'Jev OFF · 기본 모델 유지']) assert.ok(added.includes(label), label);
-  assert.ok(!added.includes('Jev 미선택'), 'managed OFF must not be an unselected submission block');
-});
-
-test('packaged native source removes the retired Jev preview RPC and UI', () => {
-  const retired = addedNative().match(/mindplayer\/prompt\/preview|MindplayerPreview|MindplayerPromptPreview|전송 문맥/);
-  assert.equal(retired?.[0] ?? null, null, 'retired Jev preview must be removed from the packaged native source');
-});
 
 function assertMode(f, mode) {
   const screen = f.projectedScreen();

@@ -5,11 +5,87 @@
 //! - Claude resume: `claude --resume <id>`           (run in the session cwd)
 //! - Kiro resume:   `kiro-cli chat --resume-id <id> --trust-all-tools --v3`
 //! - Cursor resume: `agent --resume <chatId>`        (run in the session cwd)
-//! - New session:   `codex` / `claude` / `kiro-cli chat --trust-all-tools --v3` / `agent`
+//! - OMP resume:    `omp --resume <session-file>`       (run in the session cwd)
+//! - New session:   `codex` / `claude` / `kiro-cli chat --trust-all-tools --v3` / `agent` / `omp`
 
 use crate::accounts::{Account, LaunchEnv};
 use crate::session::{Agent, Session};
 use std::path::{Path, PathBuf};
+
+/// Internal argument resolved to a private embedded extension before PTY spawn.
+pub const OMP_PICKER_MARKER: &str = "<mindplayer-omp-model-picker>";
+
+const OMP_MODEL_PICKER: &str = include_str!("omp_model_picker.js");
+
+/// Owns the private extension directory for the lifetime of an OMP pane.
+pub struct OmpPickerFile {
+    directory: PathBuf,
+}
+
+impl OmpPickerFile {
+    /// Create the embedded extension and replace the internal launch marker.
+    ///
+    /// # Errors
+    /// Returns an error if the private directory or extension cannot be created.
+    pub fn prepare(command: &mut Command) -> std::io::Result<Option<Self>> {
+        Self::prepare_in(command, &std::env::temp_dir())
+    }
+
+    fn prepare_in(command: &mut Command, root: &Path) -> std::io::Result<Option<Self>> {
+        use std::io::Write;
+        use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        if command.program != "omp"
+            || command.args.first().map(String::as_str) != Some("-e")
+            || command.args.get(1).map(String::as_str) != Some(OMP_PICKER_MARKER)
+        {
+            return Ok(None);
+        }
+        static NEXT_ID: AtomicU64 = AtomicU64::new(0);
+        let directory = loop {
+            let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+            let path = root.join(format!("mindplayer-omp-{}-{id}", std::process::id()));
+            match std::fs::DirBuilder::new().mode(0o700).create(&path) {
+                Ok(()) => break path,
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(error) => return Err(error),
+            }
+        };
+        let picker = Self { directory };
+        let path = picker.directory.join("omp_model_picker.js");
+        let path_string = path.to_str().ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "OMP extension path is not UTF-8",
+            )
+        })?;
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&path)?;
+        file.write_all(OMP_MODEL_PICKER.as_bytes())?;
+        command.args[1] = path_string.to_owned();
+        Ok(Some(picker))
+    }
+
+    /// Path the extension uses to acknowledge that its input guard is installed.
+    pub fn ready_path(&self) -> PathBuf {
+        self.directory.join("ready")
+    }
+
+    /// Path acknowledged only after a model has been selected and the picker closes.
+    pub fn selected_path(&self) -> PathBuf {
+        self.directory.join("selected")
+    }
+}
+
+impl Drop for OmpPickerFile {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.directory);
+    }
+}
 
 /// A spawnable command: program, args, the directory to run it in, and the
 /// environment that decides which login the CLI runs on.
@@ -29,16 +105,27 @@ pub struct Command {
 /// lives under that account's home, so resuming on another account finds
 /// nothing to resume.
 pub fn resume(session: &Session, account: &Account) -> Command {
-    let id = session.id.clone();
     let args = match session.agent {
-        Agent::Codex => codex_args(&session.cwd, account, vec!["resume".to_string(), id]),
-        Agent::Claude => vec!["--resume".to_string(), id],
+        Agent::Codex => codex_args(
+            &session.cwd,
+            account,
+            vec!["resume".to_string(), session.id.clone()],
+        ),
+        Agent::Claude => vec!["--resume".to_string(), session.id.clone()],
         Agent::Kiro => {
-            let mut args = vec!["chat".to_string(), "--resume-id".to_string(), id];
+            let mut args = vec![
+                "chat".to_string(),
+                "--resume-id".to_string(),
+                session.id.clone(),
+            ];
             args.extend(KIRO_FLAGS.iter().map(|f| f.to_string()));
             args
         }
-        Agent::Cursor => vec!["--resume".to_string(), id],
+        Agent::Cursor => vec!["--resume".to_string(), session.id.clone()],
+        Agent::Omp => vec![
+            "--resume".to_string(),
+            session.file.to_string_lossy().into_owned(),
+        ],
     };
     Command {
         program: session.agent.program().to_string(),
@@ -119,6 +206,7 @@ pub fn new_session(agent: Agent, cwd: PathBuf, account: &Account) -> Command {
             args
         }
         Agent::Codex => codex_args(&cwd, account, Vec::new()),
+        Agent::Omp => vec!["-e".to_string(), OMP_PICKER_MARKER.to_string()],
         Agent::Claude | Agent::Cursor => Vec::new(),
     };
     Command {
@@ -141,6 +229,8 @@ pub fn login(agent: Agent, cwd: PathBuf, account: &Account) -> Command {
         Agent::Claude => vec!["auth".to_string(), "login".to_string()],
         Agent::Kiro => vec!["user".to_string(), "login".to_string()],
         Agent::Cursor => vec!["login".to_string()],
+        // OMP configures providers in its own interactive UI.
+        Agent::Omp => Vec::new(),
     };
     Command {
         program: agent.program().to_string(),
@@ -158,6 +248,7 @@ fn logout_args(agent: Agent) -> Vec<String> {
         Agent::Claude => vec!["auth".to_string(), "logout".to_string()],
         Agent::Kiro => vec!["user".to_string(), "logout".to_string()],
         Agent::Cursor => vec!["logout".to_string()],
+        Agent::Omp => Vec::new(),
     }
 }
 
@@ -172,7 +263,7 @@ pub fn browser_hint(agent: Agent) -> String {
         Agent::Codex => Some("chatgpt.com"),
         Agent::Claude => Some("claude.ai"),
         Agent::Cursor => Some("cursor.com"),
-        Agent::Kiro => None,
+        Agent::Kiro | Agent::Omp => None,
     };
     let what = site.map_or_else(
         || format!("{} in your browser", agent.as_str()),
@@ -195,7 +286,7 @@ pub fn browser_hint(agent: Agent) -> String {
 pub fn account_chooser_url(agent: Agent) -> Option<&'static str> {
     match agent {
         Agent::Codex => Some("https://auth.openai.com/choose-an-account"),
-        Agent::Claude | Agent::Kiro | Agent::Cursor => None,
+        Agent::Claude | Agent::Kiro | Agent::Cursor | Agent::Omp => None,
     }
 }
 
@@ -213,6 +304,9 @@ pub fn account_chooser_url(agent: Agent) -> Option<&'static str> {
 /// # Errors
 /// Returns the reason when `account` is the login this machine came with.
 pub fn relogin(cwd: PathBuf, account: &Account) -> Result<Command, String> {
+    if account.provider == Agent::Omp {
+        return Err("OMP authentication is managed by OMP".into());
+    }
     if account.is_inherited() {
         return Err("the login this machine came with is signed out where you made it".into());
     }
@@ -326,6 +420,71 @@ mod tests {
             is_subagent: false,
             context_pct: None,
         }
+    }
+
+    #[test]
+    fn omp_new_session_materializes_private_embedded_picker() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = tempfile::tempdir().unwrap();
+        let mut command = new_session(
+            Agent::Omp,
+            PathBuf::from("/work"),
+            &Account::inherited(Agent::Omp),
+        );
+        command
+            .args
+            .extend(["--config".into(), "/tmp/config.yml".into()]);
+        let picker = OmpPickerFile::prepare_in(&mut command, root.path())
+            .unwrap()
+            .unwrap();
+        let path = PathBuf::from(&command.args[1]);
+        assert_eq!(command.args[0], "-e");
+        assert_eq!(&command.args[2..], ["--config", "/tmp/config.yml"]);
+        assert!(path.starts_with(root.path()));
+        assert_eq!(
+            std::fs::metadata(path.parent().unwrap())
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o700
+        );
+        assert!(!picker.ready_path().exists());
+        let selected = picker.selected_path();
+        assert!(!selected.exists());
+        std::fs::write(&selected, "selected\n").unwrap();
+        drop(picker);
+        assert!(!path.exists());
+        assert!(!selected.exists());
+    }
+
+    #[test]
+    fn omp_picker_creation_failure_does_not_modify_command() {
+        let root = tempfile::tempdir().unwrap();
+        let mut command = new_session(
+            Agent::Omp,
+            PathBuf::from("/work"),
+            &Account::inherited(Agent::Omp),
+        );
+        let original = command.clone();
+        assert!(OmpPickerFile::prepare_in(&mut command, &root.path().join("missing")).is_err());
+        assert_eq!(command, original);
+    }
+
+    #[test]
+    fn omp_resume_does_not_materialize_picker() {
+        let root = tempfile::tempdir().unwrap();
+        let mut command = resume(
+            &session(Agent::Omp, "old", "/work"),
+            &Account::inherited(Agent::Omp),
+        );
+        let original = command.clone();
+        assert!(OmpPickerFile::prepare_in(&mut command, root.path())
+            .unwrap()
+            .is_none());
+        assert_eq!(command, original);
+        assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 0);
     }
 
     #[test]

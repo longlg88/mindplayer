@@ -12,6 +12,7 @@ pub enum Agent {
     Claude,
     Kiro,
     Cursor,
+    Omp,
 }
 
 impl Agent {
@@ -23,6 +24,7 @@ impl Agent {
             Agent::Claude => "claude",
             Agent::Kiro => "kiro",
             Agent::Cursor => "cursor",
+            Agent::Omp => "omp",
         }
     }
 
@@ -34,6 +36,7 @@ impl Agent {
             Agent::Claude => "claude",
             Agent::Kiro => "kiro-cli",
             Agent::Cursor => "agent",
+            Agent::Omp => "omp",
         }
     }
 }
@@ -79,7 +82,7 @@ impl TokenUsage {
     }
 }
 
-/// A discovered Codex, Claude, Kiro, or Cursor session.
+/// A discovered Codex, Claude, Kiro, Cursor, or OMP session.
 #[derive(Debug, Clone, Serialize)]
 pub struct Session {
     /// Codex UUID / Claude sessionId.

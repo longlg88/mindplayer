@@ -497,16 +497,20 @@ export class JevService {
     // cannot acquire eligibility by borrowing the current anchor.
     if (this.latestFamily) catalogConfigurations(this.catalog, baseline, { ...catalogOptions, now: this.now(), baselineOnly: true });
     const family = this.latestFamily ? reviewFamilyRegistry(this.latestFamily, { catalog: this.catalog, now: this.now() }) : null;
-    const migrating = family && !family.currentModels.includes(baseline.model);
+    const baselineOnly = family?.baselineOnlyModels.includes(baseline.model) ?? false;
+    const migrating = family && !baselineOnly && !family.currentModels.includes(baseline.model);
     if (migrating && !family.legacyModels.includes(baseline.model)) throw fail('registry-review-required');
     if (migrating && policy) throw fail('latest-family-policy-conflict');
     const fallback = migrating ? { model: family.frontier, effort: baseline.effort } : baseline;
     const capacityRecovery = this.capacityBlocked(thread, fallback.model);
-    const familyCatalog = () => family ? this.catalog.filter(row => family.currentModels.includes(row?.model)) : this.catalog;
+    // An unranked reviewed model is eligible only when the user selected it;
+    // never offer it as a general alternative or migrate other models to it.
+    const allowed = model => family.currentModels.includes(model) || (baselineOnly && model === baseline.model);
+    const familyCatalog = () => family ? this.catalog.filter(row => allowed(row?.model)) : this.catalog;
     const nativeEligible = value => {
       if (this.capacityBlocked(thread, value.model)) return false;
       if (!family) return true;
-      if (!family.currentModels.includes(value.model) || (baseline.effort === 'ultra'
+      if (!allowed(value.model) || (baseline.effort === 'ultra'
         ? !sameConfiguration(value, fallback) : value.effort === 'ultra')) return false;
       try { catalogConfigurations(familyCatalog(), value, { ...catalogOptions, now: this.now(), baselineOnly: true }); return true; }
       catch { return false; }
@@ -550,7 +554,7 @@ export class JevService {
         if (reviewed.version !== binding.registryVersion || reviewed.digest !== binding.registryDigest) throw fail('registry-review-required');
       }
       const guarded = selected => {
-        if (family && !family.currentModels.includes(selected.model)) throw fail('latest-family-selection-invalid');
+        if (family && !allowed(selected.model)) throw fail('latest-family-selection-invalid');
         if (!nativeEligible(selected)) throw fail('selected-configuration-unavailable');
         return selected;
       };

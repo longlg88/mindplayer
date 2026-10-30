@@ -82,6 +82,32 @@ the resulting minimum version.)
 
 ### Unreleased
 
+- Reduce development build storage and clean up isolated smoke-test fixtures.
+
+- Show only Vercel key usage, with an optional key-specific local display
+  target that does not change or enforce the server-side budget.
+
+- Allow handoff to OMP, choosing a model and provider before delivering context.
+
+- Show the Vercel AI Gateway API key's effective budget and current-period
+  usage in the session-list footer when its suffix uniquely matches a key.
+
+- Add an OMP conversation-model and provider-route selector for new sessions;
+  cancellation blocks ordinary input until a model is selected. Resumed
+  sessions and auxiliary or subagent model settings are unchanged.
+
+- Let `Ctrl-Q` close an OMP pane like other providers; `Alt-Q` remains available.
+
+- Fix Jev rejecting the account's explicitly selected GPT-6.1 Terra baseline.
+  An unranked model is offered only when the user selected it and the live
+  catalog permits it; other unreviewed models still require review. A registry
+  failure now explains how to choose native routing and retry manually.
+
+- Start the actual OMP CLI from the new-session picker and discover/resume its
+  native sessions, using OMP's own authentication and model configuration.
+  Preserve OMP's other native input shortcuts; use Alt-W for pane navigation.
+  Remove the former Codex Flow mode.
+
 - Add the session base-camp view draft (`docs/plans/2026-10-23-office-view-gallery.ko.html`):
   read-only companions on a daily terrain with fenced stations, category capture
   and a species dex, with an offline interaction test.

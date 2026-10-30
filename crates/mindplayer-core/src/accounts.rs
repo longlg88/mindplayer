@@ -296,6 +296,9 @@ impl Account {
     /// Claude must UNSET its config override: explicitly setting `~/.claude`
     /// selects a different, path-hashed macOS Keychain service.
     pub fn launch_env(&self) -> LaunchEnv {
+        if self.provider == Agent::Omp {
+            return LaunchEnv::default();
+        }
         if self.provider == Agent::Claude && self.is_inherited() {
             return claude_launch_env(None);
         }
@@ -357,6 +360,7 @@ impl Account {
                     "CURSOR_AUTH_TOKEN".into(),
                 ],
             },
+            Agent::Omp => LaunchEnv::default(),
         }
     }
 
@@ -376,6 +380,7 @@ impl Account {
             Agent::Claude => base.join("projects"),
             Agent::Kiro => base.join(".kiro").join("sessions").join("cli"),
             Agent::Cursor => base.join(".cursor").join("chats"),
+            Agent::Omp => inherited_session_root(Agent::Omp, fallback_home),
         }
     }
 }
@@ -428,6 +433,43 @@ fn inherited_session_root(provider: Agent, home: &Path) -> PathBuf {
         Agent::Claude => home.join(".claude").join("projects"),
         Agent::Kiro => home.join(".kiro").join("sessions").join("cli"),
         Agent::Cursor => home.join(".cursor").join("chats"),
+        Agent::Omp => {
+            if let Some(dir) = std::env::var_os("MINDPLAYER_OMP_DIR").filter(|v| !v.is_empty()) {
+                return PathBuf::from(dir);
+            }
+            let profile = std::env::var("OMP_PROFILE")
+                .ok()
+                .or_else(|| std::env::var("PI_PROFILE").ok())
+                .filter(|p| !p.trim().is_empty() && p.trim() != "default")
+                .map(|p| p.trim().to_string());
+            let config = std::env::var_os("PI_CONFIG_DIR")
+                .filter(|v| !v.is_empty())
+                .unwrap_or_else(|| ".omp".into());
+            let mut config_root = home.join(config);
+            if let Some(profile) = &profile {
+                config_root = config_root.join("profiles").join(profile);
+            }
+            let override_dir = if profile.is_none() {
+                std::env::var_os("PI_CODING_AGENT_DIR").filter(|v| !v.is_empty())
+            } else {
+                None
+            };
+            if let Some(dir) = override_dir {
+                return PathBuf::from(dir).join("sessions");
+            }
+            if cfg!(any(target_os = "linux", target_os = "macos")) {
+                if let Some(data) = std::env::var_os("XDG_DATA_HOME").filter(|v| !v.is_empty()) {
+                    let mut root = PathBuf::from(data).join("omp");
+                    if let Some(profile) = &profile {
+                        root = root.join("profiles").join(profile);
+                    }
+                    if root.exists() {
+                        return root.join("sessions");
+                    }
+                }
+            }
+            config_root.join("agent").join("sessions")
+        }
     }
 }
 
@@ -563,6 +605,9 @@ fn one_primary_per_provider(accounts: &mut [Account]) {
 /// # Errors
 /// Returns the reason when the slot is not one of ours, or the delete fails.
 pub fn forget_login(account: &Account, home: &Path) -> Result<(), String> {
+    if account.provider == Agent::Omp {
+        return Err("OMP authentication is managed by OMP".into());
+    }
     let Slot::Isolated { path } = &account.slot else {
         return Err("the login already on this machine is not MindPlayer's to delete".into());
     };
@@ -600,6 +645,7 @@ fn whoami_command(agent: Agent) -> (&'static str, &'static [&'static str], &'sta
         Agent::Claude => (&["auth", "status"], "\"loggedin\": false"),
         Agent::Kiro => (&["whoami"], "not logged in"),
         Agent::Cursor => (&["status"], "not logged in"),
+        Agent::Omp => (&[], ""),
     };
     (agent.program(), args, marker)
 }
@@ -612,6 +658,9 @@ fn whoami_command(agent: Agent) -> (&'static str, &'static [&'static str], &'sta
 /// have nothing to do with this, and acting on a guess would interrupt
 /// someone over a dropped network.
 pub fn signed_out(account: &Account, home: &Path) -> Option<bool> {
+    if account.provider == Agent::Omp {
+        return None;
+    }
     let (program, args, marker) = whoami_command(account.provider);
     let mut command = std::process::Command::new(program);
     command

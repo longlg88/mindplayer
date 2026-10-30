@@ -388,8 +388,30 @@ fn keychain_service(
     Ok(format!("Claude Code-credentials-{}", &digest[..8]))
 }
 
+pub(crate) fn run(
+    command: &mut Command,
+    input: &[u8],
+    deadline: Instant,
+) -> Result<Output, ProbeError> {
+    run_inner(command, input, deadline, false)
+}
+
+/// Preserve the gateway key only for the OMP credential lookup.
+pub(crate) fn run_with_gateway_key(
+    command: &mut Command,
+    input: &[u8],
+    deadline: Instant,
+) -> Result<Output, ProbeError> {
+    run_inner(command, input, deadline, true)
+}
+
 #[cfg(unix)]
-fn run(command: &mut Command, input: &[u8], deadline: Instant) -> Result<Output, ProbeError> {
+fn run_inner(
+    command: &mut Command,
+    input: &[u8],
+    deadline: Instant,
+    preserve_gateway_key: bool,
+) -> Result<Output, ProbeError> {
     use std::os::fd::AsRawFd;
     use std::os::unix::process::CommandExt;
     struct Child(std::process::Child);
@@ -433,7 +455,9 @@ fn run(command: &mut Command, input: &[u8], deadline: Instant) -> Result<Output,
         return Err(temporary());
     }
     for key in crate::accounts::ROUTER_SERVICE_ENV {
-        command.env_remove(key);
+        if !preserve_gateway_key || *key != "AI_GATEWAY_API_KEY" {
+            command.env_remove(key);
+        }
     }
     let mut child = Child(
         command
@@ -497,7 +521,7 @@ fn run(command: &mut Command, input: &[u8], deadline: Instant) -> Result<Output,
 }
 
 #[cfg(not(unix))]
-fn run(_: &mut Command, _: &[u8], _: Instant) -> Result<Output, ProbeError> {
+fn run_inner(_: &mut Command, _: &[u8], _: Instant, _: bool) -> Result<Output, ProbeError> {
     Err(unreadable())
 }
 

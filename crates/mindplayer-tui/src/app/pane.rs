@@ -1267,6 +1267,12 @@ impl App {
         }
         // Never held for a pending initial input, unlike typing: a dropped path only reaches the child as a paste, now.
         if let Some(id) = self.focused_pane().map(str::to_string) {
+            if self.pending_initial_inputs.contains_key(&id)
+                && self.ptys.get(&id).and_then(|pty| pty.omp_model_selected()) == Some(true)
+            {
+                self.status = "waiting for target prompt to submit initial context".to_string();
+                return false;
+            }
             let submits = input_submits_turn(text.as_bytes())
                 && self.ptys.get(&id).is_some_and(|p| {
                     p.parser()

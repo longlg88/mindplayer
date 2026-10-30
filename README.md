@@ -100,20 +100,21 @@ the sessions you already have.
   `/usage` command, and Cursor calls its first-party `/api/usage-summary`. A
   quota with no number is shown as the **reason** it's missing, never as `0%` —
   which would read as "plenty left".
-- 📚 **Conversation log** — every user/assistant turn is mirrored out of the
-  agents' own transcripts into one normalized store at `~/.mindplayer/convo/`.
-  Theirs are three different per-agent formats that rotate and get cleared;
-  this keeps just the conversation, in one shape, as plain JSONL you can grep.
-  It grows incrementally by byte watermark, so a re-scan costs nothing, and a
+  The Vercel row reports the active AI Gateway key's budget and current-period
+  spend when the key and its budget can be identified.
+- 📚 **Conversation log** — Codex, Claude, and Kiro user/assistant turns are
+  mirrored from the agents' transcripts into a normalized store at
+  `~/.mindplayer/convo/`. Cursor and OMP transcripts are not mirrored.
+  The store grows incrementally by byte watermark, so a re-scan costs nothing,
+  and preserves turns even when the original logs rotate or are cleared. A
   directory lock keeps two MindPlayer instances from duplicating each other's
   work.
 - ⛶ **Live panes** — drive one session full‑screen or split the view across
   every session you launch together (mark a whole topic and they all land in
   one grid). <kbd>Tab</kbd> (or <kbd>Ctrl‑w</kbd>) cycles focus,
   <kbd>Ctrl‑z</kbd> zooms the focused pane back to full size (toggle again for
-  the split — no more squinting at a packed grid), <kbd>Ctrl‑o</kbd> toggles
-  the horizontal/vertical split, <kbd>Ctrl‑q</kbd> closes the focused pane,
-  and <kbd>Ctrl‑x</kbd> pops back to the list.
+  the split), <kbd>Ctrl‑q</kbd> closes the focused pane, and <kbd>Ctrl‑x</kbd>
+  pops back to the list.
 - 🗓️ **Recent first** — the list opens with everything touched in the **last
   24 hours** (a rolling window, not a calendar day — no midnight cliff) grouped
   at the top under a `recent` / `older` divider, so what you're working on now
@@ -236,8 +237,37 @@ On that first screen, <kbd>c</kbd> opens the character picker — the rubber
 duck walking on the floor can become a bunny, chick, slime, penguin, or
 octopus, and the choice sticks for next time.
 
-Press <kbd>n</kbd> for a new Codex / Claude / Kiro / Cursor session. `mindplayer --help`
-lists the rest.
+Press <kbd>n</kbd> for a new Codex / Claude / Kiro / Cursor / OMP session.
+The OMP choice runs the installed `omp` executable in the selected working
+directory. A new OMP session asks you to select a conversation model and its
+provider route from OMP's authenticated model catalog before sending a message.
+Cancel leaves ordinary input blocked; use `/mindplayer-model` to choose again
+or `/login` to add credentials. The catalog does not verify live entitlement
+for each model, and provider labels do not identify individual accounts in an
+OMP account pool. This selection does not set models used by auxiliary roles
+or subagents; extension-initiated side turns are not covered by the input guard.
+OMP keeps its own provider login, model configuration, tools, and session data;
+MindPlayer does not copy
+Codex credentials or route OMP through Jev. A new pane uses a per-run
+`autoResume: false` overlay; it does not change OMP's saved settings. Existing
+OMP sessions are discovered from the active OMP session store and resumed by
+their session file without the new-session picker. Install OMP and make `omp`
+available on `PATH` before choosing it. `mindplayer --help` lists the remaining
+controls.
+
+In an OMP pane, MindPlayer reserves `Ctrl-X` (list), `Ctrl-Z` (zoom),
+`Alt-W` (next pane), and `Ctrl-Q` or `Alt-Q` (close pane). As with other
+providers, closing a live pane hides it without terminating the session. OMP
+receives its native `Ctrl-P`, `Ctrl-T`, `Ctrl-G`, `Ctrl-W`, `Ctrl-Y`, Tab and
+Shift-Tab; its native `Ctrl-Q` is reserved by MindPlayer.
+
+Handoff can also target OMP: select OMP in the handoff picker, then choose its
+conversation model and provider. The handoff context stays queued until the
+choice succeeds; cancelling the picker leaves it queued while you retry with
+`/mindplayer-model`.
+
+MindPlayer's Trace and handoff views do not reconstruct OMP's branched
+transcript; inspect the conversation inside OMP instead.
 
 Codex and Claude launches (new, resume, and handoff) verify the selected home's
 provider-reported user and workspace/organization before execution, using one
@@ -292,19 +322,18 @@ make test                                          # cargo test --all
 | --- | --- |
 | <kbd>↑</kbd> <kbd>↓</kbd> | move selection (`▶`) |
 | <kbd>→</kbd> / <kbd>←</kbd> | move around the tree: <kbd>→</kbd> unfolds a **category** then steps inside it, <kbd>←</kbd> folds it and steps back out to the header. Neither opens a session — that's <kbd>Enter</kbd> |
-| <kbd>Enter</kbd> | open the selected session (on a **category** header, folds/unfolds it instead), **adding it to the live view** (resume, or focus if already shown); remove a pane with <kbd>Ctrl‑q</kbd>. In multi‑select mode, launch **all marked** at once |
+| <kbd>Enter</kbd> | open the selected session (on a **category** header, folds/unfolds it instead), **adding it to the live view** (resume, or focus if already shown); remove a pane with <kbd>Ctrl‑q</kbd>. In multi-select mode, launch **all marked** at once |
 | <kbd>v</kbd> | toggle **multi‑select** mode — then <kbd>Space</kbd> marks sessions and <kbd>Enter</kbd> launches them all (<kbd>Esc</kbd> cancels) |
 | <kbd>Space</kbd> | mark / unmark the selected session (`✓`) — multi‑select mode only |
-| <kbd>Tab</kbd> / <kbd>Shift‑Tab</kbd> | inside live panes, cycle focus forward / back (only when 2+ panes are open; otherwise <kbd>Tab</kbd> goes to the session) |
-| <kbd>Ctrl‑w</kbd> | cycle live‑pane focus (same as <kbd>Tab</kbd>; needs 2+ panes) |
+| <kbd>Tab</kbd> / <kbd>Shift‑Tab</kbd> | cycle live panes when 2+ are open; in OMP both keys go to OMP |
+| <kbd>Ctrl‑w</kbd> / <kbd>Alt‑w</kbd> | cycle live-pane focus; use <kbd>Alt‑w</kbd> in OMP |
 | <kbd>Ctrl‑z</kbd> | zoom the focused pane to full size (toggle again for the split view) |
-| <kbd>Ctrl‑o</kbd> | toggle the live‑pane split (horizontal ⇄ vertical) |
-| <kbd>Ctrl‑q</kbd> | close the focused live pane |
-| <kbd>Ctrl‑t</kbd> | **transition report** — `topic / RUNBOOK §n / files` → review the assembled prompt → <kbd>Enter</kbd> sends, <kbd>e</kbd> edits first |
-| <kbd>Ctrl‑p</kbd> | open a local `.html` the focused pane just produced, in your browser — pick from the detected files (the badge shows how many), or <kbd>Tab</kbd> to type a path |
+| <kbd>Ctrl‑q</kbd> / <kbd>Alt‑q</kbd> | close the focused live pane; <kbd>Alt‑q</kbd> also works in OMP |
+| <kbd>Ctrl‑t</kbd> | **transition report** outside OMP — `topic / RUNBOOK §n / files` → review → <kbd>Enter</kbd> sends, <kbd>e</kbd> edits first |
+| <kbd>Ctrl‑p</kbd> | open a local `.html` produced by a focused non-OMP pane in your browser |
 | <kbd>Ctrl‑x</kbd> | back to the list (the session keeps running) |
-| <kbd>n</kbd> | new session — pick codex/claude/kiro/cursor, then an optional label |
-| <kbd>h</kbd> | handoff the selected session — pick the **login** it should continue on, which may be another provider or another account of the same one |
+| <kbd>n</kbd> | new session — pick codex/claude/kiro/cursor/omp, then an optional label |
+| <kbd>h</kbd> | handoff the selected session — pick a target login or OMP, then choose an OMP model when applicable |
 | <kbd>d</kbd> | change the working directory (blank = global) and rescan in place |
 | <kbd>e</kbd> | label the selected session (tag an existing one, or edit/clear its label) |
 | <kbd>i</kbd> | toggle the **in-progress** mark on the selected session (see above) |
@@ -397,12 +426,30 @@ masked by the included aggregate. Auto and API breakdowns are not added as foote
 rows. Browser cookies, chat content, project content, and session metadata are not
 used as quota.
 
+The Vercel footer resolves the current workspace's gateway credential via
+`omp token vercel-ai-gateway`, then uses gateway quota metadata and the
+signed-in Vercel CLI's read access to identify the key and read its budget.
+Only the selected key's current-period usage is shown. Identification requires
+a unique six-character key suffix, a determinable team, complete key-list
+pagination, and CLI permission to read the key budget. Suffix matching is not
+full-key identity verification. The key is never placed in command arguments
+or logs. Ctrl-R refreshes the row.
+
+An optional `~/.mindplayer/vercel-key-target.json` can set a local display
+target for one key and its budget period, for example
+`{"key_id":"key_example","refresh_period":"monthly","target_usd":200}`.
+This compares the key's actual usage against the local target; **it does not
+change or enforce Vercel's server-side budget**. With no matching target the
+row shows the key budget reported by Vercel. User and team budgets may also
+apply even though they are not displayed.
+
 What MindPlayer writes, all under `~/.mindplayer/`:
 
 | Path | Contents |
 | --- | --- |
 | `state.json` | sidecar state — archived ids, labels, in-progress marks, topic categories, your walking-buddy pick |
 | `audit.jsonl` | append-only usage log: counts and timestamps only, no session id, title, or cwd |
+| `vercel-key-target.json` | optional key-specific local display target; no API key secret |
 | `accounts.json` | the accounts per provider — names, which one is in use, nothing secret |
 | `accounts/<provider>/<name>/` | a second login's own home. The provider's CLI writes its credentials here; MindPlayer only points the CLI at it |
 | `convo/` | the conversation log — `index.json` plus one append-only `<session-id>.jsonl` per session |
@@ -468,6 +515,13 @@ cargo test --all
 cargo clippy --all-targets -- -D warnings
 cargo fmt --all --check
 ```
+
+Dev builds and tests use reduced debug information and disable incremental
+compilation to save disk space. Backtraces remain available, but variable and
+type debug symbols are reduced, and rebuilds may be slower. Override these
+settings with Cargo environment variables, for example
+`CARGO_PROFILE_DEV_DEBUG=2` and `CARGO_PROFILE_DEV_INCREMENTAL=true`. Release
+builds are unaffected.
 
 Contributions welcome — open an issue or PR.
 

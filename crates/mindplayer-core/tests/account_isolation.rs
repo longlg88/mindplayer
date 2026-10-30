@@ -30,6 +30,9 @@ fn whoami(
         Agent::Claude => ("claude", &["auth", "status"], &["\"loggedin\": false"]),
         Agent::Kiro => ("kiro-cli", &["whoami"], &["not logged in"]),
         Agent::Cursor => ("agent", &["status"], &["not logged in"]),
+        Agent::Omp => {
+            unreachable!("OMP manages its own provider identity and has no MindPlayer account slot")
+        }
     }
 }
 

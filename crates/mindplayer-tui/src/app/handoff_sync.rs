@@ -59,6 +59,7 @@ impl App {
                     .cloned(),
             );
         }
+        out.push(mindplayer_core::accounts::Account::inherited(Agent::Omp));
         out
     }
 
@@ -499,6 +500,20 @@ mod source_tests {
     use super::*;
     use crate::app::tests::{fresh_login_test_home, isolated_app, session};
     use std::io::Write;
+
+    #[test]
+    fn handoff_targets_include_the_inherited_omp_account() {
+        let app = isolated_app();
+        let omp: Vec<_> = app
+            .handoff_targets()
+            .into_iter()
+            .filter(|account| account.provider == Agent::Omp)
+            .collect();
+        assert_eq!(
+            omp,
+            vec![mindplayer_core::accounts::Account::inherited(Agent::Omp)]
+        );
+    }
 
     #[test]
     fn kiro_sync_migrates_legacy_marks_and_persists_the_captured_source() {

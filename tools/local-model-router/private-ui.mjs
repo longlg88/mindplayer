@@ -95,7 +95,8 @@ export function resolveUiBinary({ integrated = false } = {}) {
     const result = spawnSync(binary, ['--mindplayer-ui-contract'], {
       env: { HOME: home, PATH: process.env.PATH ?? '/usr/bin:/bin' },
       encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
-      timeout: 5000, killSignal: 'SIGKILL', maxBuffer: 1024,
+      // A newly copied native binary can take more than five seconds to start.
+      timeout: 15_000, killSignal: 'SIGKILL', maxBuffer: 1024,
     });
     if (result.error || result.status !== 0 || result.stderr !== ''
       || (result.stdout !== CONTRACT && result.stdout !== `${CONTRACT}\n`)) throw fail(stage);

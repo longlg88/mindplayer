@@ -4791,6 +4791,85 @@ fn a_sibling_refresh_replaces_a_stale_in_memory_cache_before_fetching() {
 }
 
 #[test]
+fn vercel_results_are_independent_of_account_fetch_and_bound_to_the_directory() {
+    use mindplayer_core::vercel_usage::{VercelBudget, VercelUsage, VercelUsageError};
+
+    let mut app = isolated_app();
+    let (_account_tx, account_rx) = mpsc::channel();
+    app.limits_rx = Some(account_rx);
+    let (tx, rx) = mpsc::channel();
+    app.vercel_cwd = Some(app.cwd.clone());
+    app.vercel_rx = Some(rx);
+    let usage = VercelUsage {
+        key: Ok(VercelBudget {
+            used: 45.25,
+            limit: 100.0,
+            refresh_period: "monthly".into(),
+        }),
+        target: Some(200.0),
+    };
+    tx.send(Ok(usage.clone())).unwrap();
+    assert!(app.poll_limits());
+    assert_eq!(app.vercel_budget, Some(Ok(usage)));
+    assert!(app.limits_rx.is_some(), "account fetch is still in flight");
+
+    let (old_tx, old_rx) = mpsc::channel();
+    app.vercel_rx = Some(old_rx);
+    app.cwd.push("different-workspace");
+    old_tx.send(Err(VercelUsageError::InvalidResponse)).unwrap();
+    assert!(app.poll_limits());
+    assert!(app.vercel_budget.is_none());
+    assert!(app.vercel_rx.is_none());
+    assert!(app.vercel_cwd.is_none());
+
+    let (tx, rx) = mpsc::channel();
+    app.vercel_cwd = Some(app.cwd.clone());
+    app.vercel_rx = Some(rx);
+    tx.send(Err(VercelUsageError::Unavailable)).unwrap();
+    assert!(app.poll_limits());
+    assert_eq!(app.vercel_budget, Some(Err(VercelUsageError::Unavailable)));
+}
+
+#[test]
+fn manual_refresh_replaces_inflight_vercel_read_even_when_accounts_are_busy() {
+    use mindplayer_core::vercel_usage::{VercelBudget, VercelUsage};
+
+    let mut app = isolated_app();
+    app.cwd = std::env::temp_dir().join("mindplayer-nonexistent-vercel-workspace");
+    let (_account_tx, account_rx) = mpsc::channel();
+    app.limits_rx = Some(account_rx);
+    app.limits_started = Some(Instant::now());
+    let (old_tx, old_rx) = mpsc::channel();
+    app.vercel_cwd = Some(app.cwd.clone());
+    app.vercel_started = Some(Instant::now());
+    app.vercel_rx = Some(old_rx);
+    app.vercel_budget = Some(Ok(VercelUsage {
+        key: Ok(VercelBudget {
+            used: 1.0,
+            limit: 2.0,
+            refresh_period: "monthly".into(),
+        }),
+        target: None,
+    }));
+
+    app.refresh_limits_now();
+
+    assert!(app.vercel_budget.is_none());
+    assert!(app.vercel_rx.is_some());
+    assert!(old_tx
+        .send(Ok(VercelUsage {
+            key: Ok(VercelBudget {
+                used: 5.0,
+                limit: 6.0,
+                refresh_period: "monthly".into(),
+            }),
+            target: None,
+        }))
+        .is_err());
+    assert!(app.limits_rx.is_some());
+}
+
+#[test]
 fn a_429_account_response_defers_the_next_fetch() {
     let mut app = isolated_app();
     let (tx, rx) = mpsc::channel();
@@ -5327,7 +5406,8 @@ mod new_session_account_picker {
                 "codex · personal",
                 "claude",
                 "kiro",
-                "cursor"
+                "cursor",
+                "omp"
             ],
             "a provider's logins must each be selectable"
         );
@@ -5340,7 +5420,7 @@ mod new_session_account_picker {
         let app = app_with(base());
         assert_eq!(
             app.new_session_choice_labels(),
-            vec!["codex", "claude", "kiro", "cursor"]
+            vec!["codex", "claude", "kiro", "cursor", "omp"]
         );
     }
 
@@ -5353,7 +5433,7 @@ mod new_session_account_picker {
         let app = app_with(accounts);
         assert_eq!(
             app.new_session_choice_labels(),
-            vec!["codex", "claude", "kiro", "cursor"],
+            vec!["codex", "claude", "kiro", "cursor", "omp"],
             "a disabled login must not be startable from the picker"
         );
     }
@@ -5366,7 +5446,10 @@ mod new_session_account_picker {
             a.disabled = matches!(a.provider, Agent::Kiro | Agent::Cursor);
         }
         let app = app_with(accounts);
-        assert_eq!(app.new_session_choice_labels(), vec!["codex", "claude"]);
+        assert_eq!(
+            app.new_session_choice_labels(),
+            vec!["codex", "claude", "omp"]
+        );
     }
 
     /// With one of two logins off the provider is still in use and keeps its row.
@@ -5378,7 +5461,7 @@ mod new_session_account_picker {
         let app = app_with(accounts);
         assert_eq!(
             app.new_session_choice_labels(),
-            vec!["codex", "claude", "kiro", "cursor"]
+            vec!["codex", "claude", "kiro", "cursor", "omp"]
         );
     }
 
@@ -5392,7 +5475,7 @@ mod new_session_account_picker {
         let app = app_with(accounts);
         assert_eq!(
             app.new_session_choice_labels(),
-            vec!["codex", "claude", "kiro", "cursor"]
+            vec!["codex", "claude", "kiro", "cursor", "omp"]
         );
     }
 

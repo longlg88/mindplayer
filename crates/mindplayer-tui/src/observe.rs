@@ -115,6 +115,13 @@ impl Observer {
                         "unsupported: Cursor transcript/usage unavailable locally".to_string(),
                     );
                 }
+                Agent::Omp => {
+                    self.notice = "OMP Trace is unavailable; use the native OMP session transcript"
+                        .to_string();
+                    self.lines.push(
+                        "unsupported: OMP session branches are not reconstructed".to_string(),
+                    );
+                }
             }
             return true;
         }
@@ -482,7 +489,7 @@ impl JsonlFollower {
             let parsed = match self.agent {
                 Agent::Codex => parse_codex(&v),
                 Agent::Claude => parse_claude(&v, &mut self.claude_observed, self.partial_scope),
-                Agent::Kiro | Agent::Cursor => Parsed::default(),
+                Agent::Kiro | Agent::Cursor | Agent::Omp => Parsed::default(),
             };
             events.extend(parsed.events);
             if let Some(delta) = self.prompt_usage_delta(parsed.prompt_usage) {

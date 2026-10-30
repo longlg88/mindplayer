@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { setImmediate as tick } from 'node:timers/promises';
 import { JevService, loginFingerprint } from './service.mjs';
 import { ModelRouter } from './router.mjs';
+import { CURRENT_CODEX_FAMILY } from './current-family.mjs';
 
 const NOW = Date.parse('2026-10-18T12:00:00Z');
 const FRONTIER = 'gpt-6-astra', STANDARD = 'gpt-6.1-sol', LIGHT = 'gpt-6-luna', LEGACY = 'gpt-5.6-sol';
@@ -55,6 +56,41 @@ test('a native-eligible unknown baseline is not silently migrated', async t => {
   const f = harness(); t.after(() => f.router.close());
   await assert.rejects(f.service.decide(request(actual('gpt-99-unreviewed'))), { code: 'registry-review-required' });
   assert.equal(f.calls(), 0);
+});
+
+test('Jev sends the explicitly selected Terra xhigh baseline without migration', async t => {
+  const terra = 'gpt-6.1-terra';
+  const f = harness({
+    latestFamily: CURRENT_CODEX_FAMILY,
+    now: () => Date.parse('2026-10-28T00:00:00Z'),
+    catalog: [...catalog(), row(terra, ['low', 'high', 'xhigh'])],
+  });
+  t.after(() => f.router.close());
+  const incoming = request(actual(terra, 'xhigh'));
+  incoming.params.collaborationMode = { mode: 'default', settings: { model: terra, reasoning_effort: 'xhigh' } };
+  f.router.client(incoming);
+  await tick();
+  const sent = f.sent.find(value => value.method === 'turn/start');
+  assert.ok(sent, 'Jev must send the user-selected configuration');
+  assert.equal(f.calls(), 1);
+  assert.deepEqual(f.state().baseline, actual(terra, 'xhigh'));
+  assert.equal(sent.params.model, terra);
+  assert.equal(sent.params.effort, 'xhigh');
+  assert.equal(sent.params.collaborationMode.settings.model, terra);
+  assert.equal(sent.params.collaborationMode.settings.reasoning_effort, 'xhigh');
+});
+
+test('unranked Terra is not offered when another model is selected', async t => {
+  const terra = 'gpt-6.1-terra';
+  const f = harness({
+    latestFamily: CURRENT_CODEX_FAMILY,
+    now: () => Date.parse('2026-10-28T00:00:00Z'),
+    catalog: [...catalog(), row(terra, ['low', 'high', 'xhigh'])],
+  });
+  t.after(() => f.router.close());
+  const selected = await f.service.decide(request(actual(STANDARD, 'high')));
+  assert.equal(selected.model, STANDARD);
+  assert.ok(f.configurations().every(value => value.model !== terra));
 });
 
 test('legacy migration fails without its eligible frontier or exact supported effort', async t => {

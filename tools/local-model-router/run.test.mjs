@@ -20,3 +20,4 @@ test('an inherited Jev default never reaches a child; only the router sets it', 
   assert.equal(clean.MINDPLAYER_JEV_DEFAULT, undefined);
   assert.equal(clean.PATH, '/bin');
 });
+

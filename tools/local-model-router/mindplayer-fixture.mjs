@@ -74,6 +74,11 @@ const models = [
   { model: 'gpt-6-astra', id: 'gpt-6-astra', inputModalities: ['text'], defaultReasoningEffort: 'high',
     description: 'Synthetic configuration for open problems and design tradeoffs.', supportedReasoningEfforts: [{ reasoningEffort: 'high', description: 'Deep reasoning' }] },
 ];
+const terraBaseline = () => existsSync(`${markerDir}/synthetic-terra-baseline`);
+const terraModel = { model: 'gpt-6.1-terra', id: 'gpt-6.1-terra', inputModalities: ['text'],
+  defaultReasoningEffort: 'xhigh', description: 'Synthetic unranked selected model.',
+  supportedReasoningEfforts: [{ reasoningEffort: 'xhigh', description: 'Extra high reasoning' }] };
+const baseline = () => terraBaseline() ? { model: terraModel.model, effort: 'xhigh' } : { model: 'gpt-6-luna', effort: 'low' };
 
 function reply(message, result) {
   process.stdout.write(`${JSON.stringify({ id: message.id, result })}\n`);
@@ -101,13 +106,14 @@ function appServer() {
     try { message = JSON.parse(line); } catch { process.exitCode = 2; return; }
     if (message.method === 'initialize') reply(message, { serverInfo: { name: 'mindplayer-fixture' } });
     else if (message.method === 'model/list') {
-      writeFileSync(`${markerDir}/model-catalog.json`, JSON.stringify(models));
-      reply(message, { data: models, nextCursor: null });
+      const available = terraBaseline() ? [...models, terraModel] : models;
+      writeFileSync(`${markerDir}/model-catalog.json`, JSON.stringify(available));
+      reply(message, { data: available, nextCursor: null });
     }
     else if (message.method === 'account/read') reply(message, { account: { type: 'chatgpt', email, planType: 'business' } });
     else if (message.method === 'thread/start' || message.method === 'thread/resume') reply(message, {
       thread: { id: message.params.threadId ?? 'fixture-thread', source: 'cli', ephemeral: message.params.ephemeral ?? false },
-      model: 'gpt-6-luna', reasoningEffort: 'low',
+      model: baseline().model, reasoningEffort: baseline().effort,
     });
     else if (message.method === 'account/rateLimits/read') reply(message, {
       accountId: 'fixture-account', ordinaryUsageAllowed: true,
@@ -135,7 +141,7 @@ function appServer() {
 }
 
 function remoteUi() {
-  if (process.env.MINDPLAYER_PER_PROMPT_CHOICE !== '1') throw new Error('private v4 UI requires per-message routing metadata');
+  if (process.env.MINDPLAYER_PER_PROMPT_CHOICE !== '1') throw new Error('private UI requires integrated routing metadata');
   const remote = args[args.indexOf('--remote') + 1];
   const tokenEnv = args[args.indexOf('--remote-auth-token-env') + 1];
   if (!remote || !tokenEnv || !process.env[tokenEnv]) throw new Error('remote URL/token missing');
@@ -164,7 +170,7 @@ function remoteUi() {
       initialized = true;
       process.stdout.write('\x1b[?2004hPANE-READY\r\n');
       composer = createPromptComposer({
-        params: () => ({ threadId, cwd, model: 'gpt-6-luna', effort: 'low' }),
+        params: () => ({ threadId, cwd, ...baseline() }),
         send(request) {
           appendFileSync(`${markerDir}/ui-requests.jsonl`, `${JSON.stringify(request)}\n`, { mode: 0o600 });
           ws.send(JSON.stringify(request));
@@ -194,6 +200,7 @@ function remoteUi() {
   if (process.stdin.isTTY) process.stdin.setRawMode(true);
   process.stdin.setEncoding('utf8');
   process.stdin.on('data', chunk => {
+    if (chunk.includes('\x04')) { ws.close(); return; }
     if (initialized) composer.input(chunk);
     else buffered += chunk;
   });

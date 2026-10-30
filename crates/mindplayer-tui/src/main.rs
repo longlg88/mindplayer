@@ -29,17 +29,16 @@ use crossterm::execute;
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
-#[cfg(test)]
 use mindplayer_core::Agent;
 use ratatui::backend::{CrosstermBackend, TestBackend};
 use ratatui::Terminal;
 use render_writer::FrameSink;
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 const HELP: &str = "\
-mindplayer — a session manager for Codex / Claude / Kiro / Cursor
+mindplayer — a session manager for Codex / Claude / Kiro / Cursor / OMP
 
 USAGE:
     mindplayer [DIR]
@@ -68,9 +67,97 @@ same session. The mode remains for subsequent prompts;
 selection alone never submits. Enter submits using the current mode. Jev ON sends
 the bounded judgment context externally. OFF keeps the current native model and
 effort and makes no Jev call. Claude / Kiro / Cursor sessions keep their native
-input and controls.";
+input and controls. OMP runs independently; Ctrl-X returns to the list,
+Ctrl-Z zooms, Alt-W switches panes, and Ctrl-Q or Alt-Q closes its pane.";
+
+const IDENTITY_HELPER_FLAG: &str = "--mindplayer-verify-codex-identity";
+const IDENTITY_HELPER_MAX_BYTES: u64 = 1024 * 1024;
+
+fn verify_codex_identity_input(input: impl Read) -> Option<String> {
+    let mut bytes = Vec::new();
+    input
+        .take(IDENTITY_HELPER_MAX_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .ok()?;
+    if bytes.len() as u64 > IDENTITY_HELPER_MAX_BYTES {
+        return None;
+    }
+    let request: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+    let account = request.get("accountRead")?;
+    let quota = request.get("quotaRead")?;
+    mindplayer_core::limits::codex_exchange_fingerprint(
+        account,
+        if quota.is_null() { None } else { Some(quota) },
+    )
+    .ok()
+}
+
+fn run_identity_helper() -> bool {
+    let Some(fingerprint) = verify_codex_identity_input(io::stdin().lock()) else {
+        return false;
+    };
+    serde_json::to_writer(
+        io::stdout().lock(),
+        &serde_json::json!({ "fingerprint": fingerprint }),
+    )
+    .is_ok()
+}
+
+#[cfg(test)]
+mod identity_helper_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn verifies_workspace_and_legacy_exchanges() {
+        let account = json!({"result":{"account":{"type":"chatgpt","email":" One@Example.COM "},
+            "workspaceRouting":{"chatgptAccountId":"workspace-shared"}}});
+        let quota = json!({"result":{"accountId":"workspace-shared"}});
+        let request = json!({"accountRead":account,"quotaRead":quota});
+        let modern = verify_codex_identity_input(request.to_string().as_bytes()).unwrap();
+        assert_eq!(modern, "codex-user-48ba19b0360d2c16");
+        let mut no_quota = request.clone();
+        no_quota["quotaRead"] = serde_json::Value::Null;
+        assert_eq!(
+            verify_codex_identity_input(no_quota.to_string().as_bytes()),
+            Some(modern.clone())
+        );
+        let mut incomplete = request.clone();
+        incomplete["accountRead"]["result"]["workspaceRouting"] = json!({});
+        assert!(verify_codex_identity_input(incomplete.to_string().as_bytes()).is_none());
+        let mut legacy = request.clone();
+        legacy["accountRead"]["result"]
+            .as_object_mut()
+            .unwrap()
+            .remove("workspaceRouting");
+        assert_eq!(
+            verify_codex_identity_input(legacy.to_string().as_bytes()),
+            Some(modern)
+        );
+        let mut conflict = request;
+        conflict["quotaRead"]["result"]["accountId"] = json!("another");
+        assert!(verify_codex_identity_input(conflict.to_string().as_bytes()).is_none());
+    }
+
+    #[test]
+    fn rejects_malformed_missing_and_oversized_input() {
+        assert!(verify_codex_identity_input(&b"not json"[..]).is_none());
+        assert!(verify_codex_identity_input(&b"{\"accountRead\":{}}"[..]).is_none());
+        assert!(
+            verify_codex_identity_input(&b"{\"accountRead\":{},\"quotaRead\":null}"[..]).is_none()
+        );
+        let oversized = vec![b' '; IDENTITY_HELPER_MAX_BYTES as usize + 1];
+        assert!(verify_codex_identity_input(oversized.as_slice()).is_none());
+    }
+}
 
 fn main() -> Result<()> {
+    let mut args = std::env::args_os().skip(1);
+    let first = args.next();
+    if first.as_deref() == Some(std::ffi::OsStr::new(IDENTITY_HELPER_FLAG)) {
+        let ok = args.next().is_none() && run_identity_helper();
+        std::process::exit(if ok { 0 } else { 1 });
+    }
     // Resolve the target directory from args BEFORE touching the terminal, so
     // --help/--version print normally.
     let explicit_dir = explicit_dir_from_args();
@@ -875,7 +962,7 @@ fn handle_main_key(app: &mut App, key: KeyEvent) {
         return;
     }
 
-    // Step 1 (modal): pick codex/claude.
+    // Step 1 (modal): pick a provider and account.
     if let Some(choice) = app.new_picker {
         // One row per login, so the list is as long as the accounts make it.
         let choices = app.new_session_choices();
@@ -891,7 +978,11 @@ fn handle_main_key(app: &mut App, key: KeyEvent) {
             // Another account for this one session: it signs in to a home of its own, and running panes keep theirs.
             KeyCode::Char('l') => {
                 if let Some(account) = choices.get(choice) {
-                    app.choose_new_fresh_login(account.provider);
+                    if account.provider == Agent::Omp {
+                        app.status = "OMP manages its own login and model settings".to_string();
+                    } else {
+                        app.choose_new_fresh_login(account.provider);
+                    }
                 }
             }
             KeyCode::Esc => app.cancel_new_session(),
@@ -1106,6 +1197,23 @@ fn handle_main_key(app: &mut App, key: KeyEvent) {
                 }
                 return;
             }
+            let omp_pane = app
+                .focused_pane()
+                .and_then(|sid| ui::pane_provider(app, sid))
+                == Some(Agent::Omp);
+            if omp_pane && key.modifiers == KeyModifiers::ALT {
+                match key.code {
+                    KeyCode::Char('q') | KeyCode::Char('ㅂ') => {
+                        app.close_focused_pane();
+                        return;
+                    }
+                    KeyCode::Char('w') | KeyCode::Char('ㅈ') => {
+                        app.cycle_focus();
+                        return;
+                    }
+                    _ => {}
+                }
+            }
             // App-level pane/window chords are intercepted before forwarding
             // remaining control keys to the focused child PTY.
             if key.modifiers.contains(KeyModifiers::CONTROL)
@@ -1114,7 +1222,7 @@ fn handle_main_key(app: &mut App, key: KeyEvent) {
                     .intersects(KeyModifiers::ALT | KeyModifiers::SUPER)
             {
                 match key.code {
-                    KeyCode::Char('g') => {
+                    KeyCode::Char('g') if !omp_pane => {
                         app.toggle_observer();
                         return;
                     }
@@ -1122,7 +1230,7 @@ fn handle_main_key(app: &mut App, key: KeyEvent) {
                         app.detach_terminal();
                         return;
                     }
-                    KeyCode::Char('w') | KeyCode::Char('ㅈ') => {
+                    KeyCode::Char('w') | KeyCode::Char('ㅈ') if !omp_pane => {
                         app.cycle_focus();
                         return;
                     }
@@ -1134,25 +1242,25 @@ fn handle_main_key(app: &mut App, key: KeyEvent) {
                         app.toggle_zoom();
                         return;
                     }
-                    KeyCode::Char('y') | KeyCode::Char('ㅛ') => {
+                    KeyCode::Char('y') | KeyCode::Char('ㅛ') if !omp_pane => {
                         app.copy_links_from_focused();
                         return;
                     }
-                    KeyCode::Char('t') | KeyCode::Char('ㅅ') => {
+                    KeyCode::Char('t') | KeyCode::Char('ㅅ') if !omp_pane => {
                         app.begin_transition_report();
                         return;
                     }
-                    KeyCode::Char('p') | KeyCode::Char('ㅔ') => {
+                    KeyCode::Char('p') | KeyCode::Char('ㅔ') if !omp_pane => {
                         app.toggle_html_preview();
                         return;
                     }
                     _ => {}
                 }
             }
-            // Tab cycles pane focus, but only when 2+ live panes are open — with
-            // a single pane Tab still falls through to the child PTY so agent /
-            // shell autocompletion keeps working. Shift+Tab (BackTab) reverses.
-            if app.panes.len() >= 2
+            // OMP uses Tab for completion and Shift-Tab for thinking level;
+            // its multi-pane focus shortcut is Alt-W instead.
+            if !omp_pane
+                && app.panes.len() >= 2
                 && !key
                     .modifiers
                     .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER)
@@ -1428,6 +1536,24 @@ mod tests {
     }
 
     #[test]
+    fn omp_picker_does_not_offer_a_managed_fresh_login() {
+        let mut app = main_app();
+        let choice = app
+            .new_session_choices()
+            .iter()
+            .position(|account| account.provider == Agent::Omp)
+            .expect("OMP is available as a new session provider");
+        app.new_picker = Some(choice);
+        handle_main_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('l'), KeyModifiers::NONE),
+        );
+        assert_eq!(app.new_picker, Some(choice));
+        assert!(!app.new_fresh_login);
+        assert!(app.new_label.is_none());
+    }
+
+    #[test]
     fn default_app_does_not_gate_list_actions_on_startup_consent() {
         let mut app = App::new_in(std::env::temp_dir());
         app.screen = Screen::Main;
@@ -1553,6 +1679,93 @@ mod tests {
             assert!(!app.observer_open());
         }
         app.ptys.clear(); // PtySession::drop terminates and reaps each owned child.
+    }
+
+    #[test]
+    fn omp_keys_reach_the_native_pane_in_a_split_view() {
+        let mut app = main_app();
+        app.focus = Focus::Terminal;
+        let id = format!("omp-keys-{}", std::process::id());
+        let command = mindplayer_core::Command {
+            program: "sh".into(),
+            args: vec![
+                "-c".into(),
+                "stty raw -echo; printf KEYS_READY; od -An -tx1 -N 9".into(),
+            ],
+            cwd: std::env::temp_dir(),
+            env: Default::default(),
+        };
+        let child = pty::PtySession::spawn_with_routing(
+            &command,
+            &id,
+            10,
+            100,
+            startup_routing::RoutingMode::Native,
+        )
+        .unwrap();
+        app.ptys.insert(id.clone(), child);
+        app.pane_accounts
+            .insert(id.clone(), (Agent::Omp, "native-key-test".into()));
+        app.panes = vec![id.clone(), "other-pane".into()];
+        app.focused = 0;
+        app.active = Some(id.clone());
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !app.ptys[&id]
+            .parser()
+            .lock()
+            .unwrap()
+            .screen()
+            .contents()
+            .contains("KEYS_READY")
+        {
+            assert!(Instant::now() < deadline, "OMP child did not become ready");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        for key in ['g', 'p', 't', 'w', 'y'] {
+            handle_main_key(
+                &mut app,
+                KeyEvent::new(KeyCode::Char(key), KeyModifiers::CONTROL),
+            );
+        }
+        handle_main_key(&mut app, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        handle_main_key(
+            &mut app,
+            KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT),
+        );
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let text = app.ptys[&id].parser().lock().unwrap().screen().contents();
+            let received: Vec<_> = text
+                .split_once("KEYS_READY")
+                .map(|(_, hex)| hex.split_whitespace().collect())
+                .unwrap_or_default();
+            if received == ["07", "10", "14", "17", "19", "09", "1b", "5b", "5a"] {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "OMP keys did not reach the child: {text}"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(app.focused, 0, "Tab and Shift-Tab belong to OMP");
+        assert!(!app.observer_open());
+        assert!(app.transition_report_input.is_none());
+        assert!(app.html_preview_input.is_none());
+        handle_main_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('w'), KeyModifiers::ALT),
+        );
+        assert_eq!(app.focused, 1, "Alt-W changes panes");
+        app.focused = 0;
+        app.active = Some(id.clone());
+        handle_main_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('q'), KeyModifiers::CONTROL),
+        );
+        assert!(!app.panes.contains(&id), "Ctrl-Q closes the OMP pane");
+        app.ptys.clear();
     }
 
     #[test]

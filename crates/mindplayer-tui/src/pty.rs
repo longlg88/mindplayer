@@ -223,6 +223,8 @@ pub struct PtySession {
     /// Pane-owned metadata channel; it moves with this PTY when a provisional
     /// session is adopted, independently of application session identifiers.
     routing_status: Option<crate::local_router::RoutingStatusChannel>,
+    /// Keeps the embedded OMP extension available for the pane's lifetime.
+    _omp_picker: Option<mindplayer_core::resume::OmpPickerFile>,
     /// A successfully delivered submission/interrupt retires the prior request,
     /// including late ACK/model-report revisions, until a new request owns it.
     routing_status_floor: Option<crate::local_router::RoutingStatus>,
@@ -347,7 +349,10 @@ impl PtySession {
         }
         // Use the same PTY/input surface, but put the local per-turn router
         // between Codex's native UI and its app-server. Login is not routed.
-        let (cmd, routing_status) = crate::local_router::prepare_spawn_for_mode(cmd, routing_mode)?;
+        let (mut cmd, routing_status) =
+            crate::local_router::prepare_spawn_for_mode(cmd, routing_mode)?;
+        let omp_picker = mindplayer_core::resume::OmpPickerFile::prepare(&mut cmd)
+            .map_err(|error| anyhow::anyhow!("could not prepare OMP model picker: {error}"))?;
         let rows = rows.max(1);
         let cols = cols.max(1);
         let pty_system = native_pty_system();
@@ -397,12 +402,16 @@ impl PtySession {
         for (name, value) in &cmd.env.set {
             builder.env(name, value);
         }
+        if let Some(picker) = &omp_picker {
+            builder.env("MINDPLAYER_OMP_PICKER_READY", picker.ready_path());
+            builder.env("MINDPLAYER_OMP_PICKER_SELECTED", picker.selected_path());
+        }
 
         // Acquire the fallible handles before starting the child, so an I/O
         // setup failure cannot drop its channel while leaving it running.
         let mut reader = pair.master.try_clone_reader()?;
         let writer = pair.master.take_writer()?;
-        let child = pair.slave.spawn_command(builder)?;
+        let mut child = pair.slave.spawn_command(builder)?;
         // Slave handle no longer needed in the parent; closing it lets the
         // child own the terminal cleanly.
         drop(pair.slave);
@@ -476,8 +485,23 @@ impl PtySession {
                 dirty.store(true, Ordering::Relaxed);
             });
         }
+        if let Some(picker) = &omp_picker {
+            let ready = picker.ready_path();
+            let deadline = Instant::now() + Duration::from_secs(15);
+            while !ready.is_file() {
+                if Instant::now() >= deadline || !matches!(child.try_wait(), Ok(None)) {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    anyhow::bail!(
+                        "OMP model picker did not start; check OMP extension compatibility and {stderr_log}"
+                    );
+                }
+                thread::sleep(Duration::from_millis(20));
+            }
+        }
 
         Ok(Self {
+            _omp_picker: omp_picker,
             routing_status,
             routing_status_floor: None,
             parser,
@@ -650,6 +674,22 @@ impl PtySession {
     /// caller applies turn-boundary tracking only when actually enqueueing them.
     pub fn pending_key_due(&mut self) -> Option<Vec<u8>> {
         self.terminal_reply_guard.flush_due(Instant::now())
+    }
+
+    /// Selection is separate from the extension's startup-ready marker.
+    /// `None` means this is not a new OMP picker-backed process.
+    pub(crate) fn omp_model_selected(&self) -> Option<bool> {
+        self._omp_picker
+            .as_ref()
+            .map(|picker| picker.selected_path().is_file())
+    }
+
+    /// Bracketed paste must be enabled before sending a multiline initial prompt.
+    pub(crate) fn bracketed_paste_enabled(&self) -> bool {
+        self.parser
+            .lock()
+            .map(|parser| parser.screen().bracketed_paste())
+            .unwrap_or(false)
     }
 
     /// Forward pasted text to the child. If the child has enabled bracketed

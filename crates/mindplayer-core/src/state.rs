@@ -195,22 +195,18 @@ impl State {
         self.save_to(&default_state_path())
     }
 
-    /// Atomic durable write: serialize to a unique temp file in the same dir,
-    /// fsync it, then rename over the target. The unique temp name (pid-tagged)
-    /// avoids two MindPlayer processes (TUI + app) clobbering a shared temp.
+    /// Atomic durable write: serialize to a private temp file, fsync, then rename.
     pub fn save_to(&self, path: &Path) -> Result<()> {
         use std::io::Write as _;
-        if let Some(dir) = path.parent() {
+        if let Some(dir) = path.parent().filter(|dir| !dir.as_os_str().is_empty()) {
             crate::private::create_dir_private(dir)?;
         }
         let tmp = path.with_extension(format!("json.tmp.{}", std::process::id()));
         let data = serde_json::to_string_pretty(self)?;
         {
-            // The temp file carries the same content as the final one, so it is
-            // created owner-only too rather than being narrowed after the fact.
-            let mut f = crate::private::open_private(&tmp, false)?;
-            f.write_all(data.as_bytes())?;
-            f.sync_all()?; // durable before the rename
+            let mut file = crate::private::open_private(&tmp, false)?;
+            file.write_all(data.as_bytes())?;
+            file.sync_all()?;
         }
         std::fs::rename(&tmp, path)?;
         Ok(())

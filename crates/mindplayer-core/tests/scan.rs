@@ -512,6 +512,84 @@ fn claude_agent_name_marks_an_externally_orchestrated_subagent_with_a_novel_titl
 }
 
 #[test]
+fn claude_headless_print_run_is_hidden_unless_it_was_ever_interactive() {
+    let dir = tempdir().unwrap();
+    let claude_dir = dir.path().join("claude");
+    const HEADLESS: &str = "44444444-5555-6666-7777-888899990000";
+    const RESUMED: &str = "55555555-6666-7777-8888-999900001111";
+    const INTERACTIVE: &str = "66666666-7777-8888-9999-000011112222";
+    let line = |id: &str, entry: &str, ts: &str, text: &str| {
+        format!(
+            r#"{{"type":"user","timestamp":"{ts}","cwd":"/work","sessionId":"{id}","isSidechain":false,"entrypoint":"{entry}","message":{{"role":"user","content":"{text}"}}}}"#
+        )
+    };
+    let path = |id: &str| claude_dir.join("-work").join(format!("{id}.jsonl"));
+    write(
+        &path(HEADLESS),
+        &[
+            &line(
+                HEADLESS,
+                "sdk-cli",
+                "2026-02-02T09:00:00Z",
+                "post the release note to the team channel once",
+            ),
+            &line(HEADLESS, "sdk-cli", "2026-02-02T09:00:30Z", "done"),
+        ],
+    );
+    write(
+        &path(RESUMED),
+        &[
+            &line(
+                RESUMED,
+                "sdk-cli",
+                "2026-02-02T09:00:00Z",
+                "draft the migration plan",
+            ),
+            &line(
+                RESUMED,
+                "cli",
+                "2026-02-02T10:00:00Z",
+                "continue the plan here",
+            ),
+        ],
+    );
+    write(
+        &path(INTERACTIVE),
+        &[&line(
+            INTERACTIVE,
+            "cli",
+            "2026-02-02T09:00:00Z",
+            "review the alert rules",
+        )],
+    );
+
+    let cfg = ScanConfig {
+        codex_dir: dir.path().join("codex"),
+        claude_dir,
+        kiro_dir: dir.path().join("kiro"),
+        cursor_dir: dir.path().join("cursor"),
+        omp_dir: dir.path().join("omp"),
+    };
+    let sessions = scan(&Scope::Global, &cfg);
+    let hidden = |id: &str| {
+        sessions
+            .iter()
+            .find(|s| s.id == id)
+            .unwrap_or_else(|| panic!("{id} discovered"))
+            .is_subagent
+    };
+    assert!(
+        hidden(HEADLESS),
+        "a run recorded only as `claude -p` is a helper, not a user session"
+    );
+    assert!(
+        !hidden(RESUMED),
+        "a headless run later resumed interactively is a user session"
+    );
+    assert!(!hidden(INTERACTIVE), "an interactive session stays visible");
+}
+
+#[test]
 fn codex_last_prompt_at_ignores_the_tool_round_trip_that_follows_it() {
     let dir = tempdir().unwrap();
     let codex_dir = dir.path().join("codex");

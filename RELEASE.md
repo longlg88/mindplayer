@@ -82,6 +82,10 @@ the resulting minimum version.)
 
 ### Unreleased
 
+- Hide Claude sessions recorded only as `claude -p` runs, such as one-shot
+  posts that another agent starts, the same way as other helper sessions. A
+  run that was later resumed interactively stays in the list.
+
 - Let Tab move to the next pane from an OMP pane too, as it does for other
   providers, while two or more panes are open. OMP keeps Shift-Tab.
 

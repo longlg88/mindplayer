@@ -108,7 +108,8 @@ pub struct Session {
     /// Marked closed in the MindPlayer sidecar state (original jsonl untouched).
     pub archived: bool,
     /// A spawned helper session (codex `thread_source=subagent`, claude
-    /// sidechain, or a `/team` worker) rather than a top-level user session.
+    /// sidechain, a `/team` worker, or a `claude -p` run that was never
+    /// resumed interactively) rather than a top-level user session.
     /// Hidden from the default list.
     pub is_subagent: bool,
     /// Current context-window occupancy as a percentage (0–100), when the agent

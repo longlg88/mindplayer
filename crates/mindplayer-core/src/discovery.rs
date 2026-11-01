@@ -753,6 +753,8 @@ fn parse_claude_file(path: &Path, cwd_override: Option<&Path>) -> Option<Session
     let mut title_fallback: Option<String> = None;
     let mut is_sidechain = false;
     let mut has_agent_name = false;
+    let mut headless_entry = false;
+    let mut other_entry = false;
 
     for line in reader.lines().map_while(Result::ok) {
         let line = line.trim();
@@ -789,6 +791,11 @@ fn parse_claude_file(path: &Path, cwd_override: Option<&Path>) -> Option<Session
             .is_some_and(|s| !s.trim().is_empty())
         {
             has_agent_name = true;
+        }
+        match v.get("entrypoint").and_then(Value::as_str) {
+            Some("sdk-cli") => headless_entry = true,
+            Some(_) => other_entry = true,
+            None => {}
         }
         match v.get("type").and_then(Value::as_str).unwrap_or("") {
             "user" => {
@@ -855,7 +862,10 @@ fn parse_claude_file(path: &Path, cwd_override: Option<&Path>) -> Option<Session
     // same failure mode already fixed once for kiro in a prior commit). Check
     // the structural field first; the title heuristic stays only as a fallback
     // for transcripts that predate this field.
-    let is_subagent = is_sidechain || has_agent_name || looks_like_subagent_title(&title);
+    // A run recorded only as `claude -p` was started by a script or another agent, not typed by the user.
+    let headless_only = headless_entry && !other_entry;
+    let is_subagent =
+        is_sidechain || has_agent_name || headless_only || looks_like_subagent_title(&title);
     let stem_id = path
         .file_stem()
         .and_then(|s| s.to_str())

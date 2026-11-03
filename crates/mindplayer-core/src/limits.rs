@@ -362,12 +362,12 @@ impl QuotaRow {
     }
 }
 
-/// Replace each failed provider row with every last-good window for that provider.
+/// Fill note-only rows from the same login's cache, preserving explicit failures.
 pub fn merge_with_last_good(fresh: &[QuotaRow], stored: &[QuotaRow]) -> (Vec<QuotaRow>, bool) {
     let mut used_cache = false;
     let mut rows = Vec::new();
     for row in fresh {
-        if row.has_gauge() {
+        if row.has_gauge() || row.failure.is_some() {
             rows.push(row.clone());
             continue;
         }
@@ -420,14 +420,19 @@ fn quota_cache_path(home: &Path) -> PathBuf {
     home.join(".mindplayer").join("limits-cache.json")
 }
 
-/// Store a reading, stamped with the `build` that took it. Failure is silent on
-/// purpose: a cache that cannot be written must never interfere with the
-/// reading it was meant to speed up.
+/// Store a reading, stamped with the `build` that took it. A failed provider
+/// row is stored too, so an old number cannot survive an authentication or
+/// network failure and masquerade as a current reading.
 pub fn save_quota_cache(home: &Path, rows: &[QuotaRow], build: &str) {
-    // An empty reading is not a reading. Writing it would replace the last
-    // good one with nothing, so the next start would be blank — exactly what
-    // the cache exists to prevent.
-    if rows.is_empty() || !rows.iter().any(QuotaRow::has_gauge) {
+    // An empty or note-only reading is not a reading. Writing it would replace
+    // the last good one with nothing, so the next start would be blank —
+    // exactly what the cache exists to prevent. A failure is different: it is
+    // actionable information and must replace an old number for that provider.
+    if rows.is_empty()
+        || !rows
+            .iter()
+            .any(|row| row.has_gauge() || row.failure.is_some())
+    {
         return;
     }
     let stored = load_quota_cache(home, build);
@@ -4137,8 +4142,11 @@ sleep 10
         );
         assert_eq!(
             load_quota_cache(home, BUILD).map(|(rows, _)| rows),
-            Some(rows),
-            "an all-failure save must not refresh or erase the last real reading"
+            Some(vec![QuotaRow::reason(
+                "cursor",
+                &ProbeError::new(FailureKind::RateLimited, "HTTP 429"),
+            )]),
+            "an all-failure save must replace stale numbers with the failure"
         );
 
         std::fs::write(quota_cache_path(home), b"{ not json").unwrap();
@@ -4499,6 +4507,23 @@ mod fallback_stays_with_its_login {
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].used_percent, Some(42.0));
         assert!(used_cache, "the row on screen is the stored one, so say so");
+    }
+
+    #[test]
+    fn a_failed_reading_does_not_keep_an_old_number() {
+        let fresh = vec![QuotaRow::reason(
+            "claude",
+            &ProbeError::new(FailureKind::SignIn, "Invalid bearer token"),
+        )];
+        let stored = vec![row(Agent::Claude, "default", "claude 5h", Some(36.0))];
+
+        let (rows, used_cache) = merge_with_last_good(&fresh, &stored);
+
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].used_percent, None);
+        assert_eq!(rows[0].failure, Some(FailureKind::SignIn));
+        assert_eq!(rows[0].detail, "Invalid bearer token");
+        assert!(!used_cache, "a failed probe must not reuse its old number");
     }
 
     /// A cache written before readings carried an account cannot be attributed

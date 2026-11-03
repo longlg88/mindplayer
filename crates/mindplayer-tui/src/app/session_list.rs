@@ -1142,30 +1142,65 @@ impl App {
     pub(crate) fn plan_probe(
         &self,
         codex_only: bool,
+        force_refresh: bool,
     ) -> (
         Vec<mindplayer_core::accounts::Account>,
         Vec<mindplayer_core::limits::QuotaRow>,
     ) {
-        let accounts = self.probe_accounts();
-        if !codex_only {
-            return (accounts, Vec::new());
-        }
-        let carried: Vec<_> = self
+        let mut accounts = self.probe_accounts();
+        let mut carried: Vec<_> = self
             .quota_cache
             .iter()
             .flat_map(|(rows, _)| rows.iter())
-            .filter(|row| row.agent != Agent::Codex)
+            .filter(|row| row.failure.is_some())
             .cloned()
             .collect();
-        let accounts = accounts
-            .into_iter()
-            .filter(|account| {
-                account.provider == Agent::Codex
-                    || !carried
-                        .iter()
-                        .any(|row| row.agent == account.provider && row.account == account.name)
-            })
-            .collect();
+        for row in self
+            .limits
+            .iter()
+            .flat_map(|rows| rows.iter())
+            .filter(|row| row.failure.is_some())
+        {
+            if !carried
+                .iter()
+                .any(|cached| cached.agent == row.agent && cached.account == row.account)
+            {
+                carried.push(row.clone());
+            }
+        }
+        if !force_refresh {
+            accounts.retain(|account| {
+                !carried
+                    .iter()
+                    .any(|row| row.agent == account.provider && row.account == account.name)
+            });
+        } else {
+            carried.clear();
+        }
+        if codex_only {
+            let other_providers: Vec<_> = self
+                .quota_cache
+                .iter()
+                .flat_map(|(rows, _)| rows.iter())
+                .filter(|row| row.agent != Agent::Codex)
+                .cloned()
+                .collect();
+            for row in other_providers {
+                if !carried
+                    .iter()
+                    .any(|cached| cached.agent == row.agent && cached.account == row.account)
+                {
+                    carried.push(row);
+                }
+            }
+            accounts.retain(|account| {
+                !carried.iter().any(|row| {
+                    row.agent == account.provider
+                        && row.account == account.name
+                        && (row.agent != Agent::Codex || row.failure.is_some())
+                })
+            });
+        }
         (accounts, carried)
     }
 
@@ -1258,8 +1293,10 @@ impl App {
         self.limits_started = Some(now);
         // One reading per login, since the numbers are per account and an
         // account with its own home keeps its own state.
-        let (accounts, cached_rows) =
-            self.plan_probe(!force_refresh && shared_cache_is_fresh && needs_codex_reading);
+        let (accounts, cached_rows) = self.plan_probe(
+            !force_refresh && shared_cache_is_fresh && needs_codex_reading,
+            force_refresh,
+        );
         // An account already asked about this run is not asked again, so its provider is not asked either.
         let asked = self.unusable_asked.clone();
         let (tx, rx) = std::sync::mpsc::channel();

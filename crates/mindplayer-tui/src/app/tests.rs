@@ -4395,6 +4395,10 @@ fn right_arrow_on_a_session_row_does_not_open_it() {
 #[test]
 fn an_agent_with_no_token_counts_is_named_but_never_drawn() {
     let mut app = App::new();
+    // Other tests exercise the shared quota cache; this assertion concerns
+    // only the aggregate counts and must not inherit a persisted reading.
+    app.quota_cache = None;
+    app.limits = None;
     app.visible_aggregate.claude.total = 1_000;
     app.visible_aggregate.claude_count = 1;
     // Kiro and Cursor stores carry no comparable token totals.
@@ -4486,14 +4490,9 @@ fn each_account_gets_a_row_and_only_real_readings_get_a_gauge() {
     assert_eq!(cursor.detail, "$15.00/$50");
 }
 
-/// A reading that fails must not wipe a number that was true minutes ago.
-///
-/// The account APIs rate-limit — cursor answers 429 under the refresh cadence —
-/// and replacing a good figure with "request failed" loses information for
-/// nothing. The failed row yields to the stored one and the footer says how old
-/// it is.
+/// A failed reading must not masquerade as the last successful number.
 #[test]
-fn a_failed_reading_falls_back_to_the_last_good_one() {
+fn a_failed_reading_replaces_the_last_good_number() {
     let mut app = App::new();
     let taken = Utc::now() - chrono::Duration::minutes(7);
     app.quota_cache = Some((
@@ -4539,9 +4538,12 @@ fn a_failed_reading_falls_back_to_the_last_good_one() {
     let rows = app.quota_rows();
     let cursor = rows.iter().find(|r| r.label == "cursor").unwrap();
     assert_eq!(
-        cursor.used_percent,
-        Some(12.5),
-        "the rate-limited row keeps the last good reading: {cursor:?}"
+        cursor.used_percent, None,
+        "the rate-limited row must not keep the last good reading: {cursor:?}"
+    );
+    assert_eq!(
+        cursor.failure,
+        Some(mindplayer_core::limits::FailureKind::RateLimited)
     );
     let kiro = rows.iter().find(|r| r.label == "kiro").unwrap();
     assert_eq!(
@@ -4551,13 +4553,13 @@ fn a_failed_reading_falls_back_to_the_last_good_one() {
     );
     assert_eq!(
         app.quota_cached_at(),
-        Some(taken),
-        "the footer says how old the stale half is"
+        None,
+        "a failed provider must not make its stale number look current"
     );
 }
 
 #[test]
-fn a_failed_claude_probe_restores_both_cached_windows() {
+fn a_failed_claude_probe_replaces_both_cached_windows() {
     let mut app = isolated_app();
     app.quota_cache = Some((
         vec![
@@ -4593,19 +4595,17 @@ fn a_failed_claude_probe_restores_both_cached_windows() {
 
     let rows = app.quota_rows();
 
+    let claude = rows.iter().find(|row| row.agent == Agent::Claude).unwrap();
+    assert_eq!(claude.used_percent, None, "{rows:?}");
+    assert_eq!(
+        claude.failure,
+        Some(mindplayer_core::limits::FailureKind::RateLimited)
+    );
+    assert_eq!(claude.detail, "curl failed: HTTP 429");
     assert!(
         rows.iter()
-            .any(|row| row.label == "claude 5h" && row.used_percent == Some(42.0)),
-        "{rows:?}"
-    );
-    assert!(
-        rows.iter()
-            .any(|row| row.label == "claude wk" && row.used_percent == Some(7.0)),
-        "{rows:?}"
-    );
-    assert!(
-        rows.iter().all(|row| row.label != "claude"),
-        "the failure placeholder must yield to both stored windows: {rows:?}"
+            .all(|row| row.label != "claude 5h" && row.label != "claude wk"),
+        "the failed placeholder must replace both stored windows: {rows:?}"
     );
 }
 

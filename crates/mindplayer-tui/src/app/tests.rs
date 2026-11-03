@@ -5712,7 +5712,7 @@ mod codex_only_fetch_plan {
     }
 
     fn asked(app: &App, codex_only: bool) -> Vec<Agent> {
-        let (accounts, _) = app.plan_probe(codex_only);
+        let (accounts, _) = app.plan_probe(codex_only, false);
         accounts.iter().map(|a| a.provider).collect()
     }
 
@@ -5740,7 +5740,7 @@ mod codex_only_fetch_plan {
             Utc::now(),
         ));
 
-        let (accounts, carried) = app.plan_probe(true);
+        let (accounts, carried) = app.plan_probe(true, false);
         assert_eq!(
             accounts.iter().map(|a| a.provider).collect::<Vec<_>>(),
             vec![Agent::Codex],
@@ -5770,9 +5770,83 @@ mod codex_only_fetch_plan {
         let mut app = app_with_every_provider();
         app.quota_cache = Some((vec![row(Agent::Claude)], Utc::now()));
 
-        let (accounts, carried) = app.plan_probe(false);
+        let (accounts, carried) = app.plan_probe(false, false);
         assert_eq!(accounts.len(), 4);
         assert!(carried.is_empty());
+    }
+
+    #[test]
+    fn sign_in_failure_is_held_until_an_explicit_refresh() {
+        use mindplayer_core::limits::FailureKind;
+
+        let mut app = app_with_every_provider();
+        let failed = QuotaRow {
+            label: "claude".into(),
+            agent: Agent::Claude,
+            account: "default".into(),
+            detail: "Invalid bearer token".into(),
+            failure: Some(FailureKind::SignIn),
+            ..Default::default()
+        };
+        app.limits = Some(vec![failed.clone()]);
+
+        let (accounts, carried) = app.plan_probe(false, false);
+        assert!(
+            accounts
+                .iter()
+                .all(|account| account.provider != Agent::Claude),
+            "a background refresh must not retry the rejected login"
+        );
+        assert!(
+            carried.contains(&failed),
+            "keep showing the actionable failure"
+        );
+        assert!(
+            app.plan_probe(false, true)
+                .0
+                .iter()
+                .any(|account| account.provider == Agent::Claude),
+            "Ctrl-R after signing in must retry the account"
+        );
+
+        let rate_limited = QuotaRow {
+            failure: Some(FailureKind::RateLimited),
+            ..failed.clone()
+        };
+        app.limits = Some(vec![rate_limited.clone()]);
+        let (accounts, carried) = app.plan_probe(false, false);
+        assert!(
+            accounts
+                .iter()
+                .all(|account| account.provider != Agent::Claude),
+            "a background refresh must not retry a rate-limited account"
+        );
+        assert!(carried.contains(&rate_limited));
+        assert!(app
+            .plan_probe(false, true)
+            .0
+            .iter()
+            .any(|account| { account.provider == Agent::Claude }));
+
+        app.accounts = vec![
+            Account::inherited(Agent::Codex),
+            Account::inherited(Agent::Claude),
+        ];
+        let codex_only_failure = QuotaRow {
+            label: "codex".into(),
+            agent: Agent::Codex,
+            failure: Some(FailureKind::SignIn),
+            ..failed
+        };
+        app.limits = Some(vec![codex_only_failure.clone()]);
+        let (accounts, carried) = app.plan_probe(true, false);
+        assert!(
+            accounts
+                .iter()
+                .all(|account| account.provider != Agent::Codex),
+            "a failed Codex login also stays paused: {accounts:?}; carried={carried:?}"
+        );
+        assert!(carried.contains(&codex_only_failure));
     }
 }
 

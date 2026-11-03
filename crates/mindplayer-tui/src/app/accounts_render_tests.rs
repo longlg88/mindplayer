@@ -586,15 +586,22 @@ fn a_failed_reading_says_what_to_do_and_the_accounts_screen_keeps_the_cause() {
             "curl: (56) Recv failure: Connection reset by peer",
             FailureKind::Temporary,
         ),
+        failed(
+            Agent::Claude,
+            "default",
+            "rate limited by the account API (HTTP 429)",
+            FailureKind::RateLimited,
+        ),
     ]);
     app.limits_retry_at = Some(std::time::Instant::now() + std::time::Duration::from_secs(240));
 
     let screen = painted(&mut app, 160, 40);
     for hint in [
         "5.0%",
-        "sign-in needed · press u, then l on this account",
-        "sign-in needed · run: kiro-cli user login",
-        "temporarily unavailable · retrying in 4m · Ctrl-R now",
+        "sign-in needed · press u, then l on this account · Ctrl-R after login",
+        "sign-in needed · run: kiro-cli user login · Ctrl-R after login",
+        "temporarily unavailable · Ctrl-R to retry",
+        "rate limited · Ctrl-R when ready",
     ] {
         assert!(screen.contains(hint), "footer lacks {hint:?}:\n{screen}");
     }

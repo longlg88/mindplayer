@@ -264,15 +264,6 @@ fn quota_row_spans(
 fn failure_hint(app: &App, row: &mindplayer_core::limits::QuotaRow) -> Option<(String, Color)> {
     use mindplayer_core::limits::FailureKind;
     let kind = row.failure?;
-    let retry = || match app.limits_retry_at {
-        Some(at) if at > std::time::Instant::now() => {
-            format!(
-                "retrying in {} · Ctrl-R now",
-                short_wait(at - std::time::Instant::now())
-            )
-        }
-        _ => "retrying · Ctrl-R now".to_string(),
-    };
     Some(match kind {
         FailureKind::SignIn => {
             let inherited = row.account.is_empty()
@@ -287,10 +278,13 @@ fn failure_hint(app: &App, row: &mindplayer_core::limits::QuotaRow) -> Option<(S
             } else {
                 "press u, then l on this account".to_string()
             };
-            (format!("sign-in needed · {action}"), ZOOM)
+            (
+                format!("sign-in needed · {action} · Ctrl-R after login"),
+                ZOOM,
+            )
         }
-        FailureKind::Temporary => (format!("temporarily unavailable · {}", retry()), DIM),
-        FailureKind::RateLimited => (format!("rate limited · {}", retry()), DIM),
+        FailureKind::Temporary => ("temporarily unavailable · Ctrl-R to retry".to_string(), DIM),
+        FailureKind::RateLimited => ("rate limited · Ctrl-R when ready".to_string(), DIM),
         FailureKind::Unsupported => ("usage not available for this account".to_string(), DIM),
         FailureKind::NotInstalled => (
             format!(
@@ -305,19 +299,6 @@ fn failure_hint(app: &App, row: &mindplayer_core::limits::QuotaRow) -> Option<(S
         ),
         FailureKind::Internal => ("mindplayer error · details: u".to_string(), ERROR),
     })
-}
-
-/// A wait in the largest unit that matters: `45s`, `4m`, `2h`.
-fn short_wait(wait: std::time::Duration) -> String {
-    let secs = wait.as_secs();
-    let minutes = secs.div_ceil(60);
-    if secs < 60 {
-        format!("{secs}s")
-    } else if minutes < 60 {
-        format!("{minutes}m")
-    } else {
-        format!("{}h", secs.div_ceil(3600))
-    }
 }
 
 fn plural_session(count: usize) -> &'static str {
@@ -6703,20 +6684,5 @@ mod tests {
         // Asking for more than MAX_PANES never yields more rects than the cap.
         let rects = compute_pane_rects(body(), MAX_PANES + 3, PaneLayout::Horizontal);
         assert_eq!(rects.len(), MAX_PANES);
-    }
-}
-
-#[cfg(test)]
-mod short_wait_tests {
-    use super::short_wait;
-    use std::time::Duration;
-
-    /// Just under an hour rounds up to the hour, never to "60m".
-    #[test]
-    fn a_wait_is_named_in_the_largest_unit_that_fits() {
-        assert_eq!(short_wait(Duration::from_secs(45)), "45s");
-        assert_eq!(short_wait(Duration::from_secs(239)), "4m");
-        assert_eq!(short_wait(Duration::from_secs(3541)), "1h");
-        assert_eq!(short_wait(Duration::from_secs(5400)), "2h");
     }
 }

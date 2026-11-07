@@ -31,6 +31,7 @@ impl App {
     fn convo_pending(&self) -> Vec<Session> {
         self.all_sessions
             .iter()
+            .filter(|s| !s.archived)
             .filter(|s| self.convo_is_pending(s))
             .take(BATCH)
             .cloned()
@@ -116,6 +117,7 @@ impl App {
     pub fn convo_backlog(&self) -> usize {
         self.all_sessions
             .iter()
+            .filter(|s| !s.archived)
             .filter(|s| self.convo_is_pending(s))
             .count()
     }
@@ -274,6 +276,47 @@ mod tests {
         assert!(!app.spawn_convo_ingest());
         assert_eq!(app.convo_ingested, 1);
         assert_eq!(app.convo_total_turns(), 1);
+    }
+
+    #[test]
+    fn archive_50k_and_loaded_page_never_enter_conversation_ingest() {
+        let dir = scratch("archive-working-set");
+        let mut app = isolated_app();
+        app.convo_dir = dir.join("convo");
+        let src = dir.join("real-unread-turns.jsonl");
+        write_claude(&src, &[("user", "fixture turn")]);
+        let original = std::fs::read(&src).unwrap();
+        app.all_sessions = (0..7)
+            .map(|i| session_with(&format!("active-{i}"), src.clone()))
+            .collect();
+        let archive: Vec<_> = (0..50_000)
+            .map(|i| {
+                let mut session = session_with(&format!("archive-{i}"), src.clone());
+                session.archived = true;
+                session
+            })
+            .collect();
+        // Every source exists and contains unread turns. Removing either
+        // Active filter would therefore cause visible extra work, not a no-op.
+        app.all_sessions.extend(
+            archive
+                .iter()
+                .take(super::super::working_set::ARCHIVE_PAGE_SIZE)
+                .cloned(),
+        );
+        app.archive_catalog = std::sync::Arc::new(archive);
+        assert_eq!(app.convo_backlog(), 7);
+        assert_eq!(app.convo_pending().len(), 7);
+        assert!(run_one_batch(&mut app));
+        assert_eq!(app.convo_total_turns(), 7);
+        assert_eq!(app.convo_index.sessions.len(), 7);
+        assert!(app
+            .convo_index
+            .sessions
+            .keys()
+            .all(|id| id.starts_with("active-")));
+        assert_eq!(std::fs::read(src).unwrap(), original);
+        assert_eq!(app.convo_backlog(), 0);
     }
 
     #[test]

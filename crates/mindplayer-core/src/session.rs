@@ -63,7 +63,7 @@ pub fn is_synthetic_id(id: &str) -> bool {
 /// `cached` counts cached/cache-read input tokens. `total` is the authoritative
 /// grand total: for Codex it is the CLI-reported cumulative `total_tokens`; for
 /// Claude it is the sum of every component across all assistant messages.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TokenUsage {
     pub input: u64,
     pub output: u64,
@@ -83,7 +83,7 @@ impl TokenUsage {
 }
 
 /// A discovered Codex, Claude, Kiro, Cursor, or OMP session.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Session {
     /// Codex UUID / Claude sessionId.
     pub id: String,

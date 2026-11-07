@@ -35,6 +35,9 @@ the sessions you already have.
 - 📜 **Full session history** — scans `~/.codex/sessions`, `~/.claude/projects`,
   `~/.kiro/sessions/cli`, and `~/.cursor/chats`, with titles where each CLI's
   verified local schema exposes them.
+- ⚡ **Active working set** — keep recently used, in-progress, and running
+  sessions loaded. Older history remains searchable in a lightweight Archive;
+  restoring it resumes the same native session, not a handoff or a new chat.
 - 🤖 **Codex · Claude · Kiro · Cursor** — browse, resume, and start sessions for
   all four from one list (press <kbd>n</kbd> to pick the agent).
 - 🔢 **Usage dashboard** — per-session token totals for Codex/Claude, Kiro
@@ -102,7 +105,7 @@ the sessions you already have.
   which would read as "plenty left".
   The Vercel row reports the active AI Gateway key's budget and current-period
   spend when the key and its budget can be identified.
-- 📚 **Conversation log** — Codex, Claude, and Kiro user/assistant turns are
+- 📚 **Conversation log** — Active Codex, Claude, and Kiro user/assistant turns are
   mirrored from the agents' transcripts into a normalized store at
   `~/.mindplayer/convo/`. Cursor and OMP transcripts are not mirrored.
   The store grows incrementally by byte watermark, so a re-scan costs nothing,
@@ -262,6 +265,12 @@ pane, OMP receives it. Closing a live pane hides it without terminating the
 session. OMP receives its native `Ctrl-P`, `Ctrl-T`, `Ctrl-G`, `Ctrl-W`,
 `Ctrl-Y` and Shift-Tab; its native `Ctrl-Q` is reserved by MindPlayer.
 
+Clipboard shortcuts retain their modifiers in OMP: `Cmd-V` on macOS or
+`Ctrl-V` pastes through OMP, and `Alt-Shift-C` / `Alt-Shift-L` copies the
+whole prompt / current line. Terminal-managed pastes still use bracketed
+paste for multiline text. Drag across a pane to copy its displayed text;
+`Ctrl-C` remains OMP's native clear/interrupt shortcut, not a copy command.
+
 Handoff can also target OMP: select OMP in the handoff picker, then choose its
 conversation model and provider. The handoff context stays queued until the
 choice succeeds; cancelling the picker leaves it queued while you retry with
@@ -343,7 +352,8 @@ make test                                          # cargo test --all
 | <kbd>t</kbd> | on a **category header**: the category menu — auto‑sync on/off, sync now, rename, remove |
 | <kbd>/</kbd> | search / filter the visible sessions |
 | <kbd>x</kbd> | close (archive) & stop the selected session |
-| <kbd>a</kbd> | toggle archived view · <kbd>g</kbd> toggle sub‑agents · <kbd>r</kbd> rescan |
+| <kbd>a</kbd> | toggle Active / Archive · <kbd>[</kbd>/<kbd>]</kbd> page Archive · <kbd>Enter</kbd> restore/resume |
+| <kbd>g</kbd> / <kbd>r</kbd> | toggle sub‑agents / rescan |
 | <kbd>u</kbd> | **accounts** — which login each provider starts a session on, with its usage. See below |
 | <kbd>?</kbd> | show the full keyboard-shortcut list |
 | <kbd>q</kbd> | quit (stops all sessions) |
@@ -401,6 +411,65 @@ holder out, which is a failure neither side can explain.
 
 ## 🧠 How it works
 
+### Active and Archive
+
+Active membership uses recorded human use (opening/resuming a session or sending
+input) and available native human-prompt timestamps, not transcript modification
+time. The default inactivity window is seven days. Running sessions—including
+hidden panes—and sessions marked in progress stay Active. Explicitly closing a
+session with `x` still stops and archives it; automatic expiry never kills work.
+
+Press `a` for Archive, `/` to search its metadata, and `PageUp` / `PageDown` to
+page through up to 200 entries at a time, including filtered search results.
+Outside search, `[` / `]` also change pages; inside search they remain literal
+characters. Automatic catalog refresh preserves the selected source even if
+new rows move it to another page. `Enter` loads only the selected source, saves its
+Active membership, and resumes its original native ID and account/path. Labels,
+thread links, and categories stay attached. A missing or changed source reports
+an error without creating a replacement session or discarding the search query.
+Archive token usage is shown
+as unknown until loaded, not measured zero. `Ctrl-q` only hides a live pane; the
+running count includes it, and it can be reopened from Active.
+
+The rebuildable `session-catalog.json` cache lives beside `state.json`. Catalog
+indexing, Archive search, and restoration run on workers. Unchanged archived
+files are not reparsed; periodic usage refresh and conversation-log ingestion
+only visit Active sources. Initial metadata discovery samples bounded head/tail
+windows, so a native human turn never observed outside those windows may be
+unknown. MindPlayer's own recorded use persists independently, bound to the
+provider and exact source path rather than the native ID alone. Ambiguous
+legacy ID-only use never chooses an account/source automatically. The existing
+24-hour `recent` / `older` divider is only a display grouping within Active.
+
+Explicit close/restore decisions are source-qualified too: restoring one
+account's transcript does not reopen a closed same-ID transcript from another
+source. Unreadable files and incomplete directory scans defer legacy use
+migration until a complete census; failed migration saves are reported and
+retried. These new source-specific decisions require a current reader; an
+older installed version only understands the legacy ID-wide fields.
+
+Native Codex `/resume` retains the original PTY owner while tracking the new
+thread/source. Merely delivering input is not proof that a model turn started.
+The terminal preserves explicit Codex Ctrl+Enter instead of converting it to
+plain Enter. Rapid unbracketed text plus CR still follows the native paste guard;
+MindPlayer does not replay Enter or disable that safeguard.
+
+Automatic peer context is bound to its original source through preparation and
+deferred delivery. A native source switch cancels stale context; synchronization
+receipts advance only after successful PTY enqueue, not when preparation starts
+or context is merely queued. If cancelled context had held user keystrokes, the
+status reports their byte count: they remain in memory until the pane closes,
+are never replayed (even after switching back), and must be explicitly retyped
+if needed. Closing the pane discards those retained bytes.
+
+To change automatic retention, set `active_retention_days` in `state.json` while
+MindPlayer is closed, then restart. `0` disables automatic expiry, retaining the
+explicit Archive list; it can therefore load a large history again. No setting
+deletes or rewrites provider transcripts, and existing saved states migrate
+without losing their labels or relationships.
+
+### Sources and local state
+
 Read‑only data sources:
 
 - **Codex** — `~/.codex/sessions/YYYY/MM/DD/rollout-*-<uuid>.jsonl`
@@ -448,7 +517,8 @@ What MindPlayer writes, all under `~/.mindplayer/`:
 
 | Path | Contents |
 | --- | --- |
-| `state.json` | sidecar state — archived ids, labels, in-progress marks, topic categories, your walking-buddy pick |
+| `state.json` | sidecar state — archived ids, human-use timestamps, retention, labels, in-progress marks, topic categories, your walking-buddy pick |
+| `session-catalog.json` | rebuildable, private metadata cache; original source paths and fingerprints, no transcript bodies |
 | `audit.jsonl` | append-only usage log: counts and timestamps only, no session id, title, or cwd |
 | `vercel-key-target.json` | optional key-specific local display target; no API key secret |
 | `accounts.json` | the accounts per provider — names, which one is in use, nothing secret |

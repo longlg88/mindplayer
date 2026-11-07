@@ -46,7 +46,7 @@ export function until(events, check, label, timeoutMs = 10000) {
 // The real proxy -> ModelRouter -> JevService consumers are exercised. Only
 // backend lifecycle replies and the final judge function are synthetic; neither
 // inference, authentication, nor an actual backend turn_context is established.
-export async function createNativeQueueFixture({ queue = true, perPrompt = false, jevDefault = false, goals = false, plan = false, decisionTimeoutMs = 5000, select = text => ({ model: MODEL, effort: text === 'B' ? 'high' : 'low' }) } = {}) {
+export async function createNativeQueueFixture({ queue = true, perPrompt = false, jevDefault = false, goals = false, plan = false, decisionTimeoutMs = 5000, launch, select = text => ({ model: MODEL, effort: text === 'B' ? 'high' : 'low' }) } = {}) {
   if (perPrompt && (queue || !process.env.MINDPLAYER_NATIVE_CODEX)) {
     throw new Error('Managed session-toggle tests require queue=false and an explicit frozen MINDPLAYER_NATIVE_CODEX candidate');
   }
@@ -183,7 +183,10 @@ export async function createNativeQueueFixture({ queue = true, perPrompt = false
     '-c', 'analytics.enabled=false', '-c', 'model_reasoning_effort="low"',
     ...(goals ? ['-c', 'features.goals=true'] : []),
     ...(queue ? QUEUE_CONFIG.flatMap(entry => ['-c', entry]) : [])];
+  let launched;
   try {
+    launched = launch ? await launch({ root, binary, args, cwd, env: { ...env, NATIVE_QUEUE_REMOTE_TOKEN: proxy.token } })
+      : { binary, args, cwd, env: { ...env, NATIVE_QUEUE_REMOTE_TOKEN: proxy.token } };
     bridge = spawn(process.env.MINDPLAYER_NATIVE_PYTHON ?? '/opt/homebrew/bin/python3', ['-u', fileURLToPath(new URL('./native-queue-pty.py', import.meta.url))], { env, stdio: ['pipe', 'pipe', 'pipe'] });
   } catch (error) {
     await proxy.close(); rmSync(root, { recursive: true, force: true }); throw error;
@@ -207,7 +210,7 @@ export async function createNativeQueueFixture({ queue = true, perPrompt = false
     events.emit('change');
   });
   bridge.stdin.on('error', error => { bridgeMessages.push({ event: 'bridge-error', message: error.code }); events.emit('change'); });
-  bridge.stdin.write(`${JSON.stringify({ binary, args, cwd, env: { ...env, NATIVE_QUEUE_REMOTE_TOKEN: proxy.token } })}\n`);
+  bridge.stdin.write(`${JSON.stringify({ binary: launched.binary, args: launched.args, cwd: launched.cwd, env: launched.env })}\n`);
   async function write(text) {
     const id = nextCommand++;
     bridge.stdin.write(`${JSON.stringify({ id, op: 'write', data: Buffer.from(text).toString('base64') })}\n`);
@@ -220,7 +223,7 @@ export async function createNativeQueueFixture({ queue = true, perPrompt = false
     return check();
   }, label, timeout).catch(error => { error.message += `; methods=${messages.map(message => message.method).filter(Boolean).join(',')}; terminal=${screen().slice(-4000)}`; throw error; });
   const cleanup = { ownedPids: [], port: Number(new URL(proxy.url).port), alivePids: null, portClosed: false, rootRemoved: false };
-  const fixture = { binary, version, contract, binarySha256, root, env, args, events, trace, calls, attempts, decisions, messages, starts, shells, approvals, unknown, bridgeMessages, write, screen, wait, cleanup,
+  const fixture = { binary, version, contract, binarySha256, root, env, args, launched, events, trace, calls, attempts, decisions, messages, starts, shells, approvals, unknown, bridgeMessages, write, screen, wait, cleanup,
     // Read-only copy of the actual service consumer's ACK/completion-bound prior.
     get previousDecision() { return structuredClone(observedService?.threads.get(THREAD_ID)?.previousDecision ?? null); },
     projectedScreen: () => terminal.text(),
@@ -233,7 +236,8 @@ export async function createNativeQueueFixture({ queue = true, perPrompt = false
       writeFileSync(`${base}.screen.txt`, terminal.text(), { mode: 0o600 });
       writeFileSync(`${base}.json`, `${JSON.stringify({ label, binary, binarySha256, version, contract,
         args, rows: 40, columns: 120, perPrompt, ownedPids: cleanup.ownedPids,
-        scope: 'Actual native PTY bytes; ANSI-stripped text is a cumulative transcript, not a screen reconstruction. Synthetic backend/judge; no auth or inference.',
+        ...(launched.evidence ? { launcher: launched.evidence } : {}),
+        scope: launched.evidence?.scope ?? 'Actual native PTY bytes; ANSI-stripped text is a cumulative transcript, not a screen reconstruction. Synthetic backend/judge; no auth or inference.',
         projection: 'Existing TerminalScreenFixture text cells: cursor/erase/Hangul widths, no styling; not a general terminal emulator.',
         screen: terminal.text(),
         decisions, calls, trace }, null, 2)}\n`, { mode: 0o600 });
@@ -355,12 +359,22 @@ export async function createNativeQueueFixture({ queue = true, perPrompt = false
         // Stop the actual bridge consumer, await its finally/waitpid, then
         // verify both owned PIDs and the real listening port before deletion.
         const nativePid = bridgeMessages.find(message => message.event === 'started')?.pid;
-        cleanup.ownedPids = [bridge.pid, nativePid].filter(Number.isInteger);
+        cleanup.ownedPids = [...new Set([bridge.pid, nativePid, ...(launched.ownedPids?.() ?? [])].filter(Number.isInteger))];
         const alive = pid => {
           try { process.kill(pid, 0); return true; }
           catch (error) { if (error.code === 'ESRCH') return false; throw error; }
         };
         try {
+          if (!bridgeEnded && launched.shutdown) {
+            try { await launched.shutdown(write); }
+            catch (error) {
+              // A failed graceful quit must still reach owned-process cleanup.
+              cleanup.shutdownError = error.message;
+            }
+            const grace = new AbortController();
+            try { await Promise.race([bridgeExit, delay(5000, undefined, { signal: grace.signal })]); }
+            finally { grace.abort(); }
+          }
           if (!bridgeEnded) {
             if (bridge.stdin.writable) bridge.stdin.write(`${JSON.stringify({ id: nextCommand++, op: 'stop' })}\n`);
             const finished = new AbortController();
@@ -377,6 +391,8 @@ export async function createNativeQueueFixture({ queue = true, perPrompt = false
             }
           }
         } finally { await proxy.close(); }
+        // Include any last background probe created during graceful shutdown.
+        cleanup.ownedPids = [...new Set([...cleanup.ownedPids, ...(launched.ownedPids?.() ?? [])].filter(Number.isInteger))];
         cleanup.alivePids = cleanup.ownedPids.filter(alive);
         cleanup.portClosed = await new Promise((resolve, reject) => {
           const socket = createConnection({ host: '127.0.0.1', port: cleanup.port });

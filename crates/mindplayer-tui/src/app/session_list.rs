@@ -26,18 +26,14 @@ pub(crate) fn matches_search(s: &Session, query: &str) -> bool {
 
 impl App {
     /// Spawn a scan of the current scope on a background thread.
-    pub(crate) fn spawn_scan(&self) -> Receiver<Vec<Session>> {
-        let scope = self.scope.clone();
-        let roots = self.scan_roots();
-        let (tx, rx) = mpsc::channel();
-        thread::spawn(move || {
-            let _ = tx.send(mindplayer_core::discovery::scan_roots(&scope, &roots));
-        });
-        rx
+    pub(crate) fn spawn_scan(&self) -> Receiver<working_set::CatalogMessage> {
+        self.catalog_scan()
     }
 
     /// Confirm the scope choice and kick off the initial scan (scan screen).
     pub fn start_scan(&mut self) {
+        self.cancel_catalog_work();
+        self.working_set.epoch = self.working_set.epoch.wrapping_add(1);
         self.scope = if self.scope_choice == 0 {
             Scope::WorkingDir(self.cwd.clone())
         } else {
@@ -67,32 +63,17 @@ impl App {
         let Some(rx) = &self.bg_rescan_rx else {
             return false;
         };
-        let Ok(mut sessions) = rx.try_recv() else {
+        let Ok(result) = rx.try_recv() else {
             return false;
         };
         self.bg_rescan_rx = None;
 
-        let selected_id = self.selected_session().map(|s| s.id.clone());
-        // Resolve labels against the raw scan, persist, then stamp titles.
-        if self.state.resolve_pending(&sessions) {
-            let _ = self.save_state();
-        }
-        self.state.apply(&mut sessions);
-        self.aggregate = Aggregate::of(&sessions);
-        self.all_sessions = sessions;
-        self.merge_extras();
-        self.rebuild_visible();
-        if let Some(id) = selected_id {
-            if let Some(pos) = self.row_of_session(&id) {
-                self.selected = pos;
-            }
-        }
-        self.reconcile_codex_clears();
+        let changed = self.apply_catalog(result);
         // Keep retrying (until matched or expired) while labels are unresolved.
         if self.awaits_rescan() {
             self.rescan_due = Some(Instant::now() + Duration::from_secs(6));
         }
-        true
+        changed
     }
 
     /// Whether a session file is still expected to appear — either to carry a
@@ -106,18 +87,14 @@ impl App {
     /// Returns true if results arrived (needs redraw).
     pub fn poll_scan(&mut self) -> bool {
         if let Some(rx) = &self.scan_rx {
-            if let Ok(mut sessions) = rx.try_recv() {
-                // Resolve labels queued in a previous run before stamping titles.
-                if self.state.resolve_pending(&sessions) {
-                    let _ = self.save_state();
-                }
-                self.state.apply(&mut sessions);
-                self.aggregate = Aggregate::of(&sessions);
-                self.all_sessions = sessions;
-                self.merge_extras();
-                self.rebuild_visible();
+            if let Ok(result) = rx.try_recv() {
                 self.scan_rx = None;
-                self.screen = Screen::ScanSummary;
+                let loaded = self.apply_catalog(result);
+                self.screen = if loaded {
+                    Screen::ScanSummary
+                } else {
+                    Screen::ScopeSelect
+                };
                 // If labels are still unresolved (their sessions don't exist
                 // yet), keep trying via background re-scans.
                 if self.awaits_rescan() {
@@ -131,19 +108,34 @@ impl App {
 
     pub(crate) fn rebuild_visible(&mut self) {
         let show_archived = self.show_archived;
-        let query = self.search_query.as_deref();
+        // Catalog pages are already searched on the worker, including roots
+        // outside the page. Re-filtering here would drop their child matches.
+        let query = if show_archived && self.archive_available() {
+            None
+        } else {
+            self.search_query.as_deref()
+        };
         let mut groups: Vec<(String, Vec<usize>)> = Vec::new();
         let mut by_root: HashMap<String, Vec<usize>> = HashMap::new();
+        let positions: HashMap<&str, usize> = self
+            .all_sessions
+            .iter()
+            .enumerate()
+            .map(|(i, s)| (s.id.as_str(), i))
+            .collect();
         for (i, s) in self.all_sessions.iter().enumerate() {
             let root = self.state.thread_root(&s.id).to_string();
             by_root.entry(root).or_default().push(i);
         }
         let mut roots: Vec<String> = by_root.keys().cloned().collect();
-        roots.sort_by_key(|root| {
-            self.all_sessions
-                .iter()
-                .position(|s| s.id == *root)
-                .unwrap_or(usize::MAX)
+        roots.sort_by_cached_key(|root| {
+            (
+                positions
+                    .get(root.as_str())
+                    .copied()
+                    .unwrap_or_else(|| by_root[root][0]),
+                root.clone(),
+            )
         });
         for root in roots {
             let Some(indices) = by_root.remove(&root) else {
@@ -166,10 +158,9 @@ impl App {
                         && !s.is_subagent
                         && query.is_none_or(|query| {
                             matches_search(s, query)
-                                || self
-                                    .all_sessions
-                                    .iter()
-                                    .find(|root_session| root_session.id == root)
+                                || positions
+                                    .get(root.as_str())
+                                    .and_then(|&i| self.all_sessions.get(i))
                                     .is_some_and(|root_session| matches_search(root_session, query))
                         })
                 })
@@ -206,7 +197,7 @@ impl App {
             let recent_rank = u8::from(!group_is_recent(self, indices));
             let best_status = indices
                 .iter()
-                .map(|&i| status_rank(self.session_status(&self.all_sessions[i].id)))
+                .map(|&i| status_rank(self.session_status_for(&self.all_sessions[i])))
                 .min()
                 .unwrap_or(u8::MAX);
             let latest = indices
@@ -637,10 +628,22 @@ impl App {
         }
         // Clearing can empty a category; drop it rather than leaving a header
         // with nothing under it.
-        let known: std::collections::BTreeSet<String> =
-            self.all_sessions.iter().map(|s| s.id.clone()).collect();
+        // A scoped catalog is not proof that an out-of-scope session vanished.
+        // Keep saved identities too; category removal below still removes
+        // categories with no remaining memberships.
+        let known: std::collections::BTreeSet<String> = self
+            .known_metadata()
+            .map(|s| s.id.clone())
+            .chain(self.state.session_category.keys().cloned())
+            .chain(self.state.handoff_links.keys().cloned())
+            .chain(
+                self.state
+                    .handoff_links
+                    .values()
+                    .map(|link| link.parent_id.clone()),
+            )
+            .collect();
         self.state.prune_categories(&known);
-        self.state.prune_sync_marks(&known);
         let _ = self.save_state();
         self.category_picker = None;
         // Keep the cursor on the session that was just categorized, which has
@@ -751,6 +754,16 @@ impl App {
             r.session_index()
                 .and_then(|i| self.all_sessions.get(i))
                 .is_some_and(|s| s.id == id)
+        })
+    }
+
+    fn row_of_session_source(&self, source: &Session) -> Option<usize> {
+        self.visible.iter().position(|row| {
+            row.session_index()
+                .and_then(|index| self.all_sessions.get(index))
+                .is_some_and(|s| {
+                    s.id == source.id && s.agent == source.agent && s.file == source.file
+                })
         })
     }
 
@@ -909,63 +922,14 @@ impl App {
         usize::from(self.state.handoff_parent(id).is_some())
     }
 
-    pub fn thread_child_count(&self, id: &str) -> usize {
-        self.all_sessions
-            .iter()
-            .filter(|s| self.state.handoff_parent(&s.id) == Some(id))
-            .count()
-    }
-
-    /// Activity for a list row's time column: `(live_now, effective_last_active)`.
-    /// Every session in a thread (root, a middle handoff link, or a leaf child
-    /// lane) reflects the WHOLE thread's freshest activity, not just its own
-    /// transcript — a handoff child whose own file hasn't been touched since
-    /// it was created still reads the parent/sibling's recent time when the
-    /// thread was worked on since. Only a session with no parent AND no
-    /// children (truly standalone) skips the scan and stays O(1).
-    pub fn row_activity(&self, s: &Session, child_count: usize) -> (bool, Option<DateTime<Utc>>) {
-        if self.is_running(&s.id) {
-            return (true, s.last_active);
-        }
-        let root = self.state.thread_root(&s.id);
-        if child_count == 0 && root == s.id.as_str() {
-            return (false, s.last_active);
-        }
-        let mut latest = s.last_active;
-        for other in &self.all_sessions {
-            if other.id == s.id || self.state.thread_root(&other.id) != root {
-                continue;
-            }
-            if self.is_running(&other.id) {
-                return (true, latest.max(other.last_active));
-            }
-            latest = latest.max(other.last_active);
-        }
-        (false, latest)
-    }
-
-    /// The freshest `last_prompt_at` across a row's whole thread (root, a
-    /// handoff link, or a leaf lane) — mirrors [`Self::row_activity`]'s
-    /// same-thread rollup, but for "when did a human last actually type
-    /// something" rather than raw file activity. `None` when no lane in the
-    /// thread has one (e.g. an all-kiro thread, which can't derive it at all).
-    pub fn row_last_prompt(&self, s: &Session, child_count: usize) -> Option<DateTime<Utc>> {
-        let root = self.state.thread_root(&s.id);
-        if child_count == 0 && root == s.id.as_str() {
-            return s.last_prompt_at;
-        }
-        let mut latest = s.last_prompt_at;
-        for other in &self.all_sessions {
-            if other.id == s.id || self.state.thread_root(&other.id) != root {
-                continue;
-            }
-            latest = latest.max(other.last_prompt_at);
-        }
-        latest
-    }
-
     pub fn toggle_archived_view(&mut self) {
         self.show_archived = !self.show_archived;
+        self.archive_page = 0;
+        if self.show_archived && self.archive_available() {
+            self.request_archive_page();
+        } else if !self.show_archived && self.archive_available() {
+            self.all_sessions.retain(|s| !s.archived);
+        }
         self.selected = 0;
         mindplayer_core::log_event_to(
             &self.audit_path,
@@ -988,6 +952,8 @@ impl App {
         let id = session.id.clone();
         let now_in_progress = !self.state.is_in_progress(&id);
         self.state.set_in_progress(&id, now_in_progress);
+        self.working_set.epoch = self.working_set.epoch.wrapping_add(1);
+        self.rescan_due = Some(Instant::now());
         let _ = self.save_state();
         mindplayer_core::log_event_to(
             &self.audit_path,
@@ -1424,7 +1390,15 @@ impl App {
         if self.refresh_rx.is_some() || self.all_sessions.is_empty() {
             return;
         }
-        let mut sessions = self.all_sessions.clone();
+        let mut sessions: Vec<_> = self
+            .all_sessions
+            .iter()
+            .filter(|s| !s.archived)
+            .cloned()
+            .collect();
+        if sessions.is_empty() {
+            return;
+        }
         let (tx, rx) = mpsc::channel();
         thread::spawn(move || {
             refresh_activity_and_usage(&mut sessions);
@@ -1444,7 +1418,7 @@ impl App {
     }
 
     /// Apply a finished background refresh: update activity/usage, re-sort
-    /// newest-first, and keep the cursor on the same session by id. Returns true
+    /// newest-first, and keep the cursor on the same source. Returns true
     /// if the list changed (needs redraw).
     pub fn poll_refresh(&mut self) -> bool {
         let Some(rx) = &self.refresh_rx else {
@@ -1471,8 +1445,15 @@ impl App {
                 }
             }
         }
-        for s in self.all_sessions.iter_mut() {
+        let mut changed = false;
+        for s in self.all_sessions.iter_mut().filter(|s| !s.archived) {
             if let Some(update) = updates.get(&s.id) {
+                changed |= s.last_active != update.last_active
+                    || update
+                        .last_prompt_at
+                        .is_some_and(|at| Some(at) != s.last_prompt_at)
+                    || s.tokens != update.tokens
+                    || s.context_pct != update.context_pct;
                 s.last_active = update.last_active;
                 // A refresh pass only re-derives this from whatever tail
                 // window it happened to scan; a `None` here means "no new
@@ -1485,11 +1466,14 @@ impl App {
                 s.context_pct = update.context_pct;
             }
         }
-        let selected_id = self.selected_session().map(|s| s.id.clone());
+        if !changed {
+            return false;
+        }
+        let selected = self.selected_session().cloned();
         sort_by_recency(&mut self.all_sessions);
         self.rebuild_visible();
-        if let Some(id) = selected_id {
-            if let Some(pos) = self.row_of_session(&id) {
+        if let Some(source) = selected {
+            if let Some(pos) = self.row_of_session_source(&source) {
                 self.selected = pos;
             }
         }
@@ -1505,12 +1489,24 @@ impl App {
         let Some(session) = self.selected_session().cloned() else {
             return;
         };
+        self.refresh_native_owners();
+        if !self.can_resume_source(&session) {
+            return;
+        }
+        if self.source_runtime_conflicts(&session) {
+            self.status =
+                "session action refused: live pane has moved or its source is unresolved".into();
+            return;
+        }
+        let owner = self
+            .pty_owner_for_source(&session)
+            .unwrap_or_else(|| session.id.clone());
         mindplayer_core::log_event_to(&self.audit_path, mindplayer_core::AuditEvent::SessionClose);
         // Remember a deliberate neighbor (the row that will slide under the
-        // cursor) by id, so after the list shrinks the selection lands on it
+        // cursor) by source, so after the list shrinks the selection lands on it
         // instead of silently inheriting whatever shifted into the old index —
-        // important because the next 'x' archives + SIGKILLs the selected row.
-        let neighbor_id = self
+        // important because the next 'x' archives and stops the selected row.
+        let neighbor = self
             .visible
             .get(self.selected + 1)
             .or_else(|| {
@@ -1520,18 +1516,18 @@ impl App {
             })
             .and_then(|r| r.session_index())
             .and_then(|i| self.all_sessions.get(i))
-            .map(|s| s.id.clone());
-        if let Some(mut pty) = self.ptys.remove(&session.id) {
+            .cloned();
+        if let Some(mut pty) = self.ptys.remove(&owner) {
             pty.kill();
         }
-        self.ended.remove(&session.id);
-        self.pending_initial_inputs.remove(&session.id);
-        self.turn_submitted.remove(&session.id);
-        if self.active.as_deref() == Some(session.id.as_str()) {
-            self.remove_pane(&session.id);
+        self.ended.remove(&owner);
+        self.pending_initial_inputs.remove(&owner);
+        self.turn_submitted.remove(&owner);
+        if self.active.as_deref() == Some(owner.as_str()) {
+            self.remove_pane(&owner);
             self.focus = Focus::List;
         } else {
-            self.remove_pane(&session.id);
+            self.remove_pane(&owner);
         }
         if session.id.starts_with("new:") {
             // Synthetic placeholder: drop the row, but the agent may still write
@@ -1552,17 +1548,18 @@ impl App {
             self.closed_extras.push(session.clone());
             self.status = "closed new session".to_string();
         } else {
-            self.state.set_archived(&session.id, true);
+            self.state.set_session_archived(&session, true);
             let _ = self.save_state();
-            if let Some(s) = self.all_sessions.iter_mut().find(|s| s.id == session.id) {
-                s.archived = true;
-            }
+            self.remember_archived(session.clone());
+            self.all_sessions.retain(|s| {
+                s.id != session.id || s.agent != session.agent || s.file != session.file
+            });
             self.status = format!("archived {}", short(&session.id));
         }
         self.rebuild_visible();
-        // Restore the cursor onto the remembered neighbor by id.
-        if let Some(nid) = neighbor_id {
-            if let Some(pos) = self.row_of_session(&nid) {
+        // Restore the cursor onto the remembered source, even when IDs collide.
+        if let Some(source) = neighbor {
+            if let Some(pos) = self.row_of_session_source(&source) {
                 self.selected = pos;
             }
         }

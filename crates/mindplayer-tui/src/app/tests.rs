@@ -3,6 +3,9 @@ use super::*;
 use mindplayer_core::session::TokenUsage;
 use std::path::PathBuf;
 
+#[path = "mp02_mp03_tests.rs"]
+mod lifecycle_regressions;
+
 pub(crate) fn session(id: &str, agent: Agent, archived: bool) -> Session {
     Session {
         id: id.into(),
@@ -391,11 +394,15 @@ fn a_closed_new_sessions_late_file_is_archived_not_shown() {
     app.close_selected();
 
     // The agent writes the file after the close; the scan picks it up.
-    app.all_sessions = vec![late_disk_session(&app, "real-late", Agent::Codex, "/work")];
+    let late = late_disk_session(&app, "real-late", Agent::Codex, "/work");
+    app.all_sessions = vec![late.clone()];
     app.merge_extras();
     app.rebuild_visible();
 
-    assert!(app.state.is_archived("real-late"), "late file is archived");
+    assert!(
+        app.state.is_session_archived(&late),
+        "late file is archived"
+    );
     assert!(
         app.visible_sessions().all(|s| s.id != "real-late"),
         "and never shown"
@@ -725,6 +732,7 @@ fn typing_while_initial_input_pending_is_held_not_dropped() {
             queued_at: Instant::now(),
             readiness: DeferredInputReadiness::Startup,
             held_input: Vec::new(),
+            sync: None,
         },
     );
 
@@ -829,6 +837,7 @@ fn pasting_while_initial_input_pending_is_never_held() {
             queued_at: Instant::now(),
             readiness: DeferredInputReadiness::Startup,
             held_input: Vec::new(),
+            sync: None,
         },
     );
 
@@ -1092,29 +1101,16 @@ fn thread_root_time_reflects_freshest_lane_activity() {
         .set_handoff_link("c", "p", PathBuf::from("/tmp/h.md"), now);
     app.rebuild_visible();
 
-    let p = app
-        .all_sessions
-        .iter()
-        .find(|s| s.id == "p")
-        .unwrap()
-        .clone();
-    let (live, eff) = app.row_activity(&p, app.thread_child_count("p"));
-    assert!(!live, "no live PTY in a unit test");
+    let metadata = crate::ui::list_render_metadata(&app, 0..app.visible.len());
+    assert!(!metadata["p"].live_now, "no live PTY in a unit test");
     assert_eq!(
-        eff,
+        metadata["p"].last_active,
         Some(now),
         "parent's time reflects the lane's recent activity, not its own 2w mtime"
     );
 
-    // A standalone session still uses its own activity.
-    let c = app
-        .all_sessions
-        .iter()
-        .find(|s| s.id == "c")
-        .unwrap()
-        .clone();
-    let (_, eff_c) = app.row_activity(&c, app.thread_child_count("c"));
-    assert_eq!(eff_c, Some(now));
+    // The child's row uses the same thread aggregate.
+    assert_eq!(metadata[app.state.thread_root("c")].last_active, Some(now));
 }
 
 #[test]
@@ -1131,27 +1127,16 @@ fn thread_root_last_prompt_reflects_freshest_lane_prompt() {
         .set_handoff_link("c2", "p2", PathBuf::from("/tmp/h2.md"), now);
     app.rebuild_visible();
 
-    let p = app
-        .all_sessions
-        .iter()
-        .find(|s| s.id == "p2")
-        .unwrap()
-        .clone();
+    let metadata = crate::ui::list_render_metadata(&app, 0..app.visible.len());
     assert_eq!(
-        app.row_last_prompt(&p, app.thread_child_count("p2")),
+        metadata["p2"].last_prompt_at,
         Some(now),
         "root's last-prompt time reflects the lane's fresher prompt, not its own 2w-old one"
     );
 
-    // A standalone session with no thread still uses its own value.
-    let c = app
-        .all_sessions
-        .iter()
-        .find(|s| s.id == "c2")
-        .unwrap()
-        .clone();
+    // The child resolves the same aggregate through its root.
     assert_eq!(
-        app.row_last_prompt(&c, app.thread_child_count("c2")),
+        metadata[app.state.thread_root("c2")].last_prompt_at,
         Some(now)
     );
 }
@@ -1159,7 +1144,7 @@ fn thread_root_last_prompt_reflects_freshest_lane_prompt() {
 #[test]
 fn handoff_child_leaf_reflects_parent_activity_even_though_it_has_no_children() {
     // Regression: a handoff child (e.g. "(handoff)pulse") is a thread LEAF — it
-    // has zero children of its own, so `thread_child_count` is 0. The old code
+    // has zero children of its own. The old code
     // used that as a shortcut to skip the whole-thread scan and show only the
     // child's own (possibly long-stale) transcript mtime — even though the
     // parent it was handed off from was worked on minutes ago. A session with
@@ -1174,20 +1159,13 @@ fn handoff_child_leaf_reflects_parent_activity_even_though_it_has_no_children() 
         .set_handoff_link("child", "parent", PathBuf::from("/tmp/h.md"), now);
     app.rebuild_visible();
 
-    let child = app
-        .all_sessions
-        .iter()
-        .find(|s| s.id == "child")
-        .unwrap()
-        .clone();
+    let metadata = crate::ui::list_render_metadata(&app, 0..app.visible.len());
     assert_eq!(
-        app.thread_child_count("child"),
-        0,
+        metadata["child"].child_count, 0,
         "the child has no children of its own"
     );
-    let (_, eff) = app.row_activity(&child, app.thread_child_count("child"));
     assert_eq!(
-        eff,
+        metadata[app.state.thread_root("child")].last_active,
         Some(now),
         "the child's row must reflect the parent's recent activity, not its own 25h-stale mtime"
     );
@@ -1329,17 +1307,22 @@ fn close_selected_archives_and_hides() {
     ];
     app.rebuild_visible();
     app.selected = 0;
+    let closed = app.selected_session().unwrap().clone();
     app.close_selected();
 
     let saved = mindplayer_core::State::load_from(&tmp);
-    assert!(saved.is_archived("a"), "archive persisted to sidecar");
+    assert!(
+        saved.is_session_archived(&closed),
+        "archive persisted to sidecar"
+    );
     let _ = std::fs::remove_file(&tmp);
     assert!(
-        app.all_sessions
-            .iter()
-            .find(|s| s.id == "a")
-            .unwrap()
-            .archived
+        app.all_sessions.iter().all(|s| s.id != "a"),
+        "closing unloads detail rows"
+    );
+    assert!(
+        app.archive_available(),
+        "closing retains searchable archive metadata"
     );
     assert!(app.visible_sessions().all(|s| s.id != "a"));
 }
@@ -1956,7 +1939,10 @@ fn kiro_handoff_to_codex_creates_child_lane() {
     assert_eq!(app.session_at(0).unwrap().id, "kiro-1");
     assert_eq!(app.session_at(1).unwrap().id, pending.session_id);
     assert_eq!(app.session_depth(&pending.session_id), 1);
-    assert_eq!(app.thread_child_count("kiro-1"), 1);
+    assert_eq!(
+        crate::ui::list_render_metadata(&app, 0..app.visible.len())["kiro-1"].child_count,
+        1
+    );
 
     std::env::remove_var(handoff::HANDOFF_DIR_ENV);
     let _ = std::fs::remove_dir_all(dir);
@@ -1987,7 +1973,10 @@ fn handoff_child_is_grouped_under_parent_thread() {
     assert_eq!(app.session_at(1).unwrap().id, "codex-1");
     assert_eq!(app.session_depth("claude-1"), 0);
     assert_eq!(app.session_depth("codex-1"), 1);
-    assert_eq!(app.thread_child_count("claude-1"), 1);
+    assert_eq!(
+        crate::ui::list_render_metadata(&app, 0..app.visible.len())["claude-1"].child_count,
+        1
+    );
 }
 
 #[test]
@@ -2551,11 +2540,11 @@ fn handoff_label_prefixes_once() {
 }
 
 #[test]
-fn only_submit_keys_mark_user_turn_submitted() {
-    assert!(!input_submits_turn(b"a"));
-    assert!(!input_submits_turn(b"\x1b[A"));
-    assert!(input_submits_turn(b"\r"));
-    assert!(input_submits_turn(b"hello\n"));
+fn only_carriage_return_requests_submission() {
+    assert!(!input_requests_submit(b"a"));
+    assert!(!input_requests_submit(b"\x1b[A"));
+    assert!(input_requests_submit(b"\r"));
+    assert!(!input_requests_submit(b"hello\n"));
 }
 
 #[test]
@@ -2901,7 +2890,8 @@ fn assert_deferred_sync_preserves_active_turn(category: bool) {
     if category {
         let (tx, rx) = mpsc::channel();
         app.category_sync_rx = Some(PendingSessionSync {
-            target_id: id.into(),
+            target: app.all_sessions[0].clone(),
+            owner: Some(id.into()),
             result: rx,
         });
         tx.send((id.into(), Ok((sync, Vec::new())))).unwrap();
@@ -2909,7 +2899,8 @@ fn assert_deferred_sync_preserves_active_turn(category: bool) {
     } else {
         let (tx, rx) = mpsc::channel();
         app.thread_sync_rx = Some(PendingSessionSync {
-            target_id: id.into(),
+            target: app.all_sessions[0].clone(),
+            owner: Some(id.into()),
             result: rx,
         });
         tx.send((id.into(), Ok(sync))).unwrap();
@@ -5152,6 +5143,25 @@ mod account_selection {
             second.name,
             "this test proves nothing unless the two answers differ"
         );
+    }
+
+    #[test]
+    fn stopped_pane_binding_cannot_override_another_archive_source() {
+        let home = super::super::limits_home_for_app();
+        let (mut app, second) = app_with_two_codex_accounts(&home);
+        let mut archived = session("shared-native-id", Agent::Codex, true);
+        archived.file = second.session_root(&home).join("rollout-shared.jsonl");
+        app.pane_accounts.insert(
+            archived.id.clone(),
+            (Agent::Codex, DEFAULT_ACCOUNT.to_string()),
+        );
+        assert_eq!(
+            app.account_of_session(&archived).slot,
+            second.slot,
+            "a stopped pane's ID-only binding must not replace the selected source account"
+        );
+        app.ended.insert(archived.id.clone());
+        assert_eq!(app.account_of_session(&archived).slot, second.slot);
     }
 
     #[test]

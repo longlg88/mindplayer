@@ -85,26 +85,34 @@ impl App {
     pub fn begin_search(&mut self) {
         self.search_query = Some(String::new());
         mindplayer_core::log_event_to(&self.audit_path, mindplayer_core::AuditEvent::SearchBegin);
-        self.rebuild_visible();
+        self.refresh_search_results();
     }
 
     pub fn search_push(&mut self, c: char) {
         if let Some(query) = self.search_query.as_mut() {
             query.push(c);
-            self.rebuild_visible();
+            self.refresh_search_results();
         }
     }
 
     pub fn search_backspace(&mut self) {
         if let Some(query) = self.search_query.as_mut() {
             query.pop();
-            self.rebuild_visible();
+            self.refresh_search_results();
         }
     }
 
     pub fn cancel_search(&mut self) {
         self.search_query = None;
         mindplayer_core::log_event_to(&self.audit_path, mindplayer_core::AuditEvent::SearchCancel);
+        self.refresh_search_results();
+    }
+
+    fn refresh_search_results(&mut self) {
+        if self.show_archived && self.archive_available() {
+            self.archive_page = 0;
+            self.request_archive_page();
+        }
         self.rebuild_visible();
     }
 
@@ -116,7 +124,21 @@ impl App {
     /// `_ => {}` arm instead of cycling panes, and typed characters get pushed
     /// into the now-invisible search buffer instead of reaching the pty.
     pub fn confirm_search(&mut self) {
-        self.search_query = None;
+        if self.show_archived && self.selected_session().is_none() {
+            // A pending worker still owns this query. Do not hide the query
+            // while allowing its filtered page to arrive as an unfiltered view.
+            self.status =
+                "no archived session selected; wait for results or refine the search".to_string();
+            return;
+        }
+        // Archive restore is asynchronous. Its success path clears the query
+        // before focusing the terminal; failure must retain the matching page.
+        if !self
+            .selected_session()
+            .is_some_and(|session| session.archived)
+        {
+            self.search_query = None;
+        }
         self.request_resume();
         // Logged after the resume so the `focus` field reflects where the app
         // actually landed ("terminal" when a match resumed). Together with the

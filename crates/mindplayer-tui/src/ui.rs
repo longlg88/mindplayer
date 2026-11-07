@@ -18,6 +18,7 @@ use ratatui::widgets::{
     Block, BorderType, Borders, Clear, Gauge, List, ListItem, ListState, Padding, Paragraph, Wrap,
 };
 use ratatui::Frame;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 const ACCENT: Color = Color::Rgb(126, 162, 247);
@@ -1066,9 +1067,16 @@ fn scan_summary(f: &mut Frame, app: &App) {
     f.render_widget(
         Paragraph::new(Line::from(vec![
             Span::styled("✓ ", Style::default().fg(Color::Green)),
-            Span::raw(format!("{} sessions collected", a.session_count())),
+            Span::raw(format!("{} active sessions collected", a.session_count())),
         ])),
         rows[0],
+    );
+    f.render_widget(
+        Paragraph::new(Line::styled(
+            format!("{} archived · usage not loaded", app.archive_catalog.len()),
+            Style::default().fg(DIM),
+        )),
+        rows[1],
     );
     f.render_widget(
         Paragraph::new(Line::from(vec![
@@ -1094,7 +1102,7 @@ fn scan_summary(f: &mut Frame, app: &App) {
     );
     f.render_widget(
         Paragraph::new(Line::from(vec![
-            Span::styled("total tokens  ", Style::default().fg(DIM)),
+            Span::styled("active tokens  ", Style::default().fg(DIM)),
             Span::styled(
                 human_tokens(a.total.total),
                 Style::default().add_modifier(Modifier::BOLD),
@@ -1136,7 +1144,12 @@ fn main_view(f: &mut Frame, app: &mut App) {
             Style::default().fg(DIM),
         ));
     }
-    status.push(Span::styled(app.summary_head(), Style::default().fg(DIM)));
+    let summary_head = if app.show_archived {
+        format!("{} archived · usage not loaded", app.archive_matches)
+    } else {
+        app.summary_head()
+    };
+    status.push(Span::styled(summary_head, Style::default().fg(DIM)));
     status.push(Span::styled(app.summary_tail(), Style::default().fg(DIM)));
     // Says so while the account rows below are the previous run's. It clears
     // itself the moment this run's own reading lands, so a stale number never
@@ -1253,6 +1266,17 @@ fn main_view(f: &mut Frame, app: &mut App) {
 
     let keys: String = if startup_active {
         "이번 실행에만 적용 · 선택 저장 없음".to_string()
+    } else if app.focus == Focus::List && app.show_archived {
+        let pages = app
+            .archive_matches
+            .div_ceil(crate::app::working_set::ARCHIVE_PAGE_SIZE)
+            .max(1);
+        let page = app.archive_page.saturating_add(1).min(pages);
+        if app.search_query.is_some() {
+            format!("PgUp/PgDn page {page}/{pages} · enter restore · type to filter · esc cancel")
+        } else {
+            format!("[ ] or PgUp/PgDn page {page}/{pages} · enter restore · / search")
+        }
     } else if app.search_query.is_some() && app.multi_select {
         // Marking wins over typing for these two keys (see main.rs) — say so,
         // instead of only ever showing one of the two active modes' hints.
@@ -1711,6 +1735,50 @@ fn label_input_popup(f: &mut Frame, agent: Option<Agent>, label: &str) {
     f.render_widget(Paragraph::new(lines).block(block), area);
 }
 
+/// Direct child counts and whole-thread activity for the requested viewport.
+#[derive(Default)]
+pub(crate) struct ListThreadMetadata {
+    pub(crate) child_count: usize,
+    pub(crate) live_now: bool,
+    pub(crate) last_active: Option<DateTime<Utc>>,
+    pub(crate) last_prompt_at: Option<DateTime<Utc>>,
+}
+
+/// Keeps only requested session/root IDs; unlinked sessions use their own fields.
+pub(crate) fn list_render_metadata(
+    app: &App,
+    rows: impl Iterator<Item = usize>,
+) -> HashMap<&str, ListThreadMetadata> {
+    let mut metadata = HashMap::<_, ListThreadMetadata>::new();
+    if app.state.handoff_links.is_empty() {
+        return metadata;
+    }
+    // Keep only the on-screen sessions and their roots. Off-screen lanes still
+    // contribute counts/activity, but need no strings or per-row allocations.
+    for session in rows.filter_map(|row| app.session_at(row)) {
+        metadata.entry(session.id.as_str()).or_default();
+        metadata
+            .entry(app.state.thread_root(&session.id))
+            .or_default();
+    }
+    if metadata.is_empty() {
+        return metadata;
+    }
+    for session in &app.all_sessions {
+        if let Some(parent) = app.state.handoff_parent(&session.id) {
+            if let Some(meta) = metadata.get_mut(parent) {
+                meta.child_count += 1;
+            }
+        }
+        if let Some(meta) = metadata.get_mut(app.state.thread_root(&session.id)) {
+            meta.live_now |= app.is_running(&session.id);
+            meta.last_active = meta.last_active.max(session.last_active);
+            meta.last_prompt_at = meta.last_prompt_at.max(session.last_prompt_at);
+        }
+    }
+    metadata
+}
+
 fn session_list(f: &mut Frame, app: &mut App, area: Rect, now: DateTime<Utc>) {
     // Worked out once: resolving a session's account is a path comparison per
     // account, and this list runs to thousands of rows.
@@ -1746,7 +1814,15 @@ fn session_list(f: &mut Frame, app: &mut App, area: Rect, now: DateTime<Utc>) {
         .title(format!(
             " Sessions · recent first · {tab}{search}{multi} ({}) ",
             app.visible.len()
-        ));
+        ))
+        .title_bottom(
+            Line::from(format!(
+                " {} visible / {} running ",
+                app.visible_aggregate.session_count(),
+                app.live_pty_count(),
+            ))
+            .alignment(Alignment::Right),
+        );
 
     // Fill the pane: title gets whatever width is left after border, status
     // badge, agent, time, identity, and usage columns.
@@ -1775,16 +1851,34 @@ fn session_list(f: &mut Frame, app: &mut App, area: Rect, now: DateTime<Utc>) {
         .filter(|&r| app.session_at(r).is_some())
         .count();
 
-    let mut items: Vec<ListItem> = Vec::new();
-    let mut selected_item = None;
-    let mut current_recent: Option<bool> = None;
-    for row in 0..app.visible.len() {
-        let Some(kind) = app.row_at(row).cloned() else {
-            continue;
-        };
-        let is_recent = row < recent_count;
-        if current_recent != Some(is_recent) {
-            current_recent = Some(is_recent);
+    // Each logical row occupies one terminal row, plus the two optional band
+    // dividers. Match a fresh ListState's selection-following offset without
+    // constructing the thousands of items ratatui would immediately skip.
+    let older_divider =
+        (recent_count > 0 && recent_count < app.visible.len()).then_some(recent_count + 1);
+    let rendered_rows = app.visible.len()
+        + usize::from(!app.visible.is_empty())
+        + usize::from(older_divider.is_some());
+    let selected_item =
+        (!app.startup_routing.active() && app.selected < app.visible.len()).then(|| {
+            app.selected + 1 + usize::from(older_divider.is_some() && app.selected >= recent_count)
+        });
+    let viewport_rows = usize::from(area.height.saturating_sub(2));
+    let first_item =
+        selected_item.map_or(0, |item| (item + 1).saturating_sub(viewport_rows.max(1)));
+    let end_item = first_item.saturating_add(viewport_rows).min(rendered_rows);
+    let logical_row = |item| {
+        if item == 0 || older_divider == Some(item) {
+            None
+        } else {
+            Some(item - 1 - usize::from(older_divider.is_some_and(|divider| item > divider)))
+        }
+    };
+    let metadata = list_render_metadata(app, (first_item..end_item).filter_map(logical_row));
+    let mut items: Vec<ListItem> = Vec::with_capacity(end_item - first_item);
+    for item in first_item..end_item {
+        let Some(row) = logical_row(item) else {
+            let is_recent = item == 0 && recent_count > 0;
             let (label, count) = if is_recent {
                 ("recent", recent_sessions)
             } else {
@@ -1801,23 +1895,21 @@ fn session_list(f: &mut Frame, app: &mut App, area: Rect, now: DateTime<Utc>) {
                     Style::default().fg(DIM),
                 ),
             ])));
-        }
-        if row == app.selected {
-            selected_item = Some(items.len());
-        }
+            continue;
+        };
+        let Some(kind) = app.row_at(row) else {
+            continue;
+        };
+        let is_recent = row < recent_count;
         // Category header rows: the fold marker plus a session count. Rendered
         // as a normal list item so the cursor can sit on it (that is what makes
         // `←`/`→` able to fold without stealing `→` from session rows).
-        let cat: Option<Option<String>> = match &kind {
-            Row::Header(cat) => Some(cat.clone()),
-            Row::Session(_) => None,
-        };
-        if let Some(cat) = cat {
+        if let Row::Header(cat) = kind {
             let count = match cat.as_deref() {
                 Some(id) => app.category_session_count(Some(id)),
                 None => app.loose_session_count(is_recent),
             };
-            let (glyph, label) = match &cat {
+            let (glyph, label) = match cat {
                 Some(id) => (
                     if app.state.is_collapsed(id) {
                         "▸ "
@@ -1863,11 +1955,13 @@ fn session_list(f: &mut Frame, app: &mut App, area: Rect, now: DateTime<Utc>) {
         {
             let marked = app.marked.contains(&s.id);
             let depth = app.session_depth(&s.id);
-            let child_count = app.thread_child_count(&s.id);
+            let child_count = metadata
+                .get(s.id.as_str())
+                .map_or(0, |meta| meta.child_count);
             let (tag, tag_color) = agent_tag(s.agent);
             // Clear, fixed-width status badge so it's easy to scan a column of
             // running / working / done sessions.
-            let (badge, badge_color, badge_bold) = match app.session_status(&s.id) {
+            let (badge, badge_color, badge_bold) = match app.session_status_for(s) {
                 SessionStatus::Blocked => ("! blocked", WAITING_BORDER, true),
                 SessionStatus::Working => ("● working", WORKING_BORDER, true),
                 SessionStatus::Completed => ("✓ done   ", COMPLETED_BORDER, true),
@@ -1907,7 +2001,12 @@ fn session_list(f: &mut Frame, app: &mut App, area: Rect, now: DateTime<Utc>) {
             // Time column reflects live activity: a running session (or a thread
             // root with a running/active-today lane) reads "now" / its lane's
             // recent time rather than its own possibly-stale transcript mtime.
-            let (live_now, eff_active) = app.row_activity(s, child_count);
+            let root = app.state.thread_root(&s.id);
+            let thread = (child_count > 0 || root != s.id)
+                .then(|| metadata.get(root))
+                .flatten();
+            let live_now = app.is_running(&s.id) || thread.is_some_and(|meta| meta.live_now);
+            let eff_active = thread.map_or(s.last_active, |meta| meta.last_active);
             // A running session's file mtime is always "just now" (the agent
             // keeps writing), so showing that here would say nothing useful —
             // time since the last genuine prompt (how long it's been working
@@ -1917,7 +2016,7 @@ fn session_list(f: &mut Frame, app: &mut App, area: Rect, now: DateTime<Utc>) {
             // either — fall back to the old plain "now" rather than a bare "—"
             // for what's still very much a live, just-created row.
             let when = if live_now {
-                match app.row_last_prompt(s, child_count) {
+                match thread.map_or(s.last_prompt_at, |meta| meta.last_prompt_at) {
                     Some(t) => relative_time(Some(t), now),
                     None => "now".to_string(),
                 }
@@ -1985,7 +2084,11 @@ fn session_list(f: &mut Frame, app: &mut App, area: Rect, now: DateTime<Utc>) {
                 ));
             }
             spans.push(Span::styled(
-                format!("  {}", usage_cell(s)),
+                if app.show_archived {
+                    "  —".to_string()
+                } else {
+                    format!("  {}", usage_cell(s))
+                },
                 Style::default().fg(DIM),
             ));
             items.push(ListItem::new(Line::from(spans)));
@@ -1997,10 +2100,9 @@ fn session_list(f: &mut Frame, app: &mut App, area: Rect, now: DateTime<Utc>) {
     app.list_rows = area.height.saturating_sub(2);
 
     let mut state = ListState::default();
-    if !items.is_empty() && !app.startup_routing.active() {
-        state.select(selected_item);
+    if !items.is_empty() {
+        state.select(selected_item.map(|item| item - first_item));
     }
-    let rendered_rows = items.len();
     let list = List::new(items)
         .block(block)
         .highlight_style(
@@ -2019,7 +2121,7 @@ fn session_list(f: &mut Frame, app: &mut App, area: Rect, now: DateTime<Utc>) {
     // intentional instead of a stranded sprite over a void.
     let content_top = area.y + 1; // inside the top border
     let bottom = area.y + area.height - 1; // bottom border row
-    let region_top = content_top + rendered_rows as u16;
+    let region_top = content_top + rendered_rows.min(viewport_rows) as u16;
     let region_h = bottom.saturating_sub(region_top);
     const GAP: u16 = 1;
     let block_h = walker::HEIGHT + GAP + 2; // strip + gap + tagline + legend
@@ -4019,6 +4121,10 @@ fn accounts_popup(f: &mut Frame, app: &App) {
 }
 
 #[cfg(test)]
+#[path = "list_perf_tests.rs"]
+mod list_perf_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::pty::PtySession;
@@ -5845,7 +5951,12 @@ mod tests {
             ) {
                 assert_eq!(
                     fixture.quiet.app.session_status(&id),
-                    SessionStatus::Working
+                    if stage == RoutingStage::Running {
+                        SessionStatus::Working
+                    } else {
+                        SessionStatus::Idle
+                    },
+                    "request delivery/ACK is not an actual turn start"
                 );
             }
         }
@@ -6526,6 +6637,15 @@ mod tests {
         assert!(fixture.app.paste_to_pty("draft\nsecond line"));
         assert_eq!(fixture.app.session_status(&id), SessionStatus::Completed);
         fixture.app.send_to_pty(b"\r");
+        assert_eq!(fixture.app.session_status(&id), SessionStatus::Idle);
+        fixture.app.hook_status.insert(
+            id.clone(),
+            crate::agent_hooks::HookReading {
+                status: SessionStatus::Working,
+                event_epoch_secs: 2,
+                revision: 1,
+            },
+        );
         assert_eq!(fixture.app.session_status(&id), SessionStatus::Working);
     }
 

@@ -150,7 +150,7 @@ fn home() -> PathBuf {
 }
 
 /// Claude Code's user-level (all-projects) settings file — confirmed against
-/// the official docs, not guessed: https://code.claude.com/docs/en/hooks.
+/// the official docs, not guessed: <https://code.claude.com/docs/en/hooks>.
 pub fn claude_settings_path() -> PathBuf {
     home().join(".claude").join("settings.json")
 }

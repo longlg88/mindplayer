@@ -131,6 +131,12 @@ the resulting minimum version.)
   presenting it as a monthly usage window, and mark accounts blocked only when
   the app-server refuses ordinary usage.
 
+### v0.61.2 — 2026-11-07 (local build)
+
+- Preserve Command and shifted character shortcuts in OMP panes, fixing
+  `Cmd-V` paste and `Alt-Shift-C` / `Alt-Shift-L` copy without changing other
+  providers' key encoding or multiline bracketed paste.
+
 ### v0.57.5 — 2026-10-26
 
 - Preserve session labels, pane continuity, and resume targets across native

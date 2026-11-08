@@ -1100,11 +1100,9 @@ fn parse_claude_file_mode(
                     }
                 }
             }
-            "assistant" => {
-                if mode == ParseMode::Full {
-                    if let Some(usage) = v.get("message").and_then(|m| m.get("usage")) {
-                        add_claude_usage(&mut tokens, usage);
-                    }
+            "assistant" if mode == ParseMode::Full => {
+                if let Some(usage) = v.get("message").and_then(|m| m.get("usage")) {
+                    add_claude_usage(&mut tokens, usage);
                 }
             }
             _ => {}

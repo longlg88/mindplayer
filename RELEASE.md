@@ -94,6 +94,9 @@ the resulting minimum version.)
 
 - Reduce development build storage and clean up isolated smoke-test fixtures.
 
+- Keep Claude metadata-only scans compatible with current Clippy while
+  preserving full-scan token totals and warnings-as-errors CI checks.
+
 - Show only Vercel key usage, with an optional key-specific local display
   target that does not change or enforce the server-side budget.
 

@@ -94,6 +94,9 @@ the resulting minimum version.)
 
 - Reduce development build storage and clean up isolated smoke-test fixtures.
 
+- Keep Claude metadata-only scans compatible with current Clippy while
+  preserving full-scan token totals and warnings-as-errors CI checks.
+
 - Show only Vercel key usage, with an optional key-specific local display
   target that does not change or enforce the server-side budget.
 
@@ -130,6 +133,12 @@ the resulting minimum version.)
 - Show Codex Business `individualLimit` as a credits/spend-cap row instead of
   presenting it as a monthly usage window, and mark accounts blocked only when
   the app-server refuses ordinary usage.
+
+### v0.61.2 — 2026-11-07 (local build)
+
+- Preserve Command and shifted character shortcuts in OMP panes, fixing
+  `Cmd-V` paste and `Alt-Shift-C` / `Alt-Shift-L` copy without changing other
+  providers' key encoding or multiline bracketed paste.
 
 ### v0.57.5 — 2026-10-26
 

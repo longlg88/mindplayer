@@ -11,7 +11,7 @@ const HTML_CANDIDATE_POLL_INTERVAL: Duration = Duration::from_secs(3);
 /// are tiny (one small JSON object) so this is a direct synchronous read on
 /// the main thread, not a background sweep like the `.html` candidate walk —
 /// a short interval is cheap here.
-const HOOK_STATUS_POLL_INTERVAL: Duration = Duration::from_millis(500);
+const HOOK_STATUS_POLL_INTERVAL: Duration = Duration::from_millis(125);
 
 fn restore_tracking<T>(map: &mut HashMap<String, T>, id: &str, previous: Option<T>) {
     match previous {
@@ -375,6 +375,59 @@ impl App {
         self.ptys.contains_key(id) && !self.ended.contains(id)
     }
 
+    pub(super) fn refresh_native_owners(&self) {
+        // List actions may arrive between interval-gated hook polls. Refresh
+        // only the private ownership channels before choosing a child to act on.
+        for pty in self.ptys.values() {
+            pty.poll_routing_status();
+        }
+    }
+
+    /// Resolve a source row to its PTY without moving the child's stable pane key.
+    pub(super) fn pty_owner_for_source(&self, source: &Session) -> Option<String> {
+        let mut owners = self.ptys.iter().filter_map(|(id, pty)| {
+            if pty
+                .routing_thread_id()
+                .is_some_and(|thread| thread != source.id)
+            {
+                return None;
+            }
+            let matches = if id == &source.id {
+                self.is_unique_runtime_source(source)
+            } else {
+                source.agent == Agent::Codex
+                    && pty.routing_thread_id().as_deref() == Some(source.id.as_str())
+                    && self.native_rollout_file(id, &source.id) == Some(source.file.as_path())
+            };
+            matches.then_some(id)
+        });
+        let owner = owners.next()?;
+        owners.next().is_none().then(|| owner.clone())
+    }
+
+    fn is_unique_runtime_source(&self, source: &Session) -> bool {
+        let mut candidates = self
+            .all_sessions
+            .iter()
+            .chain(&self.extra_sessions)
+            .filter(|row| row.id == source.id && !row.archived);
+        candidates.next().is_some_and(|owner| {
+            owner.agent == source.agent
+                && owner.file == source.file
+                && !candidates.any(|row| row.agent != owner.agent || row.file != owner.file)
+        })
+    }
+
+    /// An unresolved or moved native thread must not be overwritten or closed
+    /// through an old ID while its source lookup is still pending.
+    pub(super) fn source_runtime_conflicts(&self, source: &Session) -> bool {
+        self.ptys.iter().any(|(id, pty)| {
+            !self.ended.contains(id)
+                && (id == &source.id
+                    || pty.routing_thread_id().as_deref() == Some(source.id.as_str()))
+        }) && self.pty_owner_for_source(source).is_none()
+    }
+
     /// Refresh per-session output-activity tracking from each PTY's read
     /// counter. Returns true if any session's activity changed (needs redraw to
     /// flip its status badge). Also drops tracking for closed sessions.
@@ -388,10 +441,13 @@ impl App {
             let seq = pty.output_seq();
             if self.out_seq.get(id) != Some(&seq) {
                 self.out_seq.insert(id.clone(), seq);
-                if should_stamp_activity(self.turn_submitted.contains(id), pty.looks_busy()) {
+                if should_stamp_activity(
+                    self.session_status(id) == SessionStatus::Working,
+                    pty.looks_busy(),
+                ) {
                     self.out_at.insert(id.clone(), now);
                 }
-                changed = true;
+                changed |= self.focus == Focus::List || self.panes.contains(id);
             }
         }
         self.out_seq
@@ -400,8 +456,19 @@ impl App {
             .retain(|id, _| self.ptys.contains_key(id) && !self.ended.contains(id));
         self.turn_submitted
             .retain(|id| self.ptys.contains_key(id) && !self.ended.contains(id));
-        self.thread_sync_at
-            .retain(|id, _| self.ptys.contains_key(id) && !self.ended.contains(id));
+        self.thread_sync_at.retain(|id, _| {
+            (self.ptys.contains_key(id) && !self.ended.contains(id))
+                || self
+                    .thread_sync_rx
+                    .as_ref()
+                    .is_some_and(|pending| pending.target.id == *id)
+                || self.pending_initial_inputs.values().any(|pending| {
+                    pending
+                        .sync
+                        .as_ref()
+                        .is_some_and(|sync| sync.thread && sync.source.id == *id)
+                })
+        });
         self.codex_turns
             .retain(|id, _| self.ptys.contains_key(id) && !self.ended.contains(id));
         self.hook_floor
@@ -419,13 +486,9 @@ impl App {
     /// this to keep redrawing so a badge can decay from working → idle even
     /// with no new events.
     pub fn any_recent_activity(&self) -> bool {
-        self.submitted_at
+        self.out_at
             .iter()
             .any(|(id, t)| !self.ended.contains(id) && t.elapsed() < WORKING_HOLD)
-            || self
-                .out_at
-                .iter()
-                .any(|(id, t)| !self.ended.contains(id) && t.elapsed() < WORKING_HOLD)
     }
 
     /// Status of session `id` for the list badge. A Claude/Codex pane with a
@@ -435,6 +498,23 @@ impl App {
     /// (hooks not installed, or no event has fired for this pane), falls back
     /// to the existing screen-text classifier unchanged.
     pub fn session_status(&self, id: &str) -> SessionStatus {
+        self.session_status_with_source(id, None)
+    }
+
+    /// Rendering already has the source row; do not look it up for every badge.
+    pub fn session_status_for(&self, session: &Session) -> SessionStatus {
+        if self.ended.contains(&session.id)
+            && !self.ptys.contains_key(&session.id)
+            && self.is_unique_runtime_source(session)
+        {
+            return SessionStatus::Ended;
+        }
+        self.pty_owner_for_source(session)
+            .map(|id| self.session_status_with_source(&id, Some(session)))
+            .unwrap_or(SessionStatus::Inactive)
+    }
+
+    fn session_status_with_source(&self, id: &str, source: Option<&Session>) -> SessionStatus {
         if self.ended.contains(id) {
             return SessionStatus::Ended;
         }
@@ -445,8 +525,15 @@ impl App {
             .codex_turns
             .get(id)
             .filter(|reader| {
-                pty.routing_thread_id().is_none()
-                    || self.codex_rollout_file(id) == Some(reader.file())
+                let owned = pty.routing_thread_id();
+                owned.is_none()
+                    || source
+                        .filter(|s| {
+                            Some(s.id.as_str()) == owned.as_deref() && s.agent == Agent::Codex
+                        })
+                        .map(|s| s.file.as_path())
+                        .or_else(|| self.codex_rollout_file(id))
+                        == Some(reader.file())
             })
             .and_then(|r| r.status());
         if pty.looks_blocked()
@@ -461,36 +548,29 @@ impl App {
             return status;
         }
         // The pane-owned router already correlates actual turn events, even
-        // when rollout discovery/tailing has not caught up. ACK is activity,
-        // not execution or completion; only a terminal turn event earns green.
+        // when rollout discovery/tailing has not caught up. Pending/ACK stages
+        // stay idle until actual start; only a terminal turn event earns green.
         if let Some(status) = pty.routing_status() {
             use crate::local_router::RoutingStage;
             match status.stage {
                 RoutingStage::Completed if status.turn_id.is_some() => {
                     return SessionStatus::Completed
                 }
+                RoutingStage::Running => return SessionStatus::Working,
                 RoutingStage::Judging
                 | RoutingStage::Requested
                 | RoutingStage::Accepted
-                | RoutingStage::Running => return SessionStatus::Working,
-                RoutingStage::Failed | RoutingStage::Interrupted => return SessionStatus::Idle,
+                | RoutingStage::Failed
+                | RoutingStage::Interrupted => return SessionStatus::Idle,
                 _ => {}
             }
         }
-        // Local delivery invalidates the last completion immediately, before
-        // the agent has repainted its old input prompt or written a start event.
-        if self
-            .submitted_at
-            .get(id)
-            .is_some_and(|at| at.elapsed() < WORKING_HOLD)
-        {
-            return SessionStatus::Working;
-        }
         if let Some(reading) = self.hook_status.get(id) {
-            let codex = self
-                .all_sessions
-                .iter()
-                .any(|s| s.id == id && s.agent == Agent::Codex);
+            let codex = source.map(|s| s.agent == Agent::Codex).unwrap_or_else(|| {
+                self.all_sessions
+                    .iter()
+                    .any(|s| s.id == id && s.agent == Agent::Codex)
+            });
             // Stop alone cannot distinguish successful Codex completion from
             // interruption. Codex green requires its correlated rollout event.
             return if codex && reading.status == SessionStatus::Completed {
@@ -513,12 +593,17 @@ impl App {
     fn codex_rollout_file(&self, id: &str) -> Option<&Path> {
         let owned = self.ptys.get(id).and_then(|pty| pty.routing_thread_id());
         let thread = owned.as_deref().unwrap_or(id);
+        if let Some(file) = self.native_rollout_file(id, thread) {
+            return Some(file);
+        }
         self.all_sessions
             .iter()
             .find(|session| {
                 session.id == thread
                     && session.agent == Agent::Codex
+                    && !session.archived
                     && !session.file.as_os_str().is_empty()
+                    && (thread == id || self.same_codex_source_account(id, session))
             })
             .map(|session| session.file.as_path())
     }
@@ -534,9 +619,16 @@ impl App {
         }
         self.hook_status_due = Some(Instant::now() + HOOK_STATUS_POLL_INTERVAL);
 
-        let mut changed = self.reconcile_codex_clears();
-        let live_ids: Vec<String> = self.ptys.keys().cloned().collect();
+        let live_ids = self.hook_poll_batch();
+        let mut changed = false;
         for id in &live_ids {
+            if let Some(pty) = self.ptys.get(id) {
+                changed |= pty.poll_routing_status();
+            }
+        }
+        changed |= self.reconcile_codex_clears();
+        for id in &live_ids {
+            changed |= self.poll_native_switch(id);
             if self.ended.contains(id) {
                 continue;
             }
@@ -620,6 +712,9 @@ impl App {
         if let Some(reader) = self.codex_turns.get_mut(id).filter(|_| !preserve_active) {
             reader.reset_at_end();
         }
+        if !preserve_active {
+            self.out_at.remove(id);
+        }
         self.submitted_at.remove(id);
         self.hook_status_due = None;
         (!preserve_active)
@@ -646,6 +741,7 @@ impl App {
             self.submitted_at.get(id).copied(),
             self.synthetic_turn_cutoffs.get(id).copied(),
             self.hook_status_due,
+            self.out_at.get(id).copied(),
         );
         let routing_to_retire = self.reset_turn_status(id, force_reset);
         if self.ptys.get_mut(id).is_some_and(send) {
@@ -660,6 +756,7 @@ impl App {
         restore_tracking(&mut self.submitted_at, id, previous.3);
         restore_tracking(&mut self.synthetic_turn_cutoffs, id, previous.4);
         self.hook_status_due = previous.5;
+        restore_tracking(&mut self.out_at, id, previous.6);
         false
     }
 
@@ -747,6 +844,23 @@ impl App {
         let Some(session) = self.selected_session().cloned() else {
             return;
         };
+        self.refresh_native_owners();
+        if !self.can_resume_source(&session) {
+            return;
+        }
+        let owner = self
+            .pty_owner_for_source(&session)
+            .filter(|id| self.is_running(id));
+        if self.source_runtime_conflicts(&session) {
+            self.status =
+                "session action refused: live pane has moved or its source is unresolved".into();
+            return;
+        }
+        if session.archived && owner.is_none() {
+            self.queue_archive_restore(session);
+            return;
+        }
+        self.note_session_use(&session.id);
         mindplayer_core::log_event_to(
             &self.audit_path,
             mindplayer_core::AuditEvent::SessionResume {
@@ -754,7 +868,7 @@ impl App {
             },
         );
         self.focus = Focus::Terminal;
-        if self.is_running(&session.id) {
+        if let Some(owner) = owner {
             // Already live in the background — just bring it to the
             // foreground now; any peer-lane sync reads happen off the main
             // thread (see `spawn_thread_sync_for`/`poll_thread_sync`) so
@@ -765,7 +879,7 @@ impl App {
             // handoff lineage, so a session dropped into a category with `n` has no
             // peers there at all.
             self.spawn_category_sync_for(&session, false);
-            self.focus_or_add_pane(&session.id);
+            self.focus_or_add_pane(&owner);
             return;
         }
         // A row MindPlayer invented has no real id to `resume`; just show its
@@ -1013,6 +1127,7 @@ impl App {
     /// visible order (capped at MAX_PANES) so the pane order is predictable.
     /// Clears the marks and leaves multi-select mode afterward.
     pub fn launch_marked(&mut self) {
+        self.refresh_native_owners();
         self.multi_select = false;
         if self.marked.is_empty() {
             self.request_resume();
@@ -1029,13 +1144,14 @@ impl App {
         // bug — straight off the log, without needing the source.
         let zoom_was_on = self.zoomed;
         self.zoomed = false;
-        let ids: Vec<String> = self
+        let sessions: Vec<Session> = self
             .visible_sessions()
             .filter(|s| self.marked.contains(&s.id))
-            .map(|s| s.id.clone())
             .take(MAX_PANES)
+            .cloned()
             .collect();
-        let total = ids.len();
+        let ids: Vec<_> = sessions.iter().map(|s| s.id.clone()).collect();
+        let total = sessions.len();
         mindplayer_core::log_event_to(
             &self.audit_path,
             mindplayer_core::AuditEvent::LaunchMarked {
@@ -1045,12 +1161,26 @@ impl App {
             },
         );
         self.focus = Focus::Terminal;
-        for id in &ids {
-            let Some(session) = self.all_sessions.iter().find(|s| &s.id == id).cloned() else {
+        let mut rejected = 0;
+        for session in sessions {
+            if !self.can_resume_source(&session) {
+                rejected += 1;
                 continue;
-            };
-            if self.is_running(&session.id) {
-                self.focus_or_add_pane(&session.id);
+            }
+            let owner = self
+                .pty_owner_for_source(&session)
+                .filter(|id| self.is_running(id));
+            if self.source_runtime_conflicts(&session) {
+                rejected += 1;
+                continue;
+            }
+            if session.archived && owner.is_none() {
+                self.queue_archive_restore(session);
+                continue;
+            }
+            self.note_session_use(&session.id);
+            if let Some(owner) = owner {
+                self.focus_or_add_pane(&owner);
                 continue;
             }
             // A row MindPlayer invented has no real id to resume; only show
@@ -1070,7 +1200,17 @@ impl App {
             self.focus_or_add_pane(&session.id);
         }
         self.marked.clear();
-        self.status = format!("launched {total} sessions into live panes");
+        self.status = if rejected == 0 {
+            format!("launched {total} sessions into live panes")
+        } else {
+            if rejected == total {
+                self.focus = Focus::List;
+            }
+            format!(
+                "{} session requests; {rejected} source conflicts refused",
+                total - rejected
+            )
+        };
     }
 
     /// Keep each displayed PTY sized to its pane.
@@ -1224,17 +1364,18 @@ impl App {
         }
     }
 
-    /// Only bytes released by the terminal-reply guard can submit or interrupt
+    /// Only bytes released by the terminal-reply guard can request submission or interrupt
     /// a turn. Buffered Escape and consumed CPR must leave every status source
     /// intact; a failed enqueue uses the same tracking rollback as other input.
     fn deliver_key_chunk(&mut self, id: &str, bytes: &[u8]) -> bool {
         let interrupt = bytes == b"\x1b" || bytes.contains(&0x03);
-        let delivered = if input_submits_turn(bytes) || interrupt {
+        let delivered = if input_requests_submit(bytes) || interrupt {
             self.dispatch_turn_input(id, interrupt, |p| p.send(bytes))
         } else {
             self.ptys.get_mut(id).is_some_and(|p| p.send(bytes))
         };
-        if delivered && input_submits_turn(bytes) {
+        if delivered && input_requests_submit(bytes) {
+            self.note_session_use(id);
             self.submitted_at.insert(id.into(), Instant::now());
             self.turn_submitted.insert(id.into());
         }
@@ -1273,22 +1414,9 @@ impl App {
                 self.status = "waiting for target prompt to submit initial context".to_string();
                 return false;
             }
-            let submits = input_submits_turn(text.as_bytes())
-                && self.ptys.get(&id).is_some_and(|p| {
-                    p.parser()
-                        .lock()
-                        .is_ok_and(|p| !p.screen().bracketed_paste())
-                });
-            let delivered = if submits {
-                self.dispatch_turn_input(&id, false, |p| p.paste(text))
-            } else {
-                self.ptys.get_mut(&id).is_some_and(|p| p.paste(text))
-            };
-            if delivered && submits {
-                self.turn_submitted.insert(id.clone());
-                self.submitted_at.insert(id, Instant::now());
-            }
-            return delivered;
+            // A pasted newline belongs to the native editor. Native lifecycle
+            // events, not successful enqueue, determine whether it starts work.
+            return self.ptys.get_mut(&id).is_some_and(|p| p.paste(text));
         }
         false
     }

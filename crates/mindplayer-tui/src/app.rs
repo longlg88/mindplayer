@@ -11,6 +11,7 @@ use mindplayer_core::{
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver};
+use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 
@@ -34,7 +35,8 @@ type ThreadSyncResult = (String, Result<handoff::PreparedHandoff, String>);
 /// Keep the target outside the receiver too: native /clear must be able to
 /// cancel only that session's obsolete read before the worker has completed.
 struct PendingSessionSync<T> {
-    target_id: String,
+    target: Session,
+    owner: Option<String>,
     result: Receiver<T>,
 }
 
@@ -320,12 +322,12 @@ fn should_send_initial_input(looks_idle: bool, output_seq: u64, queued_for: Dura
         || queued_for >= INITIAL_INPUT_ABSOLUTE_TIMEOUT
 }
 
-fn should_stamp_activity(turn_submitted: bool, looks_busy: bool) -> bool {
-    turn_submitted || looks_busy
+fn should_stamp_activity(working: bool, looks_busy: bool) -> bool {
+    working || looks_busy
 }
 
-fn input_submits_turn(bytes: &[u8]) -> bool {
-    bytes.iter().any(|b| matches!(b, b'\r' | b'\n'))
+fn input_requests_submit(bytes: &[u8]) -> bool {
+    bytes.contains(&b'\r')
 }
 
 pub struct App {
@@ -386,10 +388,14 @@ pub struct App {
     /// stat-ing every session on every tick.
     pub(crate) convo_last_scan: Option<Instant>,
 
-    /// Full in-scope scan (drives the aggregate / scan numbers).
+    /// Active detail rows plus at most one archive metadata page.
     pub all_sessions: Vec<Session>,
-    /// Totals over the full in-scope scan (drives the post-scan "Collected"
-    /// screen). Includes archived + sub-agent sessions.
+    pub archive_catalog: Arc<Vec<Session>>,
+    pub archive_page: usize,
+    pub archive_matches: usize,
+    working_set: working_set::WorkingSet,
+    /// Totals over the Active scan, including its sub-agents. Archive usage is
+    /// unknown until hydration and must not be reported as measured zero.
     pub aggregate: Aggregate,
     /// Totals over just the currently-visible rows (drives the status bar, so
     /// its count/tokens match the list the user is looking at).
@@ -465,6 +471,7 @@ pub struct App {
     hook_source_ids: HashMap<String, String>,
     /// Codex's append-only lifecycle records work without account-specific hooks.
     codex_turns: HashMap<String, crate::turn_status::TurnStatusReader>,
+    /// Delivery timestamps are input provenance, never proof a turn started.
     submitted_at: HashMap<String, Instant>,
     /// Input boundaries recorded before a new pane discovers its rollout path.
     synthetic_turn_cutoffs: HashMap<String, DateTime<Utc>>,
@@ -514,9 +521,7 @@ pub struct App {
     /// First sighting of a session is seeded silently — its birth is already
     /// captured by `SessionOpen`.
     last_status: HashMap<String, SessionStatus>,
-    /// Sessions where the user (or a handoff bootstrap) has submitted a turn.
-    /// Initial TUI paint after opening a session is output too, but it should
-    /// not make the row look like active work.
+    /// Sessions that received a submit request; native lifecycle still owns status.
     turn_submitted: HashSet<String>,
     /// Last time MindPlayer injected peer-lane context into a native session.
     /// This prevents repeated sync prompts while switching between lanes when
@@ -651,12 +656,12 @@ pub struct App {
     pub pty_x: u16,
     pub pty_y: u16,
 
-    scan_rx: Option<Receiver<Vec<Session>>>,
+    scan_rx: Option<Receiver<working_set::CatalogMessage>>,
     /// In-flight background usage refresh, kept off the main thread so periodic
     /// token updates and re-sort never stall input/rendering.
     refresh_rx: Option<Receiver<Vec<ActivityUpdate>>>,
     /// In-flight background full re-scan (to pick up newly created sessions).
-    bg_rescan_rx: Option<Receiver<Vec<Session>>>,
+    bg_rescan_rx: Option<Receiver<working_set::CatalogMessage>>,
     /// When to kick the next background re-scan (after creating a session).
     rescan_due: Option<Instant>,
     /// In-flight background peer-lane transcript read for a thread-sync
@@ -690,6 +695,13 @@ pub struct PendingSpawn {
 }
 
 #[derive(Clone)]
+struct DeferredSync {
+    source: Session,
+    thread: bool,
+    advance: Vec<CategorySyncAdvance>,
+}
+
+#[derive(Clone)]
 struct DeferredInitialInput {
     bytes: Vec<u8>,
     queued_at: Instant,
@@ -699,6 +711,8 @@ struct DeferredInitialInput {
     /// never interleave with (and corrupt) the queued prompt; replayed in
     /// order once `flush_initial_inputs` actually sends it.
     held_input: Vec<u8>,
+    /// Source and acknowledgements travel with context until its actual write.
+    sync: Option<DeferredSync>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -707,6 +721,8 @@ enum DeferredInputReadiness {
     Startup,
     /// An existing turn must finish; elapsed time never authorizes a send.
     AfterIdle,
+    /// A native switch cancelled context; held keystrokes are never replayed.
+    Cancelled,
 }
 
 impl App {
@@ -753,6 +769,10 @@ impl App {
             convo_ingested: 0,
             convo_last_scan: None,
             all_sessions: Vec::new(),
+            archive_catalog: Arc::new(Vec::new()),
+            archive_page: 0,
+            archive_matches: 0,
+            working_set: working_set::WorkingSet::default(),
             aggregate: Aggregate::default(),
             visible_aggregate: Aggregate::default(),
             visible: Vec::new(),
@@ -966,6 +986,7 @@ impl App {
     // --- list management --------------------------------------------------
 
     pub fn quit(&mut self) {
+        let _ = self.save_state();
         for (_, mut pty) in self.ptys.drain() {
             pty.kill();
         }
@@ -1022,7 +1043,12 @@ impl App {
         &self,
         session: &Session,
     ) -> mindplayer_core::accounts::Account {
-        if let Some((provider, name)) = self.pane_accounts.get(&session.id) {
+        // A stopped pane's native ID may also occur in another account's
+        // archive. Only a live owner or a not-yet-persisted placeholder can
+        // override the selected transcript's source-account provenance.
+        if let Some((provider, name)) = self.pane_accounts.get(&session.id).filter(|_| {
+            mindplayer_core::session::is_synthetic_id(&session.id) || self.is_running(&session.id)
+        }) {
             if let Some(account) = self
                 .accounts
                 .iter()
@@ -1416,6 +1442,9 @@ mod selection;
 mod session_continuity;
 mod session_list;
 mod spawn;
+pub(crate) mod working_set;
+#[cfg(test)]
+mod working_set_tests;
 
 #[cfg(test)]
 mod tests;

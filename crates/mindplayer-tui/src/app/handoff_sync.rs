@@ -124,8 +124,7 @@ impl App {
             self.new_counter
         );
         let baseline: HashSet<String> = self
-            .all_sessions
-            .iter()
+            .known_metadata()
             .filter(|s| !s.id.starts_with("new:") && !s.id.starts_with("handoff:"))
             .map(|s| s.id.clone())
             .collect();
@@ -228,8 +227,7 @@ impl App {
 
     pub(crate) fn thread_peer_sessions(&self, id: &str) -> Vec<Session> {
         let root = self.state.thread_root(id).to_string();
-        self.all_sessions
-            .iter()
+        self.known_metadata()
             .filter(|s| s.id != id && self.state.thread_root(&s.id) == root)
             .cloned()
             .collect()
@@ -246,8 +244,7 @@ impl App {
         let Some(cat) = self.category_of_session(id) else {
             return Vec::new();
         };
-        self.all_sessions
-            .iter()
+        self.known_metadata()
             .filter(|s| s.id != id && self.category_of_session(&s.id).as_deref() == Some(&cat))
             .cloned()
             .collect()
@@ -322,22 +319,22 @@ impl App {
         }
         let target = session.clone();
         let id = session.id.clone();
+        self.refresh_native_owners();
+        let owner = self.pty_owner_for_source(session);
         let (tx, rx) = mpsc::channel();
         thread::spawn(move || {
             let result = handoff::prepare_thread_sync_input(&target, &peers);
             let _ = tx.send((target.id, result));
         });
         self.thread_sync_rx = Some(PendingSessionSync {
-            target_id: id.clone(),
+            target: session.clone(),
+            owner,
             result: rx,
         });
         // Mark it needed-and-in-flight immediately so a second reopen before
         // this one resolves doesn't queue a duplicate read for the same id.
         self.thread_sync_at.insert(id.clone(), Utc::now());
-        // Persist the same marker so it survives a MindPlayer restart (see the
-        // doc comment on `thread_sync_needed` and on `State::thread_synced`).
-        self.state.thread_synced.insert(id);
-        let _ = self.save_state();
+        // Persistence acknowledges delivery, not an unfinished background read.
         true
     }
 
@@ -354,41 +351,29 @@ impl App {
         let Ok((id, result)) = rx.result.try_recv() else {
             return false;
         };
-        self.thread_sync_rx = None;
+        let pending = self
+            .thread_sync_rx
+            .take()
+            .expect("completed sync has a target");
         let Ok(sync) = result else {
+            self.thread_sync_at.remove(&id);
             return false;
         };
         // The actual consumer must reject pre-clear work even while rollout
         // discovery or a durable label save is still pending.
-        if self.sync_target_was_cleared(&id) {
-            self.state.thread_synced.remove(&id);
-            let _ = self.save_state();
+        if pending.target.id != id {
+            self.thread_sync_at.remove(&pending.target.id);
             return false;
         }
-        if self.ended.contains(&id) {
-            return false;
-        }
-        let injected = self.ready_for_peer_input(&id)
-            && self.dispatch_turn_input(&id, true, |p| p.paste_and_submit(&sync.input));
-        if injected {
-            self.turn_submitted.insert(id.clone());
-            self.submitted_at.insert(id.clone(), Instant::now());
-            self.status = format!(
-                "synced peer lanes into {} ({} chars, {})",
-                short(&id),
-                sync.transcript_chars,
-                sync.artifact.display()
-            );
-        } else {
-            let readiness = if self.ptys.contains_key(&id) {
-                DeferredInputReadiness::AfterIdle
-            } else {
-                DeferredInputReadiness::Startup
-            };
-            self.queue_deferred_input(id.clone(), sync.input, readiness);
-            self.status = format!("peer-lane sync for {} queued", short(&id));
-        }
-        true
+        self.deliver_peer_sync(
+            sync.input,
+            pending.owner,
+            DeferredSync {
+                source: pending.target,
+                thread: true,
+                advance: Vec::new(),
+            },
+        )
     }
 
     /// Start a category sync for `session`. `force` bypasses the category's
@@ -422,6 +407,8 @@ impl App {
             })
             .collect();
         let target = session.clone();
+        self.refresh_native_owners();
+        let owner = self.pty_owner_for_source(session);
         let cat_name = self.category_label(&cat);
         let (tx, rx) = mpsc::channel();
         thread::spawn(move || {
@@ -436,16 +423,16 @@ impl App {
             let _ = tx.send((target.id, result));
         });
         self.category_sync_rx = Some(PendingSessionSync {
-            target_id: session.id.clone(),
+            target: session.clone(),
+            owner,
             result: rx,
         });
         true
     }
 
-    /// Apply a finished category sync. Watermarks only advance once the prompt
-    /// has actually been handed over (submitted, or queued for the deferred
-    /// path) — advancing on a dropped sync would silently lose that peer
-    /// context forever.
+    /// Apply a finished category sync. Watermarks advance only on successful
+    /// PTY delivery, never for work still awaiting its source's idle prompt.
+    /// Returns true if visible state changed, including cancellation notices.
     pub fn poll_category_sync(&mut self) -> bool {
         let Some(rx) = &self.category_sync_rx else {
             return false;
@@ -453,45 +440,109 @@ impl App {
         let Ok((id, result)) = rx.result.try_recv() else {
             return false;
         };
-        self.category_sync_rx = None;
+        let pending = self
+            .category_sync_rx
+            .take()
+            .expect("completed sync has a target");
         let Ok((sync, advance)) = result else {
             return false; // nothing new, or unreadable peers
         };
-        if self.sync_target_was_cleared(&id) {
+        if pending.target.id != id {
             return false;
         }
-        if self.ended.contains(&id) {
-            return false;
+        self.deliver_peer_sync(
+            sync.input,
+            pending.owner,
+            DeferredSync {
+                source: pending.target,
+                thread: false,
+                advance,
+            },
+        )
+    }
+
+    fn deliver_peer_sync(
+        &mut self,
+        input: Vec<u8>,
+        expected_owner: Option<String>,
+        sync: DeferredSync,
+    ) -> bool {
+        let previous_status = self.status.clone();
+        self.refresh_native_owners();
+        let owner = self.pty_owner_for_source(&sync.source);
+        if self.sync_target_was_cleared(&sync.source.id)
+            || !self.can_resume_source(&sync.source)
+            || self.source_runtime_conflicts(&sync.source)
+            || expected_owner
+                .as_ref()
+                .is_some_and(|expected| owner.as_ref() != Some(expected))
+            || self
+                .ended
+                .contains(owner.as_ref().unwrap_or(&sync.source.id))
+        {
+            self.thread_sync_at.remove(&sync.source.id);
+            self.status = "peer context cancelled: target source or native owner changed".into();
+            return self.status != previous_status;
         }
-        let injected = self.ready_for_peer_input(&id)
-            && self.dispatch_turn_input(&id, true, |p| p.paste_and_submit(&sync.input));
-        if injected {
+        let id = owner.unwrap_or_else(|| sync.source.id.clone());
+        if self.ready_for_peer_input(&id) && !self.pending_initial_inputs.contains_key(&id) {
+            if !self.dispatch_turn_input(&id, true, |p| p.paste_and_submit(&input)) {
+                self.thread_sync_at.remove(&sync.source.id);
+                self.status = "peer context delivery failed; sync not acknowledged".into();
+                return self.status != previous_status;
+            }
             self.turn_submitted.insert(id.clone());
-            self.submitted_at.insert(id.clone(), Instant::now());
-            self.status = format!(
-                "category sync into {} ({} chars)",
-                short(&id),
-                sync.transcript_chars
-            );
+            self.submitted_at.insert(id, Instant::now());
+            self.acknowledge_peer_sync(sync);
         } else {
+            self.validate_deferred_source(&id);
+            if self.pending_initial_inputs.get(&id).is_some_and(|pending| {
+                pending.readiness == DeferredInputReadiness::Cancelled
+                    || pending.sync.as_ref().is_some_and(|prior| {
+                        prior.source.id != sync.source.id
+                            || prior.source.agent != sync.source.agent
+                            || prior.source.file != sync.source.file
+                    })
+            }) {
+                self.thread_sync_at.remove(&sync.source.id);
+                return self.status != previous_status;
+            }
             let readiness = if self.ptys.contains_key(&id) {
                 DeferredInputReadiness::AfterIdle
             } else {
                 DeferredInputReadiness::Startup
             };
-            self.queue_deferred_input(id.clone(), sync.input, readiness);
-            self.status = format!("category sync for {} queued", short(&id));
+            self.queue_deferred_input(id.clone(), input, readiness);
+            let pending = self
+                .pending_initial_inputs
+                .get_mut(&id)
+                .expect("queued context has an entry");
+            if let Some(prior) = &mut pending.sync {
+                prior.thread |= sync.thread;
+                prior.advance.extend(sync.advance);
+            } else {
+                pending.sync = Some(sync);
+            }
+            self.status = format!("peer context queued for {}", short(&id));
         }
-        for (peer_id, new_len, source) in advance {
+        true
+    }
+
+    pub(super) fn acknowledge_peer_sync(&mut self, sync: DeferredSync) {
+        let id = &sync.source.id;
+        if sync.thread {
+            self.thread_sync_at.insert(id.clone(), Utc::now());
+            self.state.thread_synced.insert(id.clone());
+        }
+        for (peer_id, new_len, source) in sync.advance {
             if let Some(source) = source {
                 self.state
-                    .set_sync_mark_for_source(&id, &peer_id, &source, new_len);
+                    .set_sync_mark_for_source(id, &peer_id, &source, new_len);
             } else {
-                self.state.set_sync_mark(&id, &peer_id, new_len);
+                self.state.set_sync_mark(id, &peer_id, new_len);
             }
         }
         let _ = self.save_state();
-        true
     }
 }
 
@@ -543,7 +594,8 @@ mod source_tests {
         let advance = deltas.iter().map(sync_advance).collect();
         let (tx, rx) = mpsc::channel();
         app.category_sync_rx = Some(PendingSessionSync {
-            target_id: "target".into(),
+            target: app.all_sessions[0].clone(),
+            owner: None,
             result: rx,
         });
         tx.send((
@@ -560,6 +612,26 @@ mod source_tests {
         ))
         .unwrap();
         assert!(app.poll_category_sync());
+        assert_eq!(
+            peer_sync_mark(&app.state, "target", &peer),
+            0,
+            "queued context is not acknowledged"
+        );
+        let command = mindplayer_core::Command {
+            program: "cat".into(),
+            args: Vec::new(),
+            cwd: dir.clone(),
+            env: Default::default(),
+        };
+        app.ptys.insert(
+            "target".into(),
+            PtySession::spawn(&command, "target", 6, 40).unwrap(),
+        );
+        app.pending_initial_inputs
+            .get_mut("target")
+            .unwrap()
+            .queued_at = Instant::now() - Duration::from_secs(60);
+        assert!(app.flush_initial_inputs());
         app.state = State::load_from(&app.state_path);
         assert_eq!(
             peer_sync_mark(&app.state, "target", &peer),

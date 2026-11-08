@@ -183,8 +183,7 @@ impl App {
         // only ever attach this new session's PTY to a genuinely-new disk
         // session — never to one that was already present (or freshly resumed).
         let baseline: HashSet<String> = self
-            .all_sessions
-            .iter()
+            .known_metadata()
             .filter(|s| !s.id.starts_with("new:"))
             .map(|s| s.id.clone())
             .collect();
@@ -271,6 +270,12 @@ impl App {
     ) {
         let now = Instant::now();
         if let Some(existing) = self.pending_initial_inputs.get_mut(&id) {
+            if existing.readiness == DeferredInputReadiness::Cancelled {
+                self.status =
+                    "automatic input cancelled; held draft remains in memory until pane closes"
+                        .into();
+                return;
+            }
             trim_submit(&mut existing.bytes);
             existing.bytes.extend_from_slice(b"\n\n---\n\n");
             existing.bytes.extend(input);
@@ -286,6 +291,7 @@ impl App {
                     queued_at: now,
                     readiness,
                     held_input: Vec::new(),
+                    sync: None,
                 },
             );
         }
@@ -326,7 +332,6 @@ impl App {
                 }
                 self.turn_submitted.insert(session.id.clone());
                 self.submitted_at.insert(session.id.clone(), Instant::now());
-                self.out_at.insert(session.id.clone(), Instant::now());
             } else {
                 self.queue_deferred_input(
                     session.id.clone(),
@@ -375,12 +380,19 @@ impl App {
         for extra in std::mem::take(&mut self.extra_sessions) {
             let matched = self.adopt_match(&extra, &claimed);
             match matched {
-                Some(real_id) => {
+                Some(mut real) => {
+                    let real_id = real.id.clone();
+                    real.archived = false;
+                    if !self.all_sessions.iter().any(|s| s.id == real_id) {
+                        self.all_sessions.push(real);
+                    }
+                    self.note_session_use(&real_id);
                     // Move the live PTY / state from the synthetic id to the real
                     // one. The filter guarantees `real_id` is not already a live
                     // PTY, so this insert never clobbers a running session.
                     if let Some(real) = self.all_sessions.iter_mut().find(|s| s.id == real_id) {
                         real.title = extra.title.clone();
+                        real.archived = false;
                     }
                     if let Some(label) = extra.title.strip_prefix("🏷 ") {
                         self.state.set_label(&real_id, label);
@@ -487,7 +499,7 @@ impl App {
 
     /// The real disk session a synthetic new-session row should become, if it
     /// has appeared yet. `claimed` holds ids already taken this pass.
-    fn adopt_match(&self, extra: &Session, claimed: &HashSet<String>) -> Option<String> {
+    fn adopt_match(&self, extra: &Session, claimed: &HashSet<String>) -> Option<Session> {
         // Signing in writes no transcript, so a login pane has nothing of its
         // own to become. Without this it carries no baseline, and a pane with
         // no baseline adopts any new session of its agent and cwd — which
@@ -506,8 +518,7 @@ impl App {
             .unwrap_or_else(Utc::now);
         let baseline = self.new_baselines.get(&extra.id);
         let ptys = &self.ptys;
-        self.all_sessions
-            .iter()
+        self.known_metadata()
             .filter(|s| {
                 !s.id.starts_with("new:")
                     && !s.id.starts_with("handoff:")
@@ -529,7 +540,7 @@ impl App {
                     && s.started_at.is_some_and(|t| t >= after)
             })
             .max_by_key(|s| s.started_at)
-            .map(|s| s.id.clone())
+            .cloned()
     }
 
     /// Archive the disk sessions belonging to new sessions the user already
@@ -565,11 +576,12 @@ impl App {
                 continue;
             }
             match self.adopt_match(&extra, &claimed) {
-                Some(real_id) => {
-                    self.state.set_archived(&real_id, true);
-                    if let Some(s) = self.all_sessions.iter_mut().find(|s| s.id == real_id) {
-                        s.archived = true;
-                    }
+                Some(real) => {
+                    self.state.set_session_archived(&real, true);
+                    self.all_sessions.retain(|s| {
+                        s.id != real.id || s.agent != real.agent || s.file != real.file
+                    });
+                    self.remember_archived(real);
                     self.new_baselines.remove(&extra.id);
                     archived_any = true;
                     self.pane_accounts.remove(&extra.id);
@@ -595,10 +607,14 @@ impl App {
             return;
         };
         let id = pending.session_id.clone();
-        let account = self
-            .all_sessions
-            .iter()
+        // Pin source/account metadata through asynchronous authentication even
+        // if a catalog refresh removed the original displayed row.
+        let session = self
+            .known_metadata()
             .find(|session| session.id == id)
+            .cloned();
+        let account = session
+            .as_ref()
             .map(|session| self.account_of_session(session));
         // All new/resume/handoff paths share a required asynchronous live
         // account check. Login itself is exempt, never conversation execution.
@@ -664,10 +680,9 @@ impl App {
         if let Some(reading) = crate::agent_hooks::read_hook_status(&id) {
             self.hook_floor.insert(id.clone(), reading);
         }
-        if let Some(s) = self
-            .all_sessions
-            .iter()
-            .find(|s| s.id == id && s.agent == Agent::Codex && !s.file.as_os_str().is_empty())
+        if let Some(s) = session
+            .as_ref()
+            .filter(|s| s.agent == Agent::Codex && !s.file.as_os_str().is_empty())
         {
             self.codex_turns.insert(
                 id.clone(),
@@ -689,6 +704,7 @@ impl App {
                             queued_at: Instant::now(),
                             readiness: DeferredInputReadiness::Startup,
                             held_input: Vec::new(),
+                            sync: None,
                         },
                     );
                 }
@@ -696,12 +712,14 @@ impl App {
                     self.queue_initial_input(id.clone(), waiting.bytes);
                     if let Some(input) = self.pending_initial_inputs.get_mut(&id) {
                         input.held_input.extend(waiting.held_input);
+                        input.sync = waiting.sync;
+                        input.readiness = waiting.readiness;
                     }
                 }
                 self.ptys.insert(id.clone(), pty);
                 // The one choke point every new/resumed/handoff PTY passes
                 // through — one log line here covers all of them.
-                if let Some(session) = self.all_sessions.iter().find(|s| s.id == id) {
+                if let Some(session) = session.as_ref() {
                     mindplayer_core::log_event_to(
                         &self.audit_path,
                         mindplayer_core::AuditEvent::SessionOpen {
@@ -727,9 +745,15 @@ impl App {
     /// Submit queued first-turn prompts only after the child has rendered an
     /// input prompt. Sending immediately after spawn can race the agent TUI
     /// startup and lose the handoff prompt before it reaches the transcript.
+    /// Returns true for delivery or a changed status message (caller redraws).
     pub fn flush_initial_inputs(&mut self) -> bool {
         if self.pending_initial_inputs.is_empty() {
             return false;
+        }
+        let previous_status = self.status.clone();
+        let pending_ids: Vec<_> = self.pending_initial_inputs.keys().cloned().collect();
+        for id in pending_ids {
+            self.validate_deferred_source(&id);
         }
         let now = Instant::now();
         let ready: Vec<String> = self
@@ -737,7 +761,7 @@ impl App {
             .iter()
             .filter_map(|(id, input)| {
                 let pty = self.ptys.get(id)?;
-                if self.ended.contains(id) {
+                if self.ended.contains(id) || input.readiness == DeferredInputReadiness::Cancelled {
                     return None;
                 }
                 let ready = match pty.omp_model_selected() {
@@ -754,6 +778,7 @@ impl App {
                             now.saturating_duration_since(input.queued_at),
                         ),
                         DeferredInputReadiness::AfterIdle => self.ready_for_peer_input(id),
+                        DeferredInputReadiness::Cancelled => false,
                     },
                 };
                 ready.then(|| id.clone())
@@ -761,6 +786,9 @@ impl App {
             .collect();
         let mut sent = false;
         for id in ready {
+            if !self.validate_deferred_source(&id) {
+                continue;
+            }
             let Some(input) = self.pending_initial_inputs.get(&id).cloned() else {
                 continue;
             };
@@ -779,13 +807,56 @@ impl App {
                 }
             }
             self.pending_initial_inputs.remove(&id);
+            if let Some(sync) = input.sync {
+                self.acknowledge_peer_sync(sync);
+            }
             self.turn_submitted.insert(id.clone());
             self.submitted_at.insert(id.clone(), Instant::now());
-            self.out_at.insert(id.clone(), Instant::now());
             self.status = format!("submitted initial context to {}", short(&id));
             sent = true;
         }
-        sent
+        sent || self.status != previous_status
+    }
+
+    /// Cancel stale automatic context without redirecting any held user draft.
+    /// A cancelled draft stays in this entry until the pane closes; it is never
+    /// replayed, even if the native CLI later returns to the previous source.
+    pub(super) fn validate_deferred_source(&mut self, id: &str) -> bool {
+        let Some(input) = self.pending_initial_inputs.get(id) else {
+            return true;
+        };
+        if input.readiness == DeferredInputReadiness::Cancelled {
+            return false;
+        }
+        let Some(sync) = input.sync.as_ref() else {
+            return true;
+        };
+        let source = sync.source.clone();
+        self.refresh_native_owners();
+        if !self.ended.contains(id)
+            && (!self.ptys.contains_key(id)
+                || self.pty_owner_for_source(&source).as_deref() == Some(id))
+        {
+            return true;
+        }
+        let input = self
+            .pending_initial_inputs
+            .get_mut(id)
+            .expect("source-bound input exists");
+        if input.sync.as_ref().is_some_and(|sync| sync.thread) {
+            self.thread_sync_at.remove(&source.id);
+        }
+        let held = input.held_input.len();
+        if held == 0 {
+            self.pending_initial_inputs.remove(id);
+            self.status = "peer context cancelled: native source changed; no input replayed".into();
+        } else {
+            input.bytes.clear();
+            input.sync = None;
+            input.readiness = DeferredInputReadiness::Cancelled;
+            self.status = format!("peer context cancelled: {held} held bytes retained until pane closes; not replayed; retype explicitly if needed");
+        }
+        false
     }
 
     /// If the focused pane still has startup input waiting to go out, buffer these
@@ -796,6 +867,9 @@ impl App {
         let Some(id) = self.focused_pane().map(str::to_string) else {
             return false;
         };
+        if !self.validate_deferred_source(&id) {
+            return false;
+        }
         // The chooser (including recovery commands after cancellation) must
         // receive input until the extension acknowledges a model selection.
         if self.ptys.get(&id).and_then(|pty| pty.omp_model_selected()) == Some(false) {

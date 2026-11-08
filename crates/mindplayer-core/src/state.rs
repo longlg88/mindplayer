@@ -1,14 +1,14 @@
 //! Sidecar state: MindPlayer's own record of which sessions are archived.
 //!
 //! The original Codex/Claude `.jsonl` files are never modified. "Closing" a
-//! session marks its id here. Writes are atomic (temp file + rename); a corrupt
+//! session marks its source here. Writes are atomic (temp file + rename); a corrupt
 //! file falls back to empty state with a warning.
 
-use crate::session::Session;
+use crate::session::{Agent, Session};
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 /// A label awaiting the session id the agent assigns to a session created
@@ -43,12 +43,40 @@ pub struct HandoffLink {
     pub created_at: DateTime<Utc>,
 }
 
+/// Human use bound to a provider and its exact transcript source.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SourceUse {
+    agent: Agent,
+    file: PathBuf,
+    used_at: DateTime<Utc>,
+}
+
+/// Explicit archive or restore decision for a provider and exact transcript source.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SourceArchive {
+    agent: Agent,
+    file: PathBuf,
+    archived: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct State {
     #[serde(default = "default_version")]
     pub version: u32,
     #[serde(default)]
     pub archived: BTreeSet<String>,
+    /// Source decisions override legacy ID-only archives only for an exact match.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub archived_sources: BTreeMap<String, Vec<SourceArchive>>,
+    /// Latest human use recorded by MindPlayer, independent of transcript mtime.
+    #[serde(default)]
+    pub last_used: BTreeMap<String, DateTime<Utc>>,
+    /// Source-qualified use. An empty entry prevents ambiguous legacy ID reuse.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub last_used_sources: BTreeMap<String, Vec<SourceUse>>,
+    /// Days without human activity before automatic archiving; zero disables expiry.
+    #[serde(default = "default_active_retention_days")]
+    pub active_retention_days: u32,
     /// Sessions the user has manually marked as "my work here isn't done yet" —
     /// independent of the live PTY status (a session can be Idle/Ended and
     /// still be in progress, or Working and not be something you're tracking).
@@ -139,11 +167,19 @@ fn default_version() -> u32 {
     1
 }
 
+fn default_active_retention_days() -> u32 {
+    7
+}
+
 impl Default for State {
     fn default() -> Self {
         State {
             version: default_version(),
             archived: BTreeSet::new(),
+            archived_sources: BTreeMap::new(),
+            last_used: BTreeMap::new(),
+            last_used_sources: BTreeMap::new(),
+            active_retention_days: default_active_retention_days(),
             in_progress: BTreeSet::new(),
             labels: BTreeMap::new(),
             pending_labels: Vec::new(),
@@ -453,7 +489,145 @@ impl State {
         self.archived.contains(id)
     }
 
+    /// Read an exact source decision, falling back to the legacy ID-only archive.
+    pub fn is_session_archived(&self, session: &Session) -> bool {
+        self.archived_sources
+            .get(&session.id)
+            .and_then(|sources| {
+                sources
+                    .iter()
+                    .rev()
+                    .find(|source| source.agent == session.agent && source.file == session.file)
+            })
+            .map_or_else(|| self.is_archived(&session.id), |source| source.archived)
+    }
+
+    /// Archive or restore only this source, preserving the legacy ID-only fallback.
+    pub fn set_session_archived(&mut self, session: &Session, archived: bool) {
+        let sources = self.archived_sources.entry(session.id.clone()).or_default();
+        // Replace every matching decision, including duplicates from persisted state.
+        sources.retain(|source| source.agent != session.agent || source.file != session.file);
+        sources.push(SourceArchive {
+            agent: session.agent,
+            file: session.file.clone(),
+            archived,
+        });
+    }
+
+    /// Promote a legacy ID on human use, clearing its source-specific decisions.
+    pub fn record_use(&mut self, id: &str, now: DateTime<Utc>) {
+        self.set_archived(id, false);
+        self.last_used
+            .entry(id.to_string())
+            .and_modify(|last| *last = (*last).max(now))
+            .or_insert(now);
+    }
+
+    /// Record human use without promoting a same-ID transcript from another source.
+    pub fn record_session_use(&mut self, session: &Session, now: DateTime<Utc>) {
+        self.set_session_archived(session, false);
+        let uses = self
+            .last_used_sources
+            .entry(session.id.clone())
+            .or_default();
+        let mut used_at = now;
+        uses.retain(|usage| {
+            if usage.agent == session.agent && usage.file == session.file {
+                used_at = used_at.max(usage.used_at);
+                false
+            } else {
+                true
+            }
+        });
+        uses.push(SourceUse {
+            agent: session.agent,
+            file: session.file.clone(),
+            used_at,
+        });
+        self.last_used
+            .entry(session.id.clone())
+            .and_modify(|last| *last = (*last).max(used_at))
+            .or_insert(used_at);
+    }
+
+    /// Bind legacy ID-only use against a metadata census, refusing ambiguous sources.
+    /// Missing IDs remain unresolved until their source is discovered.
+    pub fn bind_legacy_use_sources<'a>(
+        &mut self,
+        sessions: impl IntoIterator<Item = &'a Session>,
+    ) -> bool {
+        let mut unique: HashMap<&str, Option<&Session>> = HashMap::new();
+        for session in sessions {
+            if !self.last_used.contains_key(&session.id)
+                || self.last_used_sources.contains_key(&session.id)
+            {
+                continue;
+            }
+            unique
+                .entry(&session.id)
+                .and_modify(|owner| {
+                    if owner.is_some_and(|s| s.agent != session.agent || s.file != session.file) {
+                        *owner = None;
+                    }
+                })
+                .or_insert(Some(session));
+        }
+        let changed = !unique.is_empty();
+        for (id, source) in unique {
+            let uses = source
+                .into_iter()
+                .map(|s| SourceUse {
+                    agent: s.agent,
+                    file: s.file.clone(),
+                    used_at: self.last_used[id],
+                })
+                .collect();
+            self.last_used_sources.insert(id.to_string(), uses);
+        }
+        changed
+    }
+
+    /// Classify by human recency, with all running sessions protected from archive.
+    ///
+    /// Explicit archive overrides in-progress and recency. Creation time is only
+    /// a fallback when neither a recorded use nor a genuine prompt is available.
+    /// At exactly the retention boundary a session expires; zero disables expiry.
+    pub fn is_active_session(
+        &self,
+        session: &Session,
+        now: DateTime<Utc>,
+        protected: &HashSet<String>,
+    ) -> bool {
+        if protected.contains(&session.id) {
+            return true;
+        }
+        if self.is_session_archived(session) {
+            return false;
+        }
+        if self.is_in_progress(&session.id) || self.active_retention_days == 0 {
+            return true;
+        }
+        let used_at = match self.last_used_sources.get(&session.id) {
+            Some(uses) => uses
+                .iter()
+                .find(|usage| usage.agent == session.agent && usage.file == session.file)
+                .map(|usage| usage.used_at),
+            None => self.last_used.get(&session.id).copied(),
+        };
+        let human_time = used_at
+            .into_iter()
+            .chain(session.last_prompt_at)
+            .max()
+            .or(session.started_at);
+        human_time.is_some_and(|last| {
+            now.signed_duration_since(last)
+                < chrono::Duration::days(i64::from(self.active_retention_days))
+        })
+    }
+
+    /// Set an ID-wide legacy decision, replacing any source-specific overrides.
     pub fn set_archived(&mut self, id: &str, archived: bool) {
+        self.archived_sources.remove(id);
         if archived {
             self.archived.insert(id.to_string());
         } else {
@@ -664,7 +838,7 @@ impl State {
     /// A label replaces the auto-extracted title (shown with a 🏷 marker).
     pub fn apply(&self, sessions: &mut [Session]) {
         for s in sessions.iter_mut() {
-            s.archived = self.is_archived(&s.id);
+            s.archived = self.is_session_archived(s);
             if let Some(label) = self.label_for(&s.id) {
                 s.title = format!("🏷 {label}");
             }
@@ -676,6 +850,280 @@ impl State {
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    fn old_source(file: &str) -> Session {
+        Session {
+            id: "shared-native".into(),
+            agent: Agent::Codex,
+            cwd: PathBuf::from("/fixture/project"),
+            file: PathBuf::from(file),
+            started_at: Some(Utc::now() - chrono::Duration::days(30)),
+            last_active: None,
+            last_prompt_at: None,
+            tokens: Default::default(),
+            title: "synthetic session".into(),
+            archived: false,
+            is_subagent: false,
+            context_pct: None,
+        }
+    }
+
+    #[test]
+    fn source_use_roundtrip_rejects_other_source_and_keeps_latest_time() {
+        let chosen = old_source("/fixture/one/session.jsonl");
+        let other = old_source("/fixture/two/session.jsonl");
+        let now = Utc::now();
+        let mut state = State::default();
+        state.record_session_use(&chosen, now);
+        state.record_session_use(&chosen, now - chrono::Duration::days(20));
+        let loaded: State = serde_json::from_str(&serde_json::to_string(&state).unwrap()).unwrap();
+        assert!(loaded.is_active_session(&chosen, now, &HashSet::new()));
+        assert!(!loaded.is_active_session(&other, now, &HashSet::new()));
+        assert_eq!(loaded.last_used_sources[&chosen.id][0].used_at, now);
+    }
+
+    #[test]
+    fn restoring_same_id_other_source_does_not_reopen_closed_source_after_restart() {
+        let closed = old_source("/fixture/one/session.jsonl");
+        let restored = old_source("/fixture/two/session.jsonl");
+        let now = Utc::now();
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("state.json");
+        let mut state = State::default();
+        state.record_session_use(&closed, now);
+        state.set_session_archived(&closed, true);
+        assert!(!state.is_active_session(&closed, now, &HashSet::new()));
+        state.record_session_use(&restored, now);
+        state.save_to(&path).unwrap();
+
+        let loaded = State::load_from(&path);
+        assert!(loaded.is_active_session(&restored, now, &HashSet::new()));
+        assert!(
+            !loaded.is_active_session(&closed, now, &HashSet::new()),
+            "restoring another source must not undo the original source's close"
+        );
+        assert!(loaded.is_session_archived(&closed));
+        assert!(!loaded.is_session_archived(&restored));
+        assert!(!loaded.is_archived(&closed.id));
+        let mut sessions = [closed, restored];
+        loaded.apply(&mut sessions);
+        assert!(sessions[0].archived);
+        assert!(!sessions[1].archived);
+    }
+
+    #[test]
+    fn source_archive_matches_id_provider_and_path_without_archiving_siblings() {
+        let now = Utc::now();
+        let mut chosen = old_source("/fixture/one/session.jsonl");
+        chosen.last_prompt_at = Some(now);
+        let mut other_path = chosen.clone();
+        other_path.file = PathBuf::from("/fixture/two/session.jsonl");
+        let mut other_provider = chosen.clone();
+        other_provider.agent = Agent::Claude;
+        let mut other_id = chosen.clone();
+        other_id.id = "other-native".into();
+        let mut state = State::default();
+        state.record_session_use(&chosen, now);
+        state.set_session_archived(&chosen, true);
+        state.record_session_use(&other_provider, now);
+        let loaded: State = serde_json::from_str(&serde_json::to_string(&state).unwrap()).unwrap();
+
+        assert!(
+            loaded.archived.is_empty(),
+            "closing a source must not mark its ID"
+        );
+        let mut sessions = [chosen, other_path, other_provider, other_id];
+        loaded.apply(&mut sessions);
+        for (index, session) in sessions.iter().enumerate() {
+            assert_eq!(
+                loaded.is_session_archived(session),
+                index == 0,
+                "{session:?}"
+            );
+            assert_eq!(session.archived, index == 0, "{session:?}");
+            assert_eq!(
+                loaded.is_active_session(session, now, &HashSet::new()),
+                index != 0,
+                "{session:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn restoring_source_preserves_legacy_archive_for_recent_unmatched_sources() {
+        let now = Utc::now();
+        let mut closed = old_source("/fixture/one/session.jsonl");
+        closed.last_prompt_at = Some(now);
+        for (agent, file) in [
+            (Agent::Codex, "/fixture/two/session.jsonl"),
+            (Agent::Claude, "/fixture/one/session.jsonl"),
+        ] {
+            let mut restored = old_source(file);
+            restored.agent = agent;
+            let mut state: State = serde_json::from_value(serde_json::json!({
+                "version": 1,
+                "archived": [closed.id],
+                "last_used": {"shared-native": now},
+            }))
+            .unwrap();
+            assert!(state.archived_sources.is_empty());
+            state.record_session_use(&restored, now - chrono::Duration::minutes(1));
+            let encoded = serde_json::to_value(&state).unwrap();
+            assert_eq!(encoded["version"], 1);
+            assert_eq!(encoded["archived"], serde_json::json!([closed.id]));
+            assert_eq!(encoded["last_used"][&closed.id], serde_json::json!(now));
+            let loaded: State = serde_json::from_value(encoded).unwrap();
+            assert!(loaded.is_archived(&closed.id));
+            assert!(loaded.is_session_archived(&closed));
+            assert!(!loaded.is_session_archived(&restored));
+            assert!(
+                !loaded.is_active_session(&closed, now, &HashSet::new()),
+                "a recent prompt must not override a legacy archive: {agent:?} {file}"
+            );
+            assert!(loaded.is_active_session(&restored, now, &HashSet::new()));
+            let mut sessions = [closed.clone(), restored];
+            loaded.apply(&mut sessions);
+            assert!(sessions[0].archived);
+            assert!(!sessions[1].archived);
+        }
+    }
+
+    #[test]
+    fn source_unarchive_does_not_fabricate_human_activity() {
+        let session = old_source("/fixture/one/session.jsonl");
+        let mut state: State = serde_json::from_str(r#"{"archived":["shared-native"]}"#).unwrap();
+        state.set_session_archived(&session, false);
+        let loaded: State = serde_json::from_str(&serde_json::to_string(&state).unwrap()).unwrap();
+        assert!(!loaded.is_session_archived(&session));
+        assert!(loaded.is_archived(&session.id));
+        assert!(loaded.last_used.is_empty());
+        assert!(loaded.last_used_sources.is_empty());
+        assert!(!loaded.is_active_session(&session, Utc::now(), &HashSet::new()));
+    }
+
+    #[test]
+    fn explicit_source_archive_overrides_activity_but_not_running_protection() {
+        let now = Utc::now();
+        let mut session = old_source("/fixture/one/session.jsonl");
+        session.last_prompt_at = Some(now);
+        let mut state = State::default();
+        state.record_session_use(&session, now);
+        state.set_in_progress(&session.id, true);
+        state.set_session_archived(&session, true);
+        assert!(!state.is_active_session(&session, now, &HashSet::new()));
+        state.active_retention_days = 0;
+        assert!(!state.is_active_session(&session, now, &HashSet::new()));
+        assert!(state.is_active_session(&session, now, &HashSet::from([session.id.clone()])));
+    }
+
+    #[test]
+    fn recording_source_use_prunes_duplicates_without_losing_other_archive_decisions() {
+        let now = Utc::now();
+        let chosen = old_source("/fixture/one/session.jsonl");
+        let other_path = old_source("/fixture/two/session.jsonl");
+        let mut other_provider = chosen.clone();
+        other_provider.agent = Agent::Claude;
+        let mut state = State::default();
+        state.set_archived(&chosen.id, true);
+        state.set_session_archived(&chosen, false);
+        state.set_session_archived(&other_path, true);
+        state.set_session_archived(&other_provider, true);
+        state
+            .archived_sources
+            .get_mut(&chosen.id)
+            .unwrap()
+            .push(SourceArchive {
+                agent: chosen.agent,
+                file: chosen.file.clone(),
+                archived: true,
+            });
+        state.last_used_sources.insert(
+            chosen.id.clone(),
+            vec![
+                SourceUse {
+                    agent: chosen.agent,
+                    file: chosen.file.clone(),
+                    used_at: now - chrono::Duration::days(20),
+                },
+                SourceUse {
+                    agent: chosen.agent,
+                    file: chosen.file.clone(),
+                    used_at: now,
+                },
+            ],
+        );
+        let mut state: State =
+            serde_json::from_str(&serde_json::to_string(&state).unwrap()).unwrap();
+        assert!(
+            state.is_session_archived(&chosen),
+            "the last persisted decision wins"
+        );
+        state.record_session_use(&chosen, now - chrono::Duration::days(10));
+        state.record_session_use(&chosen, now - chrono::Duration::days(5));
+        let loaded: State = serde_json::from_str(&serde_json::to_string(&state).unwrap()).unwrap();
+        assert!(!loaded.is_session_archived(&chosen));
+        assert!(loaded.is_session_archived(&other_path));
+        assert!(loaded.is_session_archived(&other_provider));
+        assert!(loaded.is_archived(&chosen.id));
+        assert_eq!(loaded.archived_sources[&chosen.id].len(), 3);
+        assert_eq!(loaded.last_used_sources[&chosen.id].len(), 1);
+        assert_eq!(loaded.last_used_sources[&chosen.id][0].used_at, now);
+        assert_eq!(loaded.last_used[&chosen.id], now);
+        assert!(loaded.is_active_session(&chosen, now, &HashSet::new()));
+        assert!(!loaded.is_active_session(&other_path, now, &HashSet::new()));
+        assert!(!loaded.is_active_session(&other_provider, now, &HashSet::new()));
+    }
+
+    #[test]
+    fn legacy_id_operations_replace_source_overrides_and_keep_latest_use() {
+        let chosen = old_source("/fixture/one/session.jsonl");
+        let other = old_source("/fixture/two/session.jsonl");
+        let now = Utc::now();
+        let mut state = State::default();
+        assert!(serde_json::to_value(&state)
+            .unwrap()
+            .get("archived_sources")
+            .is_none());
+        state.record_session_use(&chosen, now);
+        state.set_archived(&chosen.id, true);
+        assert!(state.is_session_archived(&chosen));
+        assert!(state.is_session_archived(&other));
+        state.set_session_archived(&chosen, false);
+        state.set_archived(&chosen.id, false);
+        assert!(!state.is_session_archived(&chosen));
+        assert!(!state.is_session_archived(&other));
+        assert!(state.archived_sources.is_empty());
+        state.set_session_archived(&chosen, true);
+        state.record_use(&chosen.id, now - chrono::Duration::days(1));
+        assert!(!state.is_session_archived(&chosen));
+        assert!(state.archived_sources.is_empty());
+        assert_eq!(state.last_used[&chosen.id], now);
+    }
+
+    #[test]
+    fn legacy_use_binds_unique_source_but_never_guesses_an_ambiguous_source() {
+        let chosen = old_source("/fixture/one/session.jsonl");
+        let other = old_source("/fixture/two/session.jsonl");
+        let now = Utc::now();
+        let mut unique = State::default();
+        unique.record_use(&chosen.id, now);
+        assert!(unique.bind_legacy_use_sources([&chosen, &chosen]));
+        assert!(unique.is_active_session(&chosen, now, &HashSet::new()));
+        assert!(!unique.is_active_session(&other, now, &HashSet::new()));
+        assert!(!unique.bind_legacy_use_sources([&chosen, &other]));
+        let mut ambiguous = State::default();
+        ambiguous.record_use(&chosen.id, now);
+        assert!(ambiguous.bind_legacy_use_sources([&chosen, &other]));
+        assert!(!ambiguous.is_active_session(&chosen, now, &HashSet::new()));
+        assert!(!ambiguous.is_active_session(&other, now, &HashSet::new()));
+        assert_eq!(
+            ambiguous.last_used[&chosen.id], now,
+            "retain legacy data without assigning it to a guessed owner"
+        );
+        ambiguous.record_session_use(&other, now);
+        assert!(!ambiguous.is_active_session(&chosen, now, &HashSet::new()));
+        assert!(ambiguous.is_active_session(&other, now, &HashSet::new()));
+    }
 
     #[test]
     fn source_bound_sync_marks_do_not_reuse_legacy_or_other_sources() {

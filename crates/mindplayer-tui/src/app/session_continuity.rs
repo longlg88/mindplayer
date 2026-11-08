@@ -12,11 +12,8 @@ impl App {
     /// identity. Cwd, file timestamps and similarly named labels are not proof.
     pub(super) fn reconcile_codex_clears(&mut self) -> bool {
         let mut changed = false;
-        for pty in self.ptys.values() {
-            // Hidden panes own live children too. Reading their protocol must
-            // not consume terminal dirty bits or depend on a visible redraw.
-            changed |= pty.poll_routing_status();
-        }
+        // The bounded hook poll owns protocol I/O, including hidden/ended
+        // panes. Reconciliation only reads its cached, verified snapshots.
         let transitions: Vec<_> = self
             .ptys
             .iter()
@@ -27,13 +24,13 @@ impl App {
             })
             .collect();
         for (previous, current) in transitions {
-            let Some(old) = self.all_sessions.iter().find(|s| s.id == previous).cloned() else {
+            let Some(old) = self.known_metadata().find(|s| s.id == previous).cloned() else {
                 continue;
             };
             if old.agent != Agent::Codex {
                 continue;
             }
-            let Some(new) = self.all_sessions.iter().find(|s| s.id == current).cloned() else {
+            let Some(mut new) = self.known_metadata().find(|s| s.id == current).cloned() else {
                 // The native lifecycle precedes the first rollout write. Retry
                 // discovery without replacing the live pane with a guessed row.
                 self.rescan_due
@@ -52,7 +49,7 @@ impl App {
                 || self.account_auth.owns_launch(&current)
                 || self.state.label_for(&current).is_some()
                 || self.state.handoff_links.contains_key(&current)
-                || self.state.archived.contains(&current)
+                || self.state.is_session_archived(&new)
                 || self.account_of_session(&old).slot != self.account_of_session(&new).slot
             {
                 continue;
@@ -62,7 +59,7 @@ impl App {
             if self
                 .thread_sync_rx
                 .as_ref()
-                .is_some_and(|sync| sync.target_id == previous)
+                .is_some_and(|sync| sync.target.id == previous)
             {
                 next.thread_synced.remove(&previous);
             }
@@ -75,6 +72,7 @@ impl App {
             if next.in_progress.remove(&previous) {
                 next.in_progress.insert(current.clone());
             }
+            next.record_session_use(&new, Utc::now());
             if let Some(link) = next.handoff_links.get(&previous).cloned() {
                 next.handoff_links.insert(current.clone(), link);
             }
@@ -95,6 +93,13 @@ impl App {
                 continue;
             }
             self.state = next;
+            self.working_set.epoch = self.working_set.epoch.wrapping_add(1);
+            new.archived = false;
+            if let Some(row) = self.all_sessions.iter_mut().find(|s| s.id == current) {
+                row.archived = false;
+            } else {
+                self.all_sessions.push(new);
+            }
             self.rekey_cleared_pane(&previous, &current);
             // Old transcripts remain available, but only the new row owns the
             // label. Its raw pre-clear title returns on the next normal scan.
@@ -103,7 +108,7 @@ impl App {
                     row.title = previous.clone();
                 }
             }
-            self.state.apply(&mut self.all_sessions);
+            self.apply_row_state();
             self.rebuild_visible();
             let selected = selected.map(|id| if id == previous { current.clone() } else { id });
             if let Some(pos) = selected.and_then(|id| self.row_of_session(&id)) {
@@ -157,14 +162,14 @@ impl App {
         if self
             .thread_sync_rx
             .as_ref()
-            .is_some_and(|sync| sync.target_id == previous)
+            .is_some_and(|sync| sync.target.id == previous)
         {
             self.thread_sync_rx = None;
         }
         if self
             .category_sync_rx
             .as_ref()
-            .is_some_and(|sync| sync.target_id == previous)
+            .is_some_and(|sync| sync.target.id == previous)
         {
             self.category_sync_rx = None;
         }
@@ -349,7 +354,14 @@ mod tests {
         fixture.app.bg_rescan_rx = Some(rx);
         let mut sessions = fixture.app.all_sessions.clone();
         sessions.push(current);
-        tx.send(sessions).unwrap();
+        tx.send((
+            fixture.app.working_set.epoch,
+            Ok(mindplayer_core::catalog::CatalogSnapshot {
+                active: sessions,
+                ..Default::default()
+            }),
+        ))
+        .unwrap();
         assert!(fixture.app.poll_bg_rescan());
         assert!(fixture.app.ptys.contains_key("after-clear"));
         assert_eq!(fixture.app.selected_session().unwrap().id, "after-clear");
@@ -522,7 +534,14 @@ mod tests {
         fixture.app.bg_rescan_rx = Some(rx);
         let mut sessions = fixture.app.all_sessions.clone();
         sessions.push(current);
-        tx.send(sessions).unwrap();
+        tx.send((
+            fixture.app.working_set.epoch,
+            Ok(mindplayer_core::catalog::CatalogSnapshot {
+                active: sessions,
+                ..Default::default()
+            }),
+        ))
+        .unwrap();
         fixture.app.poll_bg_rescan();
         assert!(fixture.app.ptys.contains_key("after-clear"));
         assert!(fixture.app.ended.contains("after-clear"));
@@ -572,11 +591,13 @@ mod tests {
         let (thread_tx, thread_rx) = mpsc::channel();
         let (category_tx, category_rx) = mpsc::channel();
         fixture.app.thread_sync_rx = Some(PendingSessionSync {
-            target_id: "before-clear".into(),
+            target: fixture.app.all_sessions[0].clone(),
+            owner: Some("before-clear".into()),
             result: thread_rx,
         });
         fixture.app.category_sync_rx = Some(PendingSessionSync {
-            target_id: "before-clear".into(),
+            target: fixture.app.all_sessions[0].clone(),
+            owner: Some("before-clear".into()),
             result: category_rx,
         });
         fixture.app.poll_hook_status();
@@ -613,11 +634,13 @@ mod tests {
         let (thread_tx, thread_rx) = mpsc::channel();
         let (category_tx, category_rx) = mpsc::channel();
         fixture.app.thread_sync_rx = Some(PendingSessionSync {
-            target_id: "other".into(),
+            target: crate::app::tests::session("other", Agent::Codex, false),
+            owner: None,
             result: thread_rx,
         });
         fixture.app.category_sync_rx = Some(PendingSessionSync {
-            target_id: "other".into(),
+            target: crate::app::tests::session("other", Agent::Codex, false),
+            owner: None,
             result: category_rx,
         });
         fixture.app.poll_hook_status();
@@ -637,7 +660,31 @@ mod tests {
         assert!(fixture.app.poll_thread_sync());
         assert!(fixture.app.poll_category_sync());
         assert!(fixture.app.pending_initial_inputs.contains_key("other"));
+        assert_eq!(fixture.app.state.sync_mark("other", "peer"), 0);
+        let target = crate::app::tests::session("other", Agent::Codex, false);
+        fixture.app.all_sessions.push(target);
+        let command = mindplayer_core::Command {
+            program: "cat".into(),
+            args: Vec::new(),
+            cwd: fixture.directory.clone(),
+            env: Default::default(),
+        };
+        fixture.app.ptys.insert(
+            "other".into(),
+            PtySession::spawn(&command, "other", 6, 40).unwrap(),
+        );
+        fixture
+            .app
+            .pending_initial_inputs
+            .get_mut("other")
+            .unwrap()
+            .queued_at = Instant::now() - Duration::from_secs(60);
+        assert!(
+            fixture.app.flush_initial_inputs(),
+            "unrelated context still delivers"
+        );
         assert_eq!(fixture.app.state.sync_mark("other", "peer"), 99);
+        assert!(fixture.app.state.thread_synced.contains("other"));
     }
 
     #[test]
@@ -652,11 +699,13 @@ mod tests {
             let (thread_tx, thread_rx) = mpsc::channel();
             let (category_tx, category_rx) = mpsc::channel();
             fixture.app.thread_sync_rx = Some(PendingSessionSync {
-                target_id: "before-clear".into(),
+                target: fixture.app.all_sessions[0].clone(),
+                owner: Some("before-clear".into()),
                 result: thread_rx,
             });
             fixture.app.category_sync_rx = Some(PendingSessionSync {
-                target_id: "before-clear".into(),
+                target: fixture.app.all_sessions[0].clone(),
+                owner: Some("before-clear".into()),
                 result: category_rx,
             });
             fixture.app.poll_hook_status();

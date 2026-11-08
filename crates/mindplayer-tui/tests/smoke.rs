@@ -43,6 +43,9 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+#[path = "support/active_archive.rs"]
+mod active_archive;
+
 const ROWS: u16 = 40;
 const COLS: u16 = 140;
 
@@ -140,7 +143,9 @@ fn unique_tmp() -> FixtureDir {
         let n = DIR_COUNTER.fetch_add(1, Ordering::SeqCst);
         let dir = root.join(format!("mp-smoke-{}-{}", std::process::id(), n));
         match std::fs::create_dir(&dir) {
-            Ok(()) => return FixtureDir(dir),
+            // Node resolves an imported module's real path. Keep argv and
+            // import.meta.url identical even when TMPDIR is macOS /tmp.
+            Ok(()) => return FixtureDir(dir.canonicalize().expect("canonical fixture path")),
             Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
             Err(err) => panic!("create temp dir: {err}"),
         }
@@ -358,15 +363,16 @@ fn seed_claude_session(root: &Path, cwd: &Path, id: &str, title: &str) -> PathBu
     let project = root.join(cwd.to_string_lossy().replace(['/', '.'], "-"));
     std::fs::create_dir_all(&project).expect("create fixture Claude project");
     let file = project.join(format!("{id}.jsonl"));
+    let now = chrono::Utc::now();
     let rows = [
         serde_json::json!({
             "type": "user", "sessionId": id, "cwd": cwd,
-            "timestamp": "2026-07-13T10:00:00Z",
+            "timestamp": now - chrono::Duration::seconds(1),
             "message": { "role": "user", "content": title }
         }),
         serde_json::json!({
             "type": "assistant", "sessionId": id, "cwd": cwd,
-            "timestamp": "2026-07-13T10:00:01Z",
+            "timestamp": now,
             "message": { "role": "assistant", "content": "synthetic saved reply",
                 "usage": { "input_tokens": 10, "output_tokens": 5 } }
         }),
@@ -459,6 +465,16 @@ fn seed_private_codex(home: &Path, fake_codex: &Path) {
 /// recognizes: a first `session_meta` line (id + cwd) and a `response_item`
 /// user message that becomes the session title.
 fn seed_codex_session(codex_dir: &Path, scope_cwd: &Path, id: &str, title: &str) -> PathBuf {
+    seed_codex_session_at(codex_dir, scope_cwd, id, title, chrono::Utc::now())
+}
+
+fn seed_codex_session_at(
+    codex_dir: &Path,
+    scope_cwd: &Path,
+    id: &str,
+    title: &str,
+    human_at: chrono::DateTime<chrono::Utc>,
+) -> PathBuf {
     let cwd = scope_cwd.display();
     // Path shape mirrors the real store, but discovery walks recursively so only
     // the `.jsonl` extension actually matters.
@@ -466,9 +482,13 @@ fn seed_codex_session(codex_dir: &Path, scope_cwd: &Path, id: &str, title: &str)
     std::fs::create_dir_all(&dir).expect("create codex dir");
     let file = dir.join(format!("rollout-2026-07-13T10-00-00-{id}.jsonl"));
     let contents = format!(
-        "{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"{id}\",\"cwd\":\"{cwd}\",\"timestamp\":\"2026-07-13T10:00:00Z\",\"rollout_path\":\"{rollout_path}\"}}}}\n\
-         {{\"type\":\"response_item\",\"payload\":{{\"role\":\"user\",\"content\":[{{\"text\":\"{title}\"}}]}}}}\n"
-        , rollout_path = file.display()
+        "{}\n{}\n",
+        serde_json::json!({"type":"session_meta","payload":{
+            "id":id,"cwd":cwd.to_string(),"timestamp":human_at,"rollout_path":file
+        }}),
+        serde_json::json!({"type":"response_item","timestamp":human_at,"payload":{
+            "type":"message","role":"user","content":[{"type":"input_text","text":title}]
+        }})
     );
     std::fs::write(&file, contents).expect("write codex session");
     file
@@ -623,6 +643,7 @@ struct Mp {
     raw_output: Arc<Mutex<Vec<u8>>>,
     writer: Box<dyn Write + Send>,
     child: FixtureChild,
+    command: CommandBuilder,
     _master: Box<dyn MasterPty + Send>,
     _tmp: PathBuf,
     codex_marker_dir: PathBuf,
@@ -780,6 +801,27 @@ impl Mp {
         fixture: CodexFixture,
         after_spawn: impl FnOnce(&Path, Option<u32>),
     ) -> Mp {
+        Self::launch_with_fixture_hooks(
+            dimensions,
+            ambient_isolated,
+            isolated_primary,
+            with_accounts,
+            enable_cursor,
+            fixture,
+            (|_| {}, after_spawn),
+        )
+    }
+
+    fn launch_with_fixture_hooks(
+        dimensions: (u16, u16),
+        ambient_isolated: bool,
+        isolated_primary: bool,
+        with_accounts: bool,
+        enable_cursor: bool,
+        fixture: CodexFixture,
+        hooks: (impl FnOnce(&Path), impl FnOnce(&Path, Option<u32>)),
+    ) -> Mp {
+        let (prepare, after_spawn) = hooks;
         let (rows, cols) = dimensions;
         let inline_fixture = matches!(fixture, CodexFixture::InlinePainter);
         let stale_completion = matches!(fixture, CodexFixture::TaskStatus);
@@ -1290,7 +1332,12 @@ exit 0"#
         let path = std::env::var("PATH").unwrap_or_default();
         cmd.env("PATH", format!("{}:{}", bindir.display(), path));
 
-        let child = FixtureChild(pair.slave.spawn_command(cmd).expect("spawn mindplayer"));
+        prepare(&tmp);
+        let child = FixtureChild(
+            pair.slave
+                .spawn_command(cmd.clone())
+                .expect("spawn mindplayer"),
+        );
         drop(pair.slave);
         after_spawn(&tmp, child.process_id());
 
@@ -1323,6 +1370,7 @@ exit 0"#
             raw_output,
             writer,
             child,
+            command: cmd,
             _master: pair.master,
             _tmp: tmp,
             codex_marker_dir,
@@ -2425,14 +2473,22 @@ exit 0"#
     /// Complete only the existing scope/scan flow. The first real list is
     /// immediately usable; each Codex session starts with its own Jev OFF mode.
     fn start_into_main_list(&mut self) {
+        self.start_into_main_list_with_count(2, STARTUP_TIMEOUT);
+        self.expect(TITLE_A, STARTUP_TIMEOUT, "main list (session A)");
+        self.expect(TITLE_B, STARTUP_TIMEOUT, "main list (session B)");
+    }
+
+    fn start_into_main_list_with_count(&mut self, count: usize, within: Duration) {
         self.expect("collect sessions", STARTUP_TIMEOUT, "scope-select screen");
         self.send(b"\x1b[B");
         self.expect("▶ global", STARTUP_TIMEOUT, "Global option selected");
         self.send(b"\r");
-        self.expect("2 sessions", STARTUP_TIMEOUT, "scanned session count");
-        self.expect("· global", STARTUP_TIMEOUT, "Global scope in footer");
-        self.expect(TITLE_A, STARTUP_TIMEOUT, "main list (session A)");
-        self.expect(TITLE_B, STARTUP_TIMEOUT, "main list (session B)");
+        self.expect(
+            &format!("{count} sessions"),
+            within,
+            "scanned session count",
+        );
+        self.expect("· global", within, "Global scope in footer");
         self.assert_no_startup_choice();
         self.assert_no_session_child();
     }
@@ -3093,14 +3149,15 @@ fn actual_omp_resumes_discovered_session() {
     let bucket = mp._tmp.join("omp/sessions/fixture");
     std::fs::create_dir_all(&bucket).unwrap();
     let session = bucket.join("2026-01-01_0199ef00-0000-7000-8000-000000000001.jsonl");
+    let human_at = chrono::Utc::now();
     let header = serde_json::json!({
         "type": "session", "version": 3, "id": "0199ef00-0000-7000-8000-000000000001",
-        "timestamp": "2026-01-01T00:00:00Z", "cwd": mp._tmp.join("scope")
+        "timestamp": human_at - chrono::Duration::seconds(1), "cwd": mp._tmp.join("scope")
     });
     let message = serde_json::json!({
         "type": "message", "id": "a1b2c3d4", "parentId": null,
-        "timestamp": "2026-01-01T00:00:01Z",
-        "message": { "role": "user", "content": [{ "type": "text", "text": "OMP_RESUME_SENTINEL" }], "timestamp": 1767225601000i64 }
+        "timestamp": human_at,
+        "message": { "role": "user", "content": [{ "type": "text", "text": "OMP_RESUME_SENTINEL" }], "timestamp": human_at.timestamp_millis() }
     });
     std::fs::write(&session, format!("{header}\n{message}\n")).unwrap();
     mp.expect("collect sessions", STARTUP_TIMEOUT, "scope selection");
@@ -7307,6 +7364,16 @@ fn embedded_router_late_ack_preserves_running_without_reroute() {
 #[test]
 fn embedded_router_status_tracks_the_owned_thread_after_resume() {
     let mut mp = Mp::launch_router_fixture(CodexFixture::LifecycleRouter);
+    // Native /resume stays inside its launching account. The shared fixture
+    // puts ALFA in an isolated home and BRVO in the inherited home; move only
+    // this fixture's BRVO into ALFA's store before scanning, retaining its ID.
+    let current_file = mp
+        .codex_alfa_file
+        .parent()
+        .unwrap()
+        .join(mp.codex_brvo_file.file_name().unwrap());
+    std::fs::rename(&mp.codex_brvo_file, &current_file).unwrap();
+    mp.codex_brvo_file = current_file;
     mp.resume_router_fixture();
     append_codex_task_event(&mp.codex_alfa_file, "task_started", "old-thread-turn");
     mp.expect_foreground(WORKING_BORDER, STEP_TIMEOUT, "original thread is working");

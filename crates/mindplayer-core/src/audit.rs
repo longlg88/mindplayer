@@ -305,7 +305,7 @@ pub struct UsageStats {
     pub catchups_all_time: usize,
     pub transition_reports_all_time: usize,
     /// One active-seconds total per rolling 24h bucket, oldest first,
-    /// covering the last [`SPARKLINE_DAYS`] days (today included).
+    /// covering the last `SPARKLINE_DAYS` days (today included).
     pub daily_active_secs: Vec<i64>,
 }
 

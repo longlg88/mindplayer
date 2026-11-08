@@ -445,6 +445,9 @@ fn run(terminal: &mut Terminal<CrosstermBackend<FrameSink>>, app: &mut App) -> R
             if app.poll_refresh() {
                 needs_draw = true;
             }
+            if app.poll_working_set() {
+                needs_draw = true;
+            }
             // Apply a finished background peer-lane transcript read (see
             // `spawn_thread_sync_for`) — kept off this thread so reopening a
             // thread-synced session never freezes input/rendering while its
@@ -1150,6 +1153,8 @@ fn handle_main_key(app: &mut App, key: KeyEvent) {
             KeyCode::Esc => app.cancel_search(),
             KeyCode::Up => app.move_selection(-1),
             KeyCode::Down => app.move_selection(1),
+            KeyCode::PageUp if app.show_archived => app.move_archive_page(false),
+            KeyCode::PageDown if app.show_archived => app.move_archive_page(true),
             KeyCode::PageUp => app.move_page(-1),
             KeyCode::PageDown => app.move_page(1),
             // Marking still wins over typing while both modes are on —
@@ -1275,7 +1280,10 @@ fn handle_main_key(app: &mut App, key: KeyEvent) {
                     _ => {}
                 }
             }
-            if let Some(bytes) = encode_key(key) {
+            let provider = app
+                .focused_pane()
+                .and_then(|sid| ui::pane_provider(app, sid));
+            if let Some(bytes) = encode_terminal_key(key, provider) {
                 app.send_to_pty(&bytes);
             }
         }
@@ -1306,6 +1314,8 @@ fn handle_main_key(app: &mut App, key: KeyEvent) {
             match normalize_shortcut(key.code) {
                 KeyCode::Up => app.move_selection(-1),
                 KeyCode::Down => app.move_selection(1),
+                KeyCode::PageUp if app.show_archived => app.move_archive_page(false),
+                KeyCode::PageDown if app.show_archived => app.move_archive_page(true),
                 KeyCode::PageUp => app.move_page(-1),
                 KeyCode::PageDown => app.move_page(1),
                 KeyCode::Enter if app.multi_select => app.launch_marked(),
@@ -1362,6 +1372,8 @@ fn handle_main_key(app: &mut App, key: KeyEvent) {
                 KeyCode::Char('h') => app.begin_handoff(),
                 KeyCode::Char('x') => app.close_selected(),
                 KeyCode::Char('a') => app.toggle_archived_view(),
+                KeyCode::Char('[') => app.move_archive_page(false),
+                KeyCode::Char(']') => app.move_archive_page(true),
                 KeyCode::Char('q') => app.quit(),
                 _ => {}
             }
@@ -1422,6 +1434,36 @@ fn normalize_shortcut(code: KeyCode) -> KeyCode {
         other => other.to_ascii_lowercase(),
     };
     KeyCode::Char(mapped)
+}
+
+/// Preserve native shortcuts that the legacy terminal encoding cannot distinguish.
+fn encode_terminal_key(key: KeyEvent, provider: Option<Agent>) -> Option<Vec<u8>> {
+    if provider == Some(Agent::Codex)
+        && key.code == KeyCode::Enter
+        && key.modifiers == KeyModifiers::CONTROL
+    {
+        return Some(b"\x1b[13;5u".to_vec());
+    }
+    if let (Some(Agent::Omp), KeyCode::Char(c)) = (provider, key.code) {
+        let mods = key.modifiers;
+        if mods.intersects(KeyModifiers::SUPER | KeyModifiers::HYPER | KeyModifiers::META)
+            || (mods.contains(KeyModifiers::SHIFT)
+                && mods.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT))
+        {
+            // OMP accepts CSI-u even without negotiating kitty mode. Legacy
+            // encoding turns Cmd-V into "v" and Alt-Shift-C into Alt-C.
+            let modifier = 1
+                + u8::from(mods.contains(KeyModifiers::SHIFT))
+                + 2 * u8::from(mods.contains(KeyModifiers::ALT))
+                + 4 * u8::from(mods.contains(KeyModifiers::CONTROL))
+                + 8 * u8::from(mods.contains(KeyModifiers::SUPER))
+                + 16 * u8::from(mods.contains(KeyModifiers::HYPER))
+                + 32 * u8::from(mods.contains(KeyModifiers::META));
+            let codepoint = u32::from(c.to_ascii_lowercase());
+            return Some(format!("\x1b[{codepoint};{modifier}u").into_bytes());
+        }
+    }
+    encode_key(key)
 }
 
 /// Encode a key event into the byte sequence a terminal application expects.
@@ -1534,6 +1576,36 @@ mod tests {
     }
 
     #[test]
+    fn mp_review_archive_search_page_keys_preserve_query() {
+        let mut app = main_app_with_session("archive-match");
+        app.all_sessions[0].archived = true;
+        app.archive_catalog = std::sync::Arc::new(app.all_sessions.clone());
+        app.show_archived = true;
+        app.archive_matches = 450;
+        app.search_query = Some("match".into());
+        handle_main_key(
+            &mut app,
+            KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE),
+        );
+        assert_eq!(
+            app.archive_page, 1,
+            "search must reach the next catalog page"
+        );
+        assert_eq!(app.search_query.as_deref(), Some("match"));
+        handle_main_key(&mut app, KeyEvent::new(KeyCode::PageUp, KeyModifiers::NONE));
+        assert_eq!(app.archive_page, 0);
+        handle_main_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char(']'), KeyModifiers::NONE),
+        );
+        assert_eq!(
+            app.search_query.as_deref(),
+            Some("match]"),
+            "literal search characters stay editable"
+        );
+    }
+
+    #[test]
     fn omp_picker_does_not_offer_a_managed_fresh_login() {
         let mut app = main_app();
         let choice = app
@@ -1568,6 +1640,79 @@ mod tests {
         assert!(!app.startup_routing.active());
         assert!(app.pending.is_none());
         assert!(app.ptys.is_empty());
+    }
+
+    #[test]
+    fn mp_review_codex_control_enter_preserves_native_key_boundary() {
+        let control_enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::CONTROL);
+        assert_eq!(
+            encode_terminal_key(control_enter, Some(Agent::Codex)).as_deref(),
+            Some(b"\x1b[13;5u".as_slice())
+        );
+        for provider in [
+            None,
+            Some(Agent::Claude),
+            Some(Agent::Omp),
+            Some(Agent::Kiro),
+            Some(Agent::Cursor),
+        ] {
+            assert_eq!(
+                encode_terminal_key(control_enter, provider),
+                encode_key(control_enter)
+            );
+        }
+        for key in [
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT),
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::ALT),
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::CONTROL | KeyModifiers::SHIFT),
+            KeyEvent::new(KeyCode::Char('m'), KeyModifiers::CONTROL),
+            KeyEvent::new(KeyCode::F(6), KeyModifiers::NONE),
+        ] {
+            assert_eq!(
+                encode_terminal_key(key, Some(Agent::Codex)),
+                encode_key(key)
+            );
+        }
+    }
+
+    #[test]
+    fn omp_clipboard_chords_preserve_command_and_shift_modifiers() {
+        for (code, modifiers, expected) in [
+            ('v', KeyModifiers::SUPER, "\x1b[118;9u"),
+            ('c', KeyModifiers::SUPER, "\x1b[99;9u"),
+            ('c', KeyModifiers::ALT | KeyModifiers::SHIFT, "\x1b[99;4u"),
+            ('C', KeyModifiers::ALT | KeyModifiers::SHIFT, "\x1b[99;4u"),
+            ('l', KeyModifiers::ALT | KeyModifiers::SHIFT, "\x1b[108;4u"),
+            (
+                'v',
+                KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+                "\x1b[118;6u",
+            ),
+        ] {
+            let key = KeyEvent::new(KeyCode::Char(code), modifiers);
+            assert_eq!(
+                encode_terminal_key(key, Some(Agent::Omp)).as_deref(),
+                Some(expected.as_bytes()),
+                "{key:?} must not become plain text or lose its Shift modifier"
+            );
+        }
+        for (code, modifiers, expected) in [
+            ('v', KeyModifiers::NONE, b"v".as_slice()),
+            ('v', KeyModifiers::CONTROL, b"\x16"),
+            ('c', KeyModifiers::CONTROL, b"\x03"),
+            ('y', KeyModifiers::CONTROL, b"\x19"),
+            ('C', KeyModifiers::ALT, b"\x1bC"),
+        ] {
+            assert_eq!(
+                encode_terminal_key(
+                    KeyEvent::new(KeyCode::Char(code), modifiers),
+                    Some(Agent::Omp),
+                )
+                .as_deref(),
+                Some(expected),
+            );
+        }
     }
 
     #[test]

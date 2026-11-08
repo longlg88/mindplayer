@@ -27,8 +27,9 @@
 use crate::session::{Agent, Session, TokenUsage};
 use chrono::{DateTime, Utc};
 use serde_json::Value;
+use std::collections::HashSet;
 use std::fs::File;
-use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
+use std::io::{self, BufRead, BufReader, Cursor, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
 
@@ -42,6 +43,10 @@ const HEAD_LINES: usize = 300;
 /// (for token totals), but we cap the read so a crafted/corrupt file — e.g. one
 /// enormous line with no newline — can't exhaust memory.
 const MAX_CLAUDE_BYTES: u64 = 64 * 1024 * 1024;
+/// Cold catalog reads inspect at most 64 KiB of header and 256 KiB of recent
+/// records per transcript, regardless of the size of the historical body.
+const METADATA_HEAD_BYTES: u64 = 64 * 1024;
+const METADATA_TAIL_BYTES: u64 = 256 * 1024;
 
 /// Which sessions to include based on working directory.
 #[derive(Debug, Clone)]
@@ -172,18 +177,16 @@ pub fn scan_roots(scope: &Scope, roots: &[SessionRoot]) -> Vec<Session> {
     let mut omp_paths = Vec::new();
     for root in seen {
         match root.agent {
-            Agent::Codex => codex_paths.extend(gather_jsonl(&root.dir)),
-            Agent::Claude => claude_items.extend(gather_claude_items(&root.dir, scope)),
-            Agent::Kiro => kiro_paths.extend(gather_kiro(&root.dir)),
-            Agent::Cursor => cursor_paths.extend(gather_cursor(&root.dir)),
+            Agent::Codex => codex_paths.extend(gather_jsonl(&root.dir).0),
+            Agent::Claude => claude_items.extend(gather_claude_items(&root.dir, scope).0),
+            Agent::Kiro => kiro_paths.extend(gather_kiro(&root.dir).0),
+            Agent::Cursor => cursor_paths.extend(gather_cursor(&root.dir).0),
             Agent::Omp => omp_paths.extend(
-                WalkDir::new(&root.dir)
-                    .min_depth(2)
-                    .max_depth(2)
-                    .into_iter()
-                    .filter_map(Result::ok)
-                    .map(walkdir::DirEntry::into_path)
-                    .filter(|p| is_jsonl(p)),
+                gather_paths(
+                    WalkDir::new(&root.dir).min_depth(2).max_depth(2),
+                    has_jsonl_extension,
+                )
+                .0,
             ),
         }
     }
@@ -193,9 +196,13 @@ pub fn scan_roots(scope: &Scope, roots: &[SessionRoot]) -> Vec<Session> {
         parse_claude_file(path, cwd_override.as_deref())
     });
     sessions.extend(claude);
-    let kiro = parallel_filter_map(&kiro_paths, |path| parse_kiro_file(path, scope));
+    let kiro = parallel_filter_map(&kiro_paths, |path| {
+        parse_kiro_file(path, scope).ok().flatten()
+    });
     sessions.extend(kiro);
-    let cursor = parallel_filter_map(&cursor_paths, |path| parse_cursor_file(path, scope));
+    let cursor = parallel_filter_map(&cursor_paths, |path| {
+        parse_cursor_file(path, scope).ok().flatten()
+    });
     sessions.extend(cursor);
     sessions.extend(parallel_filter_map(&omp_paths, |path| {
         parse_omp_file(path, scope)
@@ -206,6 +213,138 @@ pub fn scan_roots(scope: &Scope, roots: &[SessionRoot]) -> Vec<Session> {
     // session; mixing the two made rows flap. refresh_activity also sorts.
     refresh_activity(&mut sessions);
     sessions
+}
+
+/// A candidate's original path also identifies its provider account.
+pub(crate) struct SessionSource {
+    pub agent: Agent,
+    pub file: PathBuf,
+    pub cwd_override: Option<PathBuf>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ParseMode {
+    Metadata,
+    Full,
+}
+
+/// Enumerate candidates without opening historical conversations, reporting coverage.
+pub(crate) fn gather_sources(scope: &Scope, roots: &[SessionRoot]) -> (Vec<SessionSource>, bool) {
+    let mut sources = Vec::new();
+    let mut complete = true;
+    let mut seen_roots = Vec::new();
+    let mut seen_sources = HashSet::new();
+    for root in roots {
+        if seen_roots.contains(&root) {
+            continue;
+        }
+        seen_roots.push(root);
+        let (items, root_complete) = match root.agent {
+            Agent::Claude => gather_claude_items(&root.dir, scope),
+            agent => {
+                let (paths, root_complete) = match agent {
+                    Agent::Codex => gather_jsonl(&root.dir),
+                    Agent::Kiro => gather_kiro(&root.dir),
+                    Agent::Cursor => gather_cursor(&root.dir),
+                    Agent::Omp => gather_paths(
+                        WalkDir::new(&root.dir).min_depth(2).max_depth(2),
+                        has_jsonl_extension,
+                    ),
+                    Agent::Claude => unreachable!("Claude cwd is gathered with its project path"),
+                };
+                (
+                    paths.into_iter().map(|path| (path, None)).collect(),
+                    root_complete,
+                )
+            }
+        };
+        complete &= root_complete;
+        for (file, cwd_override) in items {
+            if seen_sources.insert((root.agent, file.clone())) {
+                sources.push(SessionSource {
+                    agent: root.agent,
+                    file,
+                    cwd_override,
+                });
+            }
+        }
+    }
+    (sources, complete)
+}
+
+pub(crate) fn parse_source(source: &SessionSource, mode: ParseMode) -> io::Result<Option<Session>> {
+    let path = &source.file;
+    let session = match source.agent {
+        Agent::Codex => match mode {
+            ParseMode::Metadata => parse_codex_metadata(path)?,
+            ParseMode::Full => parse_codex_file(path, &Scope::Global),
+        },
+        Agent::Claude => parse_claude_file_mode(path, source.cwd_override.as_deref(), mode)?,
+        Agent::Kiro => parse_kiro_file(path, &Scope::Global)?,
+        Agent::Cursor => parse_cursor_file(path, &Scope::Global)?,
+        Agent::Omp => parse_omp_file_mode(path, &Scope::Global, mode)?,
+    };
+    let Some(mut session) = session else {
+        return Ok(None);
+    };
+    // Filename fallbacks are useful for older valid transcripts, but cannot
+    // turn a missing header or unreadable file into a resumable conversation.
+    if session.id.trim().is_empty() || !session.cwd.is_absolute() {
+        return Ok(None);
+    }
+    if source.agent == Agent::Cursor && mode == ParseMode::Full {
+        session.tokens = cursor_token_estimate(path, &session.id);
+    }
+    session.file.clone_from(path);
+    Ok(Some(session))
+}
+
+fn transcript_reader(path: &Path, mode: ParseMode) -> io::Result<Box<dyn BufRead>> {
+    match mode {
+        ParseMode::Full => Ok(Box::new(BufReader::new(
+            File::open(path)?.take(MAX_CLAUDE_BYTES),
+        ))),
+        ParseMode::Metadata => Ok(Box::new(Cursor::new(metadata_windows(path)?))),
+    }
+}
+
+/// Preserve whole lines only at window seams; never allocate a whole transcript.
+fn metadata_windows(path: &Path) -> io::Result<Vec<u8>> {
+    let mut file = File::open(path)?;
+    let len = file.metadata()?.len();
+    let mut head = Vec::new();
+    file.by_ref()
+        .take(METADATA_HEAD_BYTES)
+        .read_to_end(&mut head)?;
+    if len <= METADATA_HEAD_BYTES {
+        return Ok(head);
+    }
+    let head_end = head
+        .iter()
+        .rposition(|&byte| byte == b'\n')
+        .map_or(0, |position| position + 1);
+    head.truncate(head_end);
+    let start = len.saturating_sub(METADATA_TAIL_BYTES).max(head_end as u64);
+    let starts_on_line = if start == 0 {
+        true
+    } else {
+        file.seek(SeekFrom::Start(start - 1))?;
+        let mut previous = [0];
+        file.read_exact(&mut previous)?;
+        previous[0] == b'\n'
+    };
+    file.seek(SeekFrom::Start(start))?;
+    let mut tail = Vec::new();
+    file.take(len - start).read_to_end(&mut tail)?;
+    let tail_start = if starts_on_line {
+        0
+    } else {
+        tail.iter()
+            .position(|&byte| byte == b'\n')
+            .map_or(tail.len(), |position| position + 1)
+    };
+    head.extend_from_slice(&tail[tail_start..]);
+    Ok(head)
 }
 
 /// True if the session was last touched (active or started) within the last
@@ -345,35 +484,67 @@ where
     })
 }
 
-fn gather_jsonl(root: &Path) -> Vec<PathBuf> {
-    if !root.exists() {
-        return Vec::new();
+fn gather_paths(walk: WalkDir, matches: impl Fn(&Path) -> bool) -> (Vec<PathBuf>, bool) {
+    let mut complete = true;
+    let mut paths = Vec::new();
+    for entry in walk {
+        let path = match entry {
+            Ok(entry) => entry.into_path(),
+            Err(error) => {
+                // Uninstalled providers have no store. Other walk failures,
+                // including a disappearing subtree, leave the census incomplete.
+                if error.depth() != 0
+                    || error
+                        .io_error()
+                        .is_none_or(|error| error.kind() != io::ErrorKind::NotFound)
+                {
+                    complete = false;
+                }
+                continue;
+            }
+        };
+        if !matches(&path) {
+            continue;
+        }
+        // Name filters must not hide metadata failures: a directory can be
+        // listable while its children are unsearchable, even on a successful walk.
+        match path.metadata() {
+            Ok(metadata) if metadata.is_file() => paths.push(path),
+            Ok(_) => {}
+            Err(_) => complete = false,
+        }
     }
-    WalkDir::new(root)
-        .into_iter()
-        .filter_map(Result::ok)
-        .map(walkdir::DirEntry::into_path)
-        .filter(|p| is_jsonl(p))
-        .collect()
+    (paths, complete)
+}
+
+fn gather_jsonl(root: &Path) -> (Vec<PathBuf>, bool) {
+    gather_paths(WalkDir::new(root), has_jsonl_extension)
 }
 
 /// Claude scope membership is decided by directory name (it groups sessions by
 /// launch cwd), so we resolve the per-file cwd override while gathering paths.
-fn gather_claude_items(root: &Path, scope: &Scope) -> Vec<(PathBuf, Option<PathBuf>)> {
+fn gather_claude_items(root: &Path, scope: &Scope) -> (Vec<(PathBuf, Option<PathBuf>)>, bool) {
     let mut out = Vec::new();
-    if !root.exists() {
-        return out;
-    }
+    let mut complete = true;
     let want_dir = match scope {
         Scope::WorkingDir(p) => Some(encode_cwd(p)),
         Scope::Global => None,
     };
-    let Ok(entries) = std::fs::read_dir(root) else {
-        return out;
+    let entries = match std::fs::read_dir(root) {
+        Ok(entries) => entries,
+        Err(error) => return (out, error.kind() == io::ErrorKind::NotFound),
     };
-    for entry in entries.filter_map(Result::ok) {
+    for entry in entries {
+        let Ok(entry) = entry else {
+            complete = false;
+            continue;
+        };
         let dir = entry.path();
-        if !dir.is_dir() {
+        let Ok(metadata) = dir.metadata() else {
+            complete = false;
+            continue;
+        };
+        if !metadata.is_dir() {
             continue;
         }
         if let Some(want) = &want_dir {
@@ -387,50 +558,36 @@ fn gather_claude_items(root: &Path, scope: &Scope) -> Vec<(PathBuf, Option<PathB
             Scope::WorkingDir(p) => Some(p.clone()),
             Scope::Global => None,
         };
-        for file in WalkDir::new(&dir).into_iter().filter_map(Result::ok) {
-            let path = file.path();
-            if is_jsonl(path) {
-                out.push((path.to_path_buf(), cwd_override.clone()));
-            }
+        let (paths, bucket_complete) = gather_jsonl(&dir);
+        complete &= bucket_complete;
+        for path in paths {
+            out.push((path, cwd_override.clone()));
         }
     }
-    out
+    (out, complete)
 }
 
-fn is_jsonl(path: &Path) -> bool {
-    path.is_file() && path.extension().and_then(|e| e.to_str()) == Some("jsonl")
+fn has_jsonl_extension(path: &Path) -> bool {
+    path.extension().and_then(|e| e.to_str()) == Some("jsonl")
 }
 
 /// Kiro CLI writes one `<uuid>.json` metadata sidecar per session in a flat
 /// `cli/` dir (alongside `.jsonl`/`.history`/`.lock`); the `.json` is all we
 /// need to list it.
-fn gather_kiro(root: &Path) -> Vec<PathBuf> {
-    if !root.exists() {
-        return Vec::new();
-    }
-    WalkDir::new(root)
-        .into_iter()
-        .filter_map(Result::ok)
-        .map(walkdir::DirEntry::into_path)
-        .filter(|p| p.is_file() && p.extension().and_then(|e| e.to_str()) == Some("json"))
-        .collect()
+fn gather_kiro(root: &Path) -> (Vec<PathBuf>, bool) {
+    gather_paths(WalkDir::new(root), |p| {
+        p.extension().and_then(|e| e.to_str()) == Some("json")
+    })
 }
 
 /// Cursor agent writes `meta.json` under one workspace-hash and chat-id
 /// directory. The official selector recursively scans all workspace buckets,
 /// so global and working-directory scopes share the same candidate set and
 /// filter by the sidecar's `cwd` during parsing.
-fn gather_cursor(root: &Path) -> Vec<PathBuf> {
-    if !root.exists() {
-        return Vec::new();
-    }
-    WalkDir::new(root)
-        .max_depth(3)
-        .into_iter()
-        .filter_map(Result::ok)
-        .map(walkdir::DirEntry::into_path)
-        .filter(|p| p.is_file() && p.file_name().and_then(|n| n.to_str()) == Some("meta.json"))
-        .collect()
+fn gather_cursor(root: &Path) -> (Vec<PathBuf>, bool) {
+    gather_paths(WalkDir::new(root).max_depth(3), |p| {
+        p.file_name().and_then(|n| n.to_str()) == Some("meta.json")
+    })
 }
 
 // --- Codex ----------------------------------------------------------------
@@ -467,6 +624,85 @@ fn parse_codex_file(path: &Path, scope: &Scope) -> Option<Session> {
         is_subagent,
         context_pct: None,
     })
+}
+
+fn parse_codex_metadata(path: &Path) -> io::Result<Option<Session>> {
+    let reader = transcript_reader(path, ParseMode::Metadata)?;
+    let mut id = None;
+    let mut cwd = None;
+    let mut started_at = None;
+    let mut last_active = None;
+    let mut last_prompt_at = None;
+    let mut title = None;
+    let mut fallback = None;
+    let mut is_subagent = false;
+    for line in reader.lines() {
+        let line = line?;
+        let Ok(value) = serde_json::from_str::<Value>(&line) else {
+            continue;
+        };
+        let timestamp = value
+            .get("timestamp")
+            .and_then(Value::as_str)
+            .and_then(parse_ts);
+        if let Some(timestamp) = timestamp {
+            last_active =
+                Some(last_active.map_or(timestamp, |last: DateTime<Utc>| last.max(timestamp)));
+        }
+        let Some(payload) = value.get("payload") else {
+            continue;
+        };
+        if value.get("type").and_then(Value::as_str) == Some("session_meta") && cwd.is_none() {
+            id = payload
+                .get("id")
+                .and_then(Value::as_str)
+                .map(str::to_string);
+            cwd = payload
+                .get("cwd")
+                .and_then(Value::as_str)
+                .map(PathBuf::from);
+            started_at = payload
+                .get("timestamp")
+                .and_then(Value::as_str)
+                .and_then(parse_ts);
+            is_subagent = payload.get("thread_source").and_then(Value::as_str) == Some("subagent");
+        }
+        if codex_message_is_human(payload) {
+            if let Some(timestamp) = timestamp {
+                last_prompt_at = Some(
+                    last_prompt_at.map_or(timestamp, |last: DateTime<Utc>| last.max(timestamp)),
+                );
+            }
+            if title.is_none() {
+                if let Some(text) = extract_codex_text(payload) {
+                    let cleaned = extract_intent(&text);
+                    if is_boilerplate_title(&cleaned) {
+                        fallback.get_or_insert(cleaned);
+                    } else {
+                        title = Some(cleaned);
+                    }
+                }
+            }
+        }
+    }
+    let (Some(id), Some(cwd)) = (id.or_else(|| codex_uuid_from_filename(path)), cwd) else {
+        return Ok(None);
+    };
+    let title = title.or(fallback).unwrap_or_else(|| "(empty)".into());
+    Ok(Some(Session {
+        id,
+        agent: Agent::Codex,
+        cwd,
+        file: path.to_path_buf(),
+        started_at,
+        last_active,
+        last_prompt_at,
+        tokens: TokenUsage::default(),
+        is_subagent: is_subagent || looks_like_subagent_title(&title),
+        title,
+        archived: false,
+        context_pct: None,
+    }))
 }
 
 /// Title patterns that mark a spawned helper/agent rather than a user session:
@@ -610,13 +846,9 @@ fn codex_tail_scan(path: &Path) -> (TokenUsage, Option<DateTime<Utc>>, Option<Da
                     found_token = true;
                 }
             }
-            // codex keeps tool round-trips out of `message`/`role` entirely
-            // (they're their own `function_call`/`function_call_output` item
-            // types), so unlike claude, a plain `role == "user"` message here
-            // is never a disguised tool result — no extra filtering needed.
-            if payload_type == Some("message")
-                && payload.and_then(|p| p.get("role")).and_then(Value::as_str) == Some("user")
-            {
+            // Native context injection is also a user-role message. Only an
+            // actual prompt can extend the human inactivity window.
+            if payload.is_some_and(codex_message_is_human) {
                 if let Some(ts) = v
                     .get("timestamp")
                     .and_then(Value::as_str)
@@ -727,6 +959,24 @@ fn extract_codex_text(payload: &Value) -> Option<String> {
     (!out.is_empty()).then_some(out)
 }
 
+fn human_prompt_text(text: &str) -> bool {
+    !is_boilerplate_title(text) && !is_boilerplate_title(&extract_intent(text))
+}
+
+fn codex_message_is_human(payload: &Value) -> bool {
+    payload.get("type").and_then(Value::as_str) == Some("message")
+        && payload.get("role").and_then(Value::as_str) == Some("user")
+        && extract_codex_text(payload).map_or_else(
+            || {
+                payload
+                    .get("content")
+                    .and_then(Value::as_array)
+                    .is_some_and(|items| !items.is_empty())
+            },
+            |text| human_prompt_text(&text),
+        )
+}
+
 /// Reconstruct the UUID from `rollout-<iso>-<8-4-4-4-12>.jsonl` when the
 /// `session_meta` line is missing/corrupt: the UUID is the last five
 /// dash-separated groups of the file stem.
@@ -742,7 +992,17 @@ fn codex_uuid_from_filename(path: &Path) -> Option<String> {
 // --- Claude ---------------------------------------------------------------
 
 fn parse_claude_file(path: &Path, cwd_override: Option<&Path>) -> Option<Session> {
-    let reader = BufReader::new(File::open(path).ok()?.take(MAX_CLAUDE_BYTES));
+    parse_claude_file_mode(path, cwd_override, ParseMode::Full)
+        .ok()
+        .flatten()
+}
+
+fn parse_claude_file_mode(
+    path: &Path,
+    cwd_override: Option<&Path>,
+    mode: ParseMode,
+) -> io::Result<Option<Session>> {
+    let reader = transcript_reader(path, mode)?;
     let mut id: Option<String> = None;
     let mut cwd: Option<PathBuf> = None;
     let mut started_at: Option<DateTime<Utc>> = None;
@@ -755,8 +1015,10 @@ fn parse_claude_file(path: &Path, cwd_override: Option<&Path>) -> Option<Session
     let mut has_agent_name = false;
     let mut headless_entry = false;
     let mut other_entry = false;
+    let mut valid_record = false;
 
-    for line in reader.lines().map_while(Result::ok) {
+    for line in reader.lines() {
+        let line = line?;
         let line = line.trim();
         if line.is_empty() {
             continue;
@@ -764,11 +1026,22 @@ fn parse_claude_file(path: &Path, cwd_override: Option<&Path>) -> Option<Session
         let Ok(v) = serde_json::from_str::<Value>(line) else {
             continue;
         };
-        if let Some(ts) = v
+        let timestamp = v
             .get("timestamp")
             .and_then(Value::as_str)
-            .and_then(parse_ts)
-        {
+            .and_then(parse_ts);
+        valid_record |= v
+            .get("sessionId")
+            .and_then(Value::as_str)
+            .is_some_and(|id| !id.trim().is_empty())
+            || (timestamp.is_some()
+                && matches!(
+                    v.get("type").and_then(Value::as_str),
+                    Some("user" | "assistant" | "system")
+                )
+                && (v.get("message").is_some_and(Value::is_object)
+                    || v.get("cwd").is_some_and(Value::is_string)));
+        if let Some(ts) = timestamp {
             if started_at.is_none() {
                 started_at = Some(ts);
             }
@@ -817,23 +1090,27 @@ fn parse_claude_file(path: &Path, cwd_override: Option<&Path>) -> Option<Session
                 // same shape a real human turn would have. Only a record
                 // without any tool_result block reflects something a person
                 // actually typed.
-                if !claude_message_is_tool_result(message) {
+                if claude_message_is_human(message) {
                     if let Some(ts) = v
                         .get("timestamp")
                         .and_then(Value::as_str)
                         .and_then(parse_ts)
                     {
-                        last_prompt_at = Some(ts);
+                        last_prompt_at = Some(last_prompt_at.map_or(ts, |last| last.max(ts)));
                     }
                 }
             }
-            "assistant" => {
+            "assistant" if mode == ParseMode::Full => {
                 if let Some(usage) = v.get("message").and_then(|m| m.get("usage")) {
                     add_claude_usage(&mut tokens, usage);
                 }
             }
             _ => {}
         }
+    }
+
+    if !valid_record {
+        return Ok(None);
     }
 
     // Prefer the session's OWN recorded cwd. `encode_cwd` maps both '/' and '.'
@@ -883,8 +1160,11 @@ fn parse_claude_file(path: &Path, cwd_override: Option<&Path>) -> Option<Session
         // Claude file stem IS the sessionId; trust it over a possibly-missing
         // field for the main transcript.
         id.or(stem_id)
-    }?;
-    Some(Session {
+    };
+    let Some(id) = id else {
+        return Ok(None);
+    };
+    Ok(Some(Session {
         id,
         agent: Agent::Claude,
         cwd,
@@ -897,7 +1177,7 @@ fn parse_claude_file(path: &Path, cwd_override: Option<&Path>) -> Option<Session
         archived: false,
         is_subagent,
         context_pct: None,
-    })
+    }))
 }
 
 /// True when a claude `type: "user"` record is actually a tool's result being
@@ -915,6 +1195,21 @@ fn claude_message_is_tool_result(message: Option<&Value>) -> bool {
     blocks
         .iter()
         .any(|b| b.get("type").and_then(Value::as_str) == Some("tool_result"))
+}
+
+fn claude_message_is_human(message: Option<&Value>) -> bool {
+    !claude_message_is_tool_result(message)
+        && message.is_some_and(|message| {
+            extract_claude_text(message).map_or_else(
+                || {
+                    message
+                        .get("content")
+                        .and_then(Value::as_array)
+                        .is_some_and(|items| !items.is_empty())
+                },
+                |text| human_prompt_text(&text),
+            )
+        })
 }
 
 fn extract_claude_text(message: &Value) -> Option<String> {
@@ -978,13 +1273,13 @@ fn claude_usage_scan(path: &Path) -> (TokenUsage, Option<DateTime<Utc>>) {
                     add_claude_usage(&mut tokens, usage);
                 }
             }
-            Some("user") if !claude_message_is_tool_result(v.get("message")) => {
+            Some("user") if claude_message_is_human(v.get("message")) => {
                 if let Some(ts) = v
                     .get("timestamp")
                     .and_then(Value::as_str)
                     .and_then(parse_ts)
                 {
-                    last_prompt_at = Some(ts);
+                    last_prompt_at = Some(last_prompt_at.map_or(ts, |last| last.max(ts)));
                 }
             }
             _ => {}
@@ -1029,16 +1324,16 @@ fn decode_claude_cwd(dir: Option<&Path>) -> PathBuf {
 /// carries everything the list needs (id, cwd, timestamps, title, and whether it
 /// was a spawned sub-agent). Token usage is not read: the `.jsonl` conversation
 /// log's schema isn't verified here, so tokens stay zero rather than guessed.
-fn parse_kiro_file(path: &Path, scope: &Scope) -> Option<Session> {
+fn parse_kiro_file(path: &Path, scope: &Scope) -> io::Result<Option<Session>> {
     // The sidecar is tiny (~1 KB); cap the read so a pathological/hostile file
     // can't exhaust memory. A truncated read just fails to parse and is skipped.
     let mut buf = String::new();
-    File::open(path)
-        .ok()?
+    File::open(path)?
         .take(256 * 1024)
-        .read_to_string(&mut buf)
-        .ok()?;
-    let v: Value = serde_json::from_str(&buf).ok()?;
+        .read_to_string(&mut buf)?;
+    let Ok(v) = serde_json::from_str::<Value>(&buf) else {
+        return Ok(None);
+    };
 
     let cwd = v
         .get("cwd")
@@ -1046,7 +1341,7 @@ fn parse_kiro_file(path: &Path, scope: &Scope) -> Option<Session> {
         .map(PathBuf::from)
         .unwrap_or_default();
     if !scope.matches(&cwd) {
-        return None;
+        return Ok(None);
     }
     // id: prefer the recorded session_id, fall back to the filename stem.
     let id = v
@@ -1057,7 +1352,10 @@ fn parse_kiro_file(path: &Path, scope: &Scope) -> Option<Session> {
             path.file_stem()
                 .and_then(|s| s.to_str())
                 .map(str::to_string)
-        })?;
+        });
+    let Some(id) = id else {
+        return Ok(None);
+    };
 
     let started_at = v
         .get("created_at")
@@ -1108,7 +1406,7 @@ fn parse_kiro_file(path: &Path, scope: &Scope) -> Option<Session> {
         .and_then(|r| r.get("context_usage_percentage"))
         .and_then(Value::as_f64);
 
-    Some(Session {
+    Ok(Some(Session {
         id,
         agent: Agent::Kiro,
         cwd,
@@ -1124,7 +1422,7 @@ fn parse_kiro_file(path: &Path, scope: &Scope) -> Option<Session> {
         archived: false,
         is_subagent,
         context_pct,
-    })
+    }))
 }
 
 // --- Cursor ---------------------------------------------------------------
@@ -1141,20 +1439,20 @@ fn parse_kiro_file(path: &Path, scope: &Scope) -> Option<Session> {
 /// cwd, timestamps, and a structural subagent bit, but no token/context/quota
 /// fields. Usage for the row is estimated separately from the transcript — see
 /// [`cursor_token_estimate`] — and marked as an estimate where it is drawn.
-fn parse_cursor_file(path: &Path, scope: &Scope) -> Option<Session> {
+fn parse_cursor_file(path: &Path, scope: &Scope) -> io::Result<Option<Session>> {
     let mut buf = String::new();
-    File::open(path)
-        .ok()?
+    File::open(path)?
         .take(256 * 1024)
-        .read_to_string(&mut buf)
-        .ok()?;
-    let v: Value = serde_json::from_str(&buf).ok()?;
+        .read_to_string(&mut buf)?;
+    let Ok(v) = serde_json::from_str::<Value>(&buf) else {
+        return Ok(None);
+    };
     if !v
         .get("hasConversation")
         .and_then(Value::as_bool)
         .unwrap_or(false)
     {
-        return None;
+        return Ok(None);
     }
 
     let cwd = v
@@ -1163,15 +1461,17 @@ fn parse_cursor_file(path: &Path, scope: &Scope) -> Option<Session> {
         .map(PathBuf::from)
         .unwrap_or_default();
     if !scope.matches(&cwd) {
-        return None;
+        return Ok(None);
     }
 
-    let id = path
+    let Some(id) = path
         .parent()
         .and_then(Path::file_name)
         .and_then(|s| s.to_str())
-        .filter(|s| !s.is_empty())?
-        .to_string();
+        .filter(|s| !s.is_empty())
+    else {
+        return Ok(None);
+    };
     let started_at = cursor_ms(&v, "createdAtMs");
     let last_active = cursor_ms(&v, "updatedAtMs").or(started_at);
     let title = v
@@ -1185,8 +1485,8 @@ fn parse_cursor_file(path: &Path, scope: &Scope) -> Option<Session> {
         .and_then(Value::as_bool)
         .unwrap_or(false);
 
-    Some(Session {
-        id,
+    Ok(Some(Session {
+        id: id.to_string(),
         agent: Agent::Cursor,
         cwd,
         file: path.to_path_buf(),
@@ -1198,7 +1498,7 @@ fn parse_cursor_file(path: &Path, scope: &Scope) -> Option<Session> {
         archived: false,
         is_subagent,
         context_pct: None,
-    })
+    }))
 }
 
 /// Characters to a token. Cursor publishes no tokenizer, so this is the usual
@@ -1280,10 +1580,21 @@ fn cursor_ms(v: &Value, key: &str) -> Option<DateTime<Utc>> {
 
 /// OMP's header, not the lossy bucket name, owns the cwd. Reads are bounded.
 fn parse_omp_file(path: &Path, scope: &Scope) -> Option<Session> {
-    let file = std::fs::canonicalize(path).ok()?;
-    let reader = BufReader::new(File::open(&file).ok()?.take(MAX_CLAUDE_BYTES));
+    parse_omp_file_mode(path, scope, ParseMode::Full)
+        .ok()
+        .flatten()
+}
+
+fn parse_omp_file_mode(path: &Path, scope: &Scope, mode: ParseMode) -> io::Result<Option<Session>> {
+    let file = std::fs::canonicalize(path)?;
+    let reader = transcript_reader(&file, mode)?;
     let mut lines = reader.lines();
-    let first: Value = serde_json::from_str(&lines.next()?.ok()?).ok()?;
+    let Some(first) = lines.next().transpose()? else {
+        return Ok(None);
+    };
+    let Ok(first) = serde_json::from_str::<Value>(&first) else {
+        return Ok(None);
+    };
     let (slot_title, header) = if first.get("type").and_then(Value::as_str) == Some("title") {
         let valid = first.get("v").and_then(Value::as_u64) == Some(1)
             && first.get("updatedAt").and_then(Value::as_str).is_some()
@@ -1296,18 +1607,29 @@ fn parse_omp_file(path: &Path, scope: &Scope) -> Option<Session> {
             .flatten()
             .filter(|s| !s.trim().is_empty())
             .map(clean_title);
-        let header = serde_json::from_str::<Value>(&lines.next()?.ok()?).ok()?;
+        let Some(header) = lines.next().transpose()? else {
+            return Ok(None);
+        };
+        let Ok(header) = serde_json::from_str::<Value>(&header) else {
+            return Ok(None);
+        };
         (title, header)
     } else {
         (None, first)
     };
     if header.get("type").and_then(Value::as_str) != Some("session") {
-        return None;
+        return Ok(None);
     }
-    let id = header.get("id")?.as_str()?.trim();
-    let cwd = PathBuf::from(header.get("cwd")?.as_str()?);
+    let (Some(id), Some(cwd)) = (
+        header.get("id").and_then(Value::as_str),
+        header.get("cwd").and_then(Value::as_str),
+    ) else {
+        return Ok(None);
+    };
+    let id = id.trim();
+    let cwd = PathBuf::from(cwd);
     if id.is_empty() || !cwd.is_absolute() || !scope.matches(&cwd) {
-        return None;
+        return Ok(None);
     }
     let started_at = header
         .get("timestamp")
@@ -1323,7 +1645,8 @@ fn parse_omp_file(path: &Path, scope: &Scope) -> Option<Session> {
             .filter(|s| !s.trim().is_empty())
             .map(clean_title)
     });
-    for line in lines.map_while(Result::ok) {
+    for line in lines {
+        let line = line?;
         let Ok(entry) = serde_json::from_str::<Value>(&line) else {
             continue;
         };
@@ -1361,7 +1684,7 @@ fn parse_omp_file(path: &Path, scope: &Scope) -> Option<Session> {
             Some("model_usage") => entry.get("usage"),
             _ => None,
         };
-        if let Some(usage) = usage {
+        if let Some(usage) = usage.filter(|_| mode == ParseMode::Full) {
             let get = |key| usage.get(key).and_then(Value::as_u64).unwrap_or(0);
             let input = get("input");
             let output = get("output");
@@ -1383,7 +1706,7 @@ fn parse_omp_file(path: &Path, scope: &Scope) -> Option<Session> {
             });
         }
     }
-    Some(Session {
+    Ok(Some(Session {
         id: id.to_string(),
         agent: Agent::Omp,
         cwd,
@@ -1396,7 +1719,7 @@ fn parse_omp_file(path: &Path, scope: &Scope) -> Option<Session> {
         archived: false,
         is_subagent: false,
         context_pct: None,
-    })
+    }))
 }
 
 // --- shared ---------------------------------------------------------------
@@ -1438,6 +1761,30 @@ fn clean_title(raw: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cold_metadata_windows_bound_bytes_and_skip_incomplete_seams() {
+        use std::io::Write;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("large.jsonl");
+        let first = b"{\"head\":true}\n";
+        let last = b"{\"tail\":true}\n";
+        let mut file = File::create(&path).unwrap();
+        file.write_all(first).unwrap();
+        file.write_all(&vec![b'a'; METADATA_HEAD_BYTES as usize * 2])
+            .unwrap();
+        file.write_all(b"\n{\"middle\":true}\n").unwrap();
+        file.write_all(&vec![b'b'; METADATA_TAIL_BYTES as usize * 2])
+            .unwrap();
+        file.write_all(b"\n").unwrap();
+        file.write_all(last).unwrap();
+        drop(file);
+        let original = std::fs::read(&path).unwrap();
+        let metadata = metadata_windows(&path).unwrap();
+        assert!(metadata.len() as u64 <= METADATA_HEAD_BYTES + METADATA_TAIL_BYTES);
+        assert_eq!(metadata, [first.as_slice(), last.as_slice()].concat());
+        assert_eq!(std::fs::read(path).unwrap(), original);
+    }
 
     #[test]
     fn omp_discovery_and_resume_use_header_and_native_store() {

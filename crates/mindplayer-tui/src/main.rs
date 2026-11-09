@@ -1262,7 +1262,7 @@ fn handle_main_key(app: &mut App, key: KeyEvent) {
                     _ => {}
                 }
             }
-            // Tab moves panes from every provider; OMP keeps Shift-Tab for its thinking level.
+            // Tab and Shift-Tab move between live panes for every provider.
             if app.panes.len() >= 2
                 && !key
                     .modifiers
@@ -1273,7 +1273,7 @@ fn handle_main_key(app: &mut App, key: KeyEvent) {
                         app.cycle_focus();
                         return;
                     }
-                    KeyCode::BackTab if !omp_pane => {
+                    KeyCode::BackTab => {
                         app.cycle_focus_back();
                         return;
                     }
@@ -1825,96 +1825,110 @@ mod tests {
     }
 
     #[test]
-    fn omp_keys_reach_the_native_pane_in_a_split_view() {
+    fn omp_control_keys_do_not_open_mindplayer_actions() {
         let mut app = main_app();
         app.focus = Focus::Terminal;
-        let id = format!("omp-keys-{}", std::process::id());
-        let command = mindplayer_core::Command {
-            program: "sh".into(),
-            args: vec![
-                "-c".into(),
-                "stty raw -echo; printf KEYS_READY; od -An -tx1 -N 8".into(),
-            ],
-            cwd: std::env::temp_dir(),
-            env: Default::default(),
-        };
-        let child = pty::PtySession::spawn_with_routing(
-            &command,
-            &id,
-            10,
-            100,
-            startup_routing::RoutingMode::Native,
-        )
-        .unwrap();
-        app.ptys.insert(id.clone(), child);
         app.pane_accounts
-            .insert(id.clone(), (Agent::Omp, "native-key-test".into()));
-        app.panes = vec![id.clone(), "other-pane".into()];
-        app.focused = 0;
-        app.active = Some(id.clone());
+            .insert("omp".into(), (Agent::Omp, "native-key-test".into()));
+        app.panes = vec!["omp".into(), "other-pane".into()];
+        app.active = Some("omp".into());
+        let status = app.status.clone();
 
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while !app.ptys[&id]
-            .parser()
-            .lock()
-            .unwrap()
-            .screen()
-            .contents()
-            .contains("KEYS_READY")
-        {
-            assert!(Instant::now() < deadline, "OMP child did not become ready");
-            std::thread::sleep(Duration::from_millis(10));
-        }
         for key in ['g', 'p', 't', 'w', 'y'] {
             handle_main_key(
                 &mut app,
                 KeyEvent::new(KeyCode::Char(key), KeyModifiers::CONTROL),
             );
-        }
-        handle_main_key(
-            &mut app,
-            KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT),
-        );
-        let deadline = Instant::now() + Duration::from_secs(5);
-        loop {
-            let text = app.ptys[&id].parser().lock().unwrap().screen().contents();
-            let received: Vec<_> = text
-                .split_once("KEYS_READY")
-                .map(|(_, hex)| hex.split_whitespace().collect())
-                .unwrap_or_default();
-            if received == ["07", "10", "14", "17", "19", "1b", "5b", "5a"] {
-                break;
-            }
+            assert!(!app.observer_open(), "Ctrl-{key} must not open Trace");
             assert!(
-                Instant::now() < deadline,
-                "OMP keys did not reach the child: {text}"
+                app.transition_report_input.is_none(),
+                "Ctrl-{key} must not open a transition report"
             );
-            std::thread::sleep(Duration::from_millis(10));
+            assert!(
+                app.html_preview_input.is_none(),
+                "Ctrl-{key} must not open HTML preview"
+            );
+            assert_eq!(
+                app.focused_pane(),
+                Some("omp"),
+                "Ctrl-{key} must not change pane focus"
+            );
+            assert_eq!(app.focus, Focus::Terminal);
+            assert_eq!(
+                app.status, status,
+                "Ctrl-{key} must not trigger a MindPlayer action"
+            );
         }
-        assert_eq!(app.focused, 0, "Shift-Tab belongs to OMP");
-        assert!(!app.observer_open());
-        assert!(app.transition_report_input.is_none());
-        assert!(app.html_preview_input.is_none());
-        handle_main_key(&mut app, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
-        assert_eq!(
-            app.focused, 1,
-            "Tab changes panes from OMP like other providers"
-        );
-        app.focused = 0;
-        app.active = Some(id.clone());
+
         handle_main_key(
             &mut app,
             KeyEvent::new(KeyCode::Char('w'), KeyModifiers::ALT),
         );
-        assert_eq!(app.focused, 1, "Alt-W changes panes");
+        assert_eq!(
+            app.active.as_deref(),
+            Some("other-pane"),
+            "Alt-W must change panes from OMP"
+        );
+
         app.focused = 0;
-        app.active = Some(id.clone());
+        app.active = Some("omp".into());
         handle_main_key(
             &mut app,
             KeyEvent::new(KeyCode::Char('q'), KeyModifiers::CONTROL),
         );
-        assert!(!app.panes.contains(&id), "Ctrl-Q closes the OMP pane");
-        app.ptys.clear();
+        assert_eq!(app.panes.len(), 1, "Ctrl-Q must close only the OMP pane");
+        assert_eq!(app.active.as_deref(), Some("other-pane"));
+        assert_eq!(app.focus, Focus::Terminal);
+    }
+
+    #[test]
+    fn shift_tab_cycles_back_across_providers_without_changing_zoom() {
+        let mut app = main_app();
+        app.focus = Focus::Terminal;
+        for agent in [
+            Agent::Omp,
+            Agent::Codex,
+            Agent::Claude,
+            Agent::Kiro,
+            Agent::Cursor,
+        ] {
+            let id = agent.as_str().to_string();
+            app.pane_accounts
+                .insert(id.clone(), (agent, "native-key-test".into()));
+            app.panes.push(id);
+        }
+
+        for zoomed in [false, true] {
+            app.zoomed = zoomed;
+            for focused in 0..app.panes.len() {
+                app.focused = focused;
+                app.active = Some(app.panes[focused].clone());
+                let previous = (focused + app.panes.len() - 1) % app.panes.len();
+
+                handle_main_key(
+                    &mut app,
+                    KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT),
+                );
+
+                assert_eq!(
+                    app.focused, previous,
+                    "Shift-Tab must move backward from {}, zoomed={zoomed}",
+                    app.panes[focused]
+                );
+                assert_eq!(
+                    app.active.as_deref(),
+                    Some(app.panes[previous].as_str()),
+                    "keyboard input must follow the newly focused pane"
+                );
+                assert_eq!(
+                    app.zoomed, zoomed,
+                    "changing focus must preserve the layout"
+                );
+
+                handle_main_key(&mut app, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+                assert_eq!(app.focused, focused, "Tab must return to the original pane");
+            }
+        }
     }
 
     #[test]

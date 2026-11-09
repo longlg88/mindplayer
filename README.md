@@ -241,6 +241,19 @@ duck walking on the floor can become a bunny, chick, slime, penguin, or
 octopus, and the choice sticks for next time.
 
 Press <kbd>n</kbd> for a new Codex / Claude / Kiro / Cursor / OMP session.
+
+Claude new, resumed, and handoff sessions use its native
+[fullscreen renderer](https://code.claude.com/docs/en/fullscreen) through
+`--settings '{"tui":"fullscreen"}'`. Claude then lays out old conversation
+content at the current pane width when you zoom and scroll, rather than leaving
+classic-mode hard-wrapped terminal history at its original narrow width.
+This launch-only setting does not edit global Claude settings or change native
+authentication or managed policy. The renderer is a Claude research preview;
+native opt-outs such as `CLAUDE_CODE_NO_FLICKER=0` and
+`CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1` still apply. Already-running panes keep
+their renderer: restart MindPlayer at a safe stopping point, then resume the
+conversation to use the updated launch setting.
+
 The OMP choice runs the installed `omp` executable in the selected working
 directory. A new OMP session asks you to select a conversation model and its
 provider route from OMP's authenticated model catalog before sending a message.
@@ -259,11 +272,28 @@ available on `PATH` before choosing it. `mindplayer --help` lists the remaining
 controls.
 
 In an OMP pane, MindPlayer reserves `Ctrl-X` (list), `Ctrl-Z` (zoom),
-`Tab` or `Alt-W` (next pane), and `Ctrl-Q` or `Alt-Q` (close pane). As with
-other providers, Tab moves panes only while two or more are open; with one
-pane, OMP receives it. Closing a live pane hides it without terminating the
-session. OMP receives its native `Ctrl-P`, `Ctrl-T`, `Ctrl-G`, `Ctrl-W`,
-`Ctrl-Y` and Shift-Tab; its native `Ctrl-Q` is reserved by MindPlayer.
+`Tab` or `Alt-W` (next pane), `Shift-Tab` (previous pane), and `Ctrl-Q` or
+`Alt-Q` (close pane). As with other providers, Tab and Shift-Tab move panes
+only while two or more are open, including zoomed views; with one pane,
+OMP receives both keys. Closing a live pane hides it without terminating
+the session. OMP retains its native `Ctrl-P`, `Ctrl-T`, `Ctrl-G`, `Ctrl-W`
+and `Ctrl-Y` shortcuts.
+
+To keep an effort shortcut available while navigating multiple panes, remap
+OMP's native thinking-effort action in `~/.omp/agent/keybindings.yml`:
+
+```yaml
+app.thinking.cycle: F7
+```
+
+F7 avoids macOS Option-key text composition and letter-key changes under
+Korean input. On a Mac with media keys enabled, press `Fn` + `F7`.
+
+Restart OMP sessions after changing the binding. This is OMP user
+configuration, not key translation or a setting that MindPlayer installs
+automatically. The default-profile binding also affects standalone OMP.
+If a profile uses a separate configuration directory, configure its binding
+there too.
 
 Clipboard shortcuts retain their modifiers in OMP: `Cmd-V` on macOS or
 `Ctrl-V` pastes through OMP, and `Alt-Shift-C` / `Alt-Shift-L` copies the
@@ -335,7 +365,7 @@ make test                                          # cargo test --all
 | <kbd>Enter</kbd> | open the selected session (on a **category** header, folds/unfolds it instead), **adding it to the live view** (resume, or focus if already shown); remove a pane with <kbd>Ctrl‑q</kbd>. In multi-select mode, launch **all marked** at once |
 | <kbd>v</kbd> | toggle **multi‑select** mode — then <kbd>Space</kbd> marks sessions and <kbd>Enter</kbd> launches them all (<kbd>Esc</kbd> cancels) |
 | <kbd>Space</kbd> | mark / unmark the selected session (`✓`) — multi‑select mode only |
-| <kbd>Tab</kbd> / <kbd>Shift‑Tab</kbd> | cycle live panes when 2+ are open; in OMP both keys go to OMP |
+| <kbd>Tab</kbd> / <kbd>Shift‑Tab</kbd> | next / previous live pane when 2+ are open, including OMP and zoomed views |
 | <kbd>Ctrl‑w</kbd> / <kbd>Alt‑w</kbd> | cycle live-pane focus; use <kbd>Alt‑w</kbd> in OMP |
 | <kbd>Ctrl‑z</kbd> | zoom the focused pane to full size (toggle again for the split view) |
 | <kbd>Ctrl‑q</kbd> / <kbd>Alt‑q</kbd> | close the focused live pane; <kbd>Alt‑q</kbd> also works in OMP |
@@ -361,12 +391,10 @@ make test                                          # cargo test --all
 Inside a live session, <kbd>Enter</kbd> submits and
 <kbd>Shift</kbd>/<kbd>Alt</kbd>/<kbd>Ctrl</kbd>+<kbd>Enter</kbd> inserts a
 newline, and Korean/CJK input works with the cursor tracking the prompt. The
-**mouse wheel scrolls MindPlayer's own scrollback** (so history that ran off the
-top stays readable). **Drag inside a pane to select &amp; copy just that pane's
-text** to the system clipboard (via OSC 52) — so a side‑by‑side split never
-copies the neighbor pane too. (For panes running a full‑screen mouse app like
-Codex, the drag goes to that app; use your terminal's <kbd>Shift</kbd>+drag
-native selection there.)
+**mouse wheel goes to mouse-aware CLIs**, including Claude's fullscreen
+renderer; otherwise it scrolls MindPlayer's own terminal history. **Drag inside
+a pane to select &amp; copy just that pane's text** to the system clipboard
+(via OSC 52), so a side-by-side split never copies the neighboring pane.
 
 ### 👥 Accounts
 

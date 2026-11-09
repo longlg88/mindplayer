@@ -82,12 +82,24 @@ the resulting minimum version.)
 
 ### Unreleased
 
+- Keep Claude conversation history at the current width after split-pane zoom
+  and mouse-wheel scrolling. New, resumed, and handoff Claude sessions select
+  its native fullscreen renderer with a launch-local setting; global settings,
+  native authentication, managed policy, and other providers remain unchanged.
+  Already-running panes retain their current renderer.
+
 - Hide Claude sessions recorded only as `claude -p` runs, such as one-shot
   posts that another agent starts, the same way as other helper sessions. A
   run that was later resumed interactively stays in the list.
 
-- Let Tab move to the next pane from an OMP pane too, as it does for other
-  providers, while two or more panes are open. OMP keeps Shift-Tab.
+- In 0.61.4, make OMP pane navigation consistent: Tab moves forward and
+  Shift-Tab backward when two or more panes are open, including zoomed views.
+  Single-pane forwarding is unchanged. Document native effort remapping to
+  F7 in OMP's `keybindings.yml`; MindPlayer does not rewrite that file.
+  The default-profile remap also affects standalone OMP; separate configuration
+  directories need their own binding.
+  Use a function key rather than an Option/letter chord to avoid macOS text
+  composition and Korean-input differences without changing Ghostty bindings.
 
 - Align the Vercel key row with the provider quota rows: same columns and
   colours, and dollar amounts shown to the cent.

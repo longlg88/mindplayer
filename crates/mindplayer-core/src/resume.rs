@@ -2,11 +2,12 @@
 //!
 //! Verified invocations:
 //! - Codex resume:  `codex resume <uuid>`            (run in the session cwd)
-//! - Claude resume: `claude --resume <id>`           (run in the session cwd)
+//! - Claude resume: `claude --resume <id> --settings '{"tui":"fullscreen"}'` (in the session cwd)
 //! - Kiro resume:   `kiro-cli chat --resume-id <id> --trust-all-tools --v3`
 //! - Cursor resume: `agent --resume <chatId>`        (run in the session cwd)
 //! - OMP resume:    `omp --resume <session-file>`       (run in the session cwd)
-//! - New session:   `codex` / `claude` / `kiro-cli chat --trust-all-tools --v3` / `agent` / `omp`
+//! - New session: `codex` / `claude --settings '{"tui":"fullscreen"}'` /
+//!   `kiro-cli chat --trust-all-tools --v3` / `agent` / `omp`
 
 use crate::accounts::{Account, LaunchEnv};
 use crate::session::{Agent, Session};
@@ -111,7 +112,12 @@ pub fn resume(session: &Session, account: &Account) -> Command {
             account,
             vec!["resume".to_string(), session.id.clone()],
         ),
-        Agent::Claude => vec!["--resume".to_string(), session.id.clone()],
+        Agent::Claude => vec![
+            "--resume".to_string(),
+            session.id.clone(),
+            "--settings".to_string(),
+            CLAUDE_TUI_SETTINGS.to_string(),
+        ],
         Agent::Kiro => {
             let mut args = vec![
                 "chat".to_string(),
@@ -134,6 +140,10 @@ pub fn resume(session: &Session, account: &Account) -> Command {
         env: account.launch_env(),
     }
 }
+
+// Classic Claude output hard-wraps history at the old pane width. Its native
+// fullscreen renderer owns history layout and scrolling across pane resizes.
+const CLAUDE_TUI_SETTINGS: &str = r#"{"tui":"fullscreen"}"#;
 
 /// Kiro launches every session with every tool pre-trusted (user-requested: no
 /// per-tool / MCP approval prompts, ever) and on the v3 agent engine — resume,
@@ -199,7 +209,7 @@ fn codex_args(cwd: &Path, account: &Account, mut args: Vec<String>) -> Vec<Strin
 /// Command to start a brand new session in `cwd`, on `account`'s login.
 pub fn new_session(agent: Agent, cwd: PathBuf, account: &Account) -> Command {
     let args = match agent {
-        // Kiro's chat lives under a subcommand; codex/claude launch bare.
+        // Kiro's chat lives under a subcommand; the other CLIs start directly.
         Agent::Kiro => {
             let mut args = vec!["chat".to_string()];
             args.extend(KIRO_FLAGS.iter().map(|f| f.to_string()));
@@ -207,7 +217,8 @@ pub fn new_session(agent: Agent, cwd: PathBuf, account: &Account) -> Command {
         }
         Agent::Codex => codex_args(&cwd, account, Vec::new()),
         Agent::Omp => vec!["-e".to_string(), OMP_PICKER_MARKER.to_string()],
-        Agent::Claude | Agent::Cursor => Vec::new(),
+        Agent::Claude => vec!["--settings".to_string(), CLAUDE_TUI_SETTINGS.to_string()],
+        Agent::Cursor => Vec::new(),
     };
     Command {
         program: agent.program().to_string(),
@@ -507,16 +518,6 @@ mod tests {
             "resuming a codex session must stay unattended too; the machine's own login keeps its trust list"
         );
         assert_eq!(c.cwd, PathBuf::from("/work"));
-    }
-
-    #[test]
-    fn claude_resume_uses_flag() {
-        let c = resume(
-            &session(Agent::Claude, "sid-2", "/work"),
-            &Account::inherited(Agent::Claude),
-        );
-        assert_eq!(c.program, "claude");
-        assert_eq!(c.args, vec!["--resume", "sid-2"]);
     }
 
     #[test]

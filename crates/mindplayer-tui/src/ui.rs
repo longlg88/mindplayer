@@ -1302,7 +1302,8 @@ fn main_view(f: &mut Frame, app: &mut App) {
                 if app.focused_pane().and_then(|sid| pane_provider(app, sid))
                     == Some(Agent::Omp) =>
             {
-                "ctrl-x list · tab pane · ctrl-z zoom · ctrl-q close · other keys: OMP".to_string()
+                "ctrl-x list · tab/shift-tab pane · ctrl-z zoom · ctrl-q close · other keys: OMP"
+                    .to_string()
             }
             Focus::Terminal => {
                 "ctrl-g trace · ctrl-x list · tab pane · ctrl-z zoom · ctrl-q close".to_string()
@@ -3503,7 +3504,7 @@ fn help_lines(codex_input_choice: bool) -> Vec<Line<'static>> {
         Line::from(""),
         section("Terminal / Modal"),
         item("ctrl-x", "return from terminal to session list"),
-        item("tab / shift-tab", "cycle live panes when 2+ open (OMP keeps shift-tab)"),
+        item("tab / shift-tab", "next / previous live pane when 2+ open"),
         item("ctrl-w / alt-w", "cycle live panes (alt-w in OMP)"),
         item("ctrl-z", "zoom the focused pane full-size (toggle back to split)"),
         item("ctrl-q / alt-q", "close focused pane (alt-q also works in OMP)"),

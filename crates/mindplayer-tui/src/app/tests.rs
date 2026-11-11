@@ -622,21 +622,30 @@ fn zoom_and_view_toggles_log_their_resulting_state() {
 }
 
 #[test]
-fn refresh_applies_token_updates_to_existing_row() {
+fn activity_refresh_preserves_manual_tokens_and_last_prompt() {
     let mut app = app_with(vec![session("s1", Agent::Codex, false)]);
     assert_eq!(app.session_at(0).unwrap().tokens.total, 0);
+    let source = working_set::source_key(app.session_at(0).unwrap());
+    let prompt = chrono::Utc::now() - chrono::Duration::hours(1);
+    app.all_sessions[0].last_prompt_at = Some(prompt);
+    app.manual_usage.insert(
+        source.clone(),
+        mindplayer_core::catalog::UsageSnapshot {
+            tokens: TokenUsage {
+                total: 10,
+                ..Default::default()
+            },
+            context_pct: None,
+            partial: false,
+        },
+    );
+    app.rebuild_visible();
 
     let (tx, rx) = mpsc::channel();
     tx.send(vec![ActivityUpdate {
-        id: "s1".into(),
+        source,
         last_active: Some(chrono::Utc::now()),
         last_prompt_at: None,
-        tokens: TokenUsage {
-            input: 7,
-            cached: 2,
-            output: 3,
-            total: 10,
-        },
         context_pct: None,
     }])
     .unwrap();
@@ -645,6 +654,21 @@ fn refresh_applies_token_updates_to_existing_row() {
     assert!(app.poll_refresh());
     assert_eq!(app.session_at(0).unwrap().tokens.total, 10);
     assert_eq!(app.visible_aggregate.codex.total, 10);
+    assert_eq!(app.session_at(0).unwrap().last_prompt_at, Some(prompt));
+    let (tx, rx) = mpsc::channel();
+    tx.send(vec![ActivityUpdate {
+        source: working_set::source_key(&app.all_sessions[0]),
+        last_active: app.all_sessions[0].last_active,
+        last_prompt_at: Some(prompt - chrono::Duration::hours(1)),
+        context_pct: None,
+    }])
+    .unwrap();
+    app.refresh_rx = Some(rx);
+    assert!(
+        !app.poll_refresh(),
+        "an older worker cannot regress prompt metadata"
+    );
+    assert_eq!(app.all_sessions[0].last_prompt_at, Some(prompt));
 }
 
 #[test]
@@ -1370,306 +1394,6 @@ fn cancel_catchup_clears_the_confirm_without_sending() {
     app.catchup_confirm = Some("a".to_string());
     app.cancel_catchup();
     assert!(app.catchup_confirm.is_none());
-}
-
-#[test]
-fn toggle_html_preview_without_a_pane_is_a_noop() {
-    // No focused pane → nothing to act on; the popup must not open.
-    let mut app = App::new();
-    app.toggle_html_preview();
-    assert!(app.html_preview_input.is_none());
-    assert!(app.html_preview_picker.is_none());
-}
-
-#[test]
-fn toggle_html_preview_opens_popup_when_no_candidates_exist() {
-    let mut app = App::new();
-    app.focus_or_add_pane("s1");
-    app.focus = Focus::Terminal;
-    app.toggle_html_preview();
-    assert_eq!(
-        app.html_preview_input.as_deref(),
-        Some(""),
-        "Ctrl-P with no detected candidates opens the path popup"
-    );
-    assert!(app.html_preview_error.is_none());
-    assert!(app.html_preview_picker.is_none());
-}
-
-#[test]
-fn confirm_html_preview_with_a_bad_path_sets_error_and_keeps_popup_open() {
-    // A nonexistent path must set the inline error, leave the popup open, and
-    // launch nothing — the whole point of the in-popup validation.
-    let mut app = App::new();
-    app.focus_or_add_pane("s1");
-    app.focus = Focus::Terminal;
-    app.html_preview_input = Some("/definitely/not/a/real/file.html".to_string());
-
-    app.confirm_html_preview();
-
-    assert!(
-        app.html_preview_error.is_some(),
-        "a bad path must surface an inline error"
-    );
-    assert!(
-        app.html_preview_input.is_some(),
-        "the popup stays open so the path can be corrected"
-    );
-    // A bad path returns before any launch, so nothing is marked seen.
-    assert!(!app.html_seen.contains_key("s1"));
-}
-
-#[test]
-fn confirm_html_preview_with_a_blank_path_sets_error() {
-    let mut app = App::new();
-    app.focus_or_add_pane("s1");
-    app.focus = Focus::Terminal;
-    app.html_preview_input = Some("   ".to_string());
-    app.confirm_html_preview();
-    assert!(app.html_preview_error.is_some());
-    assert!(app.html_preview_input.is_some());
-}
-
-#[test]
-fn editing_the_preview_path_clears_a_stale_error() {
-    let mut app = App::new();
-    app.html_preview_input = Some("/bad".to_string());
-    app.html_preview_error = Some("not a file: /bad".to_string());
-    app.html_preview_input_push('x');
-    assert!(app.html_preview_error.is_none(), "typing clears the error");
-
-    app.html_preview_error = Some("again".to_string());
-    app.html_preview_input_backspace();
-    assert!(
-        app.html_preview_error.is_none(),
-        "backspace clears the error too"
-    );
-}
-
-#[test]
-fn cancel_html_preview_clears_input_and_error_without_side_effects() {
-    let mut app = App::new();
-    app.focus_or_add_pane("s1");
-    app.html_preview_input = Some("/some/path".to_string());
-    app.html_preview_error = Some("boom".to_string());
-    app.cancel_html_preview();
-    assert!(app.html_preview_input.is_none());
-    assert!(app.html_preview_error.is_none());
-}
-
-fn temp_html_dir(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("mindplayer-html-{name}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
-}
-
-/// Block (bounded) until an in-flight background `.html` sweep lands and its
-/// batch is consumed by `apply_html_scan`. The receiver is cleared exactly when
-/// a batch has been applied, so that — not the `changed` return value — is the
-/// completion signal (a sweep that finds nothing new still consumes its batch).
-fn finish_html_scan(app: &mut App) {
-    let deadline = Instant::now() + Duration::from_secs(5);
-    loop {
-        app.apply_html_scan();
-        if app.html_scan_rx.is_none() {
-            return;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "background html scan did not complete within 5s"
-        );
-        std::thread::sleep(Duration::from_millis(5));
-    }
-}
-
-/// Force the interval gate open, kick off a background sweep, and drive it to
-/// completion — so candidate assertions are deterministic without depending on
-/// the poll interval or a fixed sleep.
-fn run_html_scan(app: &mut App) {
-    app.html_candidates_due = None;
-    assert!(app.spawn_html_scan(), "a sweep should start");
-    finish_html_scan(app);
-}
-
-#[test]
-fn poll_html_candidates_finds_html_and_skips_vendor_dirs_at_any_depth() {
-    let dir = temp_html_dir("scan");
-    std::fs::write(dir.join("page.html"), "<html></html>").unwrap();
-    std::fs::create_dir_all(dir.join("sub")).unwrap();
-    std::fs::write(dir.join("sub").join("nested.html"), "<html></html>").unwrap();
-    // node_modules directly under the cwd AND nested one level deeper — the walk
-    // must never descend into either, at any depth.
-    std::fs::create_dir_all(dir.join("node_modules")).unwrap();
-    std::fs::write(dir.join("node_modules").join("dep.html"), "x").unwrap();
-    std::fs::create_dir_all(dir.join("sub").join("node_modules")).unwrap();
-    std::fs::write(dir.join("sub").join("node_modules").join("deep.html"), "x").unwrap();
-
-    let mut app = app_with(vec![session_in(
-        "s1",
-        Agent::Codex,
-        &dir.display().to_string(),
-        "t",
-    )]);
-    app.focus_or_add_pane("s1");
-
-    // The walk runs on a background thread: kicking off the sweep must not
-    // populate candidates synchronously on the spawning (input/render) thread.
-    app.html_candidates_due = None;
-    assert!(app.spawn_html_scan(), "a sweep starts");
-    assert!(
-        !app.html_candidates.contains_key("s1"),
-        "the background walk must not block-populate on the spawning thread"
-    );
-    // Once the background walk lands, applying its finished batch surfaces the
-    // detected files.
-    finish_html_scan(&mut app);
-    let cands = app.html_candidates.get("s1").expect("candidates detected");
-    let names: Vec<String> = cands
-        .iter()
-        .map(|p| p.file_name().unwrap().to_str().unwrap().to_string())
-        .collect();
-    assert!(names.contains(&"page.html".to_string()), "{names:?}");
-    assert!(names.contains(&"nested.html".to_string()), "{names:?}");
-    assert!(
-        !names.iter().any(|n| n == "dep.html" || n == "deep.html"),
-        "node_modules contents must be skipped at any depth: {names:?}"
-    );
-
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
-#[test]
-fn html_seen_suppresses_candidate_until_its_mtime_advances() {
-    let dir = temp_html_dir("seen");
-    let file = dir.join("report.html");
-    std::fs::write(&file, "<html></html>").unwrap();
-
-    let mut app = app_with(vec![session_in(
-        "s1",
-        Agent::Codex,
-        &dir.display().to_string(),
-        "t",
-    )]);
-    app.focus_or_add_pane("s1");
-
-    // First sweep: the file is a fresh candidate.
-    run_html_scan(&mut app);
-    assert!(app
-        .html_candidates
-        .get("s1")
-        .is_some_and(|c| c.contains(&file)));
-
-    // Seen at a FUTURE mtime → the file's real mtime is older than "seen", so it
-    // stays suppressed.
-    app.html_seen
-        .entry("s1".into())
-        .or_default()
-        .insert(file.clone(), SystemTime::now() + Duration::from_secs(3600));
-    run_html_scan(&mut app);
-    assert!(
-        app.html_candidates
-            .get("s1")
-            .is_none_or(|c| !c.contains(&file)),
-        "a file already seen must not reappear while its mtime hasn't advanced"
-    );
-
-    // Seen at a PAST mtime → the file's later mtime has advanced past it → it
-    // reappears as a fresh candidate (the "edited after being dismissed" case).
-    app.html_seen
-        .entry("s1".into())
-        .or_default()
-        .insert(file.clone(), SystemTime::now() - Duration::from_secs(3600));
-    run_html_scan(&mut app);
-    assert!(
-        app.html_candidates
-            .get("s1")
-            .is_some_and(|c| c.contains(&file)),
-        "a file edited after being seen (mtime advanced) reappears as a candidate"
-    );
-
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
-#[test]
-fn recency_floor_keeps_fresh_html_and_drops_stale() {
-    use std::fs::OpenOptions;
-
-    let dir = temp_html_dir("recency");
-    let fresh = dir.join("fresh.html");
-    let stale = dir.join("stale.html");
-    std::fs::write(&fresh, "<html></html>").unwrap();
-    std::fs::write(&stale, "<html></html>").unwrap();
-    // Backdate the stale file well past HTML_CANDIDATE_MAX_AGE (2h): a large
-    // monorepo root's dated-report dump is exactly this — old .html files that
-    // must NOT compete for the picker's slots with something written just now.
-    let old = SystemTime::now() - Duration::from_secs(6 * 60 * 60);
-    OpenOptions::new()
-        .write(true)
-        .open(&stale)
-        .unwrap()
-        .set_modified(old)
-        .unwrap();
-
-    let mut app = app_with(vec![session_in(
-        "s1",
-        Agent::Codex,
-        &dir.display().to_string(),
-        "t",
-    )]);
-    app.focus_or_add_pane("s1");
-
-    run_html_scan(&mut app);
-    let cands = app
-        .html_candidates
-        .get("s1")
-        .expect("the fresh file is a candidate");
-    assert!(
-        cands.contains(&fresh),
-        "a file written just now must be a candidate: {cands:?}"
-    );
-    assert!(
-        !cands.contains(&stale),
-        "a file older than the recency floor must be dropped: {cands:?}"
-    );
-
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
-#[test]
-fn toggle_html_preview_opens_picker_when_candidates_exist_else_blank_popup() {
-    let mut app = App::new();
-    app.focus_or_add_pane("s1");
-    app.focus = Focus::Terminal;
-
-    // No candidates → today's fallback: the blank free-text popup.
-    app.toggle_html_preview();
-    assert_eq!(app.html_preview_input.as_deref(), Some(""));
-    assert!(app.html_preview_picker.is_none());
-
-    // With candidates registered, Ctrl-P opens the ranked picker instead.
-    app.html_preview_input = None;
-    app.html_candidates
-        .insert("s1".into(), vec![PathBuf::from("/tmp/a.html")]);
-    app.toggle_html_preview();
-    assert_eq!(app.html_preview_picker, Some(0));
-    assert!(app.html_preview_input.is_none());
-}
-
-#[test]
-fn remove_pane_clears_html_candidate_state() {
-    let mut app = App::new();
-    app.focus_or_add_pane("s1");
-    app.html_candidates
-        .insert("s1".into(), vec![PathBuf::from("/tmp/a.html")]);
-    app.html_seen
-        .entry("s1".into())
-        .or_default()
-        .insert(PathBuf::from("/tmp/a.html"), SystemTime::now());
-
-    app.remove_pane("s1");
-    assert!(!app.html_candidates.contains_key("s1"));
-    assert!(!app.html_seen.contains_key("s1"));
 }
 
 #[test]
@@ -3091,204 +2815,6 @@ fn confirm_catchup_logs_nothing_when_the_send_fails() {
     app.confirm_catchup();
 
     assert!(mindplayer_core::read_events(&audit_tmp).is_empty());
-    let _ = std::fs::remove_file(&audit_tmp);
-}
-
-#[test]
-fn begin_transition_report_requires_a_focused_pane() {
-    let mut app = App::new();
-    app.begin_transition_report();
-    assert!(app.transition_report_input.is_none());
-    assert!(app.status.contains("live pane"));
-}
-
-#[test]
-fn begin_transition_report_opens_the_input_when_a_pane_is_focused() {
-    let mut app = app_with(vec![session("a", Agent::Codex, false)]);
-    app.focus_or_add_pane("a");
-    app.begin_transition_report();
-    assert_eq!(app.transition_report_input, Some(String::new()));
-}
-
-#[test]
-fn transition_report_input_push_and_backspace_edit_the_buffer() {
-    let mut app = app_with(vec![session("a", Agent::Codex, false)]);
-    app.focus_or_add_pane("a");
-    app.begin_transition_report();
-    for c in "eks / §3".chars() {
-        app.transition_report_input_push(c);
-    }
-    assert_eq!(app.transition_report_input.as_deref(), Some("eks / §3"));
-    app.transition_report_input_backspace();
-    assert_eq!(app.transition_report_input.as_deref(), Some("eks / §"));
-}
-
-#[test]
-fn cancel_transition_report_clears_without_sending() {
-    let audit_tmp = audit_tmp_path("transition-cancel");
-    let mut app = app_with(vec![session("a", Agent::Codex, false)]);
-    app.audit_path = audit_tmp.clone();
-    app.focus_or_add_pane("a");
-    app.begin_transition_report();
-    app.transition_report_input_push('x');
-    app.cancel_transition_report();
-
-    assert!(app.transition_report_input.is_none());
-    assert!(mindplayer_core::read_events(&audit_tmp).is_empty());
-    let _ = std::fs::remove_file(&audit_tmp);
-}
-
-#[test]
-fn confirm_transition_report_sends_to_the_focused_pane_and_logs_it() {
-    let audit_tmp = audit_tmp_path("transition-confirm");
-    let mut app = app_with(vec![
-        session("a", Agent::Codex, false),
-        session("b", Agent::Claude, false),
-    ]);
-    app.audit_path = audit_tmp.clone();
-    app.focus_or_add_pane("a");
-    app.focus_or_add_pane("b");
-    assert_eq!(app.focused_pane(), Some("b"));
-
-    app.begin_transition_report();
-    for c in "eks-migration / §3 / infra/eks.tf".chars() {
-        app.transition_report_input_push(c);
-    }
-    app.confirm_transition_report_input();
-    assert!(
-        app.transition_report_review.is_some(),
-        "enter shows a review, not an immediate send"
-    );
-    app.send_transition_report_review();
-
-    assert!(app.transition_report_input.is_none());
-    assert!(app.transition_report_review.is_none());
-    let events = mindplayer_core::read_events(&audit_tmp);
-    assert_eq!(events.len(), 1);
-    assert_eq!(
-        events[0].event,
-        mindplayer_core::AuditEvent::TransitionReportSent
-    );
-    assert!(app.status.contains(&short("b")));
-
-    let _ = std::fs::remove_file(&audit_tmp);
-}
-
-#[test]
-fn transition_report_uses_a_user_edited_prompt_file_when_present() {
-    // The whole point of externalizing the prompt to a file: editing it on
-    // disk must actually change what gets sent, with no rebuild/restart.
-    let prompts_dir =
-        std::env::temp_dir().join(format!("mp-prompts-edited-{}", std::process::id()));
-    std::fs::create_dir_all(&prompts_dir).unwrap();
-    std::fs::write(
-        prompts_dir.join("transition_report.md"),
-        "my custom template — {{input}}",
-    )
-    .unwrap();
-
-    let mut app = app_with(vec![session("a", Agent::Codex, false)]);
-    app.prompts_dir = prompts_dir.clone();
-    app.focus_or_add_pane("a");
-    app.begin_transition_report();
-    for c in "eks / §3".chars() {
-        app.transition_report_input_push(c);
-    }
-    app.confirm_transition_report_input();
-    app.send_transition_report_review();
-
-    let sent = app
-        .pending
-        .as_ref()
-        .expect("no live pty for 'a' — should have queued a spawn")
-        .initial_input
-        .as_ref()
-        .expect("prompt bytes queued as initial input");
-    let sent = String::from_utf8_lossy(sent);
-    assert!(
-        sent.contains("my custom template — eks / §3"),
-        "expected the edited template with the input substituted, got: {sent:?}"
-    );
-    // The compiled-in default text must NOT leak through once a real file exists.
-    assert!(!sent.contains("transition-<주제>.html"));
-
-    let _ = std::fs::remove_dir_all(&prompts_dir);
-}
-
-#[test]
-fn transition_report_review_starts_read_only_with_the_assembled_prompt() {
-    let mut app = app_with(vec![session("a", Agent::Codex, false)]);
-    app.focus_or_add_pane("a");
-    app.begin_transition_report();
-    for c in "eks / §3".chars() {
-        app.transition_report_input_push(c);
-    }
-    app.confirm_transition_report_input();
-
-    let draft = app
-        .transition_report_review
-        .as_ref()
-        .expect("review opened");
-    assert!(draft.instruction.contains("eks / §3"));
-    assert!(!app.transition_report_review_editing);
-}
-
-#[test]
-fn editing_the_review_changes_what_gets_sent() {
-    let audit_tmp = audit_tmp_path("transition-edit");
-    let mut app = app_with(vec![session("a", Agent::Codex, false)]);
-    app.audit_path = audit_tmp.clone();
-    app.focus_or_add_pane("a");
-    app.begin_transition_report();
-    for c in "eks / §3".chars() {
-        app.transition_report_input_push(c);
-    }
-    app.confirm_transition_report_input();
-
-    app.begin_editing_transition_report_review();
-    assert!(app.transition_report_review_editing);
-    // Move to the very end of the (multi-line) buffer, then append a line —
-    // this is the whole point of the review step: the sent text can differ
-    // from what was auto-assembled.
-    for _ in 0..500 {
-        app.transition_report_review_move_down();
-    }
-    app.transition_report_review_move_end();
-    app.transition_report_review_push_text("\nEXTRA HAND-EDITED LINE");
-    app.send_transition_report_review();
-
-    let sent = app
-        .pending
-        .as_ref()
-        .expect("queued a spawn")
-        .initial_input
-        .as_ref()
-        .expect("prompt bytes queued");
-    let sent = String::from_utf8_lossy(sent);
-    assert!(sent.contains("EXTRA HAND-EDITED LINE"));
-    assert_eq!(mindplayer_core::read_events(&audit_tmp).len(), 1);
-
-    let _ = std::fs::remove_file(&audit_tmp);
-}
-
-#[test]
-fn esc_cancels_the_review_without_sending() {
-    let audit_tmp = audit_tmp_path("transition-review-cancel");
-    let mut app = app_with(vec![session("a", Agent::Codex, false)]);
-    app.audit_path = audit_tmp.clone();
-    app.focus_or_add_pane("a");
-    app.begin_transition_report();
-    app.transition_report_input_push('x');
-    app.confirm_transition_report_input();
-    assert!(app.transition_report_review.is_some());
-
-    app.cancel_transition_report_review();
-
-    assert!(app.transition_report_review.is_none());
-    assert!(!app.transition_report_review_editing);
-    assert!(app.pending.is_none());
-    assert!(mindplayer_core::read_events(&audit_tmp).is_empty());
-
     let _ = std::fs::remove_file(&audit_tmp);
 }
 
@@ -4981,94 +4507,6 @@ fn a_short_path_survives_shortening_unchanged() {
         app.summary_tail().contains("· global"),
         "the smoke test greps for this exact marker: {}",
         app.summary_tail()
-    );
-}
-
-/// Every pane opened at a monorepo root shares one cwd. The sweep used to walk
-/// that tree once per pane, which on this workspace meant six walks of ~32,000
-/// entries every three seconds — the sweep never finished before the next was
-/// due, so it ran continuously and burned a core.
-#[test]
-fn panes_sharing_one_directory_are_walked_once_not_once_each() {
-    use std::cell::RefCell;
-    let shared = PathBuf::from("/tmp/one-root");
-    let other = PathBuf::from("/tmp/other-root");
-    let targets = vec![
-        ("s1".to_string(), shared.clone()),
-        ("s2".to_string(), shared.clone()),
-        ("s3".to_string(), shared.clone()),
-        ("s4".to_string(), other.clone()),
-    ];
-
-    let walked: RefCell<Vec<PathBuf>> = RefCell::new(Vec::new());
-    let batch = crate::app::pane::walk_targets_once(targets, |dir| {
-        walked.borrow_mut().push(dir.to_path_buf());
-        vec![(dir.join("page.html"), SystemTime::UNIX_EPOCH)]
-    });
-
-    // Four panes, two distinct directories: two walks, not four.
-    assert_eq!(walked.borrow().len(), 2, "walked: {:?}", walked.borrow());
-    assert_eq!(
-        batch.len(),
-        4,
-        "every pane still gets its own entry in the batch"
-    );
-    // And the three panes sharing a root all got that root's finding.
-    for (id, found) in batch.iter().filter(|(id, _)| id != "s4") {
-        assert_eq!(found.len(), 1, "{id}");
-        assert!(found[0].0.starts_with(&shared), "{id}: {found:?}");
-    }
-}
-
-/// The interval is measured from when a sweep LANDS, not from when it starts.
-/// Re-arming at spawn time meant a walk slower than the interval finished into
-/// an already-expired timer, so the next sweep began immediately and the walk
-/// ran back to back forever.
-#[test]
-fn the_next_sweep_is_scheduled_from_when_the_last_one_landed() {
-    let dir = temp_html_dir("interval");
-    std::fs::write(dir.join("page.html"), "<html></html>").unwrap();
-
-    let mut app = app_with(vec![session_in(
-        "s1",
-        Agent::Codex,
-        &dir.display().to_string(),
-        "t",
-    )]);
-    app.focus_or_add_pane("s1");
-
-    app.html_candidates_due = None;
-    assert!(app.spawn_html_scan(), "a sweep starts");
-    assert!(
-        app.html_candidates_due.is_none(),
-        "an in-flight sweep leaves nothing scheduled"
-    );
-
-    finish_html_scan(&mut app);
-    let due = app
-        .html_candidates_due
-        .expect("landing schedules the next sweep");
-    assert!(due > Instant::now(), "the next sweep is in the future");
-    assert!(
-        !app.spawn_html_scan(),
-        "and it does not start again until that interval has passed"
-    );
-}
-
-/// A pane opened somewhere pathological must not make the sweep unbounded.
-#[test]
-fn the_walk_stops_at_its_entry_ceiling() {
-    let dir = temp_html_dir("ceiling");
-    // Far below the real ceiling, so this asserts the loop's shape, not the
-    // constant: with no cap the walk would return every one of these.
-    for i in 0..40 {
-        std::fs::write(dir.join(format!("f{i}.html")), "<html></html>").unwrap();
-    }
-    let found = crate::app::pane::scan_html_candidates(&dir);
-    assert_eq!(found.len(), 40, "a small tree is never truncated");
-    assert!(
-        found.len() <= crate::app::pane::HTML_WALK_MAX_ENTRIES,
-        "the walk never returns more than it is allowed to visit"
     );
 }
 

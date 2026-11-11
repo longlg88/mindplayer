@@ -548,11 +548,7 @@ impl App {
             || self.new_label.is_some()
             || self.dir_input.is_some()
             || self.link_picker.is_some()
-            || self.html_preview_picker.is_some()
-            || self.html_preview_input.is_some()
             || self.catchup_confirm.is_some()
-            || self.transition_report_input.is_some()
-            || self.transition_report_review.is_some()
             || self.search_query.is_some()
     }
 

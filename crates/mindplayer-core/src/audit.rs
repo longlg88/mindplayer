@@ -26,7 +26,7 @@ const TODAY_WINDOW: Duration = Duration::hours(24);
 /// A single line in the audit log. Two families of events share this enum:
 ///
 /// * **Usage-stats events** (`AppStart`/`AppStop`, `SessionOpen`,
-///   `SessionClose`, `Handoff`, `CatchupSent`, `TransitionReportSent`) —
+///   `SessionClose`, `Handoff`, `CatchupSent`) —
 ///   aggregated by [`compute_stats`] and surfaced in the `u` usage popup.
 ///   These predate the incident-reconstruction events and are the only ones
 ///   `compute_stats` looks at.
@@ -59,7 +59,6 @@ pub enum AuditEvent {
     SessionClose,
     Handoff,
     CatchupSent,
-    TransitionReportSent,
 
     // --- user-action events (reconstruct "what the user did, in what order") -
     /// A session was brought to the foreground as a live pane (Enter / l / →,
@@ -193,13 +192,6 @@ pub enum AuditEvent {
         turns_ago: usize,
         picked: bool,
     },
-    /// The `.html` preview picker opened (ctrl-p); `candidates` is how many
-    /// files were detected.
-    HtmlPreviewBegin {
-        candidates: usize,
-    },
-    /// A local `.html` file was opened in the browser.
-    HtmlPreviewOpen,
     /// The shortcuts popup opened or closed (`?`).
     HelpToggle {
         open: bool,
@@ -303,7 +295,6 @@ pub struct UsageStats {
     pub sessions_closed_all_time: usize,
     pub handoffs_all_time: usize,
     pub catchups_all_time: usize,
-    pub transition_reports_all_time: usize,
     /// One active-seconds total per rolling 24h bucket, oldest first,
     /// covering the last `SPARKLINE_DAYS` days (today included).
     pub daily_active_secs: Vec<i64>,
@@ -380,7 +371,6 @@ pub fn compute_stats(
             AuditEvent::SessionClose => stats.sessions_closed_all_time += 1,
             AuditEvent::Handoff => stats.handoffs_all_time += 1,
             AuditEvent::CatchupSent => stats.catchups_all_time += 1,
-            AuditEvent::TransitionReportSent => stats.transition_reports_all_time += 1,
             AuditEvent::AppStart { .. } | AuditEvent::AppStop { .. } => {}
             // Action + status-transition events are breadcrumbs for post-hoc
             // incident reconstruction, not usage metrics — they contribute
@@ -635,5 +625,36 @@ mod tests {
             stats.daily_active_secs.iter().sum::<i64>(),
             stats.active_secs_all_time
         );
+    }
+}
+
+#[cfg(test)]
+mod legacy_event_tests {
+    #[test]
+    fn removed_events_do_not_discard_surrounding_records() {
+        let path = std::env::temp_dir().join(format!(
+            "mindplayer-audit-legacy-{}-{}.jsonl",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::write(
+            &path,
+            concat!(
+                "{\"ts\":\"2026-01-01T00:00:00Z\",\"kind\":\"catchup_sent\"}\n",
+                "{\"ts\":\"2026-01-01T00:00:01Z\",\"kind\":\"html_preview_begin\",\"candidates\":1}\n",
+                "{\"ts\":\"2026-01-01T00:00:02Z\",\"kind\":\"html_preview_open\"}\n",
+                "{\"ts\":\"2026-01-01T00:00:03Z\",\"kind\":\"transition_report_sent\"}\n",
+                "{\"ts\":\"2026-01-01T00:00:04Z\",\"kind\":\"session_close\"}\n",
+            ),
+        )
+        .unwrap();
+        let records = super::read_events(&path);
+        std::fs::remove_file(path).unwrap();
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0].event, super::AuditEvent::CatchupSent);
+        assert_eq!(records[1].event, super::AuditEvent::SessionClose);
     }
 }

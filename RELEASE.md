@@ -82,6 +82,16 @@ the resulting minimum version.)
 
 ### Unreleased
 
+- In 1.0.0, remove HTML discovery, notifications, manual browser previews and
+  the HTML transition-report generator. Ctrl-P/Ctrl-T return to native session
+  input; existing user files and custom prompts remain untouched.
+- Replace automatic transcript token recounts with list `r`: measure one selected
+  source on demand, without launching it. Session discovery and activity remain
+  automatic but use metadata-only reads, including Active catalog refresh and
+  restore. Unmeasured usage is unknown, and manual snapshots are process-local.
+- This removal of existing workflows is a MAJOR change under the policy above;
+  account quota refresh, PTY controls, categories and session handoff are retained.
+
 - Keep Claude conversation history at the current width after split-pane zoom
   and mouse-wheel scrolling. New, resumed, and handoff Claude sessions select
   its native fullscreen renderer with a launch-local setting; global settings,

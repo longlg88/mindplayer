@@ -565,10 +565,9 @@ fn mp05_activity_refresh_preserves_duplicate_archive_source_and_restore() {
     );
     let (tx, rx) = mpsc::channel();
     tx.send(vec![ActivityUpdate {
-        id: fixture.original.id.clone(),
+        source: working_set::source_key(&fixture.original),
         last_active: Some(Utc::now()),
         last_prompt_at: None,
-        tokens: fixture.original.tokens,
         context_pct: None,
     }])
     .unwrap();

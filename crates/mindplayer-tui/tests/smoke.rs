@@ -91,6 +91,7 @@ fn fixture_claude_identity(workspace: &str, email: &str) -> String {
 #[derive(Clone, Copy)]
 enum CodexFixture {
     Echo,
+    KeyCapture,
     InlinePainter,
     TaskStatus,
     AccountQuota,
@@ -101,14 +102,6 @@ enum CodexFixture {
     LifecycleRouter,
     RealJevRouter,
 }
-
-/// Distinctive token typed into the agent pane, so the open-in-browser
-/// scenarios can assert the pane still shows the agent (never a preview) after
-/// Ctrl-P fires — the browser opens in a separate window, never in the pane.
-/// Only used by those macOS-only scenarios (see their cfg note) — dead code
-/// on any other target.
-#[cfg(target_os = "macos")]
-const AGENT_TOKEN: &str = "agenttok";
 
 // Per-scenario overall bounds. A genuine hang trips these and fails the test
 // instead of hanging CI forever.
@@ -652,17 +645,6 @@ struct Mp {
     /// The router fixture was given a Jev key, so its sessions start with Jev ON.
     jev_key: bool,
     _jev_credentials: Option<FixtureJevCredentials>,
-    /// Absolute path to a real `.html` fixture the open-in-browser scenarios can
-    /// type into the Ctrl-P popup / select from the picker. Only read by the
-    /// macOS-only open-in-browser tests (`open_in_browser` itself is
-    /// `#[cfg(target_os = "macos")]`), so this is too — otherwise it's dead code
-    /// on any other target.
-    #[cfg(target_os = "macos")]
-    html_fixture: PathBuf,
-    /// File the fake `open` on PATH appends its argv to, so a test can assert
-    /// which path the browser launch was invoked with. See the cfg note above.
-    #[cfg(target_os = "macos")]
-    open_marker: PathBuf,
     codex_alfa_file: PathBuf,
     codex_brvo_file: PathBuf,
     // Fields are dropped in declaration order, after the child and PTY handles.
@@ -1099,6 +1081,14 @@ exit 0"#
                 ),
             );
         }
+        if matches!(fixture, CodexFixture::KeyCapture) {
+            let codex = bindir.join("codex");
+            let original = std::fs::read_to_string(&codex).expect("read offline Codex fixture");
+            write_script(&codex, &format!(
+                "#!/bin/sh\ncase \" $* \" in *app-server*) ;; *)\nif [ -n \"$MINDPLAYER_PANE_ID\" ]; then\nstty raw -echo\nprintf 'KEY-CAPTURE-READY\\r\\n'\nod -An -tx1 -N 3 > '{}'\nprintf 'KEY-CAPTURE-RECEIVED\\r\\n'\nexec cat\nfi\n;; esac\n{original}",
+                tmp.join("native-key-receipt").display()
+            ));
+        }
         seed_private_codex(&home, &bindir.join("codex"));
         if enable_cursor {
             write_script(
@@ -1107,31 +1097,6 @@ exit 0"#
             );
             write_script(&bindir.join("security"), "#!/bin/sh\nexit 1\n");
         }
-
-        // Fake `open` (the macOS launcher MindPlayer shells out to): append its
-        // argv to a marker file so a test can assert exactly what path it was
-        // invoked with, instead of actually opening a real browser. Exits at
-        // once — it's a fire-and-forget one-shot, exactly like the real thing.
-        // Only meaningful on macOS (see the field-level cfg note above).
-        #[cfg(target_os = "macos")]
-        let open_marker = tmp.join("open-marker.txt");
-        #[cfg(target_os = "macos")]
-        write_script(
-            &bindir.join("open"),
-            &format!(
-                "#!/bin/sh\nprintf '%s\\n' \"$@\" >> '{}'\n",
-                open_marker.display()
-            ),
-        );
-
-        // A real .html file to open (contents don't matter — only its existence
-        // must pass `is_file()` validation before the launch). Only meaningful
-        // on macOS (see the field-level cfg note above).
-        #[cfg(target_os = "macos")]
-        let html_fixture = scope.join("preview.html");
-        #[cfg(target_os = "macos")]
-        std::fs::write(&html_fixture, "<html><body>hi</body></html>\n")
-            .expect("write html fixture");
 
         let alfa_root = if with_accounts {
             isolated_home.join("sessions")
@@ -1249,6 +1214,7 @@ exit 0"#
         cmd.env("MINDPLAYER_AUDIT", &audit_dir);
         cmd.env("MINDPLAYER_PROMPTS_DIR", &prompts_dir);
         cmd.env("MINDPLAYER_HANDOFF_DIR", tmp.join("handoffs"));
+        cmd.env("MINDPLAYER_CONVO_DIR", tmp.join("conversations"));
         cmd.env("MINDPLAYER_TEST_MARKER_DIR", &codex_marker_dir);
         let fixture_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../../tools/local-model-router/mindplayer-fixture.mjs");
@@ -1378,35 +1344,9 @@ exit 0"#
             jev_provider,
             jev_key: actual_router && !matches!(fixture, CodexFixture::KeylessRouter),
             _jev_credentials: jev_credentials,
-            #[cfg(target_os = "macos")]
-            html_fixture,
-            #[cfg(target_os = "macos")]
-            open_marker,
             codex_alfa_file,
             codex_brvo_file,
             _fixture_dir: fixture_dir,
-        }
-    }
-
-    /// Read the fake-`open` marker file (empty string if it hasn't been written
-    /// yet), so a test can assert what path the browser launch received.
-    #[cfg(target_os = "macos")]
-    fn open_marker_contents(&self) -> String {
-        std::fs::read_to_string(&self.open_marker).unwrap_or_default()
-    }
-
-    /// Poll until the fake `open` marker contains `needle` or `within` elapses.
-    #[cfg(target_os = "macos")]
-    fn wait_for_open(&self, needle: &str, within: Duration) -> bool {
-        let deadline = Instant::now() + within;
-        loop {
-            if self.open_marker_contents().contains(needle) {
-                return true;
-            }
-            if Instant::now() >= deadline {
-                return false;
-            }
-            std::thread::sleep(Duration::from_millis(20));
         }
     }
 
@@ -4744,146 +4684,6 @@ fn observer_tracks_codex_jsonl_appends_without_stealing_prompt_input() {
     }
 }
 
-/// Scenario 3 — the Ctrl-P candidate picker opens the selected file in the
-/// browser (no typing).
-///
-/// The seeded session's cwd contains a real `.html` fixture. Once the periodic
-/// candidate poll runs, the live pane shows a "N new" badge; Ctrl-P then opens
-/// the ranked PICKER of detected files (NOT the blank path popup). Selecting the
-/// candidate with Enter shells out to `open <resolved-path>` — asserted via the
-/// fake `open` marker — the whole point of the feature: open a file the agent
-/// just wrote without typing a path. The pane keeps showing the agent the whole
-/// time (the browser opens in a separate window, never in the pane).
-// `open_in_browser` is `#[cfg(target_os = "macos")]`-only (see modals.rs) — on
-// any other OS it returns an error without ever invoking a command, so a fake
-// `open` on PATH would never be called and this test would hang/fail waiting
-// for a marker that's never written. CI's fmt/clippy/test gate runs on
-// ubuntu-latest, so this genuinely never executes there — that's correct for
-// a macOS-only feature, not a gap.
-#[test]
-#[cfg(target_os = "macos")]
-fn ctrl_p_picker_opens_selected_file_in_the_browser() {
-    let mut mp = Mp::launch();
-    mp.start_into_main_list();
-
-    // Resume a session into a live pane, then type a token the agent echoes so
-    // we can prove the pane still shows the agent after Ctrl-P.
-    mp.send(b"\r");
-    mp.expect(PANE_READY, STEP_TIMEOUT, "agent pane came up");
-    mp.send(AGENT_TOKEN.as_bytes());
-    mp.expect(AGENT_TOKEN, STEP_TIMEOUT, "agent echoed its token");
-
-    // The candidate poll detects scope/preview.html and the pane grows a badge.
-    mp.expect(
-        "1 new",
-        STEP_TIMEOUT,
-        "pane shows the '1 new' detected-html badge",
-    );
-
-    // Ctrl-P opens the detected-file PICKER, not the blank path popup.
-    mp.send(b"\x10");
-    mp.expect(
-        "Open a detected",
-        STEP_TIMEOUT,
-        "Ctrl-P opened the candidate picker",
-    );
-    assert!(
-        !mp.screen().contains("Open HTML in browser"),
-        "with candidates present Ctrl-P must open the picker, not the blank path popup.\n\
-         ---- screen ----\n{}\n----------------",
-        mp.screen()
-    );
-    // The fixture's filename is listed as a selectable candidate.
-    mp.expect(
-        "preview.html",
-        STEP_TIMEOUT,
-        "the detected fixture is listed in the picker",
-    );
-
-    // Enter opens the selected candidate: `open` is invoked with the resolved
-    // (canonicalized) fixture path.
-    mp.send(b"\r");
-    let want = mp
-        .html_fixture
-        .canonicalize()
-        .expect("canonicalize fixture");
-    let want = want.display().to_string();
-    assert!(
-        mp.wait_for_open(&want, STEP_TIMEOUT),
-        "selecting the candidate must invoke `open` with the resolved path {want:?}.\n\
-         ---- open marker ----\n{}\n----------------",
-        mp.open_marker_contents()
-    );
-
-    // The pane was never disturbed: the agent's own token is still on screen and
-    // no preview ever rendered inside the pane.
-    assert!(
-        mp.screen().contains(AGENT_TOKEN),
-        "the agent pane must stay put — opening the browser never touches it.\n\
-         ---- screen ----\n{}\n----------------",
-        mp.screen()
-    );
-}
-
-/// Scenario 4 — the free-text path popup opens a typed path in the browser.
-///
-/// Reaches the free-text popup via the picker's Tab escape hatch (the seeded
-/// cwd always holds the fixture, so Ctrl-P opens the picker first), types the
-/// fixture's absolute path, and confirms with Enter. `open` is then invoked with
-/// the resolved path — asserted via the fake `open` marker. Exercises the same
-/// confirm path a no-candidates blank popup would take.
-// See the cfg comment on `ctrl_p_picker_opens_selected_file_in_the_browser`
-// above — `open_in_browser` is macOS-only, so this is too.
-#[test]
-#[cfg(target_os = "macos")]
-fn ctrl_p_typed_path_opens_in_the_browser() {
-    let mut mp = Mp::launch();
-    mp.start_into_main_list();
-
-    mp.send(b"\r");
-    mp.expect(PANE_READY, STEP_TIMEOUT, "agent pane came up");
-
-    // Wait for the detected-html badge so the next Ctrl-P deterministically opens
-    // the picker, then Tab into the free-text path popup.
-    mp.expect("1 new", STEP_TIMEOUT, "pane shows the detected-html badge");
-    mp.send(b"\x10");
-    mp.expect(
-        "Open a detected",
-        STEP_TIMEOUT,
-        "Ctrl-P opened the candidate picker",
-    );
-    mp.send(b"\t"); // Tab: escape hatch to the free-text path popup.
-    mp.expect(
-        "Open HTML in browser",
-        STEP_TIMEOUT,
-        "Tab switched to the free-text path popup",
-    );
-
-    // Type the fixture path and confirm — `open` fires with the resolved path.
-    let path = mp.html_fixture.display().to_string();
-    mp.send(path.as_bytes());
-    mp.send(b"\r");
-    let want = mp
-        .html_fixture
-        .canonicalize()
-        .expect("canonicalize fixture");
-    let want = want.display().to_string();
-    assert!(
-        mp.wait_for_open(&want, STEP_TIMEOUT),
-        "confirming a typed path must invoke `open` with the resolved path {want:?}.\n\
-         ---- open marker ----\n{}\n----------------",
-        mp.open_marker_contents()
-    );
-
-    // The popup closes on success and the pane shows the agent again.
-    assert!(
-        mp.wait_until(STEP_TIMEOUT, |s| !s.contains("Open HTML in browser")),
-        "the popup must close after a successful open.\n\
-         ---- screen ----\n{}\n----------------",
-        mp.screen()
-    );
-}
-
 #[test]
 fn cursor_is_available_in_new_and_handoff_pickers() {
     {
@@ -6075,7 +5875,14 @@ fn claude_auth_signed_out_handoff_preserves_the_original_initial_context() {
     append_claude_turn(&source, "user", "original handoff question");
     append_claude_turn(&source, "assistant", "original handoff answer");
     std::fs::write(home.join("signed-out"), "synthetic native login required\n").unwrap();
-    mp.send(b"/brvo\x1b");
+    mp.send(b"/brvo");
+    mp.expect(
+        "· active · /brvo",
+        STEP_TIMEOUT,
+        "render the source filter before leaving search",
+    );
+    mp.expect("type to filter", STEP_TIMEOUT, "source filter is active");
+    mp.send(b"\x1b");
     mp.expect_absent(
         "type to filter",
         STEP_TIMEOUT,
@@ -8003,4 +7810,93 @@ fn accounts_primary_switch_wins_for_later_new_session_over_ambient_isolated() {
         "post-switch new-session pane came up",
     );
     mp.wait_for_codex_home(&mp._tmp.join("home").join(".codex"), STEP_TIMEOUT);
+}
+
+#[test]
+fn manual_tokens_require_list_r_and_korean_r_without_launching_a_session() {
+    let mut mp = Mp::launch();
+    let append_usage = |path: &Path, total: u64| {
+        let mut file = std::fs::OpenOptions::new().append(true).open(path).unwrap();
+        let event = serde_json::json!({
+            "timestamp": chrono::Utc::now(),
+            "type": "event_msg",
+            "payload": {"type": "token_count", "info": {"total_token_usage": {
+                "input_tokens": total, "output_tokens": 0, "total_tokens": total
+            }}}
+        });
+        writeln!(file, "{event}").unwrap();
+    };
+    for file in [&mp.codex_alfa_file, &mp.codex_brvo_file] {
+        append_usage(file, 1_234);
+    }
+    mp.start_into_main_list();
+    mp.expect(
+        "none measured",
+        STEP_TIMEOUT,
+        "metadata-only startup leaves tokens unknown",
+    );
+    mp.send(b"r");
+    mp.expect(
+        "manual tokens measured",
+        STEP_TIMEOUT,
+        "explicit selected-source measurement",
+    );
+    mp.expect(
+        "manual 1/2",
+        STEP_TIMEOUT,
+        "only one of two sources measured",
+    );
+    mp.expect("1.2K tok", STEP_TIMEOUT, "selected source usage rendered");
+    for file in [&mp.codex_alfa_file, &mp.codex_brvo_file] {
+        append_usage(file, 2_345);
+    }
+    mp.send("ㄱ".as_bytes());
+    mp.expect(
+        "2.3K tok",
+        STEP_TIMEOUT,
+        "Korean physical r reparses the selected source",
+    );
+    mp.expect(
+        "manual 1/2",
+        STEP_TIMEOUT,
+        "repeated request does not measure other rows",
+    );
+    assert!(
+        !mp._tmp.join("native-launches.log").exists(),
+        "measuring must not launch a provider"
+    );
+}
+
+#[test]
+fn ctrl_p_ctrl_t_and_plain_r_reach_the_native_pty_consumer() {
+    let mut mp = Mp::launch_with_options_and_fixture(
+        ROWS,
+        COLS,
+        false,
+        false,
+        false,
+        false,
+        CodexFixture::KeyCapture,
+    );
+    mp.start_into_main_list();
+    mp.send(b"\r");
+    mp.expect(
+        "KEY-CAPTURE-READY",
+        STEP_TIMEOUT,
+        "native consumer is raw and ready",
+    );
+    mp.send(b"\x10\x14r");
+    let receipt = mp._tmp.join("native-key-receipt");
+    assert!(
+        mp.wait_until(STEP_TIMEOUT, |_| {
+            std::fs::read_to_string(&receipt)
+                .is_ok_and(|text| text.split_whitespace().collect::<Vec<_>>() == ["10", "14", "72"])
+        }),
+        "native consumer must receive Ctrl-P, Ctrl-T, and r bytes"
+    );
+    mp.expect(
+        "KEY-CAPTURE-RECEIVED",
+        STEP_TIMEOUT,
+        "consumer finished the exact byte read",
+    );
 }

@@ -7,11 +7,43 @@ use std::path::Path;
 
 pub(crate) const ARCHIVE_PAGE_SIZE: usize = 200;
 const CATALOG_INTERVAL: Duration = Duration::from_secs(60);
-pub(super) type CatalogMessage = (u64, Result<CatalogSnapshot, String>);
-type SourceKey = (Agent, PathBuf, String);
+pub(super) type CatalogMessage = (u64, Instant, Result<CatalogSnapshot, String>);
+pub(super) type SourceKey = (Agent, PathBuf, String, PathBuf);
 
-fn source_key(session: &Session) -> SourceKey {
-    (session.agent, session.file.clone(), session.id.clone())
+pub(super) fn source_key(session: &Session) -> SourceKey {
+    (
+        session.agent,
+        session.file.clone(),
+        session.id.clone(),
+        session.cwd.clone(),
+    )
+}
+
+// Timestamps are accumulated evidence, but context can decrease after compaction.
+// Order overlapping reads by request start, never by delivery or percentage.
+pub(super) fn merge_kiro_context(
+    observations: &mut HashMap<SourceKey, (Instant, f64)>,
+    session: &mut Session,
+    started_at: Instant,
+) {
+    if session.agent != Agent::Kiro {
+        return;
+    }
+    let key = source_key(session);
+    if let Some((observed_at, context)) = observations.get_mut(&key) {
+        if let Some(value) = session.context_pct.filter(|_| started_at >= *observed_at) {
+            *observed_at = started_at;
+            *context = value;
+        }
+        session.context_pct = Some(*context);
+    } else if let Some(value) = session.context_pct {
+        observations.insert(key, (started_at, value));
+    }
+}
+
+fn preserve_activity(session: &mut Session, previous: &Session) {
+    session.last_active = session.last_active.max(previous.last_active);
+    session.last_prompt_at = session.last_prompt_at.max(previous.last_prompt_at);
 }
 
 fn codex_source_root<'a>(roots: &'a [SessionRoot], file: &Path) -> Option<&'a PathBuf> {
@@ -40,6 +72,7 @@ struct NativeRoute {
 struct Hydration {
     source: Session,
     epoch: u64,
+    started_at: Instant,
     result: Receiver<Result<Session, String>>,
 }
 
@@ -69,6 +102,7 @@ pub(super) struct WorkingSet {
 
 impl App {
     pub(super) fn cancel_catalog_work(&mut self) {
+        self.invalidate_manual_usage();
         self.working_set.hydration = None;
         self.working_set.hydrate_queue.clear();
         self.working_set.archive_rx = None;
@@ -99,7 +133,7 @@ impl App {
             .iter()
             .chain(self.working_set.archive_overrides.values())
             .chain(self.archive_catalog.iter())
-            .filter(move |s| seen.insert((s.agent, &s.file, &s.id)))
+            .filter(move |s| seen.insert((s.agent, &s.file, &s.id, &s.cwd)))
     }
 
     pub(super) fn apply_row_state(&mut self) {
@@ -285,17 +319,27 @@ impl App {
         }
         self.working_set.epoch = self.working_set.epoch.wrapping_add(1);
         self.state.apply(std::slice::from_mut(&mut session));
+        if let Some(previous) = self.known_metadata().find(|s| {
+            s.agent == session.agent
+                && s.file == session.file
+                && s.id == session.id
+                && s.cwd == session.cwd
+        }) {
+            preserve_activity(&mut session, previous);
+        }
+        self.restore_manual_usage(&mut session);
         session.archived = false;
         self.working_set
             .native_routes
             .get_mut(pane)
             .expect("native route was inserted")
             .source = Some(session.clone());
-        if let Some(row) = self
-            .all_sessions
-            .iter_mut()
-            .find(|s| s.agent == session.agent && s.id == session.id && s.file == session.file)
-        {
+        if let Some(row) = self.all_sessions.iter_mut().find(|s| {
+            s.agent == session.agent
+                && s.file == session.file
+                && s.id == session.id
+                && s.cwd == session.cwd
+        }) {
             *row = session;
         } else {
             self.all_sessions.push(session);
@@ -309,6 +353,7 @@ impl App {
     }
 
     pub(super) fn catalog_scan(&self) -> Receiver<CatalogMessage> {
+        let started_at = Instant::now();
         let scope = self.scope.clone();
         let roots = self.scan_roots();
         let state = self.state.clone();
@@ -356,13 +401,13 @@ impl App {
                     snapshot
                 })
                 .map_err(|_| "session catalog could not be read or saved".to_string());
-            let _ = tx.send((epoch, result));
+            let _ = tx.send((epoch, started_at, result));
         });
         rx
     }
 
     pub(super) fn apply_catalog(&mut self, message: CatalogMessage) -> bool {
-        let (epoch, result) = message;
+        let (epoch, started_at, result) = message;
         if epoch != self.working_set.epoch {
             self.rescan_due = Some(Instant::now());
             return false;
@@ -375,6 +420,22 @@ impl App {
                 return false;
             }
         };
+        {
+            let previous: HashMap<_, _> = self
+                .known_metadata()
+                .map(|s| ((s.agent, &s.file, &s.id, &s.cwd), s))
+                .collect();
+            for session in snapshot.active.iter_mut().chain(&mut snapshot.archive) {
+                if let Some(previous) =
+                    previous.get(&(session.agent, &session.file, &session.id, &session.cwd))
+                {
+                    preserve_activity(session, previous);
+                }
+            }
+        }
+        for session in snapshot.active.iter_mut().chain(&mut snapshot.archive) {
+            merge_kiro_context(&mut self.context_observations, session, started_at);
+        }
         let selected = self.selected_session().map(source_key);
         let mut migrated_use = false;
         for (id, sources) in std::mem::take(&mut snapshot.use_sources) {
@@ -440,7 +501,11 @@ impl App {
         }
         for owner in owners.values() {
             if !active.iter().any(|s| source_key(s) == source_key(owner)) {
-                active.push((*owner).clone());
+                let mut session = (*owner).clone();
+                if let Some((_, context)) = self.context_observations.get(&source_key(&session)) {
+                    session.context_pct = Some(*context);
+                }
+                active.push(session);
             }
         }
         let active_sources: HashSet<_> = active.iter().map(source_key).collect();
@@ -450,6 +515,7 @@ impl App {
         snapshot.active = active;
         self.state.apply(&mut snapshot.active);
         for session in &mut snapshot.active {
+            usage::restore(&self.manual_usage, session);
             session.archived = false;
         }
         // Archive labels are stamped only on its bounded page in the worker.
@@ -491,7 +557,7 @@ impl App {
         !self.archive_catalog.is_empty() || !self.working_set.archive_overrides.is_empty()
     }
 
-    fn row_of_source(&self, key: &SourceKey) -> Option<usize> {
+    pub(super) fn row_of_source(&self, key: &SourceKey) -> Option<usize> {
         self.visible.iter().position(|row| match row {
             Row::Session(index) => source_key(&self.all_sessions[*index]) == *key,
             _ => false,
@@ -586,9 +652,9 @@ impl App {
             let page = selected
                 .as_ref()
                 .and_then(|key| {
-                    matches
-                        .iter()
-                        .position(|s| s.agent == key.0 && s.file == key.1 && s.id == key.2)
+                    matches.iter().position(|s| {
+                        s.agent == key.0 && s.file == key.1 && s.id == key.2 && s.cwd == key.3
+                    })
                 })
                 .map(|position| position / ARCHIVE_PAGE_SIZE)
                 .unwrap_or(page)
@@ -640,6 +706,7 @@ impl App {
             return;
         };
         let source = session.clone();
+        let started_at = Instant::now();
         let (tx, rx) = mpsc::channel();
         thread::spawn(move || {
             let result = catalog::hydrate(&session).map_err(|_| {
@@ -651,6 +718,7 @@ impl App {
         self.working_set.hydration = Some(Hydration {
             source,
             epoch: self.working_set.epoch,
+            started_at,
             result: rx,
         });
     }
@@ -704,6 +772,7 @@ impl App {
 
     pub(super) fn remember_archived(&mut self, mut session: Session) {
         self.working_set.epoch = self.working_set.epoch.wrapping_add(1);
+        self.invalidate_manual_usage();
         session.archived = true;
         self.working_set
             .hydrate_queue
@@ -800,6 +869,20 @@ impl App {
                     } else {
                         self.working_set.epoch = self.working_set.epoch.wrapping_add(1);
                         self.state.apply(std::slice::from_mut(&mut session));
+                        if let Some(previous) = self.known_metadata().find(|s| {
+                            s.agent == session.agent
+                                && s.file == session.file
+                                && s.id == session.id
+                                && s.cwd == session.cwd
+                        }) {
+                            preserve_activity(&mut session, previous);
+                        }
+                        merge_kiro_context(
+                            &mut self.context_observations,
+                            &mut session,
+                            request.started_at,
+                        );
+                        self.restore_manual_usage(&mut session);
                         session.archived = false;
                         self.all_sessions
                             .retain(|s| !s.archived && source_key(s) != source_key(&session));
@@ -827,5 +910,46 @@ impl App {
             self.working_set.next_scan = Some(Instant::now() + CATALOG_INTERVAL);
         }
         changed
+    }
+}
+
+#[cfg(test)]
+mod metadata_tests {
+    use super::*;
+
+    #[test]
+    fn archive_hydration_preserves_newer_activity_and_context() {
+        let mut app = crate::app::tests::isolated_app();
+        let started_at = Instant::now();
+        let now = Utc::now();
+        let mut source = crate::app::tests::session("kiro-restore", Agent::Kiro, true);
+        source.last_active = Some(now);
+        source.last_prompt_at = Some(now);
+        source.context_pct = Some(30.0);
+        app.context_observations.insert(
+            source_key(&source),
+            (started_at + Duration::from_secs(1), 30.0),
+        );
+        app.all_sessions.push(source.clone());
+        app.archive_catalog = Arc::new(vec![source.clone()]);
+        let mut hydrated = source.clone();
+        hydrated.last_active = Some(now - chrono::Duration::minutes(1));
+        hydrated.last_prompt_at = None;
+        hydrated.context_pct = Some(80.0);
+        let (tx, rx) = mpsc::channel();
+        app.working_set.hydration = Some(Hydration {
+            source,
+            epoch: app.working_set.epoch,
+            started_at,
+            result: rx,
+        });
+        tx.send(Ok(hydrated)).unwrap();
+        assert!(app.poll_working_set());
+        let restored = &app.all_sessions[0];
+        assert!(!restored.archived);
+        assert_eq!(restored.last_active, Some(now));
+        assert_eq!(restored.last_prompt_at, Some(now));
+        assert_eq!(restored.context_pct, Some(30.0));
+        assert!(app.ptys.is_empty());
     }
 }

@@ -1,7 +1,7 @@
 //! End-to-end discovery over a mock session tree, plus state wiring.
 
 use mindplayer_core::{
-    refresh_activity_and_usage, scan, Agent, Aggregate, ScanConfig, Scope, Session, State,
+    catalog, refresh_activity, scan, Agent, Aggregate, ScanConfig, Scope, Session, State,
     TokenUsage,
 };
 use std::fs;
@@ -333,7 +333,7 @@ fn codex_tail_finds_token_after_huge_line() {
 }
 
 #[test]
-fn refresh_activity_updates_usage_for_existing_rows() {
+fn activity_refresh_preserves_usage_and_manual_measurement_ignores_mtime() {
     let dir = tempdir().unwrap();
     let codex = dir.path().join("codex.jsonl");
     write(
@@ -383,14 +383,111 @@ fn refresh_activity_updates_usage_for_existing_rows() {
         },
     ];
 
-    refresh_activity_and_usage(&mut sessions);
+    refresh_activity(&mut sessions);
+    for session in &mut sessions {
+        assert!(session.last_active.is_some());
+        assert_eq!(session.tokens, TokenUsage::default());
+        let usage = catalog::measure_usage(session).unwrap();
+        let (total, cached) = match session.agent {
+            Agent::Codex => (10, 2),
+            Agent::Claude => (31, 24),
+            _ => unreachable!(),
+        };
+        assert_eq!(usage.tokens.total, total);
+        assert_eq!(usage.tokens.cached, cached);
+        assert!(!usage.partial);
+        session.tokens = usage.tokens;
+        session.context_pct = Some(42.0);
+    }
+    refresh_activity(&mut sessions);
+    for session in &sessions {
+        let repeated = catalog::measure_usage(session).unwrap();
+        assert_eq!(repeated.tokens, session.tokens);
+        assert_eq!(session.context_pct, Some(42.0));
+    }
+}
 
-    let codex = sessions.iter().find(|s| s.id == "codex-1").unwrap();
-    assert_eq!(codex.tokens.total, 10);
-    assert_eq!(codex.tokens.cached, 2);
-    let claude = sessions.iter().find(|s| s.id == "claude-1").unwrap();
-    assert_eq!(claude.tokens.total, 31);
-    assert_eq!(claude.tokens.cached, 24);
+#[test]
+fn activity_refresh_observes_human_prompts_only_for_matching_sources() {
+    use std::fs::{File, FileTimes};
+    use std::time::{Duration, SystemTime};
+
+    for agent in [Agent::Codex, Agent::Claude, Agent::Omp] {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("session-a.jsonl");
+        let mut session = Session {
+            id: "session-a".into(),
+            agent,
+            cwd: "/work".into(),
+            file: path.clone(),
+            started_at: None,
+            last_active: None,
+            last_prompt_at: None,
+            tokens: TokenUsage {
+                total: 123,
+                ..TokenUsage::default()
+            },
+            title: "unchanged".into(),
+            archived: true,
+            is_subagent: false,
+            context_pct: Some(42.0),
+        };
+        let observed = "2026-01-02T10:00:00Z";
+        for (index, (id, cwd, timestamp)) in [
+            ("session-a", "/work", observed),
+            ("replacement", "/work", "2026-01-02T11:00:00Z"),
+            ("session-a", "/elsewhere", "2026-01-02T12:00:00Z"),
+            ("session-a", "/work", "2026-01-02T09:00:00Z"),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let records = match agent {
+                Agent::Codex => vec![
+                    serde_json::json!({"type":"session_meta","payload":{"id":id,"cwd":cwd}}),
+                    serde_json::json!({"type":"response_item","timestamp":timestamp,
+                        "payload":{"type":"message","role":"user","content":[{"text":"genuine task"}]}}),
+                ],
+                Agent::Claude => vec![serde_json::json!({"type":"user","sessionId":id,"cwd":cwd,
+                        "timestamp":timestamp,"message":{"content":"genuine task"}})],
+                Agent::Omp => vec![
+                    serde_json::json!({"type":"session","id":id,"cwd":cwd}),
+                    serde_json::json!({"type":"message","timestamp":timestamp,
+                        "message":{"role":"user","content":"genuine task"}}),
+                ],
+                _ => unreachable!(),
+            };
+            fs::write(
+                &path,
+                records
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            )
+            .unwrap();
+            File::options()
+                .write(true)
+                .open(&path)
+                .unwrap()
+                .set_times(
+                    FileTimes::new().set_modified(
+                        SystemTime::UNIX_EPOCH + Duration::from_secs(index as u64 + 1),
+                    ),
+                )
+                .unwrap();
+            refresh_activity(std::slice::from_mut(&mut session));
+            assert_eq!(
+                session.last_prompt_at,
+                Some(observed.parse().unwrap()),
+                "{agent:?}, {index}"
+            );
+            assert_eq!(session.tokens.total, 123);
+            assert_eq!(session.context_pct, Some(42.0));
+            assert_eq!(session.title, "unchanged");
+            assert!(session.archived);
+        }
+    }
 }
 
 #[test]

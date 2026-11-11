@@ -1,25 +1,19 @@
 //! Application state machine: scope select -> scanning -> main, plus the
 //! embedded PTY lifecycle and archive actions.
 
-use crate::{handoff, pty::PtySession, text_input};
+use crate::{handoff, pty::PtySession};
 use chrono::{DateTime, Utc};
 use mindplayer_core::vercel_usage::{VercelUsage, VercelUsageError};
 use mindplayer_core::{
-    refresh_activity_and_usage, resume, sort_by_recency, tokens::human_tokens, touched_recently,
-    Agent, Aggregate, ScanConfig, Scope, Session, State, TokenUsage,
+    refresh_activity, resume, sort_by_recency, tokens::human_tokens, touched_recently, Agent,
+    Aggregate, ScanConfig, Scope, Session, State, TokenUsage,
 };
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver};
 use std::sync::Arc;
 use std::thread;
-use std::time::{Duration, Instant, SystemTime};
-
-/// One background `.html`-candidate sweep's results: per scanned pane id, that
-/// pane's raw [`pane::scan_html_candidates`] output (`(path, mtime)` pairs).
-/// Named so [`App::html_scan_rx`] and the sweep thread share one non-trivial
-/// channel type without tripping `clippy::type_complexity`.
-type HtmlScanBatch = Vec<(String, Vec<(PathBuf, SystemTime)>)>;
+use std::time::{Duration, Instant};
 
 /// A finished category sync: the prompt to inject, plus the new watermark per
 /// peer. Named so the channel type stays readable and `clippy::type_complexity`
@@ -66,10 +60,9 @@ pub(crate) struct UsageReading {
 
 /// Background refresh result for one already-discovered session.
 struct ActivityUpdate {
-    id: String,
+    source: working_set::SourceKey,
     last_active: Option<DateTime<Utc>>,
     last_prompt_at: Option<DateTime<Utc>>,
-    tokens: TokenUsage,
     context_pct: Option<f64>,
 }
 
@@ -394,11 +387,10 @@ pub struct App {
     pub archive_page: usize,
     pub archive_matches: usize,
     working_set: working_set::WorkingSet,
-    /// Totals over the Active scan, including its sub-agents. Archive usage is
-    /// unknown until hydration and must not be reported as measured zero.
+    /// Active scan counts, including sub-agents. Token summaries use only the
+    /// explicitly measured snapshots, not metadata placeholders in this aggregate.
     pub aggregate: Aggregate,
-    /// Totals over just the currently-visible rows (drives the status bar, so
-    /// its count/tokens match the list the user is looking at).
+    /// Counts and measured token fields over currently visible rows.
     pub visible_aggregate: Aggregate,
     /// The rows shown, after the archived / sub-agent view filters: category
     /// headers interleaved with session rows. Sessions are held as indices into
@@ -436,30 +428,6 @@ pub struct App {
     /// All concurrently-running (or recently-ended) sessions, keyed by id, so
     /// switching between sessions keeps the others running in the background.
     pub ptys: HashMap<String, PtySession>,
-    /// When `Some`, the HTML-open path-input popup is open and holds the
-    /// path typed so far (mirrors `dir_input`).
-    pub html_preview_input: Option<String>,
-    /// Inline error shown inside the still-open popup when the last submitted
-    /// path didn't resolve to a file (or the browser failed to launch);
-    /// cleared whenever the popup is freshly opened or the input changes.
-    pub html_preview_error: Option<String>,
-    /// Per-session id, the currently-known unpreviewed `.html` candidates found
-    /// in that session's cwd, ranked most-recently-modified first. Refreshed by
-    /// [`Self::poll_html_candidates`]; an absent/empty entry means no candidates.
-    /// Drives both the passive per-pane "🌐 N new" badge and the Ctrl-P picker.
-    pub html_candidates: HashMap<String, Vec<PathBuf>>,
-    /// Per-session id, paths already offered/previewed together with the mtime
-    /// they had when last seen. A candidate is suppressed while its current
-    /// mtime is `<=` the seen mtime, so a file re-edited after being
-    /// dismissed/previewed (its mtime advancing) reappears as a fresh candidate.
-    /// A plain set can't express "seen at time T", which the reappear-on-edit
-    /// rule (and its unit test) require — hence the nested mtime map.
-    pub html_seen: HashMap<String, HashMap<PathBuf, SystemTime>>,
-    /// When the next `.html`-candidate poll is due. Gates
-    /// [`Self::poll_html_candidates`] to an interval (a few seconds) instead of
-    /// every `run()` tick, so the periodic directory walk stays cheap. `None`
-    /// means "run on the next poll".
-    pub html_candidates_due: Option<Instant>,
     /// Latest hook-derived status per pane id (Claude/Codex only — see
     /// `agent_hooks`), refreshed on the same interval gate as
     /// `hook_status_due`. Read by [`Self::session_status`] in place of the
@@ -475,14 +443,8 @@ pub struct App {
     submitted_at: HashMap<String, Instant>,
     /// Input boundaries recorded before a new pane discovers its rollout path.
     synthetic_turn_cutoffs: HashMap<String, DateTime<Utc>>,
-    /// When the next hook-state-file poll is due. Same purpose as
-    /// `html_candidates_due` — bounds the per-tick filesystem reads to an
-    /// interval instead of every frame.
+    /// When the next bounded hook-state-file poll is due.
     pub hook_status_due: Option<Instant>,
-    /// When `Some`, the Ctrl-P candidate picker is open; the value is the
-    /// selected index into the focused pane's `html_candidates` list. Mirrors
-    /// `new_picker`/`handoff_picker`.
-    pub html_preview_picker: Option<usize>,
     /// Links found in a recent answer, waiting to be picked from. Only opened
     /// when there are two or more — a single link is copied outright, since 17
     /// of 22 link-bearing answers in this project's own history had exactly one
@@ -559,26 +521,12 @@ pub struct App {
     /// Set by `c` on a Working/Blocked session, holding its id, while the
     /// "send anyway?" confirm is up. Idle sessions skip this and send at once.
     pub catchup_confirm: Option<String>,
-    /// Opened by `Ctrl-T` from a live pane (single or multi). Holds the
-    /// one-line "topic / RUNBOOK §n / files" text typed so far; sent to the
-    /// *focused* pane's own CLI on confirm, wrapped in a fixed instruction
-    /// template — never to every pane, unlike broadcast.
-    pub transition_report_input: Option<String>,
-    /// Set once the one-line input above is confirmed: the fully assembled
-    /// prompt (template + typed specifics), shown read-only by default.
-    /// Reuses `BroadcastDraft` purely as a text+cursor buffer so switching
-    /// into edit mode gets multi-line editing for free.
-    pub transition_report_review: Option<text_input::BroadcastDraft>,
-    /// False = read-only preview (enter sends as-is, `e` edits); true = the
-    /// buffer above is directly editable (enter still sends; shift/alt/ctrl-enter
-    /// inserts a newline instead, same as broadcast/dispatch).
-    pub transition_report_review_editing: bool,
     /// Resolved once at construction (see [`audit_path_for_app`]) so every
     /// instrumentation call site logs to the same place without re-resolving
     /// `MINDPLAYER_AUDIT`/`cfg!(test)` on every keypress.
     pub(crate) audit_path: PathBuf,
     /// Resolved once at construction (see [`prompts_dir_for_app`]) — the
-    /// directory `load_prompt` calls read/seed catchup.md, transition_report.md, etc. from.
+    /// directory `load_prompt` reads/seeds the user's catch-up prompt from.
     pub(crate) prompts_dir: PathBuf,
     /// Subscription rate-limit windows for the usage popup. `None` until the
     /// first fetch lands; the fetch does network I/O so it never blocks a keypress.
@@ -657,9 +605,13 @@ pub struct App {
     pub pty_y: u16,
 
     scan_rx: Option<Receiver<working_set::CatalogMessage>>,
-    /// In-flight background usage refresh, kept off the main thread so periodic
-    /// token updates and re-sort never stall input/rendering.
+    /// Lightweight activity updates, never automatic token measurements.
     refresh_rx: Option<Receiver<Vec<ActivityUpdate>>>,
+    refresh_started_at: Instant,
+    /// Kiro context uses request order, not percentage magnitude or reply order.
+    context_observations: HashMap<working_set::SourceKey, (Instant, f64)>,
+    manual_usage: HashMap<working_set::SourceKey, mindplayer_core::catalog::UsageSnapshot>,
+    manual_usage_pending: Option<usage::PendingUsage>,
     /// In-flight background full re-scan (to pick up newly created sessions).
     bg_rescan_rx: Option<Receiver<working_set::CatalogMessage>>,
     /// When to kick the next background re-scan (after creating a session).
@@ -672,15 +624,6 @@ pub struct App {
     /// the read finished. Keyed by the target session id so a stale result
     /// can never land on a pane the user has since switched away from.
     thread_sync_rx: Option<PendingSessionSync<ThreadSyncResult>>,
-    /// In-flight background `.html`-candidate scan sweep (see
-    /// `spawn_html_scan`/`apply_html_scan`). Walking each live pane's cwd
-    /// (`scan_html_candidates`) is a blocking filesystem walk that takes long
-    /// enough to visibly stall input/rendering when a session's cwd is the root
-    /// of a large monorepo — so, exactly like `thread_sync_rx`, the walk runs on
-    /// a background thread and the finished batch is picked up non-blocking on
-    /// the main thread. Each entry is `(pane_id, raw scan_html_candidates
-    /// results for that pane)`; `None` means no sweep is in flight.
-    html_scan_rx: Option<Receiver<HtmlScanBatch>>,
     pub spinner: usize,
     pub status: String,
     pub should_quit: bool,
@@ -787,11 +730,6 @@ impl App {
             multi_select: false,
             marked: HashSet::new(),
             ptys: HashMap::new(),
-            html_preview_input: None,
-            html_preview_error: None,
-            html_candidates: HashMap::new(),
-            html_seen: HashMap::new(),
-            html_candidates_due: None,
             hook_status: HashMap::new(),
             hook_floor: HashMap::new(),
             hook_source_ids: HashMap::new(),
@@ -799,7 +737,6 @@ impl App {
             submitted_at: HashMap::new(),
             synthetic_turn_cutoffs: HashMap::new(),
             hook_status_due: None,
-            html_preview_picker: None,
             link_picker: None,
             active: None,
             panes: Vec::new(),
@@ -829,9 +766,6 @@ impl App {
             label_target: None,
             dir_input: None,
             catchup_confirm: None,
-            transition_report_input: None,
-            transition_report_review: None,
-            transition_report_review_editing: false,
             audit_path: audit_path_for_app(),
             prompts_dir: prompts_dir_for_app(),
             limits: None,
@@ -868,10 +802,13 @@ impl App {
             pty_y: 0,
             scan_rx: None,
             refresh_rx: None,
+            refresh_started_at: Instant::now(),
+            context_observations: HashMap::new(),
+            manual_usage: HashMap::new(),
+            manual_usage_pending: None,
             bg_rescan_rx: None,
             rescan_due: None,
             thread_sync_rx: None,
-            html_scan_rx: None,
             spinner: 0,
             status: String::new(),
             should_quit: false,
@@ -1000,9 +937,12 @@ impl App {
     pub fn summary_head(&self) -> String {
         let a = &self.visible_aggregate;
         format!(
-            "{} sessions · {} tok",
+            "{} sessions · {}",
             a.session_count(),
-            human_tokens(a.total.total),
+            self.manual_usage_summary(self.visible.iter().filter_map(|row| match row {
+                Row::Session(index) => self.all_sessions.get(*index),
+                _ => None,
+            })),
         )
     }
 
@@ -1442,6 +1382,7 @@ mod selection;
 mod session_continuity;
 mod session_list;
 mod spawn;
+mod usage;
 pub(crate) mod working_set;
 #[cfg(test)]
 mod working_set_tests;

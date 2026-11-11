@@ -1,16 +1,6 @@
 use super::*;
 use std::path::Path;
-use std::time::SystemTime;
-use walkdir::WalkDir;
-
-/// How often the per-pane `.html`-candidate directory walk runs. A few seconds
-/// is responsive enough to notice a file the agent just wrote without turning
-/// into a hot loop of filesystem walks while a pane sits open.
-const HTML_CANDIDATE_POLL_INTERVAL: Duration = Duration::from_secs(3);
-/// How often each Claude/Codex pane's hook-state file is re-read. The files
-/// are tiny (one small JSON object) so this is a direct synchronous read on
-/// the main thread, not a background sweep like the `.html` candidate walk —
-/// a short interval is cheap here.
+/// How often each Claude/Codex pane's tiny hook-state file is re-read.
 const HOOK_STATUS_POLL_INTERVAL: Duration = Duration::from_millis(125);
 
 fn restore_tracking<T>(map: &mut HashMap<String, T>, id: &str, previous: Option<T>) {
@@ -23,41 +13,6 @@ fn restore_tracking<T>(map: &mut HashMap<String, T>, id: &str, previous: Option<
         }
     }
 }
-/// Only `.html` files modified within this window of "now" count as candidates.
-/// A session cwd that happens to be a large monorepo root can hold hundreds of
-/// stale `.html` files — e.g. a dated-report dump with one file generated per
-/// day over months — none of which relate to what the agent is doing right now.
-/// With no recency floor they sort in by mtime alongside a file written seconds
-/// ago and drown it out of the picker's visible rows (the reported bug). Two
-/// hours is deliberately generous: long enough to still surface something the
-/// user wrote earlier in the same working session (after a break, a meeting,
-/// etc.), while anything from a previous day ages out. It's orthogonal to the
-/// `html_seen` already-offered suppression — both filters apply.
-const HTML_CANDIDATE_MAX_AGE: Duration = Duration::from_secs(2 * 60 * 60);
-/// Keep the candidate walk shallow: it's meant to catch a file the agent just
-/// wrote *near* where it's working, not to index an entire repo.
-const HTML_WALK_MAX_DEPTH: usize = 3;
-/// Ceiling on entries one walk will look at, so a pane opened somewhere
-/// pathological — a home directory, a machine-wide checkout root — cannot make
-/// a periodic sweep expensive no matter how deep the skip list goes.
-///
-/// Set well above a large monorepo root (this workspace visits about 32,000 at
-/// depth 3) so it never truncates a realistic tree: the depth limit and the
-/// skip list shape the normal case, this only stops the unbounded one.
-pub(crate) const HTML_WALK_MAX_ENTRIES: usize = 50_000;
-/// Directory names never descended into during the candidate walk — heavy
-/// vendor/build/VCS trees that can hold thousands of files and would make a
-/// periodic recursive scan a real performance/battery problem.
-const HTML_SKIP_DIRS: &[&str] = &[
-    "node_modules",
-    ".git",
-    "target",
-    "dist",
-    "build",
-    "vendor",
-    ".venv",
-    "__pycache__",
-];
 
 fn point_in_bounds(bounds: Option<(u16, u16, u16, u16)>, col: u16, row: u16) -> bool {
     bounds.is_some_and(|(x, y, rows, cols)| {
@@ -254,10 +209,7 @@ impl App {
         } else {
             self.account_auth.cancel(sid);
         }
-        // Per-pane HTML-candidate detection state must not outlive the pane; the
-        // interval gate is global, so there's nothing pane-scoped to clear for it.
-        self.html_candidates.remove(sid);
-        self.html_seen.remove(sid);
+        self.invalidate_manual_usage();
         if let Some(pos) = self.panes.iter().position(|id| id == sid) {
             self.panes.remove(pos);
             self.pane_sizes.remove(sid);
@@ -609,7 +561,7 @@ impl App {
     }
 
     /// Refresh `hook_status` for every live Claude/Codex pane from its
-    /// hook-state file. Interval-gated like [`Self::poll_html_candidates`];
+    /// hook-state file. Interval-gated to keep filesystem reads bounded;
     /// returns true if any pane's cached reading changed (needs redraw since
     /// it can flip the list badge/urgency sort without any new PTY output).
     pub fn poll_hook_status(&mut self) -> bool {
@@ -910,155 +862,6 @@ impl App {
         });
         self.focus_or_add_pane(&session.id);
         self.status = format!("resuming {} {}", session.agent.as_str(), short(&session.id));
-    }
-
-    /// `Ctrl-T` from a live pane: open the one-line "topic / RUNBOOK §n /
-    /// files" input. Works the same with one pane or several open — it only
-    /// ever targets whichever pane is currently focused, never every pane
-    /// (unlike broadcast).
-    pub fn begin_transition_report(&mut self) {
-        if self.focused_pane().is_none() {
-            self.status = "transition report needs a live pane".to_string();
-            return;
-        }
-        self.transition_report_input = Some(String::new());
-        self.status = "transition report: topic / RUNBOOK §n / files, then enter".to_string();
-    }
-
-    pub fn cancel_transition_report(&mut self) {
-        self.transition_report_input = None;
-    }
-
-    pub fn transition_report_input_push(&mut self, c: char) {
-        if let Some(s) = self.transition_report_input.as_mut() {
-            s.push(c);
-        }
-    }
-
-    pub fn transition_report_input_backspace(&mut self) {
-        if let Some(s) = self.transition_report_input.as_mut() {
-            s.pop();
-        }
-    }
-
-    /// Enter on the one-line input: assemble the real prompt (template +
-    /// typed specifics) and show it read-only rather than sending it —
-    /// `send_transition_report_review` / `begin_editing_transition_report_review`
-    /// take it from here. Nothing is sent to the session yet.
-    pub fn confirm_transition_report_input(&mut self) {
-        let Some(input) = self.transition_report_input.take() else {
-            return;
-        };
-        if self.focused_pane().is_none() {
-            self.status = "transition report failed: no focused pane".to_string();
-            return;
-        }
-        let assembled = transition_report_prompt(&self.prompts_dir, &input);
-        let mut draft = text_input::BroadcastDraft::default();
-        draft.push_text(&assembled);
-        self.transition_report_review = Some(draft);
-        self.transition_report_review_editing = false;
-        self.status = "transition report: enter send · e edit · esc cancel".to_string();
-    }
-
-    pub fn cancel_transition_report_review(&mut self) {
-        self.transition_report_review = None;
-        self.transition_report_review_editing = false;
-    }
-
-    pub fn begin_editing_transition_report_review(&mut self) {
-        if self.transition_report_review.is_some() {
-            self.transition_report_review_editing = true;
-        }
-    }
-
-    /// Enter on the review screen (read-only or mid-edit): send whatever
-    /// text is currently in the buffer — the untouched assembled prompt if
-    /// the user never pressed `e`, or their edited version otherwise.
-    pub fn send_transition_report_review(&mut self) {
-        let Some(draft) = self.transition_report_review.take() else {
-            return;
-        };
-        self.transition_report_review_editing = false;
-        let Some(id) = self.focused_pane().map(str::to_string) else {
-            self.status = "transition report failed: no focused pane".to_string();
-            return;
-        };
-        let Some(session) = self.all_sessions.iter().find(|s| s.id == id).cloned() else {
-            self.status = "transition report failed: session no longer tracked".to_string();
-            return;
-        };
-        let mut prompt = draft.instruction;
-        prompt.push('\r');
-        if self.enqueue_or_submit_to_session(&session, prompt.into_bytes()) {
-            mindplayer_core::log_event_to(
-                &self.audit_path,
-                mindplayer_core::AuditEvent::TransitionReportSent,
-            );
-            self.status = format!("transition report prompt sent to {}", short(&session.id));
-        } else {
-            self.status = format!("transition report failed to send to {}", short(&session.id));
-        }
-    }
-
-    pub fn transition_report_review_push_char(&mut self, c: char) {
-        if let Some(draft) = self.transition_report_review.as_mut() {
-            draft.push_char(c);
-        }
-    }
-
-    pub fn transition_report_review_push_text(&mut self, text: &str) {
-        if let Some(draft) = self.transition_report_review.as_mut() {
-            draft.push_text(text);
-        }
-    }
-
-    pub fn transition_report_review_backspace(&mut self) {
-        if let Some(draft) = self.transition_report_review.as_mut() {
-            draft.backspace();
-        }
-    }
-
-    pub fn transition_report_review_delete(&mut self) {
-        if let Some(draft) = self.transition_report_review.as_mut() {
-            draft.delete();
-        }
-    }
-
-    pub fn transition_report_review_move_left(&mut self) {
-        if let Some(draft) = self.transition_report_review.as_mut() {
-            draft.move_left();
-        }
-    }
-
-    pub fn transition_report_review_move_right(&mut self) {
-        if let Some(draft) = self.transition_report_review.as_mut() {
-            draft.move_right();
-        }
-    }
-
-    pub fn transition_report_review_move_up(&mut self) {
-        if let Some(draft) = self.transition_report_review.as_mut() {
-            draft.move_up();
-        }
-    }
-
-    pub fn transition_report_review_move_down(&mut self) {
-        if let Some(draft) = self.transition_report_review.as_mut() {
-            draft.move_down();
-        }
-    }
-
-    pub fn transition_report_review_move_home(&mut self) {
-        if let Some(draft) = self.transition_report_review.as_mut() {
-            draft.move_home();
-        }
-    }
-
-    pub fn transition_report_review_move_end(&mut self) {
-        if let Some(draft) = self.transition_report_review.as_mut() {
-            draft.move_end();
-        }
     }
 
     /// Toggle the multi-select mark on the currently-selected session, then
@@ -1420,266 +1223,6 @@ impl App {
         }
         false
     }
-
-    /// The detected `.html` candidates for the focused pane, most-recent-first
-    /// (empty when there are none). Used by the Ctrl-P picker's key handling and
-    /// its renderer so both read the same list.
-    pub fn html_candidates_for_focused(&self) -> &[PathBuf] {
-        self.focused_pane()
-            .and_then(|id| self.html_candidates.get(id))
-            .map(Vec::as_slice)
-            .unwrap_or(&[])
-    }
-
-    /// Passive `.html`-candidate detection, called every `run()` tick. The
-    /// directory walk is a blocking filesystem operation, so it must never run
-    /// on this (input + render) thread: instead this interval-gates *when* to
-    /// kick off a sweep ([`Self::spawn_html_scan`], which snapshots each live
-    /// pane's cwd and does the walking on a background thread) and, in the same
-    /// call, picks up a finished sweep non-blocking ([`Self::apply_html_scan`]).
-    /// Only the latter can change [`Self::html_candidates`], so only its result
-    /// is returned as "needs a redraw to update the badge".
-    ///
-    /// See [`super::handoff_sync`]'s `spawn_thread_sync_for`/`poll_thread_sync`
-    /// for the same off-main-thread pattern applied to peer-lane transcript
-    /// reads — this mirrors it so a session cwd rooted at a large monorepo can
-    /// never freeze typing the way a synchronous walk did.
-    pub fn poll_html_candidates(&mut self) -> bool {
-        self.spawn_html_scan();
-        self.apply_html_scan()
-    }
-
-    /// Kick off a background `.html`-candidate sweep if the interval gate is due
-    /// and no sweep is already in flight. Snapshots the `(id, cwd)` pairs for
-    /// every live pane (a cheap in-memory read on the main thread — no I/O),
-    /// then spawns one thread that runs the blocking [`scan_html_candidates`]
-    /// walk for each and sends the whole batch back over a channel. Returns
-    /// immediately without blocking; returns true if a sweep was actually
-    /// started (used by tests to drive the flow deterministically). The
-    /// `html_seen`/recency filtering of the result happens later in
-    /// [`Self::apply_html_scan`], on the main thread, since it's all in-memory.
-    pub(crate) fn spawn_html_scan(&mut self) -> bool {
-        match self.html_candidates_due {
-            Some(at) if Instant::now() < at => return false,
-            _ => {}
-        }
-        if self.html_scan_rx.is_some() {
-            // A previous sweep is still walking; don't stack a second one. Leave
-            // the (now-due) timer alone so the next tick retries promptly once
-            // this one lands and `apply_html_scan` clears the receiver.
-            return false;
-        }
-        // Snapshot which panes to scan and where — cheap, in-memory, on the main
-        // thread — so the spawned closure owns plain data and never touches
-        // `self` (a thread closure can't safely capture `&mut App`).
-        let targets: Vec<(String, PathBuf)> = self
-            .panes
-            .iter()
-            .filter_map(|id| {
-                self.all_sessions
-                    .iter()
-                    .find(|s| &s.id == id)
-                    .map(|s| (id.clone(), s.cwd.clone()))
-            })
-            .collect();
-        if targets.is_empty() {
-            // Nothing to walk, so back off here rather than retrying every tick.
-            self.html_candidates_due = Some(Instant::now() + HTML_CANDIDATE_POLL_INTERVAL);
-            return false;
-        }
-        // Cleared, not re-armed: the next sweep is scheduled from when this one
-        // LANDS (see `apply_html_scan`), so a walk slower than the interval can
-        // never finish into an already-due timer and run back to back.
-        self.html_candidates_due = None;
-        let (tx, rx) = mpsc::channel();
-        thread::spawn(move || {
-            let _ = tx.send(walk_targets_once(targets, scan_html_candidates));
-        });
-        self.html_scan_rx = Some(rx);
-        true
-    }
-
-    /// Non-blocking pickup of a finished background sweep (see
-    /// [`Self::spawn_html_scan`]). If a batch is ready, applies the recency
-    /// floor ([`HTML_CANDIDATE_MAX_AGE`]) and the existing `html_seen`
-    /// already-offered suppression — both cheap in-memory comparisons — to each
-    /// pane's raw results and refreshes [`Self::html_candidates`]. Returns true
-    /// if any pane's candidate list changed (needs a redraw to update the
-    /// badge); false if nothing was ready yet or nothing changed.
-    pub(crate) fn apply_html_scan(&mut self) -> bool {
-        let Some(rx) = &self.html_scan_rx else {
-            return false;
-        };
-        let Ok(batch) = rx.try_recv() else {
-            return false;
-        };
-        self.html_scan_rx = None;
-        // End-to-start: the interval starts counting now that the walk is done.
-        self.html_candidates_due = Some(Instant::now() + HTML_CANDIDATE_POLL_INTERVAL);
-
-        let now = SystemTime::now();
-        // Panes still open now — a pane closed between kicking off the sweep and
-        // its result landing must not have candidate state resurrected for it.
-        let valid: HashSet<String> = self.panes.iter().cloned().collect();
-        let mut changed = false;
-        for (id, found) in batch {
-            if !valid.contains(&id) {
-                continue;
-            }
-            let candidates: Vec<PathBuf> = {
-                let seen = self.html_seen.get(&id);
-                found
-                    .into_iter()
-                    // Recency floor: only genuinely fresh files count, so a large
-                    // monorepo root's pile of old dated `.html` files ages out
-                    // instead of crowding the picker.
-                    .filter(|(_, mtime)| within_max_age(*mtime, now, HTML_CANDIDATE_MAX_AGE))
-                    // Already-offered/previewed suppression (orthogonal to the
-                    // recency floor above): a file stays hidden until its mtime
-                    // advances past when it was last seen.
-                    .filter(|(path, mtime)| {
-                        seen.and_then(|m| m.get(path))
-                            .is_none_or(|seen_mtime| mtime > seen_mtime)
-                    })
-                    .map(|(path, _)| path)
-                    .collect()
-            };
-            let new_val = if candidates.is_empty() {
-                None
-            } else {
-                Some(candidates)
-            };
-            if self.html_candidates.get(&id).map(Vec::as_slice) != new_val.as_deref() {
-                changed = true;
-                match new_val {
-                    Some(v) => {
-                        self.html_candidates.insert(id.clone(), v);
-                    }
-                    None => {
-                        self.html_candidates.remove(&id);
-                    }
-                }
-            }
-        }
-        // Drop candidate lists for panes that no longer exist (owned set, so
-        // `self` isn't double-borrowed).
-        let before = self.html_candidates.len();
-        self.html_candidates.retain(|id, _| valid.contains(id));
-        if self.html_candidates.len() != before {
-            changed = true;
-        }
-        changed
-    }
-}
-
-/// Whether `mtime` is recent enough (within `max_age` of `now`) to count as a
-/// candidate. A file whose mtime is in the future (clock skew, or a fixture
-/// deliberately post-dating it) trivially passes rather than being treated as
-/// "infinitely old". Pulled out so the recency rule is unit-testable without a
-/// real walk or clock.
-fn within_max_age(mtime: SystemTime, now: SystemTime, max_age: Duration) -> bool {
-    match now.duration_since(mtime) {
-        Ok(age) => age <= max_age,
-        Err(_) => true,
-    }
-}
-
-/// Walk `cwd` (shallowly, skipping heavy vendor/build/VCS dirs) for `.html`
-/// files, returning `(path, mtime)` sorted most-recently-modified first. Pulled
-/// out of `App` so the scan itself can be unit-tested against a real temp dir
-/// without constructing panes/PTYs.
-/// Walk each distinct directory in `targets` once, then give every pane the
-/// result for the directory it sits in.
-///
-/// Panes routinely share one cwd — every pane opened at a monorepo root does —
-/// and the walk dwarfs everything else the sweep does, so walking per pane made
-/// the cost scale with pane count for no new information. `walk` is a parameter
-/// so a test can count how many times it actually ran.
-pub(crate) fn walk_targets_once<F>(targets: Vec<(String, PathBuf)>, mut walk: F) -> HtmlScanBatch
-where
-    F: FnMut(&Path) -> Vec<(PathBuf, SystemTime)>,
-{
-    let mut walked: HashMap<PathBuf, Vec<(PathBuf, SystemTime)>> = HashMap::new();
-    for (_, cwd) in &targets {
-        if !walked.contains_key(cwd) {
-            walked.insert(cwd.clone(), walk(cwd));
-        }
-    }
-    targets
-        .into_iter()
-        .map(|(id, cwd)| {
-            let found = walked.get(&cwd).cloned().unwrap_or_default();
-            (id, found)
-        })
-        .collect()
-}
-
-pub(crate) fn scan_html_candidates(cwd: &Path) -> Vec<(PathBuf, SystemTime)> {
-    let mut out: Vec<(PathBuf, SystemTime)> = Vec::new();
-    let walker = WalkDir::new(cwd)
-        .max_depth(HTML_WALK_MAX_DEPTH)
-        .into_iter()
-        .filter_entry(|entry| {
-            // Always descend the root; below it, never enter a skip-listed
-            // directory (by name, at any depth). Non-directories always pass so
-            // their `.html`-ness is judged below.
-            if entry.depth() == 0 || !entry.file_type().is_dir() {
-                return true;
-            }
-            entry
-                .file_name()
-                .to_str()
-                .is_none_or(|name| !HTML_SKIP_DIRS.contains(&name))
-        });
-    for (visited, entry) in walker.filter_map(Result::ok).enumerate() {
-        if visited >= HTML_WALK_MAX_ENTRIES {
-            break;
-        }
-        if !entry.file_type().is_file() {
-            continue;
-        }
-        let path = entry.path();
-        if path.extension().and_then(|e| e.to_str()) != Some("html") {
-            continue;
-        }
-        if let Some(mtime) = entry.metadata().ok().and_then(|m| m.modified().ok()) {
-            out.push((path.to_path_buf(), mtime));
-        }
-    }
-    // Most-recently-modified first.
-    out.sort_by_key(|(_, mtime)| std::cmp::Reverse(*mtime));
-    out
-}
-
-/// Default content for `~/.mindplayer/prompts/transition_report.md` —
-/// seeded there on first use so it can be rewritten at any time without a
-/// rebuild. Handed to *any* provider (codex/claude/kiro — it's plain text,
-/// nothing provider-specific) by `Ctrl-T`. The bracketed placeholders are
-/// intentionally left for the agent itself to fill in from whatever the
-/// user typed in `input` — mindplayer never parses "topic / §n / files"
-/// itself, since splitting on "/" would break the moment a file path
-/// contains one. `{{input}}` marks where that typed text is substituted in;
-/// if a rewritten template drops the token, it's appended instead so
-/// nothing the user typed is silently lost.
-const DEFAULT_TRANSITION_REPORT_PROMPT: &str = "\
-transition-<주제>.html을 _assets/transition-template.html 구조로 만들어줘.
-소스: [RUNBOOK.md §n] + [실제 대상 파일들 경로].
-TL;DR/Topology/검증/Glossary는 항상, 핵심판단·wiring토글·steps는
-실제로 그 구조(2단 비교/현재-목표/순서)가 있을 때만 써줘.
-
-이번 건 세부사항: {{input}}";
-
-fn transition_report_prompt(prompts_dir: &std::path::Path, input: &str) -> String {
-    let template = mindplayer_core::load_prompt_from(
-        prompts_dir,
-        "transition_report",
-        DEFAULT_TRANSITION_REPORT_PROMPT,
-    );
-    if template.contains("{{input}}") {
-        template.replace("{{input}}", input)
-    } else {
-        format!("{template}\n\n이번 건 세부사항: {input}")
-    }
 }
 
 /// Stable-partitions `ids` into "urgent first, everyone else after" within each
@@ -1807,8 +1350,7 @@ mod stderr_tail_tests {
 
 #[cfg(test)]
 mod tests {
-    use super::{bubble_urgent_within_bands, within_max_age};
-    use std::time::{Duration, SystemTime};
+    use super::bubble_urgent_within_bands;
 
     fn ids(list: &[&str]) -> Vec<String> {
         list.iter().map(|s| s.to_string()).collect()
@@ -1870,25 +1412,6 @@ mod tests {
             |id| id == "m2" || id == "m4",
         );
         assert_eq!(out, ids(&["m2", "m4", "m1", "m3"]));
-    }
-
-    #[test]
-    fn within_max_age_keeps_fresh_and_drops_stale() {
-        let now = SystemTime::now();
-        let max = Duration::from_secs(2 * 60 * 60);
-        // Just now, and just inside the window → kept.
-        assert!(within_max_age(now, now, max));
-        assert!(within_max_age(now - Duration::from_secs(60 * 60), now, max));
-        // Exactly at the boundary is inclusive.
-        assert!(within_max_age(now - max, now, max));
-        // Past the window → dropped.
-        assert!(!within_max_age(
-            now - Duration::from_secs(3 * 60 * 60),
-            now,
-            max
-        ));
-        // A future mtime (clock skew) counts as fresh rather than infinitely old.
-        assert!(within_max_age(now + Duration::from_secs(3600), now, max));
     }
 
     #[test]

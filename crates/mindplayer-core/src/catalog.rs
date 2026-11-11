@@ -1,11 +1,11 @@
-//! Rebuildable session metadata with full parsing limited to the active working set.
+//! Rebuildable session metadata and explicitly requested, bounded usage measurements.
 //!
 //! Call scans on a worker: enumeration still visits the supplied stores. Cache
 //! entries retain raw provider titles and original paths; callers apply current
 //! labels and thread/category state after accepting a worker result.
 
 use crate::discovery::{self, ParseMode, Scope, SessionRoot, SessionSource};
-use crate::session::{Agent, Session};
+use crate::session::{Agent, Session, TokenUsage};
 use crate::state::{SourceUse, State};
 use anyhow::{ensure, Context, Result};
 use chrono::{DateTime, Utc};
@@ -22,17 +22,26 @@ static NEXT_WRITE: AtomicU64 = AtomicU64::new(0);
 /// A worker's raw session lists and counts of source parser invocations.
 #[derive(Default, Debug)]
 pub struct CatalogSnapshot {
-    /// Fully parsed sessions; every row has `archived == false`.
+    /// Lightweight metadata; every row has `archived == false`.
     pub active: Vec<Session>,
     /// Lightweight metadata; every row has `archived == true`.
     pub archive: Vec<Session>,
     /// Sources inspected with bounded metadata reads during this scan.
     pub metadata_reads: usize,
-    /// Active sources inspected with their full provider parser during this scan.
+    /// Full provider parses during this scan (metadata-only scans leave this zero).
     pub detail_reads: usize,
     /// Newly resolved legacy-use bindings from the complete metadata census.
     /// Merge only into still-unbound IDs; a newer explicit use takes precedence.
     pub use_sources: BTreeMap<String, Vec<SourceUse>>,
+}
+
+/// Usage measured on explicit request, never persisted in the metadata catalog.
+#[derive(Debug, Clone, Copy)]
+pub struct UsageSnapshot {
+    pub tokens: TokenUsage,
+    pub context_pct: Option<f64>,
+    /// The provider's read budget omitted records needed for a complete total.
+    pub partial: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -129,7 +138,7 @@ impl Catalog {
     }
 }
 
-/// Enumerate the requested stores, reuse unchanged metadata, and hydrate Active only.
+/// Enumerate the requested stores and reuse unchanged metadata for both lists.
 ///
 /// Classification uses the supplied state/time rather than filesystem mtime.
 /// Out-of-scope/root entries remain cached for other scans but never enter this
@@ -247,27 +256,14 @@ pub fn scan(
             .entry(id.clone())
             .or_default();
     }
-    for (key, mut session) in metadata_census {
+    for (_, mut session) in metadata_census {
         if matches!(scope, Scope::WorkingDir(cwd) if session.cwd != *cwd) {
             continue;
         }
-        if classified_state.is_active_session(&session, now, protected) {
-            snapshot.detail_reads += 1;
-            let Ok(mut full) = hydrate(&session) else {
-                // A racing replacement/missing source cannot be advertised as
-                // a successful active refresh. Its next scan retries metadata.
-                entries.remove(&key);
-                dirty = true;
-                continue;
-            };
-            // The catalog retains observed human activity for classification
-            // when full usage's bounded tail no longer contains that turn.
-            full.last_prompt_at = full.last_prompt_at.max(session.last_prompt_at);
-            session = full;
-        }
         session.archived = !classified_state.is_active_session(&session, now, protected);
+        // Old cache entries may contain usage; they are not manual measurements.
+        session.tokens = TokenUsage::default();
         if session.archived {
-            session.tokens = Default::default();
             snapshot.archive.push(session);
         } else {
             snapshot.active.push(session);
@@ -294,28 +290,62 @@ pub fn scan(
     Ok(snapshot)
 }
 
-/// Fully refresh exactly one source, preserving its native id, account path and view flag.
+/// Refresh one source's metadata and validate its native identity without measuring usage.
 ///
 /// # Errors
 /// Returns an error for a missing/unreadable or invalid source, changed native
 /// id/cwd/provider, or any source that the provider parser cannot refresh.
 pub fn hydrate(session: &Session) -> Result<Session> {
-    let source = SessionSource {
+    discovery::validate_source_header(session)
+        .with_context(|| format!("validating session source {}", session.file.display()))?;
+    let mut metadata = discovery::parse_source(&session_source(session), ParseMode::Metadata)
+        .with_context(|| format!("reading session source {}", session.file.display()))?
+        .with_context(|| format!("cannot hydrate session source {}", session.file.display()))?;
+    validate_identity(session, &metadata)?;
+    metadata.archived = session.archived;
+    Ok(metadata)
+}
+
+/// Measure exactly one source even when its mtime has not changed.
+///
+/// Codex uses its bounded cumulative-token tail; Claude/OMP and Cursor estimates
+/// retain their 64 MiB budgets. Kiro reports context occupancy, not token totals.
+///
+/// # Errors
+/// Returns an error if the source cannot be read or its native identity changed.
+/// Missing or ambiguous Cursor transcripts are errors, not measured zero usage.
+pub fn measure_usage(session: &Session) -> Result<UsageSnapshot> {
+    // Validate before and after the expensive read: a replaced source must not
+    // attach its usage to the selected row.
+    hydrate(session)?;
+    let (measured, partial) = discovery::measure_source_usage(&session_source(session))
+        .with_context(|| format!("measuring session source {}", session.file.display()))?
+        .with_context(|| format!("invalid session source {}", session.file.display()))?;
+    validate_identity(session, &measured)?;
+    hydrate(session)?;
+    Ok(UsageSnapshot {
+        tokens: measured.tokens,
+        context_pct: measured.context_pct,
+        partial,
+    })
+}
+
+fn session_source(session: &Session) -> SessionSource {
+    SessionSource {
         agent: session.agent,
         file: session.file.clone(),
         cwd_override: Some(session.cwd.clone()),
-    };
-    let mut full = discovery::parse_source(&source, ParseMode::Full)
-        .with_context(|| format!("reading session source {}", session.file.display()))?
-        .with_context(|| format!("cannot hydrate session source {}", session.file.display()))?;
+    }
+}
+
+fn validate_identity(session: &Session, parsed: &Session) -> Result<()> {
     ensure!(
-        full.id == session.id
-            && full.agent == session.agent
-            && full.file == session.file
-            && full.cwd == session.cwd,
+        parsed.id == session.id
+            && parsed.agent == session.agent
+            && parsed.file == session.file
+            && parsed.cwd == session.cwd,
         "session source identity changed at {}",
         session.file.display()
     );
-    full.archived = session.archived;
-    Ok(full)
+    Ok(())
 }

@@ -13,8 +13,7 @@ pub(crate) const LIMITS_FETCH_DEADLINE: Duration = Duration::from_secs(30);
 const DEFAULT_CATCHUP_PROMPT: &str = "\
 잠깐 다른 일 하다가 돌아왔어. 아래 정리해서 알려줘:
 1. 지금 이 프로젝트가 뭐 하는 프로젝트인지 간단히 소개
-2. 이 프로젝트에 backlog.html이 있으면 열어서 보여주고, 없으면 지금까지 진행 상황 기반으로 하나 만들어줘
-3. 최근에 내가 뭘 물어봤고 네가 뭘 했는지 요약";
+2. 최근에 내가 뭘 물어봤고 네가 뭘 했는지 요약";
 
 pub(crate) fn matches_search(s: &Session, query: &str) -> bool {
     let query = query.trim().to_lowercase();
@@ -107,6 +106,9 @@ impl App {
     }
 
     pub(crate) fn rebuild_visible(&mut self) {
+        for session in &mut self.all_sessions {
+            usage::restore(&self.manual_usage, session);
+        }
         let show_archived = self.show_archived;
         // Catalog pages are already searched on the worker, including roots
         // outside the page. Re-filtering here would drop their child matches.
@@ -757,12 +759,15 @@ impl App {
         })
     }
 
-    fn row_of_session_source(&self, source: &Session) -> Option<usize> {
+    pub(super) fn row_of_session_source(&self, source: &Session) -> Option<usize> {
         self.visible.iter().position(|row| {
             row.session_index()
                 .and_then(|index| self.all_sessions.get(index))
                 .is_some_and(|s| {
-                    s.id == source.id && s.agent == source.agent && s.file == source.file
+                    s.id == source.id
+                        && s.agent == source.agent
+                        && s.file == source.file
+                        && s.cwd == source.cwd
                 })
         })
     }
@@ -1383,9 +1388,7 @@ impl App {
         true
     }
 
-    /// Kick off a background usage refresh (no-op if one is already running).
-    /// File stats and token parsing happen off the main thread so input and
-    /// rendering never stall; results are applied in [`Self::poll_refresh`].
+    /// Refresh activity off the input thread, without measuring tokens.
     pub fn start_refresh(&mut self) {
         if self.refresh_rx.is_some() || self.all_sessions.is_empty() {
             return;
@@ -1394,21 +1397,35 @@ impl App {
             .all_sessions
             .iter()
             .filter(|s| !s.archived)
-            .cloned()
+            .map(|s| Session {
+                id: s.id.clone(),
+                agent: s.agent,
+                file: s.file.clone(),
+                cwd: s.cwd.clone(),
+                started_at: None,
+                last_active: s.last_active,
+                last_prompt_at: s.last_prompt_at,
+                tokens: TokenUsage::default(),
+                title: String::new(),
+                archived: false,
+                is_subagent: s.is_subagent,
+                // Only a successful metadata read may renew context freshness.
+                context_pct: None,
+            })
             .collect();
         if sessions.is_empty() {
             return;
         }
+        self.refresh_started_at = Instant::now();
         let (tx, rx) = mpsc::channel();
         thread::spawn(move || {
-            refresh_activity_and_usage(&mut sessions);
+            refresh_activity(&mut sessions);
             let out: Vec<ActivityUpdate> = sessions
                 .into_iter()
                 .map(|s| ActivityUpdate {
-                    id: s.id,
+                    source: (s.agent, s.file, s.id, s.cwd),
                     last_active: s.last_active,
                     last_prompt_at: s.last_prompt_at,
-                    tokens: s.tokens,
                     context_pct: s.context_pct,
                 })
                 .collect();
@@ -1417,63 +1434,55 @@ impl App {
         self.refresh_rx = Some(rx);
     }
 
-    /// Apply a finished background refresh: update activity/usage, re-sort
+    /// Apply a finished background activity refresh, re-sort
     /// newest-first, and keep the cursor on the same source. Returns true
     /// if the list changed (needs redraw).
     pub fn poll_refresh(&mut self) -> bool {
         let Some(rx) = &self.refresh_rx else {
             return false;
         };
-        let Ok(updates_raw) = rx.try_recv() else {
-            return false;
+        let updates_raw = match rx.try_recv() {
+            Ok(updates) => updates,
+            Err(mpsc::TryRecvError::Empty) => return false,
+            Err(mpsc::TryRecvError::Disconnected) => {
+                self.refresh_rx = None;
+                return false;
+            }
         };
         self.refresh_rx = None;
 
-        // Defensive: if two discovered sessions ever share an id (e.g. a data
-        // source that embeds the wrong id in a nested transcript), a plain
-        // `collect()` into a HashMap would silently keep whichever update
-        // happened to be last, possibly stamping a freshly-active session with
-        // a stale sibling's timestamp. Keep the most-recently-active update
-        // per id instead, so a collision can only ever look "too fresh", never
-        // corrupt a genuinely active session backwards in time.
-        let mut updates: HashMap<String, ActivityUpdate> = HashMap::new();
-        for u in updates_raw {
-            match updates.get(&u.id) {
-                Some(existing) if existing.last_active >= u.last_active => {}
-                _ => {
-                    updates.insert(u.id.clone(), u);
-                }
-            }
-        }
+        let updates: HashMap<_, _> = updates_raw
+            .iter()
+            .map(|u| ((u.source.0, &u.source.1, &u.source.2, &u.source.3), u))
+            .collect();
         let mut changed = false;
         for s in self.all_sessions.iter_mut().filter(|s| !s.archived) {
-            if let Some(update) = updates.get(&s.id) {
-                changed |= s.last_active != update.last_active
-                    || update
-                        .last_prompt_at
-                        .is_some_and(|at| Some(at) != s.last_prompt_at)
-                    || s.tokens != update.tokens
-                    || s.context_pct != update.context_pct;
-                s.last_active = update.last_active;
-                // A refresh pass only re-derives this from whatever tail
-                // window it happened to scan; a `None` here means "no new
-                // prompt observed this pass", not "there never was one" — so
-                // it must never regress an already-known timestamp.
-                if update.last_prompt_at.is_some() {
-                    s.last_prompt_at = update.last_prompt_at;
+            if let Some(update) = updates.get(&(s.agent, &s.file, &s.id, &s.cwd)) {
+                let last_active = s.last_active.max(update.last_active);
+                let last_prompt_at = s.last_prompt_at.max(update.last_prompt_at);
+                changed |= s.last_active != last_active || s.last_prompt_at != last_prompt_at;
+                s.last_active = last_active;
+                s.last_prompt_at = last_prompt_at;
+                if s.agent == Agent::Kiro && update.context_pct.is_some() {
+                    let previous = s.context_pct;
+                    s.context_pct = update.context_pct;
+                    working_set::merge_kiro_context(
+                        &mut self.context_observations,
+                        s,
+                        self.refresh_started_at,
+                    );
+                    changed |= s.context_pct != previous;
                 }
-                s.tokens = update.tokens;
-                s.context_pct = update.context_pct;
             }
         }
         if !changed {
             return false;
         }
-        let selected = self.selected_session().cloned();
+        let selected = self.selected_session().map(working_set::source_key);
         sort_by_recency(&mut self.all_sessions);
         self.rebuild_visible();
         if let Some(source) = selected {
-            if let Some(pos) = self.row_of_session_source(&source) {
+            if let Some(pos) = self.row_of_source(&source) {
                 self.selected = pos;
             }
         }

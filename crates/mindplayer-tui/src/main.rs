@@ -13,7 +13,6 @@ mod pty;
 mod render_writer;
 mod startup_routing;
 mod terminal_view;
-mod text_input;
 mod turn_status;
 mod ui;
 mod walker;
@@ -433,9 +432,7 @@ fn run(terminal: &mut Terminal<CrosstermBackend<FrameSink>>, app: &mut App) -> R
             // (change-only). Purely a side effect — status is already reflected
             // on screen, so this never forces a redraw.
             app.poll_status_transitions();
-            // Interval-gated walk of each live pane's cwd for newly-written
-            // `.html` files (drives the "🌐 N new" badge and the Ctrl-P picker).
-            if app.poll_html_candidates() {
+            if app.poll_manual_usage() {
                 needs_draw = true;
             }
             if app.flush_initial_inputs() {
@@ -1046,95 +1043,6 @@ fn handle_main_key(app: &mut App, key: KeyEvent) {
         return;
     }
 
-    // HTML candidate picker: opened by Ctrl-P from a live pane when the passive
-    // poll has detected `.html` files. Checked before the free-text popup (and
-    // before `match app.focus`) so its keys don't fall through to the pty.
-    // Up/Down move the selection (clamped, mirroring new_picker/handoff_picker),
-    // Enter opens the selected file in the browser, Tab is the escape hatch to
-    // the free-text path popup, Esc cancels.
-    if let Some(choice) = app.html_preview_picker {
-        let last = app.html_candidates_for_focused().len().saturating_sub(1);
-        match key.code {
-            KeyCode::Up => app.html_preview_picker = Some(choice.saturating_sub(1)),
-            KeyCode::Down => app.html_preview_picker = Some((choice + 1).min(last)),
-            KeyCode::Enter => app.confirm_html_preview_pick(),
-            KeyCode::Tab => app.html_preview_picker_to_input(),
-            KeyCode::Esc => app.cancel_html_preview_picker(),
-            _ => {}
-        }
-        return;
-    }
-
-    // HTML path input: opened by Ctrl-P from a live pane. Checked here, before
-    // `match app.focus`, so its keystrokes don't fall through to the raw
-    // pty-forwarding path. Enter validates + opens the file in the browser (or
-    // re-shows the inline error); Esc cancels.
-    if app.html_preview_input.is_some() {
-        match key.code {
-            KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
-                app.html_preview_input_push(c)
-            }
-            KeyCode::Backspace => app.html_preview_input_backspace(),
-            KeyCode::Enter => app.confirm_html_preview(),
-            KeyCode::Esc => app.cancel_html_preview(),
-            _ => {}
-        }
-        return;
-    }
-
-    // Transition-report input: opened by Ctrl-T from a live pane (see the
-    // Focus::Terminal chord handling below) — checked here, before that
-    // match, so its keystrokes never fall through to the raw pty-forwarding
-    // path.
-    if app.transition_report_input.is_some() {
-        match key.code {
-            KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
-                app.transition_report_input_push(c)
-            }
-            KeyCode::Backspace => app.transition_report_input_backspace(),
-            KeyCode::Enter => app.confirm_transition_report_input(),
-            KeyCode::Esc => app.cancel_transition_report(),
-            _ => {}
-        }
-        return;
-    }
-
-    // Transition-report review: the assembled prompt, read-only until `e`
-    // switches it into the same multi-line editor as the input step above.
-    // Enter sends in both modes — only whether plain typing edits the buffer
-    // or falls through differs.
-    if app.transition_report_review.is_some() {
-        if app.transition_report_review_editing {
-            match key.code {
-                KeyCode::Backspace => app.transition_report_review_backspace(),
-                KeyCode::Delete => app.transition_report_review_delete(),
-                KeyCode::Left => app.transition_report_review_move_left(),
-                KeyCode::Right => app.transition_report_review_move_right(),
-                KeyCode::Up => app.transition_report_review_move_up(),
-                KeyCode::Down => app.transition_report_review_move_down(),
-                KeyCode::Home => app.transition_report_review_move_home(),
-                KeyCode::End => app.transition_report_review_move_end(),
-                KeyCode::Enter if text_newline_key(key) => {
-                    app.transition_report_review_push_text("\n")
-                }
-                KeyCode::Enter => app.send_transition_report_review(),
-                KeyCode::Esc => app.cancel_transition_report_review(),
-                KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    app.transition_report_review_push_char(c)
-                }
-                _ => {}
-            }
-        } else {
-            match key.code {
-                KeyCode::Enter => app.send_transition_report_review(),
-                KeyCode::Char('e') => app.begin_editing_transition_report_review(),
-                KeyCode::Esc => app.cancel_transition_report_review(),
-                _ => {}
-            }
-        }
-        return;
-    }
-
     // Catch-up confirm: only reached for a Working/Blocked target (Idle sends
     // at once in begin_catchup) — asks before queuing in behind its turn.
     if app.catchup_confirm.is_some() {
@@ -1251,14 +1159,6 @@ fn handle_main_key(app: &mut App, key: KeyEvent) {
                         app.copy_links_from_focused();
                         return;
                     }
-                    KeyCode::Char('t') | KeyCode::Char('ㅅ') if !omp_pane => {
-                        app.begin_transition_report();
-                        return;
-                    }
-                    KeyCode::Char('p') | KeyCode::Char('ㅔ') if !omp_pane => {
-                        app.toggle_html_preview();
-                        return;
-                    }
                     _ => {}
                 }
             }
@@ -1371,6 +1271,13 @@ fn handle_main_key(app: &mut App, key: KeyEvent) {
                 KeyCode::Char('e') => app.begin_label_edit(),
                 KeyCode::Char('h') => app.begin_handoff(),
                 KeyCode::Char('x') => app.close_selected(),
+                KeyCode::Char('r')
+                    if !key
+                        .modifiers
+                        .intersects(KeyModifiers::ALT | KeyModifiers::SUPER) =>
+                {
+                    app.measure_selected_usage()
+                }
                 KeyCode::Char('a') => app.toggle_archived_view(),
                 KeyCode::Char('[') => app.move_archive_page(false),
                 KeyCode::Char(']') => app.move_archive_page(true),
@@ -1384,13 +1291,6 @@ fn handle_main_key(app: &mut App, key: KeyEvent) {
 fn is_help_key(code: KeyCode, modifiers: KeyModifiers) -> bool {
     matches!(code, KeyCode::Char('?'))
         || (matches!(code, KeyCode::Char('/')) && modifiers.contains(KeyModifiers::SHIFT))
-}
-
-fn text_newline_key(key: KeyEvent) -> bool {
-    matches!(key.code, KeyCode::Enter)
-        && key
-            .modifiers
-            .intersects(KeyModifiers::SHIFT | KeyModifiers::ALT | KeyModifiers::CONTROL)
 }
 
 /// Map a Korean 2-beolsik jamo back to the QWERTY letter on the same physical
@@ -1576,6 +1476,48 @@ mod tests {
     }
 
     #[test]
+    fn list_r_and_korean_r_measure_but_search_and_text_modals_keep_text() {
+        for key in ['r', 'ㄱ'] {
+            let mut app = main_app_with_session("manual-key");
+            handle_main_key(
+                &mut app,
+                KeyEvent::new(KeyCode::Char(key), KeyModifiers::NONE),
+            );
+            assert!(
+                app.status.contains("measuring selected session"),
+                "key {key}"
+            );
+            handle_main_key(
+                &mut app,
+                KeyEvent::new(KeyCode::Char(key), KeyModifiers::NONE),
+            );
+            assert!(app.status.contains("already in progress"));
+            assert!(app.pending.is_none());
+            assert!(app.ptys.is_empty());
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while !app.poll_manual_usage() {
+                assert!(Instant::now() < deadline);
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            assert!(app.status.contains("failed"));
+        }
+        let mut app = main_app_with_session("search");
+        app.begin_search();
+        handle_main_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE),
+        );
+        assert_eq!(app.search_query.as_deref(), Some("r"));
+        app.search_query = None;
+        app.dir_input = Some(String::new());
+        handle_main_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE),
+        );
+        assert_eq!(app.dir_input.as_deref(), Some("r"));
+    }
+
+    #[test]
     fn mp_review_archive_search_page_keys_preserve_query() {
         let mut app = main_app_with_session("archive-match");
         app.all_sessions[0].archived = true;
@@ -1737,7 +1679,7 @@ mod tests {
     }
 
     #[test]
-    fn f6_and_f7_reach_only_the_focused_codex_or_claude_child_unchanged() {
+    fn native_function_keys_ctrl_p_ctrl_t_and_r_reach_only_the_focused_child() {
         fn captured_hex(text: &str) -> Vec<&str> {
             text.split_once("KEYS_READY")
                 .map(|(_, hex)| hex.split_whitespace().collect())
@@ -1753,7 +1695,7 @@ mod tests {
                 program: "sh".into(),
                 args: vec![
                     "-c".into(),
-                    "stty -echo -icanon min 1 time 0; printf KEYS_READY; od -An -tx1 -N 10".into(),
+                    "stty raw -echo; printf KEYS_READY; od -An -tx1 -N 13".into(),
                 ],
                 cwd: std::env::temp_dir(),
                 env: Default::default(),
@@ -1790,11 +1732,21 @@ mod tests {
             for code in [KeyCode::F(6), KeyCode::F(7)] {
                 handle_main_key(&mut app, KeyEvent::new(code, KeyModifiers::NONE));
             }
+            for code in [KeyCode::Char('p'), KeyCode::Char('t')] {
+                handle_main_key(&mut app, KeyEvent::new(code, KeyModifiers::CONTROL));
+            }
+            handle_main_key(
+                &mut app,
+                KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE),
+            );
             let deadline = Instant::now() + Duration::from_secs(5);
             loop {
                 let text = app.ptys[&id].parser().lock().unwrap().screen().contents();
                 if captured_hex(&text)
-                    == ["1b", "5b", "31", "37", "7e", "1b", "5b", "31", "38", "7e"]
+                    == [
+                        "1b", "5b", "31", "37", "7e", "1b", "5b", "31", "38", "7e", "10", "14",
+                        "72",
+                    ]
                 {
                     break;
                 }
@@ -1840,14 +1792,6 @@ mod tests {
                 KeyEvent::new(KeyCode::Char(key), KeyModifiers::CONTROL),
             );
             assert!(!app.observer_open(), "Ctrl-{key} must not open Trace");
-            assert!(
-                app.transition_report_input.is_none(),
-                "Ctrl-{key} must not open a transition report"
-            );
-            assert!(
-                app.html_preview_input.is_none(),
-                "Ctrl-{key} must not open HTML preview"
-            );
             assert_eq!(
                 app.focused_pane(),
                 Some("omp"),
@@ -2177,30 +2121,6 @@ mod tests {
     }
 
     #[test]
-    fn ctrl_t_opens_transition_report_input_from_a_live_pane_and_esc_cancels() {
-        let mut app = main_app_with_session("s1");
-        app.focus_or_add_pane("s1");
-        app.focus = Focus::Terminal;
-
-        handle_main_key(
-            &mut app,
-            KeyEvent::new(KeyCode::Char('t'), KeyModifiers::CONTROL),
-        );
-        assert_eq!(app.transition_report_input, Some(String::new()));
-
-        // While open, plain typing must fill the input, not fall through to
-        // the raw pty-forwarding path Focus::Terminal normally takes.
-        handle_main_key(
-            &mut app,
-            KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE),
-        );
-        assert_eq!(app.transition_report_input.as_deref(), Some("x"));
-
-        handle_main_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
-        assert!(app.transition_report_input.is_none());
-    }
-
-    #[test]
     fn ctrl_g_toggles_full_screen_trace_and_esc_returns() {
         let mut app = main_app_with_session("s1");
         app.focus_or_add_pane("s1");
@@ -2336,87 +2256,6 @@ mod tests {
     }
 
     #[test]
-    fn ctrl_p_opens_html_preview_popup_and_typing_fills_it_then_esc_cancels() {
-        let mut app = main_app_with_session("s1");
-        app.focus_or_add_pane("s1");
-        app.focus = Focus::Terminal;
-
-        handle_main_key(
-            &mut app,
-            KeyEvent::new(KeyCode::Char('p'), KeyModifiers::CONTROL),
-        );
-        assert_eq!(
-            app.html_preview_input,
-            Some(String::new()),
-            "Ctrl-P opens the preview path popup"
-        );
-
-        // While the popup is open plain typing fills the path buffer instead of
-        // falling through to the raw pty-forwarding path.
-        handle_main_key(
-            &mut app,
-            KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE),
-        );
-        assert_eq!(app.html_preview_input.as_deref(), Some("a"));
-
-        handle_main_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
-        assert!(app.html_preview_input.is_none());
-    }
-
-    #[test]
-    fn ctrl_p_opens_candidate_picker_when_candidates_exist_and_nav_tab_esc_behave() {
-        let mut app = main_app_with_session("s1");
-        app.focus_or_add_pane("s1");
-        app.focus = Focus::Terminal;
-        // Two detected candidates for the focused pane → Ctrl-P opens the picker,
-        // not the blank path popup.
-        app.html_candidates.insert(
-            "s1".to_string(),
-            vec![PathBuf::from("/tmp/a.html"), PathBuf::from("/tmp/b.html")],
-        );
-
-        handle_main_key(
-            &mut app,
-            KeyEvent::new(KeyCode::Char('p'), KeyModifiers::CONTROL),
-        );
-        assert_eq!(app.html_preview_picker, Some(0));
-        assert!(
-            app.html_preview_input.is_none(),
-            "the picker opens instead of the blank path popup"
-        );
-
-        // Down moves the selection and clamps at the last row (like new_picker).
-        handle_main_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
-        assert_eq!(app.html_preview_picker, Some(1));
-        handle_main_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
-        assert_eq!(app.html_preview_picker, Some(1), "clamps at the last row");
-        // Up moves back.
-        handle_main_key(&mut app, KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
-        assert_eq!(app.html_preview_picker, Some(0));
-
-        // Tab is the escape hatch to the free-text path popup.
-        handle_main_key(&mut app, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
-        assert!(app.html_preview_picker.is_none());
-        assert_eq!(
-            app.html_preview_input.as_deref(),
-            Some(""),
-            "Tab falls through to the free-text path popup"
-        );
-
-        // Re-open the picker and confirm Esc cancels it without side effects.
-        handle_main_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
-        assert!(app.html_preview_input.is_none());
-        handle_main_key(
-            &mut app,
-            KeyEvent::new(KeyCode::Char('p'), KeyModifiers::CONTROL),
-        );
-        assert_eq!(app.html_preview_picker, Some(0));
-        handle_main_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
-        assert!(app.html_preview_picker.is_none());
-        assert!(app.html_preview_input.is_none(), "cancel opens nothing");
-    }
-
-    #[test]
     fn search_then_enter_clears_search_query_so_tab_still_cycles_panes() {
         let mut app = main_app_with_session("s1");
 
@@ -2454,52 +2293,6 @@ mod tests {
             app.focused, before,
             "Tab must cycle pane focus, not be swallowed by a stale search buffer"
         );
-    }
-
-    #[test]
-    fn transition_report_review_e_edits_plain_enter_sends_esc_cancels() {
-        let mut app = main_app_with_session("s1");
-        app.focus_or_add_pane("s1");
-        app.focus = Focus::Terminal;
-        handle_main_key(
-            &mut app,
-            KeyEvent::new(KeyCode::Char('t'), KeyModifiers::CONTROL),
-        );
-        for c in "topic".chars() {
-            handle_main_key(
-                &mut app,
-                KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE),
-            );
-        }
-        handle_main_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-        assert!(app.transition_report_review.is_some());
-        assert!(!app.transition_report_review_editing);
-
-        // Read-only: 'e' switches to editing instead of typing a literal "e".
-        handle_main_key(
-            &mut app,
-            KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE),
-        );
-        assert!(app.transition_report_review_editing);
-        let before = app
-            .transition_report_review
-            .as_ref()
-            .unwrap()
-            .instruction
-            .clone();
-
-        // Editing: plain characters now edit the buffer.
-        handle_main_key(
-            &mut app,
-            KeyEvent::new(KeyCode::Char('!'), KeyModifiers::NONE),
-        );
-        assert_ne!(
-            app.transition_report_review.as_ref().unwrap().instruction,
-            before
-        );
-
-        handle_main_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
-        assert!(app.transition_report_review.is_none());
     }
 
     #[test]

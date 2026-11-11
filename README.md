@@ -82,16 +82,15 @@ the sessions you already have.
   done with yet, independent of its live status; a thin rail keeps it visible
   even once it's buried in `older`.
 - 💬 **Catch-up prompt** — pick up a session you left mid-task with
-  <kbd>c</kbd>: it asks that session's own agent to introduce the project,
-  open (or create) `backlog.html`, and summarize what you last asked and what
-  it did — no need to remember, and mindplayer never reads the answer itself.
-- 📝 **Transition report** — <kbd>Ctrl‑t</kbd> from a live pane opens a
-  one-line prompt (`topic / RUNBOOK §n / files`), then shows the fully
-  assembled prompt for review: <kbd>Enter</kbd> sends it as-is, or
-  <kbd>e</kbd> edits it first (multi-line) before sending. Asks the focused pane's own agent to write
-  `transition-<topic>.html` against your `_assets/transition-template.html`
-  structure. Provider-agnostic (it's just text) and works whether one pane or
-  several are open.
+  <kbd>c</kbd>: it asks that session's own agent to introduce the project and
+  summarize what you last asked and what it did. The built-in prompt no longer
+  requests an HTML backlog; existing user-edited prompts are not overwritten.
+- **Manual session usage** — press <kbd>r</kbd> on one session in the list to
+  measure its token usage in the background. Unmeasured rows show `—`, not zero.
+  Results are manual snapshots held for this run, not live counters; restarting
+  clears them. Totals describe measured sessions only, and bounded or estimated
+  results are distinguished from complete measurements. Session activity,
+  discovery and account quota updates remain automatic.
 - 🔍 **Search** — <kbd>/</kbd> filters the visible list as you type.
 - 📊 **Usage stats** — <kbd>u</kbd> shows a popup with active time (today/all
   time, plus a 14‑day trend), sessions opened per agent, handoffs, and
@@ -369,8 +368,7 @@ make test                                          # cargo test --all
 | <kbd>Ctrl‑w</kbd> / <kbd>Alt‑w</kbd> | cycle live-pane focus; use <kbd>Alt‑w</kbd> in OMP |
 | <kbd>Ctrl‑z</kbd> | zoom the focused pane to full size (toggle again for the split view) |
 | <kbd>Ctrl‑q</kbd> / <kbd>Alt‑q</kbd> | close the focused live pane; <kbd>Alt‑q</kbd> also works in OMP |
-| <kbd>Ctrl‑t</kbd> | **transition report** outside OMP — `topic / RUNBOOK §n / files` → review → <kbd>Enter</kbd> sends, <kbd>e</kbd> edits first |
-| <kbd>Ctrl‑p</kbd> | open a local `.html` produced by a focused non-OMP pane in your browser |
+| <kbd>Ctrl‑p</kbd> / <kbd>Ctrl‑t</kbd> | native session input; MindPlayer no longer intercepts these for HTML features |
 | <kbd>Ctrl‑x</kbd> | back to the list (the session keeps running) |
 | <kbd>n</kbd> | new session — pick codex/claude/kiro/cursor/omp, then an optional label |
 | <kbd>h</kbd> | handoff the selected session — pick a target login or OMP, then choose an OMP model when applicable |
@@ -383,7 +381,7 @@ make test                                          # cargo test --all
 | <kbd>/</kbd> | search / filter the visible sessions |
 | <kbd>x</kbd> | close (archive) & stop the selected session |
 | <kbd>a</kbd> | toggle Active / Archive · <kbd>[</kbd>/<kbd>]</kbd> page Archive · <kbd>Enter</kbd> restore/resume |
-| <kbd>g</kbd> / <kbd>r</kbd> | toggle sub‑agents / rescan |
+| <kbd>r</kbd> | manually measure usage for the selected session; no batch refresh or session launch |
 | <kbd>u</kbd> | **accounts** — which login each provider starts a session on, with its usage. See below |
 | <kbd>?</kbd> | show the full keyboard-shortcut list |
 | <kbd>q</kbd> | quit (stops all sessions) |
@@ -395,6 +393,11 @@ newline, and Korean/CJK input works with the cursor tracking the prompt. The
 renderer; otherwise it scrolls MindPlayer's own terminal history. **Drag inside
 a pane to select &amp; copy just that pane's text** to the system clipboard
 (via OSC 52), so a side-by-side split never copies the neighboring pane.
+
+MindPlayer no longer scans for HTML files, shows HTML notifications, opens local
+HTML previews, or offers the HTML transition-report generator. Existing reports,
+HTML files, and custom prompt files are left untouched. Ordinary link copying,
+catch-up and session handoff remain available.
 
 ### 👥 Accounts
 
@@ -576,11 +579,11 @@ newer kiro-cli release without waiting on a MindPlayer update. Cursor currently
 uses the same generic PTY screen-state fallback (blocked/working/idle markers)
 without a Cursor-specific lifecycle hook.
 
-Canned prompts (<kbd>c</kbd> catch-up, <kbd>Ctrl‑t</kbd> transition report)
-live as plain `.md` files under `~/.mindplayer/prompts/` — `catchup.md`,
-`transition_report.md` — seeded with the built-in default the first time
-each is used. Edit them in any text editor; the next send picks up the
-change immediately, no rebuild or restart needed.
+The catch-up prompt (<kbd>c</kbd>) lives at
+`~/.mindplayer/prompts/catchup.md`, seeded with the built-in default on first
+use. Edit it in any text editor; the next send picks up the change immediately.
+Existing custom prompts, including old `transition_report.md` files, are left
+untouched; MindPlayer no longer invokes the transition-report prompt.
 
 Resuming launches `codex resume <id>` / `claude --resume <id>` /
 `kiro-cli chat --resume-id <id>` / `agent --resume <id>` in an embedded PTY in
@@ -589,10 +592,10 @@ the session's original directory.
 <details>
 <summary>Performance & gotchas</summary>
 
-- **Performance.** Real stores can be multi‑GB with files up to hundreds of MB.
-  MindPlayer never reads a whole file just to list it — Codex cwd/tokens come from
-  the first line plus a bounded tail read, Claude is filtered by directory name,
-  and parsing is parallelized. Warm scans are ~1–2 s.
+- **Performance.** Catalog and activity refreshes read metadata without token
+  aggregation. Explicit list <kbd>r</kbd> reads only the selected session's
+  usage source using provider-specific bounds; incomplete totals are marked
+  partial rather than presented as full-session totals.
 - **codex + PTY.** codex aborts on startup if its stderr shares the TUI's PTY, so
   children are spawned as `sh -c 'exec <prog> <args> 2>>~/.mindplayer/logs/<id>.stderr.log'`.
 

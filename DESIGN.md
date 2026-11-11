@@ -1,5 +1,19 @@
 # Design
 
+## HTML 제거 · 수동 사용량 집계 — 1.0.0 / 승인된 구현 방향
+
+- HTML 자동/수동 탐색, 브라우저 미리보기, 알림 배지, Ctrl-T HTML 보고서
+  생성 기능을 제거한다. Ctrl-P/Ctrl-T는 네이티브 세션 입력으로 전달한다.
+- 일반 catch-up은 유지하고 기본 프롬프트의 HTML 생성 요구만 제거한다.
+  사용자가 만든 HTML·보고서·프롬프트 파일과 아래의 과거 시안은 보존한다.
+- 목록 `r`/`ㄱ`은 선택한 소스 하나만 백그라운드로 집계한다. 미집계는
+  `—`, 집계값은 실행 중 유지하는 수동 스냅샷이며 전체 실시간 합계가 아니다.
+  새 영속 캐시는 만들지 않고 재시작하면 미집계로 돌아간다.
+- 활동·신원 검증·세션 발견/복원은 메타데이터로 유지한다. 계정 quota,
+  PTY·붙여넣기·탭 이동·zoom/scroll·세션 handoff는 변경하지 않는다.
+- 검증은 사용자 작업 창이 아닌 격리된 별도 인스턴스에서 수행한다.
+
+
 ## 세션 거점 보기 — 2026-10-23 / 지형 시안 5개, 미승인
 
 산출물은 [거점 지형 시안](docs/plans/2026-10-23-office-view-gallery.ko.html)이다.
@@ -1042,8 +1056,8 @@ account/session model as part of this design decision.
   create a second status channel.
 - Categories exist only in the title. A label such as the screenshot's `still
   working` remains category/title content and must not be promoted to a
-  lifecycle status. Provider tags, pane indexes, handoff labels, and
-  HTML-preview markers remain independent title metadata.
+  lifecycle status. Provider tags, pane indexes and handoff labels remain
+  independent title metadata. HTML-preview markers were removed in 1.0.0.
 - In a narrow pane, render the **status glyph first, then category/title**. If
   the cell budget is insufficient, elide or shorten the category/title before
   dropping the glyph; perform a terminal cell-width check rather than relying

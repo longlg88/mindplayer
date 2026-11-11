@@ -201,7 +201,7 @@ fn running_protection_precedes_archive_and_archive_precedes_in_progress() {
 }
 
 #[test]
-fn cold_archive_is_metadata_only_and_warm_archive_is_not_parsed() {
+fn active_and_archive_stay_metadata_only_until_explicit_measurement() {
     let store = Store::new(Agent::Codex);
     let old = store.codex("old", now() - Duration::days(30));
     let fresh = store.codex("fresh", now() - Duration::hours(1));
@@ -209,12 +209,12 @@ fn cold_archive_is_metadata_only_and_warm_archive_is_not_parsed() {
     let mut state = State::default();
     state.set_label("old", "sidecar title");
     let cold = store.scan(&state);
-    assert_eq!((cold.metadata_reads, cold.detail_reads), (2, 1));
+    assert_eq!((cold.metadata_reads, cold.detail_reads), (2, 0));
     assert_eq!(cold.active.len(), 1);
     assert_eq!(cold.archive.len(), 1);
     assert_eq!(cold.active[0].id, "fresh");
     assert!(!cold.active[0].archived);
-    assert_eq!(cold.active[0].tokens.total, 15);
+    assert_eq!(cold.active[0].tokens, TokenUsage::default());
     assert!(cold.archive[0].archived);
     assert_eq!(cold.archive[0].tokens, TokenUsage::default());
     assert_eq!(
@@ -222,19 +222,28 @@ fn cold_archive_is_metadata_only_and_warm_archive_is_not_parsed() {
         "TUI applies latest labels"
     );
     let warm = store.scan(&state);
-    assert_eq!((warm.metadata_reads, warm.detail_reads), (0, 1));
+    assert_eq!((warm.metadata_reads, warm.detail_reads), (0, 0));
     assert_eq!(warm.archive[0].file, old);
     let hydrated = catalog::hydrate(&warm.archive[0]).unwrap();
     assert_eq!(hydrated.file, old);
-    assert_eq!(hydrated.tokens.total, 15);
+    assert_eq!(hydrated.tokens, TokenUsage::default());
+    let measured = catalog::measure_usage(&warm.archive[0]).unwrap();
+    assert_eq!(measured.tokens.total, 15);
+    assert!(!measured.partial);
+    assert_eq!(
+        catalog::measure_usage(&warm.active[0])
+            .unwrap()
+            .tokens
+            .total,
+        15
+    );
+    assert_eq!(store.scan(&state).active[0].tokens, TokenUsage::default());
     assert!(
         hydrated.archived,
         "hydration preserves the caller's view flag"
     );
     assert_eq!(fs::read(old).unwrap(), originals[0]);
     assert_eq!(fs::read(fresh).unwrap(), originals[1]);
-    let _: CatalogSnapshot = CatalogSnapshot::default();
-    assert!(!format!("{warm:?}").is_empty());
 }
 
 #[cfg(unix)]
@@ -545,7 +554,7 @@ fn source_bound_use_survives_state_reload_with_a_warm_catalog() {
     let state = State::load_from(&path);
     for _ in 0..2 {
         let warm = scan(&state);
-        assert_eq!((warm.metadata_reads, warm.detail_reads), (0, 1));
+        assert_eq!((warm.metadata_reads, warm.detail_reads), (0, 0));
         assert_eq!(warm.active.len(), 1);
         assert_eq!(warm.active[0].file, first);
         assert_eq!(warm.archive.len(), 1);
@@ -798,7 +807,7 @@ fn changed_metadata_reactivates_age_archive_but_not_explicit_archive() {
     assert_eq!(store.scan(&state).archive.len(), 1);
     write_codex(&path, "old", "/work/project", now());
     let changed = store.scan(&state);
-    assert_eq!((changed.metadata_reads, changed.detail_reads), (1, 1));
+    assert_eq!((changed.metadata_reads, changed.detail_reads), (1, 0));
     assert_eq!(changed.active.len(), 1);
     state.set_archived("old", true);
     let explicitly_archived = store.scan(&state);
@@ -833,6 +842,7 @@ fn mtime_only_change_never_promotes_and_removed_sources_leave_catalog() {
     assert_eq!(fs::read(&path).unwrap(), before);
     fs::remove_file(&path).unwrap();
     assert!(catalog::hydrate(&cold.archive[0]).is_err());
+    assert!(catalog::measure_usage(&cold.archive[0]).is_err());
     assert!(store.scan(&state).archive.is_empty());
 }
 
@@ -937,6 +947,7 @@ fn hydration_rejects_corruption_and_changed_native_identity() {
                 catalog::hydrate(&session).is_err(),
                 "{agent:?} must not fabricate from filename for {corrupt:?}"
             );
+            assert!(catalog::measure_usage(&session).is_err());
         }
         let changed = String::from_utf8(bytes.clone())
             .unwrap()
@@ -946,6 +957,7 @@ fn hydration_rejects_corruption_and_changed_native_identity() {
             catalog::hydrate(&session).is_err(),
             "native id changed for {agent:?}"
         );
+        assert!(catalog::measure_usage(&session).is_err());
         let changed = String::from_utf8(bytes)
             .unwrap()
             .replace("/work/project", "/work/replaced");
@@ -954,6 +966,39 @@ fn hydration_rejects_corruption_and_changed_native_identity() {
             catalog::hydrate(&session).is_err(),
             "source cwd changed for {agent:?}"
         );
+        assert!(catalog::measure_usage(&session).is_err());
+    }
+}
+
+#[test]
+fn native_identity_records_larger_than_metadata_header_hydrate_and_measure() {
+    for agent in [Agent::Codex, Agent::Claude] {
+        let store = Store::new(agent);
+        let path = store.archived_source("session-a");
+        let mut records: Vec<serde_json::Value> = fs::read_to_string(&path)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        records[0]["padding"] = serde_json::Value::String("x".repeat(70 * 1024));
+        if agent == Agent::Claude {
+            records.push(serde_json::json!({"type":"assistant",
+                "message":{"usage":{"input_tokens":12,"output_tokens":3}}}));
+        }
+        let text = records
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        fs::write(&path, text).unwrap();
+        let session = store.scan(&State::default()).archive.remove(0);
+        assert_eq!(
+            catalog::hydrate(&session).unwrap().tokens,
+            TokenUsage::default()
+        );
+        let measured = catalog::measure_usage(&session).unwrap();
+        assert_eq!(measured.tokens.total, 15, "{agent:?}");
+        assert!(!measured.partial, "{agent:?}");
     }
 }
 
@@ -987,15 +1032,18 @@ fn claude_cold_metadata_skips_usage_and_tool_results_do_not_refresh_human_time()
         Some(now() - Duration::days(30))
     );
     assert_eq!(cold.archive[0].tokens.total, 0);
-    let full = catalog::hydrate(&cold.archive[0]).unwrap();
-    assert_eq!(full.tokens.total, 25000);
-    assert_eq!(full.last_prompt_at, cold.archive[0].last_prompt_at);
+    let hydrated = catalog::hydrate(&cold.archive[0]).unwrap();
+    assert_eq!(hydrated.tokens, TokenUsage::default());
+    assert_eq!(hydrated.last_prompt_at, cold.archive[0].last_prompt_at);
+    let measured = catalog::measure_usage(&cold.archive[0]).unwrap();
+    assert_eq!(measured.tokens.total, 25000);
+    assert!(!measured.partial);
     assert_eq!(store.scan(&State::default()).metadata_reads, 0);
     assert_eq!(fs::read(path).unwrap(), before);
 }
 
 #[test]
-fn protected_archive_is_fully_loaded_without_mutating_explicit_state() {
+fn protected_archive_stays_active_without_measuring_or_mutating_explicit_state() {
     let store = Store::new(Agent::Codex);
     store.codex("old", now() - Duration::days(30));
     let mut state = State::default();
@@ -1011,7 +1059,8 @@ fn protected_archive_is_fully_loaded_without_mutating_explicit_state() {
     .unwrap();
     assert_eq!(result.active.len(), 1);
     assert!(result.archive.is_empty());
-    assert_eq!(result.detail_reads, 1);
+    assert_eq!(result.detail_reads, 0);
+    assert_eq!(result.active[0].tokens, TokenUsage::default());
     assert!(!result.active[0].archived);
     assert!(state.is_archived("old"));
 }
@@ -1137,7 +1186,7 @@ fn claude_lossy_cwd_collision_is_checked_and_fallback_contexts_are_separate() {
 }
 
 #[test]
-fn known_human_time_survives_tail_only_output_and_bounded_full_parser() {
+fn human_time_in_header_survives_tail_only_output() {
     let store = Store::new(Agent::Codex);
     let path = store.codex("recent", now() - Duration::hours(1));
     let mut file = File::options().append(true).open(&path).unwrap();
@@ -1146,16 +1195,19 @@ fn known_human_time_survives_tail_only_output_and_bounded_full_parser() {
     }
     drop(file);
     let snapshot = store.scan(&State::default());
-    assert_eq!(
-        snapshot.active.len(),
-        1,
-        "full tail parsing cannot erase the known human prompt from the head"
-    );
+    assert_eq!(snapshot.active.len(), 1);
     assert_eq!(
         snapshot.active[0].last_prompt_at,
         Some(now() - Duration::hours(1))
     );
-    assert_eq!(snapshot.active[0].tokens.total, 99);
+    assert_eq!(snapshot.active[0].tokens, TokenUsage::default());
+    assert_eq!(
+        catalog::measure_usage(&snapshot.active[0])
+            .unwrap()
+            .tokens
+            .total,
+        99
+    );
 }
 
 #[test]
@@ -1174,17 +1226,24 @@ fn changed_source_keeps_observed_human_turn_after_it_moves_out_of_both_windows()
     };
     let state = State::default();
     append_output();
-    assert_eq!(store.scan(&state).archive.len(), 1);
+    let mut observed = store.scan(&state).archive.remove(0);
+    mindplayer_core::refresh_activity(std::slice::from_mut(&mut observed));
     writeln!(File::options().append(true).open(&path).unwrap(), "{}", serde_json::json!({"type":"response_item","timestamp":now(),"payload":{"type":"message","role":"user","content":[{"text":"new human turn"}]}})).unwrap();
+    mindplayer_core::refresh_activity(std::slice::from_mut(&mut observed));
+    assert_eq!(observed.last_prompt_at, Some(now()));
+    assert_eq!(observed.tokens, TokenUsage::default());
     let external_use = store.scan(&state);
     assert_eq!(external_use.active.len(), 1);
     assert_eq!(external_use.active[0].last_prompt_at, Some(now()));
     append_output();
+    mindplayer_core::refresh_activity(std::slice::from_mut(&mut observed));
+    assert_eq!(observed.last_prompt_at, Some(now()));
+    assert_eq!(observed.tokens, TokenUsage::default());
     let before = fs::read(&path).unwrap();
     let output_only = store.scan(&state);
     assert_eq!(
         (output_only.metadata_reads, output_only.detail_reads),
-        (1, 1)
+        (1, 0)
     );
     assert_eq!(output_only.active.len(), 1);
     assert_eq!(output_only.active[0].last_prompt_at, Some(now()));
@@ -1275,12 +1334,13 @@ fn sidecars_and_omp_use_their_native_source_for_metadata_and_hydration() {
             assert_eq!(full.context_pct, Some(42.5));
         }
         if agent == Agent::Omp {
-            assert_eq!(full.tokens.total, 10);
+            assert_eq!(full.tokens, TokenUsage::default());
+            assert_eq!(catalog::measure_usage(metadata).unwrap().tokens.total, 10);
         }
         let mut state = State::default();
         state.record_use("session-a", now());
         let promoted = store.scan(&state);
-        assert_eq!((promoted.metadata_reads, promoted.detail_reads), (0, 1));
+        assert_eq!((promoted.metadata_reads, promoted.detail_reads), (0, 0));
         assert_eq!(promoted.active.len(), 1);
         assert_eq!(fs::read(&path).unwrap(), original);
         fs::remove_file(path).unwrap();
@@ -1301,7 +1361,7 @@ fn changed_length_invalidates_even_when_mtime_is_unchanged() {
         .unwrap();
     drop(file);
     let changed = store.scan(&state);
-    assert_eq!((changed.metadata_reads, changed.detail_reads), (1, 1));
+    assert_eq!((changed.metadata_reads, changed.detail_reads), (1, 0));
     assert_eq!(changed.active[0].last_prompt_at, Some(now()));
 }
 
@@ -1359,10 +1419,10 @@ fn large_archive_catalog_5k_and_50k_warm_reads_are_bounded() {
             cold.metadata_reads,
             size - populated + usize::from(populated == 0)
         );
-        assert_eq!(cold.detail_reads, 1);
+        assert_eq!(cold.detail_reads, 0);
         drop(cold);
         let warm = store.scan(&state);
-        assert_eq!((warm.metadata_reads, warm.detail_reads), (0, 1));
+        assert_eq!((warm.metadata_reads, warm.detail_reads), (0, 0));
         assert_eq!(warm.archive.len(), size);
         assert!(warm
             .archive
@@ -1384,5 +1444,258 @@ fn large_archive_catalog_5k_and_50k_warm_reads_are_bounded() {
             warm.metadata_reads, warm.detail_reads
         );
         populated = size;
+    }
+}
+
+#[test]
+fn manual_usage_repeats_after_growth_even_when_activity_already_refreshed() {
+    let store = Store::new(Agent::Claude);
+    let path = store.archived_source("session-a");
+    let mut session = store.scan(&State::default()).archive.remove(0);
+    let zero = catalog::measure_usage(&session).unwrap();
+    assert_eq!(zero.tokens, TokenUsage::default());
+    assert!(!zero.partial);
+    let modified = fs::metadata(&path).unwrap().modified().unwrap();
+    for total in [7, 14] {
+        let mut file = File::options().append(true).open(&path).unwrap();
+        writeln!(file, "{}", serde_json::json!({"type":"assistant","message":{"usage":{"input_tokens":5,"output_tokens":2}}})).unwrap();
+        file.set_times(FileTimes::new().set_modified(modified))
+            .unwrap();
+        drop(file);
+        mindplayer_core::refresh_activity(std::slice::from_mut(&mut session));
+        let usage = catalog::measure_usage(&session).unwrap();
+        assert_eq!(usage.tokens.total, total);
+        assert!(!usage.partial);
+        assert!(session.archived);
+        assert_eq!(session.tokens, TokenUsage::default());
+        assert_eq!(
+            catalog::measure_usage(&session).unwrap().tokens.total,
+            total
+        );
+    }
+}
+
+#[test]
+fn additive_usage_reports_partial_at_its_read_budget() {
+    use std::io::{Seek, SeekFrom};
+
+    for agent in [Agent::Claude, Agent::Omp] {
+        let store = Store::new(agent);
+        let path = store.archived_source("session-a");
+        let usage = match agent {
+            Agent::Claude => {
+                serde_json::json!({"type":"assistant","message":{"usage":{"input_tokens":5,"output_tokens":2}}})
+            }
+            Agent::Omp => {
+                serde_json::json!({"type":"model_usage","usage":{"input":5,"output":2,"totalTokens":7}})
+            }
+            _ => unreachable!(),
+        };
+        let mut file = File::options().write(true).open(&path).unwrap();
+        file.seek(SeekFrom::End(0)).unwrap();
+        writeln!(file, "{usage}").unwrap();
+        file.set_len(64 * 1024 * 1024 + 1024).unwrap();
+        file.seek(SeekFrom::End(0)).unwrap();
+        writeln!(file, "\n{usage}").unwrap();
+        drop(file);
+        let session = store.scan(&State::default()).archive.remove(0);
+        assert_eq!(session.tokens, TokenUsage::default());
+        assert_eq!(
+            catalog::hydrate(&session).unwrap().tokens,
+            TokenUsage::default()
+        );
+        let measured = catalog::measure_usage(&session).unwrap();
+        assert_eq!(measured.tokens.total, 7, "{agent:?}");
+        assert!(measured.partial, "{agent:?}");
+    }
+}
+
+#[test]
+fn unicode_budget_boundary_preserves_prior_usage_and_actual_eof_records() {
+    use std::io::{Seek, SeekFrom};
+
+    for agent in [Agent::Claude, Agent::Omp, Agent::Cursor] {
+        let store = Store::new(agent);
+        let source = store.archived_source("session-a");
+        let session = store.scan(&State::default()).archive.remove(0);
+        let transcript = if agent == Agent::Cursor {
+            let path = source
+                .ancestors()
+                .nth(4)
+                .unwrap()
+                .join("projects/project/agent-transcripts/session-a/session-a.jsonl");
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(&path, "").unwrap();
+            path
+        } else {
+            source
+        };
+        let usage = match agent {
+            Agent::Claude => serde_json::json!({"type":"assistant",
+                "message":{"usage":{"input_tokens":5,"output_tokens":2}}}),
+            Agent::Omp => serde_json::json!({"type":"model_usage",
+                "usage":{"input":5,"output":2,"totalTokens":7}}),
+            Agent::Cursor => serde_json::json!({"role":"assistant",
+                "message":{"content":"a complete answer"}}),
+            _ => unreachable!(),
+        };
+        // A real EOF without a newline must still include the last usage record.
+        let mut file = File::options().append(true).open(&transcript).unwrap();
+        write!(file, "{usage}").unwrap();
+        drop(file);
+        let complete = catalog::measure_usage(&session).unwrap();
+        assert!(complete.tokens.total > 0, "{agent:?}");
+        assert!(!complete.partial, "{agent:?}");
+
+        let mut file = File::options()
+            .read(true)
+            .write(true)
+            .open(&transcript)
+            .unwrap();
+        file.seek(SeekFrom::End(0)).unwrap();
+        writeln!(file).unwrap();
+        let prefix_len = file.stream_position().unwrap();
+        // Pad with complete valid records using fixed space, not a 64 MiB string.
+        const BUDGET: u64 = 64 * 1024 * 1024;
+        let filler = format!("{{\"padding\":\"{}\"}}\n", "x".repeat(4096));
+        while file.stream_position().unwrap() + filler.len() as u64 + 64 < BUDGET {
+            file.write_all(filler.as_bytes()).unwrap();
+        }
+        let remaining = BUDGET - file.stream_position().unwrap();
+        file.write_all(b"{\"padding\":\"").unwrap();
+        file.write_all(&vec![b'x'; remaining as usize - 13])
+            .unwrap();
+        // The budget contains only the first byte of the three-byte character.
+        file.write_all("한\"}\n".as_bytes()).unwrap();
+        drop(file);
+        let capped = catalog::measure_usage(&session).unwrap();
+        assert_eq!(capped.tokens, complete.tokens, "{agent:?}");
+        assert!(capped.partial, "{agent:?}");
+
+        // Invalid UTF-8 in a complete record is a source error, not truncation.
+        let mut file = File::options().write(true).open(&transcript).unwrap();
+        file.set_len(prefix_len).unwrap();
+        file.seek(SeekFrom::End(0)).unwrap();
+        file.write_all(b"{\"padding\":\"\xff\"}\n").unwrap();
+        drop(file);
+        assert!(catalog::measure_usage(&session).is_err(), "{agent:?}");
+    }
+}
+
+#[test]
+fn codex_completeness_depends_on_cumulative_record_not_total_file_size() {
+    let store = Store::new(Agent::Codex);
+    let path = store.archived_source("session-a");
+    let session = store.scan(&State::default()).archive.remove(0);
+    let file = File::options().write(true).open(&path).unwrap();
+    file.set_len(65 * 1024 * 1024).unwrap();
+    drop(file);
+    let omitted = catalog::measure_usage(&session).unwrap();
+    assert!(omitted.partial);
+    assert_eq!(omitted.tokens, TokenUsage::default());
+    writeln!(File::options().append(true).open(&path).unwrap(), "\n{}", serde_json::json!({"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":17,"output_tokens":3,"total_tokens":20}}}})).unwrap();
+    let cumulative = catalog::measure_usage(&session).unwrap();
+    assert!(!cumulative.partial);
+    assert_eq!(cumulative.tokens.total, 20);
+
+    fs::write(&path, serde_json::json!({"type":"session_meta","payload":{"id":"session-a","cwd":"/work/project"}}).to_string()).unwrap();
+    let zero = catalog::measure_usage(&session).unwrap();
+    assert!(!zero.partial);
+    assert_eq!(zero.tokens, TokenUsage::default());
+}
+
+#[test]
+fn native_hydration_does_not_accept_identity_recovered_only_from_a_tail() {
+    for agent in [Agent::Codex, Agent::Claude] {
+        let store = Store::new(agent);
+        let path = store.archived_source("session-a");
+        let session = store.scan(&State::default()).archive.remove(0);
+        let original = fs::read(&path).unwrap();
+        let mut file = File::create(&path).unwrap();
+        file.write_all(&vec![b'\n'; 512 * 1024]).unwrap();
+        file.write_all(&original).unwrap();
+        drop(file);
+        assert!(catalog::hydrate(&session).is_err(), "{agent:?}");
+        assert!(catalog::measure_usage(&session).is_err(), "{agent:?}");
+    }
+}
+
+#[test]
+fn kiro_activity_refresh_updates_context_without_usage_or_cross_source_leakage() {
+    let store = Store::new(Agent::Kiro);
+    let path = store.archived_source("session-a");
+    let mut session = store.scan(&State::default()).archive.remove(0);
+    session.tokens.total = 123;
+    session.last_prompt_at = Some(now());
+    for (id, cwd, context, expected) in [
+        ("session-a", "/work/project", 42.5, Some(42.5)),
+        ("replacement", "/work/project", 90.0, Some(42.5)),
+        ("session-a", "/elsewhere", 95.0, Some(42.5)),
+    ] {
+        fs::write(&path, serde_json::json!({"session_id":id,"cwd":cwd,"session_state":{"rts_model_state":{"context_usage_percentage":context}}}).to_string()).unwrap();
+        mindplayer_core::refresh_activity(std::slice::from_mut(&mut session));
+        assert_eq!(session.context_pct, expected);
+        assert_eq!(session.tokens.total, 123);
+        assert_eq!(session.last_prompt_at, Some(now()));
+    }
+}
+
+#[test]
+fn cursor_manual_estimates_use_transcript_budget_and_fail_on_missing_or_ambiguous_sources() {
+    use std::io::{Seek, SeekFrom};
+
+    let store = Store::new(Agent::Cursor);
+    store.archived_source("session-a");
+    let session = store.scan(&State::default()).archive.remove(0);
+    assert!(catalog::measure_usage(&session).is_err());
+    assert_eq!(
+        catalog::hydrate(&session).unwrap().tokens,
+        TokenUsage::default()
+    );
+    let projects = session.file.ancestors().nth(4).unwrap().join("projects");
+    let relative = "agent-transcripts/session-a/session-a.jsonl";
+    let transcript = projects.join("project-a").join(relative);
+    fs::create_dir_all(transcript.parent().unwrap()).unwrap();
+    fs::write(&transcript, "").unwrap();
+    let zero = catalog::measure_usage(&session).unwrap();
+    assert_eq!(zero.tokens, TokenUsage::default());
+    assert!(!zero.partial);
+    let user = serde_json::json!({"role":"user","message":{"content":"hello"}});
+    let assistant = serde_json::json!({"role":"assistant","message":{"content":"world"}});
+    let mut file = File::options().write(true).open(&transcript).unwrap();
+    writeln!(file, "{user}\n{assistant}").unwrap();
+    drop(file);
+    let measured = catalog::measure_usage(&session).unwrap();
+    assert!(measured.tokens.total > 0);
+    assert!(!measured.partial);
+    let mut file = File::options().write(true).open(&transcript).unwrap();
+    file.set_len(64 * 1024 * 1024 + 1024).unwrap();
+    file.seek(SeekFrom::End(0)).unwrap();
+    writeln!(file, "\n{assistant}").unwrap();
+    drop(file);
+    let truncated = catalog::measure_usage(&session).unwrap();
+    assert_eq!(truncated.tokens, measured.tokens);
+    assert!(
+        truncated.partial,
+        "budget applies to transcript, not tiny meta.json"
+    );
+    let duplicate = projects.join("project-b").join(relative);
+    fs::create_dir_all(duplicate.parent().unwrap()).unwrap();
+    fs::write(&duplicate, format!("{user}\n{assistant}\n")).unwrap();
+    assert!(catalog::measure_usage(&session).is_err());
+}
+
+#[test]
+fn metadata_hydration_and_measurement_reject_replaced_sidecar_or_omp_identity() {
+    for agent in [Agent::Kiro, Agent::Cursor, Agent::Omp] {
+        let store = Store::new(agent);
+        let path = store.archived_source("session-a");
+        let session = store.scan(&State::default()).archive.remove(0);
+        let replaced = fs::read_to_string(&path)
+            .unwrap()
+            .replace("/work/project", "/work/replaced");
+        fs::write(&path, replaced).unwrap();
+        assert!(catalog::hydrate(&session).is_err(), "{agent:?}");
+        assert!(catalog::measure_usage(&session).is_err(), "{agent:?}");
     }
 }

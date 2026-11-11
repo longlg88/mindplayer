@@ -6,7 +6,6 @@ use crate::local_router::{RoutingStage, RoutingStatus};
 use crate::mascot;
 use crate::startup_routing::{RoutingMode, StartupStage};
 use crate::terminal_view::TerminalView;
-use crate::text_input;
 use crate::walker;
 use chrono::{DateTime, Utc};
 use mindplayer_core::tokens::human_tokens;
@@ -37,10 +36,9 @@ const IN_PROGRESS: Color = Color::Rgb(201, 166, 255);
 // (245, 180, 90) — zoom is a view mode, not a session status, and the two can
 // legitimately show on the same pane at once (a zoomed, blocked session).
 const ZOOM: Color = Color::Rgb(235, 160, 70);
-// A bright cyan for the HTML-preview badge, distinct from ACCENT (soft blue),
-// ZOOM (gold), DIM (gray), and every status color (amber/green/teal/rose).
+// Cyan highlights the link-copy picker.
 const PREVIEW: Color = Color::Rgb(82, 196, 214);
-// Rose used for the inline error line inside the preview popup.
+// Rose highlights errors.
 const ERROR: Color = Color::Rgb(245, 130, 120);
 // The observer is a local read-only tool, not another agent terminal. Keep its
 // colour and surface separate from session/focus chrome so the two cannot be
@@ -1073,7 +1071,10 @@ fn scan_summary(f: &mut Frame, app: &App) {
     );
     f.render_widget(
         Paragraph::new(Line::styled(
-            format!("{} archived · usage not loaded", app.archive_catalog.len()),
+            format!(
+                "{} archived · measure with r in list",
+                app.archive_catalog.len()
+            ),
             Style::default().fg(DIM),
         )),
         rows[1],
@@ -1104,19 +1105,8 @@ fn scan_summary(f: &mut Frame, app: &App) {
         Paragraph::new(Line::from(vec![
             Span::styled("active tokens  ", Style::default().fg(DIM)),
             Span::styled(
-                human_tokens(a.total.total),
+                app.manual_usage_summary(app.all_sessions.iter().filter(|s| !s.archived)),
                 Style::default().add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-                format!(
-                    "   (codex {} · claude {} · kiro {} · cursor {} · omp {})",
-                    human_tokens(a.codex.total),
-                    human_tokens(a.claude.total),
-                    if a.kiro_count > 0 { "—" } else { "0" },
-                    if a.cursor_count > 0 { "—" } else { "0" },
-                    human_tokens(a.omp.total),
-                ),
-                Style::default().fg(DIM),
             ),
         ])),
         rows[4],
@@ -1145,7 +1135,11 @@ fn main_view(f: &mut Frame, app: &mut App) {
         ));
     }
     let summary_head = if app.show_archived {
-        format!("{} archived · usage not loaded", app.archive_matches)
+        format!(
+            "{} archived · page {}",
+            app.archive_matches,
+            app.manual_usage_summary(app.visible_sessions())
+        )
     } else {
         app.summary_head()
     };
@@ -1398,10 +1392,6 @@ fn main_view(f: &mut Frame, app: &mut App) {
         dir_input_popup(f, path);
     } else if let Some(picker) = &app.link_picker {
         link_picker_popup(f, picker);
-    } else if let Some(choice) = app.html_preview_picker {
-        html_preview_picker_popup(f, choice, app.html_candidates_for_focused());
-    } else if let Some(path) = &app.html_preview_input {
-        html_preview_popup(f, path, app.html_preview_error.as_deref());
     } else if let Some(id) = &app.catchup_confirm {
         let title = app
             .all_sessions
@@ -1410,86 +1400,7 @@ fn main_view(f: &mut Frame, app: &mut App) {
             .map(|s| s.title.as_str())
             .unwrap_or("this session");
         catchup_confirm_popup(f, title);
-    } else if let Some(input) = &app.transition_report_input {
-        transition_report_popup(f, input);
-    } else if let Some(draft) = &app.transition_report_review {
-        transition_report_review_popup(f, draft, app.transition_report_review_editing);
     }
-}
-
-fn transition_report_popup(f: &mut Frame, input: &str) {
-    let area = centered(f.area(), 70, 8);
-    f.render_widget(Clear, area);
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(ACCENT))
-        .title(" Transition report ");
-    let lines = vec![
-        Line::from(Span::styled(
-            "topic / RUNBOOK §n / files (free text — sent to the focused pane):",
-            Style::default().fg(DIM),
-        )),
-        Line::from(vec![
-            Span::raw(input.to_string()),
-            Span::styled("▏", Style::default().fg(ACCENT)),
-        ]),
-        Line::from(""),
-        Line::from(Span::styled(
-            "enter send   esc cancel",
-            Style::default().fg(DIM),
-        )),
-    ];
-    f.render_widget(Paragraph::new(lines).block(block), area);
-}
-
-fn transition_report_review_popup(
-    f: &mut Frame,
-    draft: &text_input::BroadcastDraft,
-    editing: bool,
-) {
-    let area = centered(f.area(), 88, 14);
-    f.render_widget(Clear, area);
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(ACCENT))
-        .title(if editing {
-            " Transition report — editing "
-        } else {
-            " Transition report — review "
-        });
-    let mut lines = vec![Line::from(Span::styled(
-        if editing {
-            "Editing the assembled prompt:"
-        } else {
-            "About to send this to the focused pane:"
-        },
-        Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
-    ))];
-    lines.extend(textarea_lines_with_cursor(
-        &draft.instruction,
-        editing.then_some(draft.cursor),
-        "",
-        8,
-        78,
-    ));
-    lines.extend([
-        Line::from(""),
-        Line::from(Span::styled(
-            if editing {
-                "enter send   shift/alt/ctrl-enter newline   esc cancel"
-            } else {
-                "enter send as-is   e edit first   esc cancel"
-            },
-            Style::default().fg(DIM),
-        )),
-    ]);
-    f.render_widget(
-        Paragraph::new(lines)
-            .block(block)
-            .alignment(Alignment::Left)
-            .wrap(Wrap { trim: false }),
-        area,
-    );
 }
 
 fn catchup_confirm_popup(f: &mut Frame, title: &str) {
@@ -1542,53 +1453,7 @@ fn dir_input_popup(f: &mut Frame, path: &str) {
     f.render_widget(Paragraph::new(lines).block(block), area);
 }
 
-/// Path-input popup for opening a local `.html` file in the browser. Mirrors
-/// `dir_input_popup`, but shows an inline error line inside the SAME still-open
-/// popup when the last-submitted path didn't resolve — so the user can correct
-/// it in place instead of losing the popup to a bottom-bar status message.
-fn html_preview_popup(f: &mut Frame, path: &str, error: Option<&str>) {
-    let area = centered(f.area(), 70, 8);
-    f.render_widget(Clear, area);
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(PREVIEW))
-        .title(" Open HTML in browser ");
-    let mut lines = vec![
-        Line::from(Span::styled(
-            "Path to a local .html file (~ allowed):",
-            Style::default().fg(DIM),
-        )),
-        Line::from(vec![
-            Span::raw(path.to_string()),
-            Span::styled("▏", Style::default().fg(PREVIEW)),
-        ]),
-    ];
-    // Third row: the inline error when present, otherwise a blank spacer so the
-    // popup's height and the hint's position stay stable.
-    if let Some(err) = error {
-        lines.push(Line::from(Span::styled(
-            format!("⚠ {err}"),
-            Style::default().fg(ERROR),
-        )));
-    } else {
-        lines.push(Line::from(""));
-    }
-    lines.push(Line::from(Span::styled(
-        "enter open   esc cancel",
-        Style::default().fg(DIM),
-    )));
-    f.render_widget(Paragraph::new(lines).block(block), area);
-}
-
-/// Ranked picker of detected `.html` candidates (most-recent-first) for the
-/// focused pane — what Ctrl-P opens instead of the blank path popup when the
-/// passive poll has found files. Styled like `new_session_popup`/`dir_input_popup`
-/// (centered box, PREVIEW-cyan border, the selected row marked with `▶` and
-/// highlighted). Each row shows the filename plus its parent directory so
-/// same-named files in different subdirs stay distinguishable. The hint line
-/// documents `tab` as the escape hatch to the free-text path popup.
-/// The "copy a link" picker. Same shape as the `.html` picker so the two read as
-/// one family — only opened when an answer had two or more links.
+/// Pick a link when an answer contains two or more.
 fn link_picker_popup(f: &mut Frame, picker: &crate::app::LinkPicker) {
     const MAX_ROWS: usize = 10;
     let shown = picker.links.len().min(MAX_ROWS);
@@ -1635,54 +1500,6 @@ fn link_picker_popup(f: &mut Frame, picker: &crate::app::LinkPicker) {
     let inner = block.inner(area);
     f.render_widget(block, area);
     f.render_widget(Paragraph::new(lines), inner);
-}
-
-fn html_preview_picker_popup(f: &mut Frame, choice: usize, candidates: &[PathBuf]) {
-    const MAX_ROWS: usize = 10;
-    let shown = candidates.len().min(MAX_ROWS);
-    // header + rows (+ overflow line) + blank + hint, all inside the borders.
-    let overflow = usize::from(candidates.len() > MAX_ROWS);
-    let height = (shown + overflow + 4).max(5) as u16;
-    let area = centered(f.area(), 84, height);
-    f.render_widget(Clear, area);
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(PREVIEW))
-        .title(" Open a detected .html file ");
-    let mut lines = vec![Line::from(Span::styled(
-        "Recently edited .html files in this session's directory:",
-        Style::default().fg(DIM),
-    ))];
-    for (i, path) in candidates.iter().take(MAX_ROWS).enumerate() {
-        let selected = i == choice;
-        let marker = if selected { "▶ " } else { "  " };
-        let name = path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("(unnamed)");
-        let parent = path.parent().and_then(Path::to_str).unwrap_or("");
-        let name_style = if selected {
-            Style::default().fg(PREVIEW).add_modifier(Modifier::BOLD)
-        } else {
-            Style::default()
-        };
-        lines.push(Line::from(vec![
-            Span::styled(format!("{marker}{name}"), name_style),
-            Span::styled(format!("  {parent}"), Style::default().fg(DIM)),
-        ]));
-    }
-    if overflow == 1 {
-        lines.push(Line::from(Span::styled(
-            format!("  … +{} more", candidates.len() - MAX_ROWS),
-            Style::default().fg(DIM),
-        )));
-    }
-    lines.push(Line::from(""));
-    lines.push(Line::from(Span::styled(
-        "enter open   ↑↓ choose   tab type a path   esc cancel",
-        Style::default().fg(DIM),
-    )));
-    f.render_widget(Paragraph::new(lines).block(block), area);
 }
 
 fn label_edit_popup(f: &mut Frame, label: &str) {
@@ -2085,11 +1902,7 @@ fn session_list(f: &mut Frame, app: &mut App, area: Rect, now: DateTime<Utc>) {
                 ));
             }
             spans.push(Span::styled(
-                if app.show_archived {
-                    "  —".to_string()
-                } else {
-                    format!("  {}", usage_cell(s))
-                },
+                format!("  {}", usage_cell(s, app.measured_usage(s))),
                 Style::default().fg(DIM),
             ));
             items.push(ListItem::new(Line::from(spans)));
@@ -2846,16 +2659,6 @@ fn render_pane(
                 .bg(dot_color)
                 .add_modifier(Modifier::BOLD),
         ),
-        // Passive "N new" badge: shown when this pane has detected, not-yet-
-        // opened `.html` candidates. Rendered as PREVIEW-cyan text (not a filled
-        // chip) so it reads as a quiet, lower-emphasis hint.
-        match app.html_candidates.get(sid).map(Vec::len) {
-            Some(n) if n > 0 => Span::styled(
-                format!(" 🌐 {n} new "),
-                Style::default().fg(PREVIEW).add_modifier(Modifier::BOLD),
-            ),
-            _ => Span::raw(""),
-        },
     ]);
     // Shape marks focus; colour always marks status, including in zoom.
     let (border_type, weight) = pane_border_for(pane_focused, zoomed);
@@ -3500,6 +3303,7 @@ fn help_lines(codex_input_choice: bool) -> Vec<Line<'static>> {
         item("/", "search visible sessions"),
         item("d", "change working directory scope"),
         item("ctrl-r", "refresh account usage now"),
+        item("r", "manually measure selected session tokens (— = unmeasured)"),
         item("a", "toggle archived sessions"),
         Line::from(""),
         section("Terminal / Modal"),
@@ -3508,14 +3312,6 @@ fn help_lines(codex_input_choice: bool) -> Vec<Line<'static>> {
         item("ctrl-w / alt-w", "cycle live panes (alt-w in OMP)"),
         item("ctrl-z", "zoom the focused pane full-size (toggle back to split)"),
         item("ctrl-q / alt-q", "close focused pane (alt-q also works in OMP)"),
-        item(
-            "ctrl-t",
-            "transition report outside OMP: topic/RUNBOOK/files -> review -> enter sends, e edits",
-        ),
-        item(
-            "ctrl-p",
-            "open a local .html file outside OMP: pick from detected files or tab to type a path",
-        ),
         item(
             "ctrl-y",
             "copy a link from the focused pane's most recent answer outside OMP",
@@ -3563,78 +3359,6 @@ fn centered(area: Rect, width: u16, height: u16) -> Rect {
         width: w,
         height: h,
     }
-}
-
-fn textarea_lines_with_cursor(
-    text: &str,
-    cursor: Option<usize>,
-    placeholder: &str,
-    rows: usize,
-    width: usize,
-) -> Vec<Line<'static>> {
-    let mut lines = Vec::new();
-    let content: Vec<String> = if text.is_empty() {
-        if cursor.is_some() {
-            vec!["▏".to_string()]
-        } else {
-            vec![placeholder.to_string()]
-        }
-    } else {
-        wrapped_text_rows(&text_with_cursor(text, cursor), width)
-    };
-    let cursor_row = cursor
-        .and_then(|_| content.iter().position(|row| row.contains('▏')))
-        .unwrap_or(0);
-    let start = viewport_start_for_cursor(content.len(), rows, cursor_row);
-    for row in 0..rows {
-        let body = content.get(start + row).map(String::as_str).unwrap_or("");
-        let style = if text.is_empty() && cursor.is_none() {
-            Style::default().fg(DIM)
-        } else {
-            Style::default()
-        };
-        lines.push(Line::from(vec![
-            Span::styled("  │ ", Style::default().fg(DIM)),
-            Span::styled(body.to_string(), style),
-        ]));
-    }
-    if content.len() > rows {
-        let above = start;
-        let below = content.len().saturating_sub(start + rows);
-        let summary = match (above, below) {
-            (0, below) => format!("  └ +{below} more lines"),
-            (above, 0) => format!("  ┌ +{above} earlier lines"),
-            (above, below) => format!("  ├ +{above} earlier, +{below} more"),
-        };
-        lines.push(Line::from(Span::styled(summary, Style::default().fg(DIM))));
-    }
-    lines
-}
-
-fn viewport_start_for_cursor(total: usize, rows: usize, cursor_row: usize) -> usize {
-    if total <= rows {
-        return 0;
-    }
-    let half = rows / 2;
-    let max_start = total.saturating_sub(rows);
-    cursor_row.saturating_sub(half).min(max_start)
-}
-
-fn text_with_cursor(text: &str, cursor: Option<usize>) -> String {
-    let Some(mut cursor) = cursor else {
-        return text.to_string();
-    };
-    if cursor > text.len() {
-        cursor = text.len();
-    }
-    while cursor > 0 && !text.is_char_boundary(cursor) {
-        cursor -= 1;
-    }
-    let mut out = String::with_capacity(text.len() + "▏".len());
-    out.push_str(&text[..cursor]);
-    out.push('▏');
-    out.push_str(&text[cursor..]);
-    out
 }
 
 fn wrapped_text_rows(text: &str, width: usize) -> Vec<String> {
@@ -3786,14 +3510,6 @@ fn short(id: &str) -> String {
     id.chars().take(8).collect()
 }
 
-/// The usage column for one session row.
-///
-/// Each agent records something different and the column shows what it has:
-/// codex and claude count tokens per request, kiro reports only how full its
-/// context window is, and cursor records nothing at all — its figure is
-/// estimated from the transcript, so it carries a `~` to keep it from reading
-/// as a count. Nothing to show reads "—", never `0`, which would claim the
-/// session spent nothing.
 /// Colors for a provider's logins in list order; the machine's own login stays quiet.
 const ACCOUNT_TONES: [Color; 4] = [DIM, CATEGORY, PREVIEW, ZOOM];
 
@@ -3829,18 +3545,22 @@ fn listed_cwds_differ(app: &App) -> bool {
         })
 }
 
-fn usage_cell(s: &Session) -> String {
-    match s.agent {
-        Agent::Kiro => match s.context_pct {
-            Some(p) => format!("ctx {p:.0}%"),
-            None => "—".to_string(),
-        },
-        Agent::Cursor if s.tokens.total == 0 => "—".to_string(),
-        Agent::Cursor => format!("~{} tok", human_tokens(s.tokens.total)),
-        Agent::Codex | Agent::Claude | Agent::Omp => {
-            format!("{} tok", human_tokens(s.tokens.total))
-        }
+/// Manual measurements distinguish unknown from zero and disclose bounded reads.
+fn usage_cell(s: &Session, measured: Option<&mindplayer_core::catalog::UsageSnapshot>) -> String {
+    if s.agent == Agent::Kiro {
+        return s
+            .context_pct
+            .map_or_else(|| "—".into(), |p| format!("ctx {p:.0}%"));
     }
+    let Some(value) = measured else {
+        return "—".into();
+    };
+    format!(
+        "{}{} tok{}",
+        if s.agent == Agent::Cursor { "~" } else { "" },
+        human_tokens(value.tokens.total),
+        if value.partial { " partial" } else { "" }
+    )
 }
 
 fn cwd_leaf(cwd: &Path) -> String {
@@ -5600,15 +5320,34 @@ mod tests {
     /// actually reported.
     #[test]
     fn an_estimated_total_is_marked_and_a_measured_one_is_not() {
-        assert_eq!(usage_cell(&session(Agent::Cursor, 6_200_000)), "~6.2M tok");
-        assert_eq!(usage_cell(&session(Agent::Claude, 6_200_000)), "6.2M tok");
+        let measured = mindplayer_core::catalog::UsageSnapshot {
+            tokens: session(Agent::Claude, 6_200_000).tokens,
+            context_pct: None,
+            partial: false,
+        };
+        assert_eq!(
+            usage_cell(&session(Agent::Cursor, 6_200_000), Some(&measured)),
+            "~6.2M tok"
+        );
+        assert_eq!(
+            usage_cell(&session(Agent::Claude, 6_200_000), Some(&measured)),
+            "6.2M tok"
+        );
     }
 
-    /// Zero here means "nothing on disk to estimate from", and a session that
-    /// spent nothing is a different claim than one we cannot read.
+    /// Unmeasured is distinct from a successful measurement of zero.
     #[test]
     fn a_cursor_session_with_nothing_to_estimate_shows_no_number() {
-        assert_eq!(usage_cell(&session(Agent::Cursor, 0)), "—");
+        let source = session(Agent::Cursor, 0);
+        assert_eq!(usage_cell(&source, None), "—");
+        let mut measured = mindplayer_core::catalog::UsageSnapshot {
+            tokens: source.tokens,
+            context_pct: None,
+            partial: false,
+        };
+        assert_eq!(usage_cell(&source, Some(&measured)), "~0 tok");
+        measured.partial = true;
+        assert_eq!(usage_cell(&source, Some(&measured)), "~0 tok partial");
     }
 
     /// A line that fits costs one row; one that overflows costs as many as it
@@ -6698,33 +6437,6 @@ mod tests {
         assert_eq!(display_width('a'), 1);
         assert_eq!(display_width('한'), 2);
         assert_eq!(display_width('界'), 2);
-    }
-
-    #[test]
-    fn textarea_inserts_visible_cursor_marker() {
-        assert_eq!(text_with_cursor("review", Some(2)), "re▏view");
-        assert_eq!(
-            wrapped_text_rows(&text_with_cursor("한글abc", Some(7)), 6),
-            vec!["한글a▏", "bc"]
-        );
-    }
-
-    #[test]
-    fn textarea_viewport_follows_cursor_row() {
-        assert_eq!(viewport_start_for_cursor(8, 4, 7), 4);
-        let lines =
-            textarea_lines_with_cursor("1\n2\n3\n4\n5", Some("1\n2\n3\n4\n5".len()), "", 3, 20);
-        let rendered = lines
-            .iter()
-            .map(|line| {
-                line.spans
-                    .iter()
-                    .map(|span| span.content.as_ref())
-                    .collect::<String>()
-            })
-            .collect::<Vec<_>>();
-        assert!(rendered.iter().any(|line| line.contains("5▏")));
-        assert!(!rendered.iter().any(|line| line.contains("1")));
     }
 
     fn body() -> Rect {

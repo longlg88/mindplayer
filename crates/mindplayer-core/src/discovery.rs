@@ -47,6 +47,8 @@ const MAX_CLAUDE_BYTES: u64 = 64 * 1024 * 1024;
 /// records per transcript, regardless of the size of the historical body.
 const METADATA_HEAD_BYTES: u64 = 64 * 1024;
 const METADATA_TAIL_BYTES: u64 = 256 * 1024;
+/// Finish identity records that begin in the header, without scanning the body.
+const IDENTITY_READ_BYTES: u64 = 1024 * 1024;
 
 /// Which sessions to include based on working directory.
 #[derive(Debug, Clone)]
@@ -292,20 +294,141 @@ pub(crate) fn parse_source(source: &SessionSource, mode: ParseMode) -> io::Resul
     if session.id.trim().is_empty() || !session.cwd.is_absolute() {
         return Ok(None);
     }
-    if source.agent == Agent::Cursor && mode == ParseMode::Full {
-        session.tokens = cursor_token_estimate(path, &session.id);
-    }
     session.file.clone_from(path);
     Ok(Some(session))
 }
 
-fn transcript_reader(path: &Path, mode: ParseMode) -> io::Result<Box<dyn BufRead>> {
-    match mode {
-        ParseMode::Full => Ok(Box::new(BufReader::new(
-            File::open(path)?.take(MAX_CLAUDE_BYTES),
-        ))),
-        ParseMode::Metadata => Ok(Box::new(Cursor::new(metadata_windows(path)?))),
+/// A tail window must not substitute for authoritative native identity in the header.
+pub(crate) fn validate_source_header(session: &Session) -> io::Result<()> {
+    if !matches!(session.agent, Agent::Codex | Agent::Claude) {
+        return Ok(());
     }
+    let file = File::open(&session.file)?;
+    let len = file.metadata()?.len();
+    // Small Claude transcripts retain the existing legacy filename/cwd fallbacks.
+    if session.agent == Agent::Claude && len <= METADATA_HEAD_BYTES {
+        return Ok(());
+    }
+    let mut id = None;
+    let mut cwd = None;
+    let mut read_bytes = 0;
+    for line in bounded_records(file, IDENTITY_READ_BYTES)?.take(if session.agent == Agent::Codex {
+        HEAD_LINES
+    } else {
+        usize::MAX
+    }) {
+        let line = line?;
+        if read_bytes >= METADATA_HEAD_BYTES {
+            break;
+        }
+        read_bytes += line.len() as u64 + 1;
+        let Ok(record) = serde_json::from_str::<Value>(&line) else {
+            continue;
+        };
+        let (record, id_key) = if session.agent == Agent::Codex {
+            if record.get("type").and_then(Value::as_str) != Some("session_meta") {
+                continue;
+            }
+            (record.get("payload").unwrap_or(&Value::Null), "id")
+        } else {
+            (&record, "sessionId")
+        };
+        if id.is_none() {
+            id = record
+                .get(id_key)
+                .and_then(Value::as_str)
+                .map(str::to_owned);
+        }
+        if cwd.is_none() {
+            cwd = record.get("cwd").and_then(Value::as_str).map(PathBuf::from);
+        }
+        if session.agent == Agent::Codex || (id.is_some() && cwd.is_some()) {
+            break;
+        }
+    }
+    let id_matches = if session.agent == Agent::Codex {
+        id.or_else(|| codex_uuid_from_filename(&session.file))
+            .as_deref()
+            == Some(session.id.as_str())
+    } else {
+        session.is_subagent || id.as_deref() == Some(session.id.as_str())
+    };
+    if !id_matches || cwd.as_ref() != Some(&session.cwd) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "native session identity is missing or changed in the bounded header",
+        ));
+    }
+    Ok(())
+}
+
+/// Explicit usage reads retain each provider's own budget and completeness semantics.
+pub(crate) fn measure_source_usage(source: &SessionSource) -> io::Result<Option<(Session, bool)>> {
+    let mode = match source.agent {
+        Agent::Claude | Agent::Omp => ParseMode::Full,
+        _ => ParseMode::Metadata,
+    };
+    let Some(mut session) = parse_source(source, mode)? else {
+        return Ok(None);
+    };
+    let partial = match source.agent {
+        Agent::Codex => {
+            let usage = codex_tail_scan(&source.file)?;
+            session.tokens = usage.tokens;
+            usage.partial
+        }
+        Agent::Claude | Agent::Omp => std::fs::metadata(&source.file)?.len() > MAX_CLAUDE_BYTES,
+        Agent::Cursor => {
+            let (tokens, partial) = cursor_token_estimate(&source.file, &session.id)?;
+            session.tokens = tokens;
+            partial
+        }
+        Agent::Kiro => false,
+    };
+    Ok(Some((session, partial)))
+}
+
+fn transcript_lines(
+    path: &Path,
+    mode: ParseMode,
+) -> io::Result<Box<dyn Iterator<Item = io::Result<String>>>> {
+    match mode {
+        ParseMode::Full => Ok(Box::new(bounded_records(
+            File::open(path)?,
+            MAX_CLAUDE_BYTES,
+        )?)),
+        ParseMode::Metadata => Ok(Box::new(Cursor::new(metadata_windows(path)?).lines())),
+    }
+}
+
+/// Decode one record at a time, excluding an artificial budget-truncated suffix.
+/// A non-newline record at the actual EOF remains valid input.
+fn bounded_records(
+    mut file: File,
+    mut budget: u64,
+) -> io::Result<impl Iterator<Item = io::Result<String>>> {
+    if file.metadata()?.len() > budget {
+        // Find the last complete record using fixed scratch space. In particular,
+        // do not allocate/decode a potentially enormous truncated final record.
+        let mut end = budget;
+        let mut buffer = [0; 8192];
+        budget = 0;
+        while end > 0 {
+            let start = end.saturating_sub(buffer.len() as u64);
+            let chunk = &mut buffer[..(end - start) as usize];
+            file.seek(SeekFrom::Start(start))?;
+            file.read_exact(chunk)?;
+            if let Some(newline) = chunk.iter().rposition(|&byte| byte == b'\n') {
+                budget = start + newline as u64 + 1;
+                break;
+            }
+            end = start;
+        }
+        file.rewind()?;
+    }
+    Ok(BufReader::new(file.take(budget)).split(b'\n').map(|bytes| {
+        String::from_utf8(bytes?).map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
+    }))
 }
 
 /// Preserve whole lines only at window seams; never allocate a whole transcript.
@@ -369,78 +492,34 @@ pub fn sort_by_recency(sessions: &mut [Session]) {
     });
 }
 
-/// Cheaply refresh `last_active` from each session file's mtime and re-sort.
-/// No JSON parsing — a few thousand `stat`s, used for periodic live re-ordering
-/// so a session you're actively working in bubbles to the top. (File mtime
-/// tracks the last appended event, which matches the in-transcript timestamp.)
+/// Refresh bounded activity/prompt metadata without changing token totals.
+/// Kiro context uses its sidecar even when the main source mtime is unchanged.
 pub fn refresh_activity(sessions: &mut [Session]) {
     for s in sessions.iter_mut() {
-        if let Ok(modified) = std::fs::metadata(&s.file).and_then(|m| m.modified()) {
-            s.last_active = Some(DateTime::<Utc>::from(modified));
+        let modified = std::fs::metadata(&s.file)
+            .and_then(|m| m.modified())
+            .ok()
+            .map(DateTime::<Utc>::from);
+        let changed = modified.is_none() || modified != s.last_active;
+        if let Some(modified) = modified {
+            s.last_active = Some(modified);
         }
-    }
-    sort_by_recency(sessions);
-}
-
-/// Refresh mtime-based activity and token/context usage for already-discovered
-/// sessions. This is meant for the live TUI: initial scans can catch a newly
-/// spawned session before its first token record is written, so mtime-only
-/// refreshes would otherwise leave that row stuck at `0` until a manual rescan.
-pub fn refresh_activity_and_usage(sessions: &mut [Session]) {
-    for s in sessions.iter_mut() {
-        let old_active = s.last_active;
-        let Ok(modified) = std::fs::metadata(&s.file).and_then(|m| m.modified()) else {
-            continue;
-        };
-        let active = DateTime::<Utc>::from(modified);
-        s.last_active = Some(active);
-
-        let changed = old_active.is_none_or(|prev| active > prev);
-        let missing_usage = s.tokens.total == 0
-            && matches!(
-                s.agent,
-                Agent::Codex | Agent::Claude | Agent::Cursor | Agent::Omp
-            );
-        let missing_context = s.agent == Agent::Kiro && s.context_pct.is_none();
-        if !changed && !missing_usage && !missing_context {
-            continue;
-        }
-
-        match s.agent {
-            Agent::Codex => {
-                let (tokens, _, last_prompt_at) = codex_tail_scan(&s.file);
-                if tokens.total > 0 || s.tokens.total == 0 {
-                    s.tokens = tokens;
-                }
-                if last_prompt_at.is_some() {
-                    s.last_prompt_at = last_prompt_at;
-                }
-            }
-            Agent::Claude => {
-                let (tokens, last_prompt_at) = claude_usage_scan(&s.file);
-                if tokens.total > 0 || s.tokens.total == 0 {
-                    s.tokens = tokens;
-                }
-                if last_prompt_at.is_some() {
-                    s.last_prompt_at = last_prompt_at;
-                }
-            }
-            Agent::Kiro => {
-                if let Some(context_pct) = kiro_context_pct(&s.file) {
-                    s.context_pct = Some(context_pct);
-                }
-            }
-            Agent::Cursor => {
-                let estimate = cursor_token_estimate(&s.file, &s.id);
-                if estimate.total > 0 {
-                    s.tokens = estimate;
-                }
-            }
-            Agent::Omp => {
-                if let Some(updated) = parse_omp_file(&s.file, &Scope::Global) {
-                    s.tokens = updated.tokens;
-                    s.last_prompt_at = updated.last_prompt_at;
-                    s.title = updated.title;
+        if s.agent == Agent::Kiro
+            || (changed && matches!(s.agent, Agent::Codex | Agent::Claude | Agent::Omp))
+        {
+            let source = SessionSource {
+                agent: s.agent,
+                file: s.file.clone(),
+                cwd_override: Some(s.cwd.clone()),
+            };
+            if validate_source_header(s).is_ok() {
+                if let Ok(Some(metadata)) = parse_source(&source, ParseMode::Metadata) {
+                    if metadata.agent == s.agent && metadata.id == s.id && metadata.cwd == s.cwd {
+                        s.last_prompt_at = s.last_prompt_at.max(metadata.last_prompt_at);
+                        if s.agent == Agent::Kiro {
+                            s.context_pct = metadata.context_pct.or(s.context_pct);
+                        }
+                    }
                 }
             }
         }
@@ -607,7 +686,7 @@ fn parse_codex_file(path: &Path, scope: &Scope) -> Option<Session> {
         return None;
     }
     let id = meta.id.or_else(|| codex_uuid_from_filename(path))?;
-    let (tokens, last_active, last_prompt_at) = codex_tail_scan(path);
+    let usage = codex_tail_scan(path).ok()?;
     let title = codex_head_title(path).unwrap_or_else(|| "(empty)".to_string());
     let is_subagent = meta.is_subagent || looks_like_subagent_title(&title);
     Some(Session {
@@ -616,9 +695,9 @@ fn parse_codex_file(path: &Path, scope: &Scope) -> Option<Session> {
         cwd: meta.cwd,
         file: path.to_path_buf(),
         started_at: meta.started,
-        last_active,
-        last_prompt_at,
-        tokens,
+        last_active: usage.last_active,
+        last_prompt_at: usage.last_prompt_at,
+        tokens: usage.tokens,
         title,
         archived: false,
         is_subagent,
@@ -627,7 +706,7 @@ fn parse_codex_file(path: &Path, scope: &Scope) -> Option<Session> {
 }
 
 fn parse_codex_metadata(path: &Path) -> io::Result<Option<Session>> {
-    let reader = transcript_reader(path, ParseMode::Metadata)?;
+    let lines = transcript_lines(path, ParseMode::Metadata)?;
     let mut id = None;
     let mut cwd = None;
     let mut started_at = None;
@@ -636,7 +715,7 @@ fn parse_codex_metadata(path: &Path) -> io::Result<Option<Session>> {
     let mut title = None;
     let mut fallback = None;
     let mut is_subagent = false;
-    for line in reader.lines() {
+    for line in lines {
         let line = line?;
         let Ok(value) = serde_json::from_str::<Value>(&line) else {
             continue;
@@ -773,39 +852,29 @@ fn codex_meta(path: &Path) -> CodexMeta {
     meta
 }
 
+struct CodexTail {
+    tokens: TokenUsage,
+    last_active: Option<DateTime<Utc>>,
+    last_prompt_at: Option<DateTime<Utc>>,
+    partial: bool,
+}
+
 /// Read a bounded window from EOF and take the last `token_count` (cumulative),
 /// the last timestamp, and the last genuine user prompt. Grows the window if no
 /// `token_count` is in range.
-fn codex_tail_scan(path: &Path) -> (TokenUsage, Option<DateTime<Utc>>, Option<DateTime<Utc>>) {
+fn codex_tail_scan(path: &Path) -> io::Result<CodexTail> {
     let mut tokens = TokenUsage::default();
     let mut last_active = None;
     let mut last_prompt_at = None;
-    let Ok(mut file) = File::open(path) else {
-        return (tokens, last_active, last_prompt_at);
-    };
-    let len = match file.metadata() {
-        Ok(m) => m.len(),
-        Err(_) => return (tokens, last_active, last_prompt_at),
-    };
-    if len == 0 {
-        return (tokens, last_active, last_prompt_at);
-    }
+    let mut file = File::open(path)?;
+    let len = file.metadata()?.len();
 
     let mut window = INITIAL_TAIL_BYTES;
     loop {
         let start = len.saturating_sub(window);
-        if file.seek(SeekFrom::Start(start)).is_err() {
-            break;
-        }
+        file.seek(SeekFrom::Start(start))?;
         let mut bytes = Vec::new();
-        if file
-            .by_ref()
-            .take(len - start)
-            .read_to_end(&mut bytes)
-            .is_err()
-        {
-            break;
-        }
+        file.by_ref().take(len - start).read_to_end(&mut bytes)?;
         // Drop only a genuine partial fragment: when starting mid-file, skip
         // exactly up to and including the first newline (never a whole record).
         let slice: &[u8] = if start > 0 {
@@ -860,11 +929,17 @@ fn codex_tail_scan(path: &Path) -> (TokenUsage, Option<DateTime<Utc>>, Option<Da
             }
         }
         if found_token || start == 0 || window >= MAX_TAIL_BYTES {
-            break;
+            return Ok(CodexTail {
+                tokens,
+                last_active,
+                last_prompt_at,
+                // A cumulative record is complete even when older history was
+                // outside the window. No record is only a true zero at BOF.
+                partial: !found_token && start > 0,
+            });
         }
         window = (window * 4).min(MAX_TAIL_BYTES);
     }
-    (tokens, last_active, last_prompt_at)
 }
 
 /// Read the leading lines to find the first *real* user prompt for the title.
@@ -1002,7 +1077,7 @@ fn parse_claude_file_mode(
     cwd_override: Option<&Path>,
     mode: ParseMode,
 ) -> io::Result<Option<Session>> {
-    let reader = transcript_reader(path, mode)?;
+    let lines = transcript_lines(path, mode)?;
     let mut id: Option<String> = None;
     let mut cwd: Option<PathBuf> = None;
     let mut started_at: Option<DateTime<Utc>> = None;
@@ -1017,7 +1092,7 @@ fn parse_claude_file_mode(
     let mut other_entry = false;
     let mut valid_record = false;
 
-    for line in reader.lines() {
+    for line in lines {
         let line = line?;
         let line = line.trim();
         if line.is_empty() {
@@ -1252,56 +1327,6 @@ fn add_claude_usage(tokens: &mut TokenUsage, usage: &Value) {
         .saturating_add(cache_read);
 }
 
-fn claude_usage_scan(path: &Path) -> (TokenUsage, Option<DateTime<Utc>>) {
-    let Ok(file) = File::open(path) else {
-        return (TokenUsage::default(), None);
-    };
-    let reader = BufReader::new(file.take(MAX_CLAUDE_BYTES));
-    let mut tokens = TokenUsage::default();
-    let mut last_prompt_at: Option<DateTime<Utc>> = None;
-    for line in reader.lines().map_while(Result::ok) {
-        let line = line.trim();
-        if line.is_empty() {
-            continue;
-        }
-        let Ok(v) = serde_json::from_str::<Value>(line) else {
-            continue;
-        };
-        match v.get("type").and_then(Value::as_str) {
-            Some("assistant") => {
-                if let Some(usage) = v.get("message").and_then(|m| m.get("usage")) {
-                    add_claude_usage(&mut tokens, usage);
-                }
-            }
-            Some("user") if claude_message_is_human(v.get("message")) => {
-                if let Some(ts) = v
-                    .get("timestamp")
-                    .and_then(Value::as_str)
-                    .and_then(parse_ts)
-                {
-                    last_prompt_at = Some(last_prompt_at.map_or(ts, |last| last.max(ts)));
-                }
-            }
-            _ => {}
-        }
-    }
-    (tokens, last_prompt_at)
-}
-
-fn kiro_context_pct(path: &Path) -> Option<f64> {
-    let mut buf = String::new();
-    File::open(path)
-        .ok()?
-        .take(256 * 1024)
-        .read_to_string(&mut buf)
-        .ok()?;
-    let v: Value = serde_json::from_str(&buf).ok()?;
-    v.get("session_state")
-        .and_then(|s| s.get("rts_model_state"))
-        .and_then(|r| r.get("context_usage_percentage"))
-        .and_then(Value::as_f64)
-}
-
 /// Claude's directory-name encoding of a cwd: `/` and `.` become `-`
 /// (e.g. `/Users/jane.doe/proj` -> `-Users-jane-doe-proj`).
 fn encode_cwd(p: &Path) -> String {
@@ -1514,19 +1539,14 @@ const CURSOR_CHARS_PER_TOKEN: u64 = 4;
 /// conversation ahead of it, since that is what a turn resends and what the
 /// per-request numbers codex and claude report add up to. It is an estimate,
 /// not a measurement, and the column marks it as one.
-fn cursor_token_estimate(meta: &Path, id: &str) -> TokenUsage {
-    let Some(path) = cursor_transcript(meta, id) else {
-        return TokenUsage::default();
-    };
-    let Ok(file) = File::open(path) else {
-        return TokenUsage::default();
-    };
+fn cursor_token_estimate(meta: &Path, id: &str) -> io::Result<(TokenUsage, bool)> {
+    let path = cursor_transcript(meta, id)?;
+    let file = File::open(path)?;
+    let partial = file.metadata()?.len() > MAX_CLAUDE_BYTES;
     let mut tokens = TokenUsage::default();
     let mut conversation_so_far: u64 = 0;
-    for line in BufReader::new(file.take(MAX_CLAUDE_BYTES))
-        .lines()
-        .map_while(Result::ok)
-    {
+    for line in bounded_records(file, MAX_CLAUDE_BYTES)? {
+        let line = line?;
         let Ok(v) = serde_json::from_str::<Value>(line.trim()) else {
             continue;
         };
@@ -1544,7 +1564,7 @@ fn cursor_token_estimate(meta: &Path, id: &str) -> TokenUsage {
         conversation_so_far = conversation_so_far.saturating_add(turn);
     }
     tokens.total = tokens.input.saturating_add(tokens.output);
-    tokens
+    Ok((tokens, partial))
 }
 
 /// Path to the transcript for cursor chat `id`, if one was written.
@@ -1554,19 +1574,39 @@ fn cursor_token_estimate(meta: &Path, id: &str) -> TokenUsage {
 /// `<root>/projects/<cwd-slug>/agent-transcripts/<id>/<id>.jsonl`. The slug is
 /// some transform of the cwd that we would have to guess at, so the search goes
 /// by chat id, which is unique across projects.
-fn cursor_transcript(meta: &Path, id: &str) -> Option<PathBuf> {
-    let root = meta.ancestors().nth(4)?;
+fn cursor_transcript(meta: &Path, id: &str) -> io::Result<PathBuf> {
+    let root = meta.ancestors().nth(4).ok_or_else(|| {
+        io::Error::new(io::ErrorKind::InvalidInput, "invalid Cursor metadata path")
+    })?;
     let transcript = |project: PathBuf| {
         project
             .join("agent-transcripts")
             .join(id)
             .join(format!("{id}.jsonl"))
     };
-    std::fs::read_dir(root.join("projects"))
-        .ok()?
-        .flatten()
-        .map(|entry| transcript(entry.path()))
-        .find(|path| path.is_file())
+    let mut found = None;
+    for entry in std::fs::read_dir(root.join("projects"))? {
+        let project = entry?.path();
+        if !std::fs::metadata(&project)?.is_dir() {
+            continue;
+        }
+        let path = transcript(project);
+        match std::fs::metadata(&path) {
+            Ok(metadata) if metadata.is_file() => {
+                if found.is_some() {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "ambiguous Cursor transcript",
+                    ));
+                }
+                found = Some(path);
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
+    }
+    found.ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "Cursor transcript not found"))
 }
 
 fn cursor_ms(v: &Value, key: &str) -> Option<DateTime<Utc>> {
@@ -1587,8 +1627,7 @@ fn parse_omp_file(path: &Path, scope: &Scope) -> Option<Session> {
 
 fn parse_omp_file_mode(path: &Path, scope: &Scope, mode: ParseMode) -> io::Result<Option<Session>> {
     let file = std::fs::canonicalize(path)?;
-    let reader = transcript_reader(&file, mode)?;
-    let mut lines = reader.lines();
+    let mut lines = transcript_lines(&file, mode)?;
     let Some(first) = lines.next().transpose()? else {
         return Ok(None);
     };
@@ -1900,7 +1939,8 @@ mod tests {
         let id = "e9301055-fe00-4c36-b718-1fdf3b083210";
         let meta = cursor_chat(dir.path(), id, &["user", "assistant", "user", "assistant"]);
 
-        let got = cursor_token_estimate(&meta, id);
+        let (got, partial) = cursor_token_estimate(&meta, id).unwrap();
+        assert!(!partial);
 
         // 28 tokens a message. The first answer was asked with one message
         // ahead of it (28), the second with three (84).
@@ -1924,7 +1964,7 @@ mod tests {
         std::fs::create_dir_all(meta.parent().unwrap()).unwrap();
         std::fs::write(&meta, "{}").unwrap();
 
-        assert_eq!(cursor_token_estimate(&meta, id), TokenUsage::default());
+        assert!(cursor_token_estimate(&meta, id).is_err());
     }
 
     #[test]

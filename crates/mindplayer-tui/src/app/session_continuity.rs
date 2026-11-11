@@ -138,8 +138,6 @@ impl App {
             pane_accounts,
             pane_sizes,
             pane_bounds,
-            html_candidates,
-            html_seen,
             out_seq,
             out_at,
             last_status,
@@ -356,6 +354,7 @@ mod tests {
         sessions.push(current);
         tx.send((
             fixture.app.working_set.epoch,
+            Instant::now(),
             Ok(mindplayer_core::catalog::CatalogSnapshot {
                 active: sessions,
                 ..Default::default()
@@ -536,6 +535,7 @@ mod tests {
         sessions.push(current);
         tx.send((
             fixture.app.working_set.epoch,
+            Instant::now(),
             Ok(mindplayer_core::catalog::CatalogSnapshot {
                 active: sessions,
                 ..Default::default()

@@ -863,9 +863,16 @@ fn measured_archive_search(
             "archive_search",
         ));
     }
-    mp.wait_until(Duration::from_millis(250), |screen| {
+    let ready = mp.wait_until(Duration::from_millis(250), |screen| {
         archive_row(screen, title)
-    })
+    });
+    if !ready {
+        eprintln!(
+            "Archive row {title:?} missed the 250ms deadline:\n{}",
+            mp.screen()
+        );
+    }
+    ready
 }
 
 fn leave_archive_search(mp: &mut Mp) {

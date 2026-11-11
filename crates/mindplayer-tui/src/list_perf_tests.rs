@@ -201,7 +201,7 @@ fn list_archive_footer_keeps_page_restore_and_search_hints() {
                 "matches={matches}, page={page}: {text}"
             );
             assert!(
-                text.contains(&format!("{matches} archived · usage not loaded")),
+                text.contains(&format!("{matches} archived · page — tok")),
                 "{text}"
             );
             assert!(!text.contains("0 tok"), "metadata usage is unknown: {text}");
@@ -210,7 +210,7 @@ fn list_archive_footer_keeps_page_restore_and_search_hints() {
 }
 
 #[test]
-fn list_archive_usage_is_unknown_while_active_usage_remains_loaded() {
+fn list_archive_and_active_usage_are_unknown_until_manually_measured() {
     let mut fixture = ListFixture::new(2);
     let area = Rect::new(2, 2, 120, 8);
     fixture.app.show_archived = true;
@@ -233,8 +233,8 @@ fn list_archive_usage_is_unknown_while_active_usage_remains_loaded() {
     fixture.app.visible_aggregate = Aggregate::of_refs(fixture.app.visible_sessions());
     let buffer = draw_list(&mut fixture.app, area);
     let text = row_text(&buffer, area, 1);
-    assert!(text.contains("1.2K tok"), "{text}");
-    assert!(draw_screen(&mut fixture.app).contains("2 sessions · 1.2K tok"));
+    assert!(text.trim_end().ends_with('—'), "{text}");
+    assert!(draw_screen(&mut fixture.app).contains("2 sessions · — tok"));
 }
 
 #[test]
@@ -250,8 +250,11 @@ fn list_scan_summary_distinguishes_active_usage_from_unloaded_archive() {
     fixture.app.screen = Screen::ScanSummary;
     let text = draw_screen(&mut fixture.app);
     assert!(text.contains("2 active sessions collected"), "{text}");
-    assert!(text.contains("3 archived · usage not loaded"), "{text}");
-    assert!(text.contains("active tokens 1.2K"), "{text}");
+    assert!(
+        text.contains("3 archived · measure with r in list"),
+        "{text}"
+    );
+    assert!(text.contains("active tokens — tok"), "{text}");
     assert!(
         !text.contains("total tokens"),
         "archive usage is not totaled: {text}"

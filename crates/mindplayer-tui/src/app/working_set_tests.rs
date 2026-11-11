@@ -12,6 +12,7 @@ fn mp_review_migration_save_failure_is_visible_and_retried() {
     assert!(migrated.bind_legacy_use_sources([&chosen]));
     app.apply_catalog((
         app.working_set.epoch,
+        Instant::now(),
         Ok(mindplayer_core::catalog::CatalogSnapshot {
             active: vec![chosen.clone()],
             use_sources: migrated.last_used_sources.clone(),
@@ -27,6 +28,7 @@ fn mp_review_migration_save_failure_is_visible_and_retried() {
     // The next scan has no new binding because the in-memory state already has it.
     app.apply_catalog((
         app.working_set.epoch,
+        Instant::now(),
         Ok(mindplayer_core::catalog::CatalogSnapshot {
             active: vec![chosen],
             ..Default::default()
@@ -94,6 +96,7 @@ fn mp_review_live_typing_does_not_starve_catalog_adoption() {
     assert!(
         fixture.app.apply_catalog((
             epoch,
+            Instant::now(),
             Ok(mindplayer_core::catalog::CatalogSnapshot {
                 archive: vec![fixture.target.clone(), fixture.collision.clone()],
                 ..Default::default()
@@ -121,6 +124,7 @@ fn mp_review_catalog_adoption_preserves_archive_selection_identity() {
     let selected = app.selected_session().unwrap().clone();
     assert!(app.apply_catalog((
         app.working_set.epoch,
+        Instant::now(),
         Ok(mindplayer_core::catalog::CatalogSnapshot {
             archive: rows,
             ..Default::default()
@@ -193,6 +197,7 @@ fn mp_review_archive_selection_follows_source_across_page_boundary() {
     rows.push(tests::session("archive-000-new", Agent::Codex, true));
     app.apply_catalog((
         app.working_set.epoch,
+        Instant::now(),
         Ok(mindplayer_core::catalog::CatalogSnapshot {
             archive: rows.clone(),
             ..Default::default()
@@ -207,6 +212,7 @@ fn mp_review_archive_selection_follows_source_across_page_boundary() {
     rows.retain(|s| s.id != selected.id);
     app.apply_catalog((
         app.working_set.epoch,
+        Instant::now(),
         Ok(mindplayer_core::catalog::CatalogSnapshot {
             archive: rows,
             ..Default::default()
@@ -274,6 +280,7 @@ fn mp_review_archive_refresh_keeps_same_id_source_not_just_native_id() {
         .unwrap();
     app.apply_catalog((
         app.working_set.epoch,
+        Instant::now(),
         Ok(mindplayer_core::catalog::CatalogSnapshot {
             archive: vec![two.clone(), one],
             ..Default::default()
@@ -288,10 +295,9 @@ fn unchanged_refresh_does_not_rebuild_or_redraw() {
     let mut app = tests::isolated_app();
     let session = tests::session("unchanged", Agent::Codex, false);
     let update = ActivityUpdate {
-        id: session.id.clone(),
+        source: working_set::source_key(&session),
         last_active: session.last_active,
         last_prompt_at: session.last_prompt_at,
-        tokens: session.tokens,
         context_pct: session.context_pct,
     };
     app.all_sessions.push(session);
@@ -369,7 +375,7 @@ fn archive_50k_is_paged_and_never_enters_usage_refresh() {
         7,
         "archive page must not enter detailed refresh"
     );
-    assert!(updates.iter().all(|s| s.id.starts_with("active-")));
+    assert!(updates.iter().all(|s| s.source.2.starts_with("active-")));
     app.move_archive_page(true);
     wait_for_archive(&mut app);
     assert_eq!(app.archive_page, 1);
@@ -454,6 +460,7 @@ fn stale_catalog_cannot_reverse_a_human_promotion() {
     app.note_session_use("chosen");
     assert!(!app.apply_catalog((
         old_epoch,
+        Instant::now(),
         Ok(mindplayer_core::catalog::CatalogSnapshot {
             archive: vec![tests::session("chosen", Agent::Codex, true)],
             ..Default::default()
@@ -550,6 +557,7 @@ fn catalog_resolves_pending_labels_against_archived_metadata() {
         .add_pending_label("codex", archived.cwd.clone(), now, "saved topic");
     app.apply_catalog((
         app.working_set.epoch,
+        Instant::now(),
         Ok(mindplayer_core::catalog::CatalogSnapshot {
             archive: vec![archived],
             ..Default::default()
@@ -590,6 +598,7 @@ fn catalog_cannot_retarget_a_live_native_id_to_another_account_source() {
     app.all_sessions.push(loaded_archive);
     app.apply_catalog((
         app.working_set.epoch,
+        Instant::now(),
         Ok(mindplayer_core::catalog::CatalogSnapshot {
             active: vec![other.clone()],
             ..Default::default()
@@ -814,7 +823,7 @@ impl NativeSwitch {
             .app
             .all_sessions
             .iter()
-            .any(|s| !s.archived && s.file == self.target.file && s.tokens.total == 42)
+            .any(|s| !s.archived && s.file == self.target.file && s.tokens == TokenUsage::default())
         {
             self.app.poll_working_set();
             self.app.hook_status_due = None;
@@ -826,6 +835,31 @@ impl NativeSwitch {
             thread::sleep(Duration::from_millis(5));
         }
     }
+}
+
+#[test]
+fn native_hydration_preserves_observed_activity_by_source() {
+    let mut fixture = NativeSwitch::new();
+    let now = Utc::now() + chrono::Duration::minutes(1);
+    let mut observed = fixture.target.clone();
+    observed.last_active = Some(now);
+    observed.last_prompt_at = Some(now);
+    let mut collision = fixture.collision.clone();
+    collision.last_active = Some(now + chrono::Duration::minutes(1));
+    collision.last_prompt_at = collision.last_active;
+    fixture.app.all_sessions.extend([observed, collision]);
+    fixture.app.poll_hook_status();
+    fixture.wait_for_target();
+    let target = fixture
+        .app
+        .all_sessions
+        .iter()
+        .find(|s| working_set::source_key(s) == working_set::source_key(&fixture.target))
+        .unwrap();
+    assert!(!target.archived);
+    assert_eq!(target.last_active, Some(now));
+    assert_eq!(target.last_prompt_at, Some(now));
+    assert_eq!(fixture.app.ptys.len(), 1, "only the fixture-owned cat PTY");
 }
 
 #[test]
@@ -905,7 +939,7 @@ fn native_switch_catalog_protects_the_verified_running_target() {
     let mut fixture = NativeSwitch::new();
     fixture.app.state.set_archived(&fixture.target.id, true);
     fixture.app.poll_hook_status();
-    let (_, snapshot) = fixture
+    let (_, _, snapshot) = fixture
         .app
         .catalog_scan()
         .recv_timeout(Duration::from_secs(5))
@@ -922,4 +956,43 @@ fn native_switch_catalog_protects_the_verified_running_target() {
         .active
         .iter()
         .any(|s| s.file == fixture.collision.file));
+}
+
+#[test]
+fn native_metadata_hydration_preserves_last_manual_measurement() {
+    let mut fixture = NativeSwitch::new();
+    fixture.app.manual_usage.insert(
+        working_set::source_key(&fixture.target),
+        mindplayer_core::catalog::UsageSnapshot {
+            tokens: TokenUsage {
+                total: 123,
+                ..Default::default()
+            },
+            context_pct: Some(25.0),
+            partial: true,
+        },
+    );
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        fixture.app.poll_working_set();
+        fixture.app.hook_status_due = None;
+        fixture.app.poll_hook_status();
+        if let Some(row) = fixture
+            .app
+            .all_sessions
+            .iter()
+            .find(|s| !s.archived && s.file == fixture.target.file)
+        {
+            assert_eq!(
+                row.tokens.total, 123,
+                "metadata must not overwrite measured tokens"
+            );
+            assert_eq!(row.context_pct, Some(25.0));
+            break;
+        }
+        assert!(Instant::now() < deadline, "native target was not promoted");
+        thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(fixture.app.ptys.len(), 1);
+    assert!(fixture.app.pending.is_none());
 }

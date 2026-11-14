@@ -486,7 +486,7 @@ test('invalid options are rejected with a fixed configuration error', () => {
   safeError('network-error')(new JevError(API_KEY + SECRET));
 });
 
-for (const [status, code] of [[401, 'unauthorized'], [402, 'payment-required'], [429, 'rate-limited'], [400, 'http-error'], [403, 'http-error'], [422, 'http-error'], [500, 'http-error'], [529, 'http-error'], [302, 'http-error']]) {
+for (const [status, code] of [[401, 'unauthorized'], [429, 'rate-limited'], [400, 'http-error'], [403, 'http-error'], [422, 'http-error'], [500, 'http-error'], [529, 'http-error'], [302, 'http-error']]) {
   test(`HTTP ${status} is sanitized, cancelled, and never retried`, async () => {
     let cancelled = 0, read = 0, internalSignal;
     const f = mocked((_, options) => {
@@ -497,6 +497,123 @@ for (const [status, code] of [[401, 'unauthorized'], [402, 'payment-required'], 
     assert.equal(f.calls(), 1); assert.equal(read, 0); assert.equal(cancelled, 1); assert.equal(internalSignal.aborted, true);
   });
 }
+
+const budgetBody = (scope = 'User', used = '51.00', limit = '50.00') => ({
+  error: { type: 'quota_for_entity_exceeded',
+    message: `${scope} budget exceeded. Current spend: $${used}, limit: $${limit}. Team owners can edit this budget in AI Gateway Budgets & Spend (https://untrusted.invalid/${API_KEY}/${SECRET}).`,
+    accountId: SECRET, credential: API_KEY },
+});
+
+for (const [label, scope] of [['User', 'user'], ['Team', 'team'], ['Project', 'project'], ['API key', 'api-key'], ['API Key', 'api-key']]) {
+  test(`Gateway HTTP 402 ${label} budget retains only bounded scope and amounts`, async () => {
+    const bytes = Buffer.from(JSON.stringify(budgetBody(label)));
+    const f = mocked(() => streamResponse(Array.from(bytes, byte => Uint8Array.of(byte)), { status: 402 }),
+      { maxResponseBytes: bytes.length });
+    await assert.rejects(f.judge(SECRET), error => {
+      safeError('budget-exceeded')(error);
+      assert.deepEqual(error.budget, { scope, used: 51, limit: 50 });
+      assert.ok(Object.isFrozen(error.budget));
+      assert.equal(error.message, `${label === 'API Key' ? 'API key' : label} budget exceeded: $51.00 / $50.00`);
+      assert.ok(!inspect(error, { showHidden: true }).includes('https://'));
+      return true;
+    });
+    assert.equal(f.calls(), 1);
+  });
+}
+
+test('budget errors revalidate structured evidence without coercion or retaining extra properties', () => {
+  const valid = { scope: 'user', used: 51, limit: 50 };
+  for (const budget of [null, {}, { ...valid, scope: SECRET }, { ...valid, scope: '__proto__' },
+    ...[NaN, Infinity, -1, Number.MAX_SAFE_INTEGER + 1, '51', { toString() { throw new Error(SECRET); } }]
+      .flatMap(value => [{ ...valid, used: value }, { ...valid, limit: value }]),
+    { ...valid, used: 49 }]) {
+    const error = new JevError('budget-exceeded', budget);
+    safeError('payment-required')(error);
+    assert.equal(error.budget, undefined);
+  }
+  const source = { ...valid, message: SECRET, apiKey: API_KEY };
+  const error = new JevError('budget-exceeded', source);
+  source.used = 999;
+  safeError('budget-exceeded')(error);
+  assert.deepEqual(error.budget, valid);
+});
+
+test('unknown and hostile 402 envelopes stay generic without exposing upstream content', async () => {
+  const standard = budgetBody().error.message;
+  const invalid = [
+    null, [], {}, { error: null }, { error: { type: 'other', message: standard } },
+    { error: { message: standard } }, { error: { type: 'quota_for_entity_exceeded', message: {} } },
+    ...['Organization', 'user', SECRET].map(scope => budgetBody(scope)),
+    ...['NaN', 'Infinity', '-1', '1e10', '1,000.00', '9'.repeat(400), '9007199254740992'].map(used => budgetBody('User', used)),
+    budgetBody('User', '49.00'), budgetBody('User', '51.00', '-1'),
+    ...[`\x1b[31m${standard}`, standard + '\n' + SECRET, standard + '\u202e' + SECRET,
+      `${SECRET} ${standard}`, standard.replace('$51.00', `$51.00${SECRET}`), standard + 'x'.repeat(4096)]
+      .map(message => ({ error: { type: 'quota_for_entity_exceeded', message } })),
+  ];
+  for (const body of invalid) {
+    const f = mocked(() => jsonResponse(body, { status: 402 }));
+    await assert.rejects(f.judge(SECRET), error => {
+      safeError('payment-required')(error);
+      assert.equal(error.budget, undefined);
+      return true;
+    });
+    assert.equal(f.calls(), 1);
+  }
+});
+
+test('malformed, truncated, empty and invalid UTF-8 402 bodies remain payment-required', async () => {
+  const complete = JSON.stringify(budgetBody());
+  for (const body of [API_KEY + SECRET, '', '{', complete.slice(0, -1), Uint8Array.of(0xff), null]) {
+    const f = mocked(() => new Response(body, { status: 402 }));
+    await assert.rejects(f.judge(SECRET), safeError('payment-required'));
+    assert.equal(f.calls(), 1);
+  }
+});
+
+test('oversized 402 bodies stop at the existing byte bound and remain payment-required', async () => {
+  const bytes = Buffer.from(JSON.stringify(budgetBody()));
+  for (const headers of [undefined, { 'content-length': '1' }, { 'content-length': 'garbage' }]) {
+    let cancelled = 0;
+    const f = mocked(() => streamResponse([bytes], { status: 402, headers, finish: false, cancel() { cancelled++; } }),
+      { maxResponseBytes: bytes.length - 1 });
+    await assert.rejects(f.judge(SECRET), safeError('payment-required'));
+    assert.equal(f.calls(), 1); assert.equal(cancelled, 1);
+  }
+  let acquired = 0, cancelled = 0;
+  const f = mocked(() => ({ status: 402, headers: new Headers({ 'content-length': '99999' }),
+    body: { getReader() { acquired++; }, cancel() { cancelled++; } } }), { maxResponseBytes: 100 });
+  await assert.rejects(f.judge(SECRET), safeError('payment-required'));
+  assert.equal(acquired, 0); assert.equal(cancelled, 1); assert.equal(f.calls(), 1);
+});
+
+test('402 body reading shares the request deadline and cancellation without retry', { timeout: 1000 }, async () => {
+  for (const mode of ['timeout', 'aborted']) {
+    const controller = new AbortController();
+    let cancelled = 0, internalSignal;
+    const f = mocked((_, options) => {
+      internalSignal = options.signal;
+      if (mode === 'aborted') setImmediate(() => controller.abort(new Error(API_KEY + SECRET)));
+      return streamResponse([JSON.stringify(budgetBody())], { status: 402, finish: false, cancel() { cancelled++; } });
+    }, { timeoutMs: mode === 'timeout' ? 20 : 500 });
+    await assert.rejects(f.judge(SECRET, { signal: controller.signal }), safeError(mode));
+    assert.equal(f.calls(), 1); assert.equal(cancelled, 1); assert.equal(internalSignal.aborted, true);
+    assert.equal(getEventListeners(controller.signal, 'abort').length, 0);
+  }
+});
+
+test('402 stream transport failures retain their sanitized network classification', async () => {
+  const f = mocked(() => new Response(new ReadableStream({
+    start(controller) { controller.error(new Error(API_KEY + SECRET)); },
+  }), { status: 402 }));
+  await assert.rejects(f.judge(SECRET), safeError('network-error'));
+  assert.equal(f.calls(), 1);
+});
+
+test('direct TypeSafe non-budget 402 remains generic without retry', async () => {
+  const f = mocked(() => jsonResponse({ error: { message: API_KEY + SECRET } }, { status: 402 }), { provider: 'typesafe' });
+  await assert.rejects(f.judge(SECRET), safeError('payment-required'));
+  assert.equal(f.calls(), 1);
+});
 
 test('redirected responses are rejected even from a nonconforming fetch implementation', async () => {
   const f = mocked(() => ({ status: 200, redirected: true }));

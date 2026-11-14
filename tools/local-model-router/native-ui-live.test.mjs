@@ -54,9 +54,9 @@ const ROUTING_FAILURE_REASONS = new Map([
   ['route-skipped', ['non-user-thread', 'external-transfer-policy-unset']],
   ['route-failed', ['selector-error', 'selector-timeout', 'invalid-selection', 'submission-uncertain-no-replay',
     'new-turn-active', 'thread-closed', 'stale-decision', 'main-ownership-unverified', 'jev-key-unavailable',
-    'jev-unauthorized', 'jev-payment-required', 'jev-rate-limited', 'jev-http-error', 'jev-tls-error',
+    'jev-unauthorized', 'jev-payment-required', 'jev-budget-exceeded', 'jev-rate-limited', 'jev-http-error', 'jev-tls-error',
     'jev-network-error', 'jev-timeout', 'jev-invalid-response', 'jev-request-too-large', 'jev-response-too-large']],
-  ['jev-failed', ['jev-key-unavailable', 'unauthorized', 'payment-required', 'rate-limited', 'http-error',
+  ['jev-failed', ['jev-key-unavailable', 'unauthorized', 'payment-required', 'budget-exceeded', 'rate-limited', 'http-error',
     'tls-error', 'network-error', 'timeout', 'aborted', 'invalid-response', 'request-too-large',
     'response-too-large', 'invalid-config', 'invalid-request', 'jev-unavailable']],
   ['start-rejected', []],
@@ -72,7 +72,7 @@ function safeRoutingFailure(audit, trace) {
     event: failed.event,
     reason: ROUTING_FAILURE_REASONS.get(failed.event).has(failed.reason) ? failed.reason
       : failed.reason === undefined ? 'not-reported' : 'suppressed',
-    errorType: ['PolicyError', 'Error'].includes(failed.errorType) ? failed.errorType
+    errorType: ['PolicyError', 'Error', 'JevError'].includes(failed.errorType) ? failed.errorType
       : failed.errorType === undefined ? 'not-reported' : 'suppressed',
     counts: {
       'jev-started': audit.filter(row => row.event === 'jev-started').length,
@@ -521,7 +521,7 @@ test('recognizes its own composer input across terminal escapes and line wrappin
 });
 
 test('routing failure diagnostics report only fixed failure codes, permitted error types, and actual stage counts', () => {
-  for (const errorType of ['PolicyError', 'Error']) {
+  for (const errorType of ['PolicyError', 'Error', 'JevError']) {
     assert.deepEqual(safeRoutingFailure([
       { event: 'jev-started' }, { event: 'jev-started' }, { event: 'jev-judged' }, { event: 'turn-started' },
       { event: 'route-failed', reason: 'selector-error', errorType },
@@ -529,6 +529,17 @@ test('routing failure diagnostics report only fixed failure codes, permitted err
       event: 'route-failed', reason: 'selector-error', errorType,
       counts: { 'jev-started': 2, 'jev-judged': 1, 'native-starts': 1, 'turn-started': 1 },
     });
+  }
+});
+
+test('budget failure diagnostics retain fixed reasons but never copy error payloads', () => {
+  for (const [event, reason] of [['jev-failed', 'budget-exceeded'], ['route-failed', 'jev-budget-exceeded']]) {
+    const diagnostic = safeRoutingFailure([{ event: 'jev-started' }, {
+      event, reason, errorType: 'JevError', budget: { scope: 'user', used: 51, limit: 50, accountId: 'private-canary' },
+      message: 'private-canary', url: 'https://untrusted.invalid/private-canary',
+    }], []);
+    assert.deepEqual(diagnostic, { event, reason, errorType: 'JevError',
+      counts: { 'jev-started': 1, 'jev-judged': 0, 'native-starts': 0, 'turn-started': 0 } });
   }
 });
 

@@ -423,7 +423,7 @@ fn an_exhausted_login_stays_on_the_footer_after_switching_away_from_it() {
 /// to sit in `accounts.json`, so Codex was first and last with Claude and Kiro
 /// between them.
 #[test]
-fn the_footer_groups_each_platform_and_names_it_once() {
+fn the_footer_groups_each_platform() {
     use mindplayer_core::limits::QuotaRow;
     let mut app = app_on_main();
     let kr = Account::isolated(&std::env::temp_dir(), Agent::Codex, "work").unwrap();
@@ -476,16 +476,6 @@ fn the_footer_groups_each_platform_and_names_it_once() {
         "the platforms are not in the fixed order:\n{screen}"
     );
 
-    // Named once per group, and the label no longer repeats it.
-    assert_eq!(
-        screen.matches("codex").count(),
-        1,
-        "the platform is repeated on its own rows:\n{screen}"
-    );
-    assert!(
-        !screen.contains("codex weekly"),
-        "the label still carries the platform it sits next to:\n{screen}"
-    );
     assert!(
         screen.contains("work weekly"),
         "the window and account left the line:\n{screen}"
@@ -524,11 +514,20 @@ fn the_session_list_names_each_rows_account() {
             .unwrap_or_else(|| panic!("{title} not drawn:\n{screen}"))
             .to_string()
     };
+    let kept_line = line("kept-row");
+    let second_line = line("second-row");
     assert!(
-        line("kept-row").contains(&format!("codex  {}", kept.name)),
+        kept_line.contains("codex")
+            && kept_line.split_whitespace().any(|cell| cell == kept.name)
+            && !kept_line.split_whitespace().any(|cell| cell == "other"),
         "{screen}"
     );
-    assert!(line("second-row").contains("codex  other"), "{screen}");
+    assert!(
+        second_line.contains("codex")
+            && second_line.split_whitespace().any(|cell| cell == "other")
+            && !second_line.split_whitespace().any(|cell| cell == kept.name),
+        "{screen}"
+    );
     assert!(!line("lone-row").contains(&kept.name) && !line("lone-row").contains("other"));
     assert!(
         !screen.contains("projdir"),

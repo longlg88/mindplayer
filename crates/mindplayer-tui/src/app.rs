@@ -70,7 +70,6 @@ struct ActivityUpdate {
 pub enum Screen {
     ScopeSelect,
     Scanning,
-    ScanSummary,
     Main,
 }
 
@@ -387,9 +386,6 @@ pub struct App {
     pub archive_page: usize,
     pub archive_matches: usize,
     working_set: working_set::WorkingSet,
-    /// Active scan counts, including sub-agents. Token summaries use only the
-    /// explicitly measured snapshots, not metadata placeholders in this aggregate.
-    pub aggregate: Aggregate,
     /// Counts and measured token fields over currently visible rows.
     pub visible_aggregate: Aggregate,
     /// The rows shown, after the archived / sub-agent view filters: category
@@ -408,13 +404,21 @@ pub struct App {
     /// `rebuild_visible` so the list renderer draws the section headers from one
     /// source of truth.
     pub recent_count: usize,
+    /// Rendered list cells mapped to logical rows; dividers and gaps are inert.
+    pub list_item_rows: Vec<Option<usize>>,
+    /// Rendered cell for each logical row, rebuilt alongside `visible`.
+    pub list_row_items: Vec<usize>,
+    /// Visible session counts per recency band, excluding category headers.
+    pub list_recent_sessions: usize,
+    pub list_older_sessions: usize,
+    /// Whether visible sessions need a working-directory disambiguator.
+    pub list_multiple_cwds: bool,
     pub show_archived: bool,
     /// Show spawned helper/sub-agent sessions (hidden by default).
     /// Set by the list renderer each frame: true when the animated hero block
     /// (mascot) is actually on screen, so the loop only animates when useful.
     pub hero_visible: bool,
-    /// Set by the list renderer each frame: the number of session rows visible
-    /// in the list pane, used as the PageUp/PageDown step.
+    /// Set by the list renderer each frame: the list viewport height in cells.
     pub list_rows: u16,
 
     pub focus: Focus,
@@ -680,7 +684,10 @@ impl App {
     pub fn new_in(cwd: PathBuf) -> Self {
         // Loaded before the literal so the stored character id can be resolved
         // to an index up front (an unknown id falls back to the default).
+        #[cfg(not(test))]
         let state_path = mindplayer_core::state::default_state_path();
+        #[cfg(test)]
+        let state_path = tests::fresh_login_test_home().join("state.json");
         let state = State::load_from(&state_path);
         let accounts_home = accounts_home_for_app();
         let accounts = mindplayer_core::accounts::load_accounts(&accounts_home);
@@ -716,11 +723,15 @@ impl App {
             archive_page: 0,
             archive_matches: 0,
             working_set: working_set::WorkingSet::default(),
-            aggregate: Aggregate::default(),
             visible_aggregate: Aggregate::default(),
             visible: Vec::new(),
             selected: 0,
             recent_count: 0,
+            list_item_rows: Vec::new(),
+            list_row_items: Vec::new(),
+            list_recent_sessions: 0,
+            list_older_sessions: 0,
+            list_multiple_cwds: false,
             category_counts: HashMap::new(),
             loose_counts: [0; 2],
             show_archived: false,
@@ -819,7 +830,7 @@ impl App {
     /// redraw on each tick to animate it).
     pub fn mascot_visible(&self) -> bool {
         match self.screen {
-            Screen::ScopeSelect | Screen::Scanning | Screen::ScanSummary => true,
+            Screen::ScopeSelect | Screen::Scanning => true,
             // Only animate when something is actually moving: the list's hero
             // block (when shown), or the idle mascot in an empty live pane.
             Screen::Main => match self.focus {
@@ -915,11 +926,6 @@ impl App {
         self.spinner = self.spinner.wrapping_add(1);
     }
 
-    /// Move from the scan summary into the main view.
-    pub fn open_main(&mut self) {
-        self.screen = Screen::Main;
-    }
-
     // --- list management --------------------------------------------------
 
     pub fn quit(&mut self) {
@@ -930,10 +936,7 @@ impl App {
         self.should_quit = true;
     }
 
-    /// One-line summary used in the status bar. Totals the *visible* rows so the
-    /// count and tokens match the list on screen (not the full scan, which also
-    /// counts archived + sub-agent sessions and is shown on the scan screen).
-    /// Everything before the usage bar.
+    /// One-line status summary of visible sessions and manually measured usage.
     pub fn summary_head(&self) -> String {
         let a = &self.visible_aggregate;
         format!(

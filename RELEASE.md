@@ -82,6 +82,57 @@ the resulting minimum version.)
 
 ### Unreleased
 
+- In 1.0.9, move provider identity to a fixed left column beside the handoff tree
+  and task title, retaining the title's cell budget and right-side account/status
+  metadata. Start each account's quota on its own row; only that account's windows
+  may share a line when they fit.
+
+- In 1.0.8, apply the approved title-first session list: clearer handoff rails and shared
+  family shading, category spacing, right-side metadata, and title-first
+  degradation on narrow terminals. Preserve mixed-cwd hints, owned status,
+  compact status glyphs and logical selection across decorative gaps.
+- Remove the Collected startup screen and its 800 ms pause. Collection uses the
+  list surface; empty success opens the list and scan failures offer Enter retry.
+- Combine Vercel key/user budgets into one truthful summary with attributed-user
+  spend/limit and independent blocking/unknown states. Omit ordinary default-key
+  boilerplate; wrap financial/reset details without clipping. Retire local
+  display-target parsing without modifying existing user files or server budgets.
+- Collapse repeated saved, unmeasured and sync-off labels. Cache list geometry
+  and cwd disambiguation during visibility rebuilds; retain manual token
+  measurement and pack provider quota windows only when they fit.
+- Isolate the completed-Vercel probe cleanup smoke from unrelated account
+  workers. Preserve the Archive search timing guard and report its actual
+  observed screen and elapsed time instead of a later diagnostic frame.
+
+- In 1.0.7, show the selected Gateway key's attributed-user budget separately
+  from its API-key budget. Read attribution from raw key metadata, not the CLI
+  login; distinguish blocked spend, absent meters, unknown attribution, and
+  independent read failures. Keep narrow-footer budget states meaningful.
+  Recognized Jev budget rejections now report their scope and numeric spend/limit
+  without forwarding upstream payloads or dispatching a native turn. Server
+  budgets and credentials are unchanged.
+
+- In 1.0.6, include default-covered Vercel API-key meters and resolve an active
+  default when the key has no custom budget. Distinguish measured zero spend
+  from unavailable usage; a policy-only reading shows its inherited limit
+  without inventing dollars or percentages. Keep failed/incomplete requests
+  separate from genuine absence. Requests remain read-only and use the existing
+  Vercel CLI login.
+
+- In 1.0.5, page Vercel key and budget queries in smaller batches to stay within
+  the bounded subprocess output limit. Read structured budget listings so a key
+  without a budget displays `no active budget`, not `unavailable`; incomplete
+  queries and authentication failures remain errors. No server budgets are changed.
+
+- In 1.0.1, make session-list state explicit with `saved` for sources not owned
+  by an open pane in this instance; retain source-qualified live status.
+- Extract genuine Claude/Codex task titles, excluding native command notices,
+  meta records and tool feedback. Shorten recognized Slack operational preambles
+  without discarding the task. Rebuild older metadata catalogs once.
+- Draw handoff branches and lane counts from visible adjacent parent/child rows,
+  preserving atomic thread categories; missing, filtered, clipped or ambiguous
+  parents no longer imply a connection to the preceding session.
+
 - In 1.0.0, remove HTML discovery, notifications, manual browser previews and
   the HTML transition-report generator. Ctrl-P/Ctrl-T return to native session
   input; existing user files and custom prompts remain untouched.

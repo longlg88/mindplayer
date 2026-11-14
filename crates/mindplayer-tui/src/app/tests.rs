@@ -149,6 +149,193 @@ fn app_with(sessions: Vec<Session>) -> App {
     app
 }
 
+fn initial_scan_app() -> (App, mpsc::Sender<working_set::CatalogMessage>) {
+    let mut app = isolated_app_at(fresh_login_test_home().join("state.json"));
+    let (tx, rx) = mpsc::channel();
+    app.scan_rx = Some(rx);
+    app.screen = Screen::Scanning;
+    (app, tx)
+}
+
+#[test]
+fn initial_scan_success_opens_main_immediately() {
+    let (mut app, tx) = initial_scan_app();
+    tx.send((
+        app.working_set.epoch,
+        Instant::now(),
+        Ok(mindplayer_core::catalog::CatalogSnapshot {
+            active: vec![session("collected", Agent::Codex, false)],
+            ..Default::default()
+        }),
+    ))
+    .unwrap();
+
+    assert!(app.poll_scan());
+    assert_eq!(app.screen, Screen::Main);
+    assert!(app.scan_rx.is_none());
+    assert_eq!(app.selected_session().unwrap().id, "collected");
+    assert!(!app.poll_scan(), "a completed scan is applied only once");
+}
+
+#[test]
+fn initial_scan_empty_success_opens_main_immediately() {
+    let (mut app, tx) = initial_scan_app();
+    tx.send((
+        app.working_set.epoch,
+        Instant::now(),
+        Ok(mindplayer_core::catalog::CatalogSnapshot::default()),
+    ))
+    .unwrap();
+
+    assert!(app.poll_scan());
+    assert_eq!(app.screen, Screen::Main);
+    assert!(app.scan_rx.is_none());
+    assert!(app.all_sessions.is_empty());
+    assert!(app.visible.is_empty());
+    assert!(app.status.is_empty());
+}
+
+#[test]
+fn initial_scan_pending_keeps_loading() {
+    let (mut app, _tx) = initial_scan_app();
+    assert!(!app.poll_scan());
+    assert_eq!(app.screen, Screen::Scanning);
+    assert!(app.scan_rx.is_some());
+    assert!(app.status.is_empty());
+}
+
+#[test]
+fn initial_scan_failure_preserves_rows_and_allows_retry() {
+    let (mut app, tx) = initial_scan_app();
+    app.all_sessions = vec![session("existing", Agent::Codex, false)];
+    app.rebuild_visible();
+    tx.send((
+        app.working_set.epoch,
+        Instant::now(),
+        Err("catalog fixture could not be saved".into()),
+    ))
+    .unwrap();
+
+    assert!(app.poll_scan());
+    assert_eq!(app.screen, Screen::ScopeSelect);
+    assert!(app.scan_rx.is_none());
+    assert!(app.status.contains("catalog fixture could not be saved"));
+    assert!(app.status.contains("enter retry"));
+    assert_eq!(app.selected_session().unwrap().id, "existing");
+
+    // Retry through the same action as ScopeSelect's Enter key. All stores
+    // and the catalog cache belong to this test; no real discovery or auth.
+    let root = fresh_login_test_home();
+    app.cfg = ScanConfig {
+        codex_dir: root.join("codex"),
+        claude_dir: root.join("claude"),
+        kiro_dir: root.join("kiro"),
+        cursor_dir: root.join("cursor"),
+        omp_dir: root.join("omp"),
+    };
+    for store in app.cfg.roots() {
+        std::fs::create_dir_all(store.dir).unwrap();
+    }
+    app.accounts.clear();
+    app.cwd = root;
+    app.start_scan();
+    assert_eq!(app.screen, Screen::Scanning);
+    assert!(
+        app.status.is_empty(),
+        "retry clears the previous scan error"
+    );
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !app.poll_scan() {
+        assert!(Instant::now() < deadline, "isolated retry did not finish");
+        thread::sleep(Duration::from_millis(1));
+    }
+    assert_eq!(app.screen, Screen::Main, "{}", app.status);
+    assert!(app.all_sessions.is_empty());
+}
+
+#[test]
+fn initial_scan_disconnected_worker_returns_to_retry() {
+    let (mut app, tx) = initial_scan_app();
+    app.all_sessions = vec![session("existing", Agent::Codex, false)];
+    app.rebuild_visible();
+    drop(tx);
+
+    assert!(app.poll_scan());
+    assert_eq!(app.screen, Screen::ScopeSelect);
+    assert!(app.scan_rx.is_none());
+    assert!(app.status.contains("stopped before returning results"));
+    assert!(app.status.contains("enter retry"));
+    assert_eq!(app.selected_session().unwrap().id, "existing");
+    assert!(
+        !app.poll_scan(),
+        "a disconnected worker cannot keep spinning"
+    );
+}
+
+#[test]
+fn list_item_mapping_separates_categories_and_bands_without_selectable_gaps() {
+    let mut app = isolated_app_at(fresh_login_test_home().join("state.json"));
+    app.all_sessions = (0..4)
+        .map(|index| session(&format!("row-{index}"), Agent::Claude, false))
+        .collect();
+    app.all_sessions[1].cwd = PathBuf::from("/other-work");
+    app.visible = vec![
+        Row::Header(Some("recent-a".into())),
+        Row::Session(0),
+        Row::Header(Some("recent-b".into())),
+        Row::Session(1),
+        Row::Header(Some("older-a".into())),
+        Row::Session(2),
+        Row::Header(None),
+        Row::Session(3),
+    ];
+    app.recent_count = 4;
+    app.rebuild_list_items();
+
+    assert_eq!(app.list_row_items, vec![1, 2, 4, 5, 8, 9, 11, 12]);
+    assert_eq!(app.list_recent_sessions, 2);
+    assert_eq!(app.list_older_sessions, 2);
+    assert!(app.list_multiple_cwds);
+    for (row, &item) in app.list_row_items.iter().enumerate() {
+        assert_eq!(app.list_item_rows[item], Some(row));
+    }
+    for item in [0, 3, 6, 7, 10] {
+        assert_eq!(app.list_item_rows[item], None);
+    }
+    app.move_page(1);
+    assert_eq!(app.selected, 4, "paging still advances four logical rows");
+    app.move_selection(1);
+    assert_eq!(app.selected, 5, "arrow movement cannot select a spacer");
+}
+
+#[test]
+fn list_item_mapping_handles_folded_single_band_and_empty_lists() {
+    let mut app = isolated_app_at(fresh_login_test_home().join("state.json"));
+    app.all_sessions = vec![session("row-0", Agent::Claude, false)];
+    for recent_count in [0, 3] {
+        app.visible = vec![
+            Row::Header(Some("folded".into())),
+            Row::Header(None),
+            Row::Session(0),
+        ];
+        app.recent_count = recent_count;
+        app.rebuild_list_items();
+        assert_eq!(app.list_row_items, vec![1, 3, 4]);
+        assert_eq!(
+            app.list_item_rows,
+            vec![None, Some(0), None, Some(1), Some(2)]
+        );
+        assert_eq!(app.list_recent_sessions, usize::from(recent_count > 0));
+        assert_eq!(app.list_older_sessions, usize::from(recent_count == 0));
+    }
+    app.visible.clear();
+    app.rebuild_list_items();
+    assert!(app.list_row_items.is_empty());
+    assert!(app.list_item_rows.is_empty());
+    assert_eq!(app.list_recent_sessions, 0);
+    assert_eq!(app.list_older_sessions, 0);
+}
+
 #[test]
 fn unconfirmed_startup_keeps_pending_work_without_creating_a_pty() {
     let mut app = isolated_app();
@@ -1662,7 +1849,6 @@ fn kiro_handoff_to_codex_creates_child_lane() {
     assert_eq!(app.visible.len(), 2);
     assert_eq!(app.session_at(0).unwrap().id, "kiro-1");
     assert_eq!(app.session_at(1).unwrap().id, pending.session_id);
-    assert_eq!(app.session_depth(&pending.session_id), 1);
     assert_eq!(
         crate::ui::list_render_metadata(&app, 0..app.visible.len())["kiro-1"].child_count,
         1
@@ -1695,8 +1881,6 @@ fn handoff_child_is_grouped_under_parent_thread() {
     assert_eq!(app.visible.len(), 2);
     assert_eq!(app.session_at(0).unwrap().id, "claude-1");
     assert_eq!(app.session_at(1).unwrap().id, "codex-1");
-    assert_eq!(app.session_depth("claude-1"), 0);
-    assert_eq!(app.session_depth("codex-1"), 1);
     assert_eq!(
         crate::ui::list_render_metadata(&app, 0..app.visible.len())["claude-1"].child_count,
         1
@@ -4309,7 +4493,9 @@ fn a_sibling_refresh_replaces_a_stale_in_memory_cache_before_fetching() {
 
 #[test]
 fn vercel_results_are_independent_of_account_fetch_and_bound_to_the_directory() {
-    use mindplayer_core::vercel_usage::{VercelBudget, VercelUsage, VercelUsageError};
+    use mindplayer_core::vercel_usage::{
+        BudgetSource, VercelBudget, VercelUsage, VercelUsageError,
+    };
 
     let mut app = isolated_app();
     let (_account_tx, account_rx) = mpsc::channel();
@@ -4318,12 +4504,13 @@ fn vercel_results_are_independent_of_account_fetch_and_bound_to_the_directory() 
     app.vercel_cwd = Some(app.cwd.clone());
     app.vercel_rx = Some(rx);
     let usage = VercelUsage {
+        user: Err(VercelUsageError::Unavailable),
         key: Ok(VercelBudget {
-            used: 45.25,
+            used: Some(45.25),
+            source: BudgetSource::ApiKey,
             limit: 100.0,
             refresh_period: "monthly".into(),
         }),
-        target: Some(200.0),
     };
     tx.send(Ok(usage.clone())).unwrap();
     assert!(app.poll_limits());
@@ -4349,7 +4536,7 @@ fn vercel_results_are_independent_of_account_fetch_and_bound_to_the_directory() 
 
 #[test]
 fn manual_refresh_replaces_inflight_vercel_read_even_when_accounts_are_busy() {
-    use mindplayer_core::vercel_usage::{VercelBudget, VercelUsage};
+    use mindplayer_core::vercel_usage::{BudgetSource, VercelBudget, VercelUsage};
 
     let mut app = isolated_app();
     app.cwd = std::env::temp_dir().join("mindplayer-nonexistent-vercel-workspace");
@@ -4361,12 +4548,13 @@ fn manual_refresh_replaces_inflight_vercel_read_even_when_accounts_are_busy() {
     app.vercel_started = Some(Instant::now());
     app.vercel_rx = Some(old_rx);
     app.vercel_budget = Some(Ok(VercelUsage {
+        user: Ok(None),
         key: Ok(VercelBudget {
-            used: 1.0,
+            used: Some(1.0),
+            source: BudgetSource::ApiKey,
             limit: 2.0,
             refresh_period: "monthly".into(),
         }),
-        target: None,
     }));
 
     app.refresh_limits_now();
@@ -4375,12 +4563,13 @@ fn manual_refresh_replaces_inflight_vercel_read_even_when_accounts_are_busy() {
     assert!(app.vercel_rx.is_some());
     assert!(old_tx
         .send(Ok(VercelUsage {
+            user: Ok(None),
             key: Ok(VercelBudget {
-                used: 5.0,
+                used: Some(5.0),
+                source: BudgetSource::ApiKey,
                 limit: 6.0,
                 refresh_period: "monthly".into(),
             }),
-            target: None,
         }))
         .is_err());
     assert!(app.limits_rx.is_some());

@@ -353,7 +353,6 @@ fn teardown(terminal: &mut Terminal<CrosstermBackend<FrameSink>>) -> Result<()> 
 }
 
 fn run(terminal: &mut Terminal<CrosstermBackend<FrameSink>>, app: &mut App) -> Result<()> {
-    let mut summary_since: Option<Instant> = None;
     let mut last_anim = Instant::now();
     let mut last_refresh = Instant::now();
     // Kicked off here rather than on the first three-second tick: reading the
@@ -538,8 +537,7 @@ fn run(terminal: &mut Terminal<CrosstermBackend<FrameSink>>, app: &mut App) -> R
             needs_draw = true;
         }
 
-        // Animation tick is time-based (~12fps); only the spinner / summary
-        // screens animate, so only they force a redraw here.
+        // Animation tick is time-based (~12fps); redraw animated surfaces only.
         if last_anim.elapsed() >= Duration::from_millis(80) {
             app.tick();
             last_anim = Instant::now();
@@ -554,21 +552,8 @@ fn run(terminal: &mut Terminal<CrosstermBackend<FrameSink>>, app: &mut App) -> R
             }
         }
 
-        match app.screen {
-            Screen::Scanning => {
-                if app.poll_scan() {
-                    needs_draw = true;
-                }
-            }
-            Screen::ScanSummary => {
-                let since = summary_since.get_or_insert_with(Instant::now);
-                if since.elapsed() >= Duration::from_millis(800) {
-                    app.open_main();
-                    summary_since = None;
-                    needs_draw = true;
-                }
-            }
-            _ => summary_since = None,
+        if app.screen == Screen::Scanning && app.poll_scan() {
+            needs_draw = true;
         }
     }
     Ok(())
@@ -800,11 +785,6 @@ fn handle_key(app: &mut App, key: KeyEvent) {
                 app.quit();
             }
         }
-        Screen::ScanSummary => match key.code {
-            KeyCode::Enter => app.open_main(),
-            KeyCode::Char('q') | KeyCode::Esc => app.quit(),
-            _ => {}
-        },
         Screen::Main => handle_main_key(app, key),
     }
 }

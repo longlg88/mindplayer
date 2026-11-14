@@ -4,6 +4,7 @@ use super::*;
 use mindplayer_core::catalog::{self, CatalogSnapshot};
 use mindplayer_core::discovery::SessionRoot;
 use std::path::Path;
+use std::sync::Weak;
 
 pub(crate) const ARCHIVE_PAGE_SIZE: usize = 200;
 const CATALOG_INTERVAL: Duration = Duration::from_secs(60);
@@ -91,6 +92,8 @@ pub(super) struct WorkingSet {
     archive_due: Option<Instant>,
     archive_selection: Option<SourceKey>,
     archive_overrides: HashMap<SourceKey, Session>,
+    indexed_archive: Weak<Vec<Session>>,
+    archive_source_indices: Vec<usize>,
     hydration: Option<Hydration>,
     hydrate_queue: VecDeque<Session>,
     next_scan: Option<Instant>,
@@ -124,6 +127,48 @@ impl App {
             return false;
         }
         true
+    }
+
+    /// Reuse an ID-sorted index until the immutable archive snapshot changes.
+    pub(super) fn refresh_handoff_archive_index(&mut self) {
+        if self.state.handoff_links.is_empty()
+            || self.working_set.indexed_archive.as_ptr() == Arc::as_ptr(&self.archive_catalog)
+        {
+            return;
+        }
+        let catalog = &self.archive_catalog;
+        let indices = &mut self.working_set.archive_source_indices;
+        indices.clear();
+        indices.extend(0..catalog.len());
+        indices.sort_unstable_by(|&left, &right| catalog[left].id.cmp(&catalog[right].id));
+        self.working_set.indexed_archive = Arc::downgrade(catalog);
+    }
+
+    /// ID-only handoff links cannot choose among distinct off-page sources.
+    pub(crate) fn handoff_archive_source_conflicts(&self, source: &Session) -> bool {
+        let differs = |other: &Session| {
+            other.id == source.id
+                && (other.agent != source.agent
+                    || other.file != source.file
+                    || other.cwd != source.cwd)
+        };
+        if self.working_set.archive_overrides.values().any(differs) {
+            return true;
+        }
+        if self.archive_catalog.is_empty() {
+            return false;
+        }
+        if self.working_set.indexed_archive.as_ptr() != Arc::as_ptr(&self.archive_catalog) {
+            return true;
+        }
+        let catalog = &self.archive_catalog;
+        let indices = &self.working_set.archive_source_indices;
+        let start = indices.partition_point(|&index| catalog[index].id < source.id);
+        indices[start..]
+            .iter()
+            .map(|&index| &catalog[index])
+            .take_while(|other| other.id == source.id)
+            .any(differs)
     }
 
     /// Registry operations must not mistake an active set/page for a census.
@@ -519,7 +564,6 @@ impl App {
             session.archived = false;
         }
         // Archive labels are stamped only on its bounded page in the worker.
-        self.aggregate = Aggregate::of(&snapshot.active);
         self.all_sessions = snapshot.active;
         self.archive_matches = snapshot.archive.len();
         self.archive_catalog = Arc::new(snapshot.archive);
@@ -916,6 +960,46 @@ impl App {
 #[cfg(test)]
 mod metadata_tests {
     use super::*;
+
+    #[test]
+    fn handoff_archive_identity_checks_track_generations_and_live_overrides() {
+        let mut app = crate::app::tests::isolated_app();
+        let source = crate::app::tests::session("same-id", Agent::Claude, false);
+        app.state.set_handoff_link(
+            "child",
+            &source.id,
+            PathBuf::from("/fixture/handoff"),
+            Utc::now(),
+        );
+        app.archive_catalog = Arc::new(vec![source.clone()]);
+        app.refresh_handoff_archive_index();
+        assert!(!app.handoff_archive_source_conflicts(&source));
+        for dimension in ["provider", "file", "cwd"] {
+            let mut other = source.clone();
+            match dimension {
+                "provider" => other.agent = Agent::Codex,
+                "file" => other.file = PathBuf::from("/other-account/session"),
+                "cwd" => other.cwd = PathBuf::from("/other-workspace"),
+                _ => unreachable!(),
+            }
+            let key = source_key(&other);
+            app.working_set.archive_overrides.insert(key.clone(), other);
+            assert!(
+                app.handoff_archive_source_conflicts(&source),
+                "{dimension} differs without replacing the catalog"
+            );
+            app.working_set.archive_overrides.remove(&key);
+            assert!(!app.handoff_archive_source_conflicts(&source));
+        }
+        let unrelated = crate::app::tests::session("other-id", Agent::Claude, true);
+        app.archive_catalog = Arc::new(vec![unrelated, source.clone()]);
+        assert!(
+            app.handoff_archive_source_conflicts(&source),
+            "an unindexed generation cannot prove uniqueness"
+        );
+        app.refresh_handoff_archive_index();
+        assert!(!app.handoff_archive_source_conflicts(&source));
+    }
 
     #[test]
     fn archive_hydration_preserves_newer_activity_and_context() {

@@ -59,6 +59,7 @@ impl ListFixture {
         app.visible = (0..count).map(Row::Session).collect();
         app.recent_count = count / 2;
         app.visible_aggregate = Aggregate::of_refs(app.visible_sessions());
+        app.rebuild_list_items();
         Self { app, dir }
     }
 
@@ -117,6 +118,7 @@ impl ListFixture {
         ];
         app.recent_count = 6;
         app.visible_aggregate = Aggregate::of_refs(app.visible_sessions());
+        app.rebuild_list_items();
         fixture
     }
 
@@ -146,6 +148,7 @@ fn now() -> DateTime<Utc> {
 }
 
 fn draw_list(app: &mut App, area: Rect) -> Buffer {
+    app.rebuild_list_items();
     let mut terminal =
         Terminal::new(TestBackend::new(area.right() + 2, area.bottom() + 2)).unwrap();
     terminal
@@ -218,9 +221,9 @@ fn list_archive_and_active_usage_are_unknown_until_manually_measured() {
         session.archived = true;
     }
     let buffer = draw_list(&mut fixture.app, area);
-    for row in [1, 3] {
+    for row in [1, 4] {
         let text = row_text(&buffer, area, row);
-        assert!(text.trim_end().ends_with('—'), "{text}");
+        assert!(!text.contains(" tok"), "{text}");
         assert!(
             !text.contains("tok"),
             "unknown usage must not read as zero: {text}"
@@ -233,32 +236,8 @@ fn list_archive_and_active_usage_are_unknown_until_manually_measured() {
     fixture.app.visible_aggregate = Aggregate::of_refs(fixture.app.visible_sessions());
     let buffer = draw_list(&mut fixture.app, area);
     let text = row_text(&buffer, area, 1);
-    assert!(text.trim_end().ends_with('—'), "{text}");
+    assert!(!text.contains(" tok"), "{text}");
     assert!(draw_screen(&mut fixture.app).contains("2 sessions · — tok"));
-}
-
-#[test]
-fn list_scan_summary_distinguishes_active_usage_from_unloaded_archive() {
-    let mut fixture = ListFixture::new(2);
-    fixture.app.all_sessions[0].tokens.total = 1_234;
-    fixture.app.aggregate = Aggregate::of(&fixture.app.all_sessions);
-    let mut archived = fixture.app.all_sessions[1].clone();
-    archived.archived = true;
-    archived.tokens = TokenUsage::default();
-    fixture.app.archive_catalog = std::sync::Arc::new(vec![archived; 3]);
-    fixture.app.archive_matches = 1; // Search matches are not the catalog count.
-    fixture.app.screen = Screen::ScanSummary;
-    let text = draw_screen(&mut fixture.app);
-    assert!(text.contains("2 active sessions collected"), "{text}");
-    assert!(
-        text.contains("3 archived · measure with r in list"),
-        "{text}"
-    );
-    assert!(text.contains("active tokens — tok"), "{text}");
-    assert!(
-        !text.contains("total tokens"),
-        "archive usage is not totaled: {text}"
-    );
 }
 
 #[test]
@@ -326,24 +305,24 @@ fn list_thread_metadata_is_viewport_bounded_and_includes_offscreen_lanes() {
 #[test]
 fn list_headers_keep_band_counts_folds_sync_and_thread_labels() {
     let mut fixture = ListFixture::categorized();
-    let area = Rect::new(3, 2, 145, 16);
+    let area = Rect::new(3, 2, 145, 19);
     let buffer = draw_list(&mut fixture.app, area);
     for (row, expected) in [
         (0, "── recent 3 sessions"),
-        (1, "▶ ▾ Topic A · 2 sessions ⇄ auto"),
-        (4, "▸ Folded ⇄ off"),
-        (5, "· uncategorized"),
-        (7, "── older 2 sessions"),
-        (8, "▾ Topic B ⇄ auto"),
-        (10, "· uncategorized"),
+        (1, "▶ ▾ Topic A 2 ⇄ auto"),
+        (4, ""),
+        (5, "▸ Folded"),
+        (6, ""),
+        (7, "· uncategorized"),
+        (9, ""),
+        (10, "── older 2 sessions"),
+        (11, "▾ Topic B ⇄ auto"),
+        (13, ""),
+        (14, "· uncategorized"),
     ] {
         assert_eq!(words(&row_text(&buffer, area, row)), expected, "row {row}");
     }
-    let root = words(&row_text(&buffer, area, 2));
-    let lane = words(&row_text(&buffer, area, 3));
-    assert!(root.contains("2m ▾ Root [2 lanes]"), "{root}");
-    assert!(lane.contains("2m └─ Lane"), "{lane}");
-    assert_eq!(fixture.app.list_rows, 14);
+    assert_eq!(fixture.app.list_rows, 17);
     assert!(!fixture.app.hero_visible);
 }
 
@@ -355,16 +334,20 @@ fn list_scrolling_keeps_selection_and_absolute_cell_coordinates() {
         "Topic A",
         "Root",
         "Lane",
+        "",
         "Folded",
+        "",
         "uncategorized",
         "Recent loose",
+        "",
         "── older",
         "Topic B",
         "Older first",
+        "",
         "uncategorized",
         "Older last",
     ];
-    let logical_to_item: [usize; 10] = [1, 2, 3, 4, 5, 6, 8, 9, 10, 11];
+    let logical_to_item: [usize; 10] = [1, 2, 3, 5, 7, 8, 11, 12, 14, 15];
     for width in [45, 88, 145] {
         for height in [3, 4, 5, 7, 16] {
             let area = Rect::new(4, 3, width, height);
@@ -376,18 +359,36 @@ fn list_scrolling_keeps_selection_and_absolute_cell_coordinates() {
                 for (offset, label) in labels.iter().skip(start).take(rows).enumerate() {
                     let text = row_text(&buffer, area, offset as u16);
                     assert!(
-                        text.contains(label),
+                        if label.is_empty() { text.trim().is_empty() } else { text.contains(label) },
                         "{width}x{height}, selected {selected}, cell row {offset}: {text:?}, expected {label:?}"
                     );
                 }
                 let pointer = (area.x + 1, area.y + 1 + (item - start) as u16);
                 assert_eq!(buffer[pointer].symbol(), "▶", "selection {selected}");
-                assert_eq!(buffer[pointer].fg, ACCENT, "selection {selected}");
-                assert_eq!(buffer[pointer].bg, Color::Rgb(48, 60, 96));
                 assert_eq!(fixture.app.selected, selected);
                 assert_eq!(fixture.app.list_rows, height - 2);
             }
         }
+    }
+}
+
+#[test]
+fn list_page_movement_never_selects_a_gap_or_loses_the_cursor() {
+    let mut fixture = ListFixture::categorized();
+    let area = Rect::new(4, 3, 80, 7);
+    for direction in [1, 1, 1, -1, -1, -1] {
+        fixture.app.move_page(direction);
+        let selected = fixture.app.selected;
+        let buffer = draw_list(&mut fixture.app, area);
+        let selected_item = fixture.app.list_row_items[selected];
+        assert_eq!(fixture.app.list_item_rows[selected_item], Some(selected));
+        assert_eq!(
+            (0..area.height - 2)
+                .filter(|row| buffer[(area.x + 1, area.y + 1 + row)].symbol() == "▶")
+                .count(),
+            1,
+            "selected logical row {selected}",
+        );
     }
 }
 

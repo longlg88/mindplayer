@@ -347,6 +347,31 @@ test('Jev transport, authentication and size failures expose only fixed pre-subm
   }
 });
 
+test('budget failures revalidate evidence and suppress hostile names, messages and extra fields', async t => {
+  const secret = 'private-upstream-canary';
+  for (const budget of [{ scope: 'user', used: 51, limit: 50, accountId: secret, message: secret },
+    { scope: secret, used: 51, limit: 50 }, { scope: 'user', used: secret, limit: 50 }, undefined]) {
+    let calls = 0;
+    const { router, sent, received, audit } = harness({ decide: () => {
+      calls++;
+      throw Object.assign(new Error(secret), { name: `\x1b[31m${secret}`, code: 'budget-exceeded', budget, cause: secret });
+    } });
+    t.after(() => router.close());
+    router.client(request()); await tick();
+    assert.equal(calls, 1); assert.equal(sent.length, 0); assert.equal(received.length, 1);
+    const valid = budget?.scope === 'user' && budget.used === 51;
+    assert.equal(received[0].error.message, valid
+      ? 'User budget exceeded: $51.00 / $50.00; nothing was sent. Ask a team owner to review AI Gateway Budgets & Spend'
+      : 'Jev billing authorization failed; nothing was sent');
+    const failure = audit.find(event => event.event === 'route-failed');
+    assert.equal(failure.reason, valid ? 'jev-budget-exceeded' : 'jev-payment-required');
+    assert.equal(failure.errorType, 'Error');
+    assert.deepEqual(failure.budget, valid ? { scope: 'user', used: 51, limit: 50 } : undefined);
+    const evidence = JSON.stringify({ received, audit });
+    assert.ok(!evidence.includes(secret)); assert.ok(!evidence.includes('\\u001b'));
+  }
+});
+
 test('current-family policy failures expose a bounded cause without leaking upstream details or submitting', async () => {
   for (const code of ['registry-review-required', 'latest-family-anchor-unavailable', 'latest-family-effort-unsupported',
     'latest-family-policy-conflict', 'latest-family-selection-invalid', 'baseline-ineligible', 'external-transfer-policy-unset']) {

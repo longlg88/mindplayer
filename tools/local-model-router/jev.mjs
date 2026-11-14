@@ -51,6 +51,7 @@ const ERROR_MESSAGES = Object.freeze({
   'response-too-large': 'Jev response exceeded its byte limit',
   unauthorized: 'Jev authentication failed',
   'payment-required': 'Jev payment is required',
+  'budget-exceeded': 'Jev budget exceeded',
   'rate-limited': 'Jev rate limit exceeded',
   'http-error': 'Jev HTTP request failed',
   'tls-error': 'Jev TLS verification failed',
@@ -62,12 +63,31 @@ const ERROR_MESSAGES = Object.freeze({
 
 // Never attach upstream messages, bodies, headers, abort reasons, or causes.
 export class JevError extends Error {
-  constructor(code) {
-    const safeCode = typeof code === 'string' && Object.hasOwn(ERROR_MESSAGES, code) ? code : 'network-error';
-    super(ERROR_MESSAGES[safeCode]);
+  constructor(code, budget) {
+    let safeCode = typeof code === 'string' && Object.hasOwn(ERROR_MESSAGES, code) ? code : 'network-error';
+    const scopes = { team: 'Team', project: 'Project', 'api-key': 'API key', user: 'User' };
+    const safeBudget = safeCode === 'budget-exceeded' && budget && typeof budget.scope === 'string'
+      && Object.hasOwn(scopes, budget.scope)
+      && [budget.used, budget.limit].every(value => typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= Number.MAX_SAFE_INTEGER)
+      && budget.used >= budget.limit
+      ? Object.freeze({ scope: budget.scope, used: budget.used, limit: budget.limit }) : null;
+    if (safeCode === 'budget-exceeded' && !safeBudget) safeCode = 'payment-required';
+    super(safeBudget ? `${scopes[safeBudget.scope]} budget exceeded: $${safeBudget.used.toFixed(2)} / $${safeBudget.limit.toFixed(2)}` : ERROR_MESSAGES[safeCode]);
     this.name = 'JevError';
     Object.defineProperty(this, 'code', { value: safeCode, enumerable: true });
+    if (safeBudget) Object.defineProperty(this, 'budget', { value: safeBudget, enumerable: true });
   }
+}
+
+function gatewayBudgetError(body) {
+  const error = body?.error;
+  if (error?.type !== 'quota_for_entity_exceeded' || typeof error.message !== 'string'
+    || error.message.length > 4096 || /[^\x20-\x7e]/.test(error.message)) return new JevError('payment-required');
+  // Only the standard first sentence is evidence. Never retain the help text or URL.
+  const match = /^(Team|Project|API key|API Key|User) budget exceeded\. Current spend: \$([0-9]+(?:\.[0-9]+)?), limit: \$([0-9]+(?:\.[0-9]+)?)\.(?: |$)/.exec(error.message);
+  if (!match) return new JevError('payment-required');
+  const scope = { Team: 'team', Project: 'project', 'API key': 'api-key', 'API Key': 'api-key', User: 'user' }[match[1]];
+  return new JevError('budget-exceeded', { scope, used: Number(match[2]), limit: Number(match[3]) });
 }
 
 const isRecord = value => value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -270,13 +290,14 @@ export function createJevClient({ apiKey, provider = 'gateway', configurations, 
         checkActive();
         if (response?.redirected) throw new JevError('http-error');
         if (!Number.isInteger(response?.status) || response.status < 100 || response.status > 599) throw new JevError('invalid-response');
-        if (response.status < 200 || response.status >= 300) {
-          const code = { 401: 'unauthorized', 402: 'payment-required', 429: 'rate-limited' }[response.status] ?? 'http-error';
+        const paymentRequired = response.status === 402;
+        if (!paymentRequired && (response.status < 200 || response.status >= 300)) {
+          const code = { 401: 'unauthorized', 429: 'rate-limited' }[response.status] ?? 'http-error';
           throw new JevError(code);
         }
         const length = response.headers?.get('content-length');
-        if (length && /^\d+$/.test(length) && Number(length) > maxResponseBytes) throw new JevError('response-too-large');
-        if (typeof response.body?.getReader !== 'function') throw new JevError('invalid-response');
+        if (length && /^\d+$/.test(length) && Number(length) > maxResponseBytes) throw new JevError(paymentRequired ? 'payment-required' : 'response-too-large');
+        if (typeof response.body?.getReader !== 'function') throw new JevError(paymentRequired ? 'payment-required' : 'invalid-response');
         reader = response.body.getReader();
         const chunks = [];
         let bytes = 0;
@@ -285,19 +306,21 @@ export function createJevClient({ apiKey, provider = 'gateway', configurations, 
           const { done, value } = await reader.read();
           checkActive();
           if (done) break;
-          if (!(value instanceof Uint8Array)) throw new JevError('invalid-response');
+          if (!(value instanceof Uint8Array)) throw new JevError(paymentRequired ? 'payment-required' : 'invalid-response');
           bytes += value.byteLength;
-          if (bytes > maxResponseBytes) throw new JevError('response-too-large');
+          if (bytes > maxResponseBytes) throw new JevError(paymentRequired ? 'payment-required' : 'response-too-large');
           if (value.byteLength) chunks.push(Buffer.from(value));
         }
         let judgment;
         try {
           const json = new TextDecoder('utf-8', { fatal: true }).decode(Buffer.concat(chunks, bytes));
-          judgment = validateJudgment(JSON.parse(json), { provider, configurations: validatedConfigurations, capacityRecovery });
+          const body = JSON.parse(json);
+          judgment = paymentRequired ? gatewayBudgetError(body) : validateJudgment(body, { provider, configurations: validatedConfigurations, capacityRecovery });
         } catch {
-          throw new JevError('invalid-response');
+          throw new JevError(paymentRequired ? 'payment-required' : 'invalid-response');
         }
         checkActive();
+        if (paymentRequired) throw judgment;
         return judgment;
       };
       // One race covers both the headers and full body, even with uncooperative mocks.
@@ -309,7 +332,7 @@ export function createJevClient({ apiKey, provider = 'gateway', configurations, 
       else if (isTlsError(error)) code = 'tls-error';
       controller.abort();
       cancelBody(reader ?? response?.body);
-      throw new JevError(code);
+      throw new JevError(code, !stopped && error instanceof JevError ? error.budget : undefined);
     } finally {
       clearTimeout(timer);
       signal?.removeEventListener('abort', onAbort);

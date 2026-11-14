@@ -370,7 +370,6 @@ fn successful_non_session_reads_remain_cached_for_every_provider() {
         assert_eq!(cold.metadata_reads, 1, "{agent:?}");
         let cached: serde_json::Value =
             serde_json::from_slice(&fs::read(&store.cache).unwrap()).unwrap();
-        assert_eq!(cached["version"], 2);
         assert_eq!(cached["entries"].as_array().unwrap().len(), 1);
         assert!(
             cached["entries"][0]["metadata"].is_null(),
@@ -394,39 +393,131 @@ fn successful_non_session_reads_remain_cached_for_every_provider() {
 }
 
 #[test]
-fn legacy_negative_cache_retries_without_reparsing_successful_metadata() {
+fn old_catalog_titles_are_reparsed_without_touching_user_state() {
+    for version in [1, 2, 3] {
+        let store = Store::new(Agent::Codex);
+        let recovered = store.archived_source("recovered");
+        let unchanged = store.archived_source("unchanged");
+        let original = fs::read(&unchanged).unwrap();
+        let mut state = State::default();
+        state
+            .labels
+            .insert("unchanged".into(), "my chosen label".into());
+        let state_before = serde_json::to_value(&state).unwrap();
+        store.scan(&state);
+        let mut legacy: serde_json::Value =
+            serde_json::from_slice(&fs::read(&store.cache).unwrap()).unwrap();
+        legacy["version"] = serde_json::json!(version);
+        for entry in legacy["entries"].as_array_mut().unwrap() {
+            if entry["metadata"]["id"] == "recovered" {
+                entry["metadata"] = serde_json::Value::Null;
+            } else {
+                entry["metadata"]["title"] = serde_json::json!("obsolete generated notice");
+            }
+        }
+        fs::write(&store.cache, serde_json::to_vec(&legacy).unwrap()).unwrap();
+        let retry = store.scan(&state);
+        let refreshed = retry
+            .archive
+            .iter()
+            .find(|row| row.file == unchanged)
+            .unwrap();
+        assert_eq!(
+            refreshed.title, "original title",
+            "v{version} titles must be rebuilt even when the source fingerprint is unchanged"
+        );
+        assert!(retry.archive.iter().any(|row| row.file == recovered));
+        assert_eq!((retry.metadata_reads, retry.detail_reads), (2, 0));
+        assert_eq!(store.scan(&state).metadata_reads, 0, "rebuild only once");
+        assert_eq!(fs::read(&unchanged).unwrap(), original);
+        assert_eq!(serde_json::to_value(&state).unwrap(), state_before);
+    }
+}
+
+#[test]
+fn v3_false_empty_codex_title_is_repaired_and_reused_without_usage_reads() {
     let store = Store::new(Agent::Codex);
-    let recovered = store.archived_source("recovered");
-    store.archived_source("unchanged");
-    let state = State::default();
-    store.scan(&state);
+    let path = store.archived_source("buried-task");
+    let header = serde_json::json!({
+        "type":"session_meta",
+        "payload":{"id":"buried-task","cwd":"/work/project","timestamp":now()-Duration::days(30)}
+    });
+    let mut context = serde_json::json!({
+        "type":"response_item",
+        "payload":{"type":"message","role":"user","content":[{
+            "type":"input_text","text":"# AGENTS.md instructions for /work/project\n"
+        }]}
+    });
+    let overhead = format!("{header}\n{context}\n").len();
+    context["payload"]["content"][0]["text"] = format!(
+        "# AGENTS.md instructions for /work/project\n{}",
+        "x".repeat(660_718 - overhead)
+    )
+    .into();
+    let task = serde_json::json!({
+        "type":"response_item","timestamp":now()-Duration::hours(1),
+        "payload":{"type":"message","role":"user","content":[{
+            "type":"input_text","text":"Update the Atlantis version"
+        }]}
+    });
+    let output = serde_json::json!({
+        "type":"response_item","timestamp":now(),
+        "payload":{"type":"message","role":"assistant","content":[{
+            "text":"output".repeat(260_000)
+        }]}
+    });
+    let usage = serde_json::json!({
+        "type":"event_msg","timestamp":now(),
+        "payload":{"type":"token_count","info":{"total_token_usage":{"total_tokens":99}}}
+    });
+    let original = format!("{header}\n{context}\n{task}\n{output}\n{usage}\n");
+    fs::write(&path, &original).unwrap();
+    let modified = fs::metadata(&path).unwrap().modified().unwrap();
+    let mut state = State::default();
+    state.set_label("buried-task", "My release session");
+    let state_before = serde_json::to_value(&state).unwrap();
+    let cold = store.scan(&state);
+    assert_eq!((cold.metadata_reads, cold.detail_reads), (1, 0));
+
     let mut legacy: serde_json::Value =
         serde_json::from_slice(&fs::read(&store.cache).unwrap()).unwrap();
-    legacy["version"] = serde_json::json!(1);
-    for entry in legacy["entries"].as_array_mut().unwrap() {
-        if entry["metadata"]["id"] == "recovered" {
-            entry["metadata"] = serde_json::Value::Null;
-        }
-    }
+    legacy["version"] = serde_json::json!(3);
+    legacy["entries"][0]["metadata"]["title"] = serde_json::json!("(empty)");
+    legacy["entries"][0]["metadata"]["last_prompt_at"] = serde_json::Value::Null;
     fs::write(&store.cache, serde_json::to_vec(&legacy).unwrap()).unwrap();
-    let retry = store.scan(&state);
+
+    let repaired = store.scan(&state);
+    assert_eq!((repaired.metadata_reads, repaired.detail_reads), (1, 0));
+    assert_eq!(repaired.active.len(), 1);
+    assert!(repaired.archive.is_empty());
+    let session = &repaired.active[0];
+    assert_eq!(session.title, "Update the Atlantis version");
+    assert_eq!(session.last_prompt_at, Some(now() - Duration::hours(1)));
+    assert_eq!(session.tokens, TokenUsage::default());
+    assert!(!session.is_subagent);
+    let hydrated = catalog::hydrate(session).unwrap();
+    assert_eq!(hydrated.title, session.title);
+    assert_eq!(hydrated.tokens, TokenUsage::default());
+    let mut labeled = hydrated.clone();
+    state.apply(std::slice::from_mut(&mut labeled));
+    assert!(labeled.title.ends_with("My release session"));
+    let warm = store.scan(&state);
+    assert_eq!((warm.metadata_reads, warm.detail_reads), (0, 0));
+    assert_eq!(warm.active[0].title, session.title);
+    assert_eq!(warm.active[0].tokens, TokenUsage::default());
+    assert_eq!(catalog::measure_usage(session).unwrap().tokens.total, 99);
+    let after_measurement = store.scan(&state);
     assert_eq!(
-        retry.archive.len(),
-        2,
-        "old failed reads cannot remain permanently hidden"
+        (
+            after_measurement.metadata_reads,
+            after_measurement.detail_reads
+        ),
+        (0, 0)
     );
-    assert_eq!(
-        retry.metadata_reads, 1,
-        "keep successful legacy metadata warm"
-    );
-    assert!(retry
-        .archive
-        .iter()
-        .any(|session| session.file == recovered));
-    let migrated: serde_json::Value =
-        serde_json::from_slice(&fs::read(&store.cache).unwrap()).unwrap();
-    assert_eq!(migrated["version"], 2);
-    assert_eq!(store.scan(&state).metadata_reads, 0);
+    assert_eq!(after_measurement.active[0].tokens, TokenUsage::default());
+    assert_eq!(fs::read(&path).unwrap(), original.as_bytes());
+    assert_eq!(fs::metadata(&path).unwrap().modified().unwrap(), modified);
+    assert_eq!(serde_json::to_value(&state).unwrap(), state_before);
 }
 
 #[test]

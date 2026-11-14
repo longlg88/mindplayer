@@ -49,18 +49,28 @@ the sessions you already have.
   on, with <kbd>u</kbd>. The login already on this machine keeps working and is
   listed like any other; a second one gets a home of its own, so signing it in
   never disturbs the first. Nothing is copied between them.
+- **Session list** — a fixed provider column on the left leads directly into
+  the task and handoff tree; account, status, age and ID sit to the right.
+  Category gaps separate topics; connected handoff lanes share a rail and
+  background. Narrow layouts prioritize the title over optional metadata.
+  Mixed working directories retain a bounded folder hint when space permits.
+- **Direct startup** — after choosing a working directory, collection uses the
+  list surface and opens the list immediately, including an empty result.
+  Failed collection stays an error with Enter to retry, not a successful empty
+  list or an intermediate `Collected` screen.
 - 🪟 **Many sessions at once** — resume or start several; each keeps running in
   the background. **Mark several** in the list (<kbd>Space</kbd>) and launch them
   together as live panes with one <kbd>Enter</kbd>.
-- 🚦 **Live status** — each row shows `○ done` (just finished — sorted
-  above everything else, since there's nothing left for the agent to do and
-  everything left is on you), `● blocked` (paused at an approval prompt —
-  needs you), `● working` (producing output now), or `● idle` (running,
-  waiting) at a glance. For Codex and Claude Code this comes straight from
-  the agent's own lifecycle hooks once installed (see `--install-agent-hooks`
-  below) — a confirmed state, not a screen‑text guess. Kiro and Cursor use
-  the pane's own text instead; Kiro's patterns are editable in
-  `~/.mindplayer/kiro-patterns.json` (see **How it works**).
+- 🚦 **Live status** — opened sessions show `! blocked` (approval needed),
+  `● working`, `○ idle` (waiting), `✓ done` (turn completed), or `○ ended`
+  (process exited). `saved` means the source is listed but has no unambiguous
+  live pane owned by this MindPlayer instance; it does not claim the session
+  is idle or stopped in other terminals. For Codex and Claude Code, lifecycle
+  events/hooks drive status when available (see `--install-agent-hooks`
+  below); otherwise the pane's own text is used. Kiro's patterns are editable
+  in `~/.mindplayer/kiro-patterns.json` (see **How it works**).
+  When this instance has no retained PTYs, one `all saved in this instance`
+  footer replaces repeated saved badges; mixed lists retain per-row status.
 - ⏱️ **Time since last prompt** — a live session's time column shows how
   long it's been since *you* last typed something, not just "now" (which a
   running agent's own file mtime would otherwise always show) — so you can
@@ -69,15 +79,18 @@ the sessions you already have.
 - 🗂️ **Topic categories** — group sessions on one subject under a named
   category with <kbd>t</kbd>: start with a single session, add more as the work
   splits, or select several (<kbd>v</kbd> + <kbd>Space</kbd>) and categorize
-  them all at once. The list groups by topic, handoff lanes stay nested inside,
-  and <kbd>→</kbd>/<kbd>←</kbd> walk into and out of a topic. The `recent` / `older` split
-  is unchanged — a topic moves as one, so it never straddles the divider.
+  them all at once. The list groups each handoff thread under one topic.
+  `├─`/`└─` connect only adjacent lanes whose parent is visible in that group;
+  missing, filtered, or off-screen parents never attach to an unrelated row.
+  The lane count describes those visible connections. <kbd>→</kbd>/<kbd>←</kbd>
+  walk into and out of a topic. The `recent` / `older` split is unchanged —
+  a topic moves as one, so it never straddles the divider.
 - ⇄ **Context sync across a topic** — sessions in a category keep each other
   current: entering one pulls in **only what its peers did since the last sync**,
   read straight from their transcripts (nothing to maintain by hand). A quiet
   peer means nothing is injected at all, and a busy session is never interrupted
-  mid‑turn. Per‑category toggle in the header menu (<kbd>t</kbd>), shown as
-  `⇄ auto` / `⇄ off` on every category row.
+  mid‑turn. Per-category toggle in the header menu (<kbd>t</kbd>); `⇄ auto`
+  appears on enabled categories, while the repeated off label is omitted.
 - 🟣 **In-progress mark** — flag a session with <kbd>i</kbd> as work you're not
   done with yet, independent of its live status; a thin rail keeps it visible
   even once it's buried in `older`.
@@ -86,11 +99,13 @@ the sessions you already have.
   summarize what you last asked and what it did. The built-in prompt no longer
   requests an HTML backlog; existing user-edited prompts are not overwritten.
 - **Manual session usage** — press <kbd>r</kbd> on one session in the list to
-  measure its token usage in the background. Unmeasured rows show `—`, not zero.
+  measure its token usage in the background. Unmeasured rows omit token text;
+  the footer explicitly reports when nothing has been measured, never zero.
   Results are manual snapshots held for this run, not live counters; restarting
   clears them. Totals describe measured sessions only, and bounded or estimated
-  results are distinguished from complete measurements. Session activity,
-  discovery and account quota updates remain automatic.
+  results are distinguished from complete measurements. Narrow rows may omit
+  the usage annotation to preserve the task title. Session activity, discovery
+  and account quota updates remain automatic.
 - 🔍 **Search** — <kbd>/</kbd> filters the visible list as you type.
 - 📊 **Usage stats** — <kbd>u</kbd> shows a popup with active time (today/all
   time, plus a 14‑day trend), sessions opened per agent, handoffs, and
@@ -102,8 +117,11 @@ the sessions you already have.
   `/usage` command, and Cursor calls its first-party `/api/usage-summary`. A
   quota with no number is shown as the **reason** it's missing, never as `0%` —
   which would read as "plenty left".
-  The Vercel row reports the active AI Gateway key's budget and current-period
-  spend when the key and its budget can be identified.
+  Each account starts a separate footer row. Only windows belonging to the
+  same provider and account share a line when they fit.
+  One Vercel summary identifies API-key use, known budget blocking and the
+  attributed user's measured spend/limit. Key and user uncertainty remain
+  independent; unknown usage is never presented as available budget.
 - 📚 **Conversation log** — Active Codex, Claude, and Kiro user/assistant turns are
   mirrored from the agents' transcripts into a normalized store at
   `~/.mindplayer/convo/`. Cursor and OMP transcripts are not mirrored.
@@ -472,6 +490,12 @@ provider and exact source path rather than the native ID alone. Ambiguous
 legacy ID-only use never chooses an account/source automatically. The existing
 24-hour `recent` / `older` divider is only a display grouping within Active.
 
+Session titles use genuine task text rather than Claude local-command notices,
+tool feedback, or injected runtime context; explicit labels still win. Recognized
+Slack operational introductions retain the action and actual request. Version
+1.0.1 rebuilds older metadata catalogs once using bounded reads so cached titles
+also refresh, without rewriting transcripts, labels, or handoff relationships.
+
 Explicit close/restore decisions are source-qualified too: restoring one
 account's transcript does not reopen a closed same-ID transcript from another
 source. Unreadable files and incomplete directory scans defer legacy use
@@ -529,20 +553,55 @@ used as quota.
 
 The Vercel footer resolves the current workspace's gateway credential via
 `omp token vercel-ai-gateway`, then uses gateway quota metadata and the
-signed-in Vercel CLI's read access to identify the key and read its budget.
-Only the selected key's current-period usage is shown. Identification requires
-a unique six-character key suffix, a determinable team, complete key-list
-pagination, and CLI permission to read the key budget. Suffix matching is not
+signed-in Vercel CLI's read access to identify the key and read its budgets.
+Identification requires a unique six-character key suffix, a determinable team,
+complete key-list pagination, and CLI read permission. Suffix matching is not
 full-key identity verification. The key is never placed in command arguments
-or logs. Ctrl-R refreshes the row.
+or logs. Ctrl-R refreshes the summary.
+Queries use bounded, paginated raw key listings and authenticated, read-only
+`vercel api` requests for budgets, including default-covered meters.
+An explicit key budget takes precedence; an absent or archived override can
+inherit the team's active API-key default. Only a returned meter supplies usage:
+an unmetered policy remains unknown, not fabricated zero or remaining balance.
+A valid zero reading is displayed as zero. Failed or incomplete queries remain
+unavailable. An absent key budget remains distinct from failed lookup; inactive,
+nonarchived overrides are not silently replaced by defaults.
+Rotating a Gateway key does not migrate its custom budget; it can inherit a
+team default. Remove revoked entries from OMP's credential store so `omp token`
+selects the current key. MindPlayer does not change credentials or server
+budgets and does not use the paid reporting API.
 
-An optional `~/.mindplayer/vercel-key-target.json` can set a local display
-target for one key and its budget period, for example
-`{"key_id":"key_example","refresh_period":"monthly","target_usd":200}`.
-This compares the key's actual usage against the local target; **it does not
-change or enforce Vercel's server-side budget**. With no matching target the
-row shows the key budget reported by Vercel. User and team budgets may also
-apply even though they are not displayed.
+The unified summary follows the selected key's raw `metadata.spendAttribution`
+and `createdBy`, never the CLI login. A user-attributed key shows that creator's
+custom or default budget and period. Measured spend at or above either
+independent cap marks the summary `blocked`; a user over its cap remains blocked
+even when the key has room. A blocked key retains its own spend/limit detail.
+An explicit team attribution is reported as team-attributed; missing attribution
+remains unknown rather than assuming that no user cap applies.
+
+Ordinary default-key limit boilerplate is omitted when a measured user budget
+already explains the state. If user spend is unavailable, a valid key meter
+can still be shown, clearly labeled as key spend. An unmetered user limit keeps
+its limit and unknown-spend warning; partial failures never promote the summary
+to unblocked. `Not blocked by budgets` describes only the observed key/user
+budget checks, not guaranteed access: team/project limits or other authorization
+rules may still reject a request. Long amounts and reset details wrap rather
+than lose digits. Other providers' quota windows share a row only when they fit.
+
+Budget fields and inheritance follow Vercel's
+[budget-list API](https://vercel.com/docs/rest-api/ai-gateway/list-ai-gateway-budgets)
+and [default-budget rules](https://vercel.com/docs/ai-gateway/observability-and-spend/budgets).
+
+Jev distinguishes recognized Gateway budget rejections from generic billing
+failures. A validated `quota_for_entity_exceeded` response shows its scope,
+reported spend, and limit before any native turn is dispatched. Only validated
+scope and numeric amounts are retained; upstream text, links, and credentials are
+not forwarded. Unknown or malformed HTTP 402 responses remain generic billing
+errors. No failure automatically retries or bypasses the budget.
+
+The footer uses server-side caps only. Local display-target overrides are no
+longer read; existing `~/.mindplayer/vercel-key-target.json` files are left
+untouched and cannot make the server-budget lookup fail.
 
 What MindPlayer writes, all under `~/.mindplayer/`:
 
@@ -551,7 +610,6 @@ What MindPlayer writes, all under `~/.mindplayer/`:
 | `state.json` | sidecar state — archived ids, human-use timestamps, retention, labels, in-progress marks, topic categories, your walking-buddy pick |
 | `session-catalog.json` | rebuildable, private metadata cache; original source paths and fingerprints, no transcript bodies |
 | `audit.jsonl` | append-only usage log: counts and timestamps only, no session id, title, or cwd |
-| `vercel-key-target.json` | optional key-specific local display target; no API key secret |
 | `accounts.json` | the accounts per provider — names, which one is in use, nothing secret |
 | `accounts/<provider>/<name>/` | a second login's own home. The provider's CLI writes its credentials here; MindPlayer only points the CLI at it |
 | `convo/` | the conversation log — `index.json` plus one append-only `<session-id>.jsonl` per session |

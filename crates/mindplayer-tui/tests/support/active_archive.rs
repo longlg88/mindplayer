@@ -863,13 +863,24 @@ fn measured_archive_search(
             "archive_search",
         ));
     }
-    let ready = mp.wait_until(Duration::from_millis(250), |screen| {
-        archive_row(screen, title)
-    });
+    let waiting = Instant::now();
+    let (ready, elapsed, observed_screen) = loop {
+        let screen = mp.screen();
+        let ready = archive_row(&screen, title);
+        let elapsed = waiting.elapsed();
+        if ready || elapsed >= Duration::from_millis(250) {
+            break (ready, elapsed, screen);
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    eprintln!(
+        "ARCHIVE_RESULT title={title:?} ready={ready} after_ms={:.3}",
+        elapsed.as_secs_f64() * 1000.0
+    );
     if !ready {
         eprintln!(
             "Archive row {title:?} missed the 250ms deadline:\n{}",
-            mp.screen()
+            observed_screen
         );
     }
     ready

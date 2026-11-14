@@ -16,7 +16,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-const CATALOG_VERSION: u32 = 2;
+const CATALOG_VERSION: u32 = 4;
 static NEXT_WRITE: AtomicU64 = AtomicU64::new(0);
 
 /// A worker's raw session lists and counts of source parser invocations.
@@ -98,8 +98,9 @@ struct Catalog {
 
 impl Catalog {
     fn load(path: &Path) -> Option<Self> {
-        let mut catalog: Self = serde_json::from_slice(&fs::read(path).ok()?).ok()?;
-        if !matches!(catalog.version, 1 | CATALOG_VERSION)
+        let catalog: Self = serde_json::from_slice(&fs::read(path).ok()?).ok()?;
+        // Earlier parsers cached generated notices and false empty titles.
+        if catalog.version != CATALOG_VERSION
             || catalog.entries.iter().any(|entry| {
                 entry.metadata.as_ref().is_some_and(|session| {
                     session.file != entry.source.file
@@ -110,11 +111,6 @@ impl Catalog {
             })
         {
             return None;
-        }
-        if catalog.version == 1 {
-            // Version 1 conflated unreadable sources with valid empty sources.
-            // Retry those entries once while retaining successful warm metadata.
-            catalog.entries.retain(|entry| entry.metadata.is_some());
         }
         Some(catalog)
     }
@@ -170,9 +166,7 @@ pub fn scan(
         "catalog path must not overwrite a session source"
     );
     let loaded = Catalog::load(&cache_path);
-    let mut dirty = loaded
-        .as_ref()
-        .is_none_or(|catalog| catalog.version != CATALOG_VERSION);
+    let mut dirty = loaded.is_none();
     let mut entries: HashMap<SourceKey, Entry> = loaded
         .into_iter()
         .flat_map(|catalog| catalog.entries)

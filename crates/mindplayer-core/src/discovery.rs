@@ -43,10 +43,12 @@ const HEAD_LINES: usize = 300;
 /// (for token totals), but we cap the read so a crafted/corrupt file — e.g. one
 /// enormous line with no newline — can't exhaust memory.
 const MAX_CLAUDE_BYTES: u64 = 64 * 1024 * 1024;
-/// Cold catalog reads inspect at most 64 KiB of header and 256 KiB of recent
-/// records per transcript, regardless of the size of the historical body.
+/// Normal cold catalog reads inspect 64 KiB of header and 256 KiB of recent
+/// records; missing Codex titles can trigger a bounded prefix fallback.
 const METADATA_HEAD_BYTES: u64 = 64 * 1024;
 const METADATA_TAIL_BYTES: u64 = 256 * 1024;
+/// Maximum prefix searched when injected context obscures a Codex task.
+const MAX_CODEX_TITLE_BYTES: u64 = 1024 * 1024;
 /// Finish identity records that begin in the header, without scanning the body.
 const IDENTITY_READ_BYTES: u64 = 1024 * 1024;
 
@@ -388,16 +390,19 @@ pub(crate) fn measure_source_usage(source: &SessionSource) -> io::Result<Option<
     Ok(Some((session, partial)))
 }
 
-fn transcript_lines(
-    path: &Path,
-    mode: ParseMode,
-) -> io::Result<Box<dyn Iterator<Item = io::Result<String>>>> {
+type TranscriptLines = Box<dyn Iterator<Item = io::Result<String>>>;
+
+fn transcript_lines(path: &Path, mode: ParseMode) -> io::Result<(TranscriptLines, bool)> {
     match mode {
-        ParseMode::Full => Ok(Box::new(bounded_records(
-            File::open(path)?,
-            MAX_CLAUDE_BYTES,
-        )?)),
-        ParseMode::Metadata => Ok(Box::new(Cursor::new(metadata_windows(path)?).lines())),
+        ParseMode::Full => {
+            let file = File::open(path)?;
+            let complete = file.metadata()?.len() <= MAX_CLAUDE_BYTES;
+            Ok((Box::new(bounded_records(file, MAX_CLAUDE_BYTES)?), complete))
+        }
+        ParseMode::Metadata => {
+            let window = metadata_windows(path)?;
+            Ok((Box::new(Cursor::new(window.bytes).lines()), window.complete))
+        }
     }
 }
 
@@ -431,8 +436,14 @@ fn bounded_records(
     }))
 }
 
+struct MetadataWindow {
+    bytes: Vec<u8>,
+    head_end: usize,
+    complete: bool,
+}
+
 /// Preserve whole lines only at window seams; never allocate a whole transcript.
-fn metadata_windows(path: &Path) -> io::Result<Vec<u8>> {
+fn metadata_windows(path: &Path) -> io::Result<MetadataWindow> {
     let mut file = File::open(path)?;
     let len = file.metadata()?.len();
     let mut head = Vec::new();
@@ -440,7 +451,11 @@ fn metadata_windows(path: &Path) -> io::Result<Vec<u8>> {
         .take(METADATA_HEAD_BYTES)
         .read_to_end(&mut head)?;
     if len <= METADATA_HEAD_BYTES {
-        return Ok(head);
+        return Ok(MetadataWindow {
+            head_end: head.len(),
+            bytes: head,
+            complete: true,
+        });
     }
     let head_end = head
         .iter()
@@ -467,7 +482,11 @@ fn metadata_windows(path: &Path) -> io::Result<Vec<u8>> {
             .map_or(tail.len(), |position| position + 1)
     };
     head.extend_from_slice(&tail[tail_start..]);
-    Ok(head)
+    Ok(MetadataWindow {
+        complete: head.len() as u64 == len,
+        bytes: head,
+        head_end,
+    })
 }
 
 /// True if the session was last touched (active or started) within the last
@@ -676,7 +695,7 @@ struct CodexMeta {
     cwd: PathBuf,
     started: Option<DateTime<Utc>>,
     /// `session_meta.thread_source`: "user" for top-level, "subagent" for spawned.
-    is_subagent: bool,
+    is_subagent: Option<bool>,
 }
 
 fn parse_codex_file(path: &Path, scope: &Scope) -> Option<Session> {
@@ -688,7 +707,9 @@ fn parse_codex_file(path: &Path, scope: &Scope) -> Option<Session> {
     let id = meta.id.or_else(|| codex_uuid_from_filename(path))?;
     let usage = codex_tail_scan(path).ok()?;
     let title = codex_head_title(path).unwrap_or_else(|| "(empty)".to_string());
-    let is_subagent = meta.is_subagent || looks_like_subagent_title(&title);
+    let is_subagent = meta
+        .is_subagent
+        .unwrap_or_else(|| looks_like_subagent_title(&title));
     Some(Session {
         id,
         agent: Agent::Codex,
@@ -706,17 +727,24 @@ fn parse_codex_file(path: &Path, scope: &Scope) -> Option<Session> {
 }
 
 fn parse_codex_metadata(path: &Path) -> io::Result<Option<Session>> {
-    let lines = transcript_lines(path, ParseMode::Metadata)?;
+    let window = metadata_windows(path)?;
+    let mut complete = window.complete;
+    let head_end = window.head_end;
+    let lines = Cursor::new(window.bytes).split(b'\n');
     let mut id = None;
     let mut cwd = None;
     let mut started_at = None;
     let mut last_active = None;
     let mut last_prompt_at = None;
     let mut title = None;
-    let mut fallback = None;
-    let mut is_subagent = false;
+    let mut is_subagent = None;
+    let mut title_in_head = false;
+    let mut offset = 0;
     for line in lines {
-        let line = line?;
+        let line = String::from_utf8(line?)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+        let in_head = offset < head_end;
+        offset += line.len() + 1;
         let Ok(value) = serde_json::from_str::<Value>(&line) else {
             continue;
         };
@@ -744,7 +772,7 @@ fn parse_codex_metadata(path: &Path) -> io::Result<Option<Session>> {
                 .get("timestamp")
                 .and_then(Value::as_str)
                 .and_then(parse_ts);
-            is_subagent = payload.get("thread_source").and_then(Value::as_str) == Some("subagent");
+            is_subagent = codex_native_subagent(payload);
         }
         if codex_message_is_human(payload) {
             if let Some(timestamp) = timestamp {
@@ -752,22 +780,48 @@ fn parse_codex_metadata(path: &Path) -> io::Result<Option<Session>> {
                     last_prompt_at.map_or(timestamp, |last: DateTime<Utc>| last.max(timestamp)),
                 );
             }
-            if title.is_none() {
-                if let Some(text) = extract_codex_text(payload) {
-                    let cleaned = extract_intent(&text);
-                    if is_boilerplate_title(&cleaned) {
-                        fallback.get_or_insert(cleaned);
-                    } else {
-                        title = Some(cleaned);
-                    }
-                }
-            }
+        }
+        if title.is_none() {
+            title = codex_message_title(payload);
+            title_in_head = in_head && title.is_some();
         }
     }
     let (Some(id), Some(cwd)) = (id.or_else(|| codex_uuid_from_filename(path)), cwd) else {
         return Ok(None);
     };
-    let title = title.or(fallback).unwrap_or_else(|| "(empty)".into());
+    if !title_in_head && !complete {
+        complete = path.metadata()?.len() <= MAX_CODEX_TITLE_BYTES;
+        // Restart at the beginning so records crossing the normal head seam
+        // remain intact. Prefer the first task over a later tail follow-up.
+        for line in bounded_records(File::open(path)?, MAX_CODEX_TITLE_BYTES)? {
+            let line = line?;
+            let Ok(value) = serde_json::from_str::<Value>(&line) else {
+                continue;
+            };
+            let Some(payload) = value.get("payload") else {
+                continue;
+            };
+            if codex_message_is_human(payload) {
+                let timestamp = value
+                    .get("timestamp")
+                    .and_then(Value::as_str)
+                    .and_then(parse_ts);
+                last_prompt_at = last_prompt_at.max(timestamp);
+            }
+            if let Some(candidate) = codex_message_title(payload) {
+                title = Some(candidate);
+                break;
+            }
+        }
+    }
+    let title = title.unwrap_or_else(|| {
+        if complete {
+            "(empty)"
+        } else {
+            "(unknown title)"
+        }
+        .into()
+    });
     Ok(Some(Session {
         id,
         agent: Agent::Codex,
@@ -777,7 +831,7 @@ fn parse_codex_metadata(path: &Path) -> io::Result<Option<Session>> {
         last_active,
         last_prompt_at,
         tokens: TokenUsage::default(),
-        is_subagent: is_subagent || looks_like_subagent_title(&title),
+        is_subagent: is_subagent.unwrap_or_else(|| looks_like_subagent_title(&title)),
         title,
         archived: false,
         context_pct: None,
@@ -810,7 +864,7 @@ fn codex_meta(path: &Path) -> CodexMeta {
         id: None,
         cwd: PathBuf::new(),
         started: None,
-        is_subagent: false,
+        is_subagent: None,
     };
     let Ok(file) = File::open(path) else {
         return meta;
@@ -842,10 +896,7 @@ fn codex_meta(path: &Path) -> CodexMeta {
                 .and_then(|p| p.get("timestamp"))
                 .and_then(Value::as_str)
                 .and_then(parse_ts);
-            meta.is_subagent = payload
-                .and_then(|p| p.get("thread_source"))
-                .and_then(Value::as_str)
-                == Some("subagent");
+            meta.is_subagent = payload.and_then(codex_native_subagent);
             break;
         }
     }
@@ -942,16 +993,13 @@ fn codex_tail_scan(path: &Path) -> io::Result<CodexTail> {
     }
 }
 
-/// Read the leading lines to find the first *real* user prompt for the title.
-/// Codex injects boilerplate (AGENTS.md instructions, environment context) as
-/// the first user message; we skip those and use the first genuine request,
-/// falling back to the boilerplate only if nothing better is found.
+/// Read the leading lines to find the first genuine user task, never falling
+/// back to injected context when the bounded window contains no task.
 fn codex_head_title(path: &Path) -> Option<String> {
     let Ok(file) = File::open(path) else {
         return None;
     };
     let reader = BufReader::new(file);
-    let mut fallback: Option<String> = None;
     for line in reader.lines().take(HEAD_LINES).map_while(Result::ok) {
         let line = line.trim();
         if line.is_empty() {
@@ -966,28 +1014,21 @@ fn codex_head_title(path: &Path) -> Option<String> {
         let Some(payload) = v.get("payload") else {
             continue;
         };
-        if payload.get("role").and_then(Value::as_str) != Some("user") {
-            continue;
-        }
-        let Some(text) = extract_codex_text(payload) else {
-            continue;
-        };
-        let cleaned = extract_intent(&text);
-        if is_boilerplate_title(&cleaned) {
-            fallback.get_or_insert(cleaned);
-        } else {
-            return Some(cleaned);
+        if let Some(title) = codex_message_title(payload) {
+            return Some(title);
         }
     }
-    fallback
+    None
 }
 
 /// Turn a raw user message into the best one-line intent for the list.
 ///
 /// codex's goal loop wraps the real task in `<objective>…</objective>` behind a
 /// generic "Continue working toward the active thread goal" preamble; when
-/// present we surface the objective itself. Otherwise we just clean the text.
+/// present we surface the objective itself. Known operational prefixes are
+/// removed without discarding the task they introduce.
 pub(crate) fn extract_intent(raw: &str) -> String {
+    let raw = strip_prompt_context(raw);
     if let Some(start) = raw.find("<objective>") {
         let after = &raw[start + "<objective>".len()..];
         let inner = after.split("</objective>").next().unwrap_or(after);
@@ -996,7 +1037,105 @@ pub(crate) fn extract_intent(raw: &str) -> String {
             return cleaned;
         }
     }
+    for task in ["Slack posting task", "Slack thread-reply task"] {
+        if let Some(constraints) = raw
+            .strip_prefix(task)
+            .and_then(|rest| rest.strip_prefix(" in THIS ROOT THREAD only: no subagents"))
+        {
+            if let Some((index, _)) = constraints
+                .match_indices('.')
+                .find(|(index, _)| constraints[index + 1..].starts_with(char::is_whitespace))
+            {
+                let request = constraints[index + 1..].trim();
+                let request = request.strip_prefix("1) ").unwrap_or(request);
+                if !request.is_empty() {
+                    return clean_title(&format!("{task}: {request}"));
+                }
+            }
+        }
+    }
     clean_title(raw)
+}
+
+/// Generated context can share a user record with an appended genuine request.
+fn strip_prompt_context(mut text: &str) -> &str {
+    text = text.trim_start();
+    loop {
+        let wrapper = text
+            .strip_prefix("<system-reminder>")
+            .map(|rest| (rest, "</system-reminder>"))
+            .or_else(|| {
+                text.strip_prefix("<turn_aborted>")
+                    .map(|rest| (rest, "</turn_aborted>"))
+            });
+        if let Some((body, closing)) = wrapper {
+            let Some((_, rest)) = body.split_once(closing) else {
+                return "";
+            };
+            text = rest.trim_start();
+            continue;
+        }
+        let handoff = text.strip_prefix("---\n\n").unwrap_or(text);
+        if !handoff.starts_with("MindPlayer handoff from ") {
+            return text;
+        }
+        // Match the generated prompt contract, not ordinary requests about
+        // handoffs. Keep any user text following the generated transcript block.
+        let Some((header, body)) = handoff.split_once(concat!(
+            "\n\nBefore answering, first read the handoff artifact above. ",
+            "Then identify the latest user request, summarize the relevant prior context ",
+            "in a few bullets, ignore unrelated runtime/setup/hook noise unless it changes ",
+            "the task, and continue the same task in this working directory.\n",
+            "Treat the artifact as the previous session context. If the artifact is ",
+            "inaccessible or insufficient, ask me before making irreversible changes."
+        )) else {
+            return text;
+        };
+        if !header.contains("\n\nSource session:\n")
+            || ![
+                "\n- agent:",
+                "\n- session id:",
+                "\n- working directory:",
+                "\n- title:",
+                "\n- extracted transcript artifact:",
+                "\n- transcript mode:",
+            ]
+            .iter()
+            .all(|field| header.contains(field))
+        {
+            return text;
+        }
+        if let Some((_, rest)) = body.split_once(concat!(
+            "The source session is large, so the transcript is not pasted into this prompt.\n",
+            "Do not answer from a preview. Read the handoff artifact before continuing."
+        )) {
+            text = rest.trim_start();
+        } else if let Some((_, transcript)) = body.split_once(concat!(
+            "The extracted transcript is included below and also saved in the handoff artifact.",
+            "\n\n```text\n"
+        )) {
+            let mut depth = 1;
+            let mut end = 0;
+            for line in transcript.split_inclusive('\n') {
+                end += line.len();
+                let fence = line.trim();
+                if fence == "```" {
+                    depth -= 1;
+                } else if fence.starts_with("```") {
+                    depth += 1;
+                }
+                if depth == 0 {
+                    break;
+                }
+            }
+            if depth != 0 {
+                return text;
+            }
+            text = transcript[end..].trim_start();
+        } else {
+            return text;
+        }
+    }
 }
 
 /// Injected context / system preamble that shouldn't be used as a session title.
@@ -1011,6 +1150,11 @@ fn is_boilerplate_title(t: &str) -> bool {
         || t.starts_with("Caveat: The messages below")
         || t.starts_with("This session is being continued")
         || t.starts_with("<system-reminder>")
+        || t.starts_with("<environment_context>")
+        || t.starts_with("<local-command-caveat>")
+        || t.starts_with("<local-command-stdout>")
+        || t.starts_with("<command-name>")
+        || t.starts_with("<task-notification>")
 }
 
 fn codex_usage(info: &Value) -> TokenUsage {
@@ -1035,6 +1179,7 @@ fn extract_codex_text(payload: &Value) -> Option<String> {
 }
 
 fn human_prompt_text(text: &str) -> bool {
+    let text = strip_prompt_context(text);
     !is_boilerplate_title(text) && !is_boilerplate_title(&extract_intent(text))
 }
 
@@ -1050,6 +1195,34 @@ fn codex_message_is_human(payload: &Value) -> bool {
             },
             |text| human_prompt_text(&text),
         )
+}
+
+fn codex_native_subagent(payload: &Value) -> Option<bool> {
+    match payload.get("thread_source").and_then(Value::as_str) {
+        Some("user") => Some(false),
+        Some("subagent") => Some(true),
+        _ => None,
+    }
+}
+
+fn codex_message_title(payload: &Value) -> Option<String> {
+    if payload.get("type").and_then(Value::as_str) != Some("message")
+        || payload.get("role").and_then(Value::as_str) != Some("user")
+    {
+        return None;
+    }
+    let text = extract_codex_text(payload)?;
+    let raw = strip_prompt_context(&text);
+    // A generated goal reminder can carry the task's title without counting
+    // as a new human interaction.
+    let objective = raw.starts_with("Continue working toward the active")
+        && raw.contains("<objective>")
+        && raw.contains("</objective>");
+    if !objective && !human_prompt_text(raw) {
+        return None;
+    }
+    let title = extract_intent(raw);
+    (!is_boilerplate_title(&title)).then_some(title)
 }
 
 /// Reconstruct the UUID from `rollout-<iso>-<8-4-4-4-12>.jsonl` when the
@@ -1077,7 +1250,7 @@ fn parse_claude_file_mode(
     cwd_override: Option<&Path>,
     mode: ParseMode,
 ) -> io::Result<Option<Session>> {
-    let lines = transcript_lines(path, mode)?;
+    let (lines, complete) = transcript_lines(path, mode)?;
     let mut id: Option<String> = None;
     let mut cwd: Option<PathBuf> = None;
     let mut started_at: Option<DateTime<Utc>> = None;
@@ -1085,7 +1258,6 @@ fn parse_claude_file_mode(
     let mut last_prompt_at: Option<DateTime<Utc>> = None;
     let mut tokens = TokenUsage::default();
     let mut title: Option<String> = None;
-    let mut title_fallback: Option<String> = None;
     let mut is_sidechain = false;
     let mut has_agent_name = false;
     let mut headless_entry = false;
@@ -1148,29 +1320,17 @@ fn parse_claude_file_mode(
         match v.get("type").and_then(Value::as_str).unwrap_or("") {
             "user" => {
                 let message = v.get("message");
-                if title.is_none() {
-                    if let Some(text) = message.and_then(extract_claude_text) {
-                        let cleaned = extract_intent(&text);
-                        // Skip injected preamble (system reminders, AGENTS/CLAUDE
-                        // boilerplate); keep the first genuine request.
-                        if is_boilerplate_title(&cleaned) {
-                            title_fallback.get_or_insert(cleaned);
-                        } else {
-                            title = Some(cleaned);
-                        }
+                // Native meta records and tool results are user-shaped, but
+                // must not supply either the title or the last human activity.
+                if v.get("isMeta").and_then(Value::as_bool) != Some(true)
+                    && claude_message_is_human(message)
+                {
+                    if title.is_none() {
+                        title = message
+                            .and_then(extract_claude_text)
+                            .map(|text| extract_intent(&text));
                     }
-                }
-                // Claude represents a tool's result as its own `type: "user"`
-                // record (content is an array of `tool_result` blocks) — the
-                // same shape a real human turn would have. Only a record
-                // without any tool_result block reflects something a person
-                // actually typed.
-                if claude_message_is_human(message) {
-                    if let Some(ts) = v
-                        .get("timestamp")
-                        .and_then(Value::as_str)
-                        .and_then(parse_ts)
-                    {
+                    if let Some(ts) = timestamp {
                         last_prompt_at = Some(last_prompt_at.map_or(ts, |last| last.max(ts)));
                     }
                 }
@@ -1197,9 +1357,14 @@ fn parse_claude_file_mode(
     let cwd = cwd
         .or_else(|| cwd_override.map(Path::to_path_buf))
         .unwrap_or_else(|| decode_claude_cwd(path.parent()));
-    let title = title
-        .or(title_fallback)
-        .unwrap_or_else(|| "(empty)".to_string());
+    let title = title.unwrap_or_else(|| {
+        if complete {
+            "(empty)"
+        } else {
+            "(unknown title)"
+        }
+        .into()
+    });
     // `isSidechain` only marks an inline subagent call embedded in its parent's
     // OWN transcript — a subagent spawned by an external multi-agent
     // orchestrator (this project's own OMC layer, headlessly invoking `claude`
@@ -1627,7 +1792,7 @@ fn parse_omp_file(path: &Path, scope: &Scope) -> Option<Session> {
 
 fn parse_omp_file_mode(path: &Path, scope: &Scope, mode: ParseMode) -> io::Result<Option<Session>> {
     let file = std::fs::canonicalize(path)?;
-    let mut lines = transcript_lines(&file, mode)?;
+    let (mut lines, complete) = transcript_lines(&file, mode)?;
     let Some(first) = lines.next().transpose()? else {
         return Ok(None);
     };
@@ -1754,7 +1919,14 @@ fn parse_omp_file_mode(path: &Path, scope: &Scope, mode: ParseMode) -> io::Resul
         last_active,
         last_prompt_at,
         tokens,
-        title: title.unwrap_or_else(|| "(empty)".into()),
+        title: title.unwrap_or_else(|| {
+            if complete {
+                "(empty)"
+            } else {
+                "(unknown title)"
+            }
+            .into()
+        }),
         archived: false,
         is_subagent: false,
         context_pct: None,
@@ -1802,6 +1974,600 @@ mod tests {
     use super::*;
 
     #[test]
+    fn title_regression_claude_selects_first_human_task() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("human-task.jsonl");
+        let ignored = [
+            serde_json::json!({"isMeta":true,"message":{"content":"Generated context that looks like a request"}}),
+            serde_json::json!({"message":{"content":"<local-command-caveat>The command below was run directly in Claude Code, not sent to you as a request.</local-command-caveat>"}}),
+            serde_json::json!({"message":{"content":"<command-name>/clear</command-name><command-message>clear</command-message><command-args></command-args>"}}),
+            serde_json::json!({"message":{"content":[{"type":"text","text":"Tool execution details"},{"type":"tool_result","content":"finished"}]}}),
+            serde_json::json!({"message":{"content":"<task-notification><summary>Background task finished</summary></task-notification>"}}),
+        ];
+        for ignored in ignored {
+            let mut record = ignored;
+            record["type"] = "user".into();
+            record["sessionId"] = "human-task".into();
+            record["cwd"] = "/work".into();
+            record["timestamp"] = "2026-01-01T00:00:00Z".into();
+            let human = serde_json::json!({
+                "type":"user","sessionId":"human-task","timestamp":"2026-01-01T00:01:00Z",
+                "message":{"content":"Fix the failing login test"}
+            });
+            let mut later = record.clone();
+            later["timestamp"] = "2026-01-01T00:02:00Z".into();
+            std::fs::write(&path, format!("{record}\n{human}\n{later}\n")).unwrap();
+            for mode in [ParseMode::Metadata, ParseMode::Full] {
+                let session = parse_claude_file_mode(&path, None, mode).unwrap().unwrap();
+                assert_eq!(session.title, "Fix the failing login test", "{record}");
+                assert_eq!(
+                    session.last_prompt_at,
+                    parse_ts("2026-01-01T00:01:00Z"),
+                    "{record}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn title_regression_claude_unwraps_context_before_human_task() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("wrapped-task.jsonl");
+        let record = serde_json::json!({
+            "type":"user","sessionId":"wrapped-task","cwd":"/work","timestamp":"2026-01-01T00:00:00Z",
+            "message":{"content":"<system-reminder>Injected runtime context</system-reminder>\nPlease fix Slack notifications"}
+        });
+        std::fs::write(&path, format!("{record}\n")).unwrap();
+        for mode in [ParseMode::Metadata, ParseMode::Full] {
+            let session = parse_claude_file_mode(&path, None, mode).unwrap().unwrap();
+            assert_eq!(session.title, "Please fix Slack notifications");
+            assert_eq!(session.last_prompt_at, parse_ts("2026-01-01T00:00:00Z"));
+        }
+    }
+
+    #[test]
+    fn title_regression_no_human_task_uses_safe_fallback() {
+        let dir = tempfile::tempdir().unwrap();
+        let claude = dir.path().join("claude.jsonl");
+        let codex = dir.path().join("codex.jsonl");
+        std::fs::write(&claude, concat!(
+            "{\"type\":\"user\",\"sessionId\":\"claude\",\"cwd\":\"/work\",\"timestamp\":\"2026-01-01T00:00:00Z\",\"isMeta\":true,\"message\":{\"content\":\"<local-command-caveat>The command below was run directly in Claude Code, not sent to you as a request.</local-command-caveat>\"}}\n",
+            "{\"type\":\"user\",\"sessionId\":\"claude\",\"timestamp\":\"2026-01-01T00:01:00Z\",\"message\":{\"content\":\"<command-name>/clear</command-name>\"}}\n"
+        )).unwrap();
+        std::fs::write(&codex, concat!(
+            "{\"type\":\"session_meta\",\"payload\":{\"id\":\"codex\",\"cwd\":\"/work\"}}\n",
+            "{\"type\":\"response_item\",\"timestamp\":\"2026-01-01T00:00:00Z\",\"payload\":{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"# AGENTS.md instructions for /work\"}]}}\n"
+        )).unwrap();
+        for session in [
+            parse_claude_file_mode(&claude, None, ParseMode::Metadata)
+                .unwrap()
+                .unwrap(),
+            parse_claude_file(&claude, None).unwrap(),
+            parse_codex_metadata(&codex).unwrap().unwrap(),
+            parse_codex_file(&codex, &Scope::Global).unwrap(),
+        ] {
+            assert_eq!(session.title, "(empty)", "{:?}", session.agent);
+            assert_eq!(session.last_prompt_at, None);
+        }
+    }
+
+    #[test]
+    fn title_regression_codex_preserves_slack_task_intent() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("slack.jsonl");
+        for (prompt, expected) in [
+            ("Slack posting task in THIS ROOT THREAD only: no subagents, no file writes, no shell except reading one file. 1) Post the release announcement.", "Slack posting task: Post the release announcement."),
+            ("Slack thread-reply task in THIS ROOT THREAD only: no subagents, no file writes. 1) Reply with the deployment status.", "Slack thread-reply task: Reply with the deployment status."),
+            ("Slack posting task in THIS ROOT THREAD only: no subagents, read /tmp/release.md.\n1) Post the release announcement.", "Slack posting task: Post the release announcement."),
+            ("Slack thread-reply task in THIS ROOT THREAD only: no subagents, read https://example.test/release.md.\t1) Reply with the deployment status.", "Slack thread-reply task: Reply with the deployment status."),
+            ("Please post the release announcement to Slack", "Please post the release announcement to Slack"),
+            ("Slack posting task: send the release announcement", "Slack posting task: send the release announcement"),
+        ] {
+            let record = serde_json::json!({
+                "type":"response_item","timestamp":"2026-01-01T00:01:00Z",
+                "payload":{"type":"message","role":"user","content":[{"type":"input_text","text":prompt}]}
+            });
+            std::fs::write(&path, format!(
+                "{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"slack\",\"cwd\":\"/work\"}}}}\n{record}\n"
+            )).unwrap();
+            for mut session in [
+                parse_codex_metadata(&path).unwrap().unwrap(),
+                parse_codex_file(&path, &Scope::Global).unwrap(),
+            ] {
+                assert_eq!(session.title, expected);
+                assert_eq!(session.last_prompt_at, parse_ts("2026-01-01T00:01:00Z"));
+                let mut state = crate::state::State::default();
+                state.set_label(&session.id, "Named release session");
+                state.apply(std::slice::from_mut(&mut session));
+                assert!(session.title.ends_with("Named release session"));
+                assert!(!session.title.contains(expected));
+            }
+        }
+    }
+
+    fn codex_padded_prefix(bytes: usize) -> String {
+        let header =
+            "{\"type\":\"session_meta\",\"payload\":{\"id\":\"bounded\",\"cwd\":\"/work\"}}\n";
+        let mut context = serde_json::json!({
+            "type":"response_item",
+            "payload":{"type":"message","role":"user","content":[{
+                "type":"input_text","text":"# AGENTS.md instructions for /work\n"
+            }]}
+        });
+        let overhead = header.len() + context.to_string().len() + 1;
+        context["payload"]["content"][0]["text"] = format!(
+            "# AGENTS.md instructions for /work\n{}",
+            "x".repeat(bytes - overhead)
+        )
+        .into();
+        format!("{header}{context}\n")
+    }
+
+    fn codex_handoff_context() -> &'static str {
+        concat!(
+            "---\n\nMindPlayer handoff from codex to codex.\n\n",
+            "Source session:\n- agent: codex\n- session id: previous\n",
+            "- working directory: /work\n- title: Previous source title\n",
+            "- extracted transcript artifact: /tmp/handoff.md\n",
+            "- transcript mode: large source session; latest excerpt included; full artifact available",
+            "\n\nBefore answering, first read the handoff artifact above. ",
+            "Then identify the latest user request, summarize the relevant prior context ",
+            "in a few bullets, ignore unrelated runtime/setup/hook noise unless it changes ",
+            "the task, and continue the same task in this working directory.\n",
+            "Treat the artifact as the previous session context. If the artifact is ",
+            "inaccessible or insufficient, ask me before making irreversible changes.\n\n",
+            "Latest source-session excerpt is included directly below so you can continue even before opening the artifact.\n\n",
+            "```text\nPrior user: old request\nPrior assistant: old response\n```\n\n",
+            "The source session is large, so the transcript is not pasted into this prompt.\n",
+            "Do not answer from a preview. Read the handoff artifact before continuing.\n"
+        )
+    }
+
+    #[test]
+    fn codex_missing_title_searches_bounded_prefix_and_stops_at_first_task() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("bounded.jsonl");
+        for offset in [335_754, 660_718] {
+            let handoff = serde_json::json!({
+                "type":"response_item","timestamp":"2026-01-01T00:04:00Z",
+                "payload":{"type":"message","role":"user","content":[{"text":codex_handoff_context()}]}
+            });
+            let aborted = serde_json::json!({
+                "type":"response_item","timestamp":"2026-01-01T00:05:00Z",
+                "payload":{"type":"message","role":"user","content":[{
+                    "text":"<turn_aborted>The user interrupted the previous turn.</turn_aborted>"
+                }]}
+            });
+            let generated = format!("{handoff}\n{aborted}\n");
+            let mut transcript = codex_padded_prefix(offset - generated.len());
+            transcript.push_str(&generated);
+            let task = serde_json::json!({
+                "type":"response_item","timestamp":"2026-01-01T00:01:00Z",
+                "payload":{"type":"message","role":"user","content":[{
+                    "type":"input_text","text":"Slack posting task: announce the Atlantis version change"
+                }]}
+            });
+            transcript.push_str(&format!("{task}\n"));
+            let later = serde_json::json!({
+                "type":"response_item","timestamp":"2026-01-01T00:02:00Z",
+                "payload":{"type":"message","role":"user","content":[{"text":"A later task"}]}
+            });
+            transcript.push_str(&format!("{later}\n"));
+            let output = serde_json::json!({
+                "type":"response_item","timestamp":"2026-01-01T00:03:00Z",
+                "payload":{"type":"message","role":"assistant","content":[{
+                    "text":"output".repeat(150_000)
+                }]}
+            });
+            transcript.push_str(&format!("{output}\n"));
+            std::fs::write(&path, &transcript).unwrap();
+            let metadata = parse_codex_metadata(&path).unwrap().unwrap();
+            assert_eq!(
+                metadata.title,
+                "Slack posting task: announce the Atlantis version change"
+            );
+            assert_eq!(metadata.last_prompt_at, parse_ts("2026-01-01T00:01:00Z"));
+            assert!(!metadata.is_subagent);
+            assert_eq!(metadata.tokens, TokenUsage::default());
+            assert_eq!(std::fs::read(&path).unwrap(), transcript.as_bytes());
+        }
+    }
+
+    #[test]
+    fn codex_title_fallback_respects_head_and_cap_record_seams() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cap.jsonl");
+        let task = format!(
+            "{}\n",
+            serde_json::json!({
+                "type":"response_item","timestamp":"2026-01-01T00:01:00Z",
+                "payload":{"type":"message","role":"user","content":[{"text":"Repair the seam"}]}
+            })
+        );
+        let output = serde_json::json!({
+            "type":"response_item",
+            "payload":{"type":"message","role":"assistant","content":[{
+                "text":"x".repeat(METADATA_TAIL_BYTES as usize * 2)
+            }]}
+        });
+        for end in [
+            METADATA_HEAD_BYTES as usize + 64,
+            MAX_CODEX_TITLE_BYTES as usize - 1,
+            MAX_CODEX_TITLE_BYTES as usize,
+            MAX_CODEX_TITLE_BYTES as usize + 1,
+            MAX_CODEX_TITLE_BYTES as usize + 64,
+        ] {
+            let prefix = codex_padded_prefix(end - task.len());
+            std::fs::write(&path, format!("{prefix}{task}{output}\n")).unwrap();
+            let metadata = parse_codex_metadata(&path).unwrap().unwrap();
+            let fits = end <= MAX_CODEX_TITLE_BYTES as usize;
+            assert_eq!(
+                metadata.title,
+                if fits {
+                    "Repair the seam"
+                } else {
+                    "(unknown title)"
+                },
+                "record ends at {end}"
+            );
+            assert_eq!(
+                metadata.last_prompt_at,
+                if fits {
+                    parse_ts("2026-01-01T00:01:00Z")
+                } else {
+                    None
+                },
+                "record ends at {end}"
+            );
+            assert_eq!(metadata.tokens, TokenUsage::default());
+        }
+    }
+
+    #[test]
+    fn codex_title_fallback_accepts_actual_eof_without_newline_at_cap() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("eof.jsonl");
+        let prefix = codex_padded_prefix(96 * 1024);
+        for bytes in [
+            MAX_CODEX_TITLE_BYTES as usize,
+            MAX_CODEX_TITLE_BYTES as usize + 1,
+        ] {
+            let mut task = serde_json::json!({
+                "type":"response_item","timestamp":"2026-01-01T00:01:00Z",
+                "payload":{"type":"message","role":"user","content":[{"text":"Repair the EOF seam"}]},
+                "context":""
+            });
+            let overhead = prefix.len() + task.to_string().len();
+            task["context"] = "x".repeat(bytes - overhead).into();
+            std::fs::write(&path, format!("{prefix}{task}")).unwrap();
+            let metadata = parse_codex_metadata(&path).unwrap().unwrap();
+            assert_eq!(
+                metadata.title,
+                if bytes <= MAX_CODEX_TITLE_BYTES as usize {
+                    "Repair the EOF seam"
+                } else {
+                    "(unknown title)"
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn codex_title_fallback_distinguishes_empty_from_unsearched_context() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("no-task.jsonl");
+        for bytes in [
+            METADATA_TAIL_BYTES as usize * 2,
+            MAX_CODEX_TITLE_BYTES as usize,
+            MAX_CODEX_TITLE_BYTES as usize + 1,
+        ] {
+            // A complete JSON record at actual EOF needs no trailing newline.
+            let mut transcript = codex_padded_prefix(bytes + 1);
+            transcript.pop();
+            std::fs::write(&path, transcript).unwrap();
+            let metadata = parse_codex_metadata(&path).unwrap().unwrap();
+            assert_eq!(
+                metadata.title,
+                if bytes <= MAX_CODEX_TITLE_BYTES as usize {
+                    "(empty)"
+                } else {
+                    "(unknown title)"
+                }
+            );
+            assert_eq!(metadata.last_prompt_at, None);
+            assert!(!metadata.is_subagent);
+        }
+    }
+
+    #[test]
+    fn codex_title_fallback_keeps_newer_human_time_from_metadata_tail() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("timestamp.jsonl");
+        let task = serde_json::json!({
+            "type":"response_item","timestamp":"2026-01-01T00:01:00Z",
+            "payload":{"type":"message","role":"user","content":[{"text":"Fix the release"}]}
+        });
+        let output = serde_json::json!({
+            "type":"response_item",
+            "payload":{"type":"message","role":"assistant","content":[{
+                "text":"x".repeat(METADATA_TAIL_BYTES as usize * 2)
+            }]}
+        });
+        let image = serde_json::json!({
+            "type":"response_item","timestamp":"2026-01-01T00:02:00Z",
+            "payload":{"type":"message","role":"user","content":[{"type":"input_image"}]}
+        });
+        std::fs::write(
+            &path,
+            format!(
+                "{}{task}\n{output}\n{image}\n",
+                codex_padded_prefix(660_718)
+            ),
+        )
+        .unwrap();
+        let metadata = parse_codex_metadata(&path).unwrap().unwrap();
+        assert_eq!(metadata.title, "Fix the release");
+        assert_eq!(metadata.last_prompt_at, parse_ts("2026-01-01T00:02:00Z"));
+    }
+
+    #[test]
+    fn codex_prefix_task_precedes_tail_followup_without_losing_human_time() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("followup.jsonl");
+        let first = serde_json::json!({
+            "type":"response_item","timestamp":"2026-01-01T00:01:00Z",
+            "payload":{"type":"message","role":"user","content":[{"text":"Update Atlantis"}]}
+        });
+        let output = serde_json::json!({
+            "type":"response_item",
+            "payload":{"type":"message","role":"assistant","content":[{
+                "text":"x".repeat(METADATA_TAIL_BYTES as usize * 2)
+            }]}
+        });
+        let followup = serde_json::json!({
+            "type":"response_item","timestamp":"2026-01-01T00:02:00Z",
+            "payload":{"type":"message","role":"user","content":[{"text":"Now publish it"}]}
+        });
+        std::fs::write(
+            &path,
+            format!(
+                "{}{first}\n{output}\n{followup}\n",
+                codex_padded_prefix(660_718)
+            ),
+        )
+        .unwrap();
+        let metadata = parse_codex_metadata(&path).unwrap().unwrap();
+        assert_eq!(metadata.title, "Update Atlantis");
+        assert_eq!(metadata.last_prompt_at, parse_ts("2026-01-01T00:02:00Z"));
+        assert_eq!(metadata.tokens, TokenUsage::default());
+    }
+
+    #[test]
+    fn codex_goal_objective_titles_do_not_refresh_human_activity() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("goal.jsonl");
+        let goal = serde_json::json!({
+            "type":"response_item","timestamp":"2026-01-01T00:01:00Z",
+            "payload":{"type":"message","role":"user","content":[{
+                "text":"Continue working toward the active thread goal.\n<objective>Fix the Atlantis release</objective>"
+            }]}
+        });
+        let output = serde_json::json!({
+            "type":"response_item",
+            "payload":{"type":"message","role":"assistant","content":[{
+                "text":"x".repeat(METADATA_TAIL_BYTES as usize * 2)
+            }]}
+        });
+        for offset in [512, 660_718] {
+            std::fs::write(
+                &path,
+                format!("{}{goal}\n{output}\n", codex_padded_prefix(offset)),
+            )
+            .unwrap();
+            for session in [
+                parse_codex_metadata(&path).unwrap().unwrap(),
+                parse_codex_file(&path, &Scope::Global).unwrap(),
+            ] {
+                assert_eq!(session.title, "Fix the Atlantis release");
+                assert_eq!(session.last_prompt_at, None);
+            }
+        }
+    }
+
+    #[test]
+    fn codex_native_thread_source_overrides_title_heuristics() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("native-source.jsonl");
+        let prefix = codex_padded_prefix(660_718);
+        let (_, context) = prefix.split_once('\n').unwrap();
+        let output = serde_json::json!({
+            "type":"response_item",
+            "payload":{"type":"message","role":"assistant","content":[{
+                "text":"x".repeat(METADATA_TAIL_BYTES as usize * 2)
+            }]}
+        });
+        for source in [Some("user"), Some("subagent"), None] {
+            let header = serde_json::json!({
+                "type":"session_meta",
+                "payload":{"id":"native","cwd":"/work","thread_source":source}
+            });
+            for prompt in [
+                "Read-only review of the Atlantis release",
+                "You are helping me ship Atlantis",
+            ] {
+                let task = serde_json::json!({
+                    "type":"response_item","timestamp":"2026-01-01T00:01:00Z",
+                    "payload":{"type":"message","role":"user","content":[{"text":prompt}]}
+                });
+                std::fs::write(&path, format!("{header}\n{context}{task}\n{output}\n")).unwrap();
+                for session in [
+                    parse_codex_metadata(&path).unwrap().unwrap(),
+                    parse_codex_file(&path, &Scope::Global).unwrap(),
+                ] {
+                    assert_eq!(session.title, prompt);
+                    assert_eq!(session.is_subagent, source != Some("user"));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn codex_generated_context_preserves_appended_requests() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("wrapped-task.jsonl");
+        let inline = codex_handoff_context().replace(
+            concat!(
+                "The source session is large, so the transcript is not pasted into this prompt.\n",
+                "Do not answer from a preview. Read the handoff artifact before continuing.\n"
+            ),
+            concat!(
+                "The extracted transcript is included below and also saved in the handoff artifact.\n\n",
+                "```text\nPrior request\n```rust\nfn prior_answer() {}\n```\nPrior response\n```\n"
+            ),
+        );
+        for wrapper in [
+            "<turn_aborted>The user interrupted the previous turn.</turn_aborted>",
+            codex_handoff_context(),
+            inline.as_str(),
+        ] {
+            for request in ["", "\nPlease post the Atlantis update to Slack"] {
+                let record = serde_json::json!({
+                    "type":"response_item","timestamp":"2026-01-01T00:01:00Z",
+                    "payload":{"type":"message","role":"user","content":[{
+                        "text":format!("{wrapper}{request}")
+                    }]}
+                });
+                std::fs::write(
+                    &path,
+                    format!(
+                        "{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"wrapped\",\"cwd\":\"/work\"}}}}\n{record}\n"
+                    ),
+                )
+                .unwrap();
+                let metadata = parse_codex_metadata(&path).unwrap().unwrap();
+                assert_eq!(
+                    metadata.title,
+                    if request.is_empty() {
+                        "(empty)"
+                    } else {
+                        "Please post the Atlantis update to Slack"
+                    }
+                );
+                assert_eq!(
+                    metadata.last_prompt_at,
+                    if request.is_empty() {
+                        None
+                    } else {
+                        parse_ts("2026-01-01T00:01:00Z")
+                    }
+                );
+                assert!(!metadata.is_subagent);
+            }
+        }
+        let appended =
+            format!("{inline}\nPlease review this code:\n```rust\nfn main() {{}}\n```\n");
+        assert_eq!(
+            strip_prompt_context(&appended),
+            "Please review this code:\n```rust\nfn main() {}\n```\n"
+        );
+        let ordinary = "MindPlayer handoff from codex to claude. Please fix the export.";
+        assert!(human_prompt_text(ordinary));
+    }
+
+    #[test]
+    fn title_regression_metadata_does_not_scan_hidden_middle_or_tokens() {
+        use std::io::Write;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("bounded-title.jsonl");
+        let mut file = File::create(&path).unwrap();
+        writeln!(
+            file,
+            "{}",
+            serde_json::json!({
+                "type":"user","sessionId":"bounded-title","cwd":"/work",
+                "isMeta":true,"message":{"content":"Internal startup context"}
+            })
+        )
+        .unwrap();
+        file.write_all(&vec![b' '; METADATA_HEAD_BYTES as usize * 2])
+            .unwrap();
+        writeln!(file).unwrap();
+        writeln!(
+            file,
+            "{}",
+            serde_json::json!({
+                "type":"user","timestamp":"2026-01-01T00:01:00Z",
+                "message":{"content":"Repair the hidden middle task"}
+            })
+        )
+        .unwrap();
+        file.write_all(&vec![b' '; METADATA_TAIL_BYTES as usize * 2])
+            .unwrap();
+        writeln!(file).unwrap();
+        writeln!(
+            file,
+            "{}",
+            serde_json::json!({
+                "type":"assistant","message":{"usage":{"input_tokens":10,"output_tokens":5}}
+            })
+        )
+        .unwrap();
+        drop(file);
+        let metadata = parse_claude_file_mode(&path, None, ParseMode::Metadata)
+            .unwrap()
+            .unwrap();
+        assert_eq!(metadata.title, "(unknown title)");
+        assert_eq!(metadata.last_prompt_at, None);
+        assert_eq!(metadata.tokens, TokenUsage::default());
+        let full = parse_claude_file(&path, None).unwrap();
+        assert_eq!(full.title, "Repair the hidden middle task");
+        assert_eq!(full.tokens.total, 15);
+    }
+
+    #[test]
+    fn omp_omitted_middle_is_unknown_but_empty_and_native_titles_are_preserved() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("omp.jsonl");
+        let mut header = serde_json::json!({"type":"session","id":"omp","cwd":"/work"});
+        std::fs::write(&path, format!("{header}\n")).unwrap();
+        assert_eq!(
+            parse_omp_file_mode(&path, &Scope::Global, ParseMode::Metadata)
+                .unwrap()
+                .unwrap()
+                .title,
+            "(empty)"
+        );
+        let context = serde_json::json!({
+            "type":"message","message":{"role":"assistant","content":"x".repeat(128 * 1024)}
+        });
+        let task = serde_json::json!({
+            "type":"message","timestamp":"2026-01-01T00:01:00Z",
+            "message":{"role":"user","content":"Repair the hidden OMP task"}
+        });
+        let output = serde_json::json!({
+            "type":"message","message":{"role":"assistant","content":"x".repeat(512 * 1024)}
+        });
+        for native_title in [None, Some("Native OMP title")] {
+            header["title"] = serde_json::json!(native_title);
+            std::fs::write(&path, format!("{header}\n{context}\n{task}\n{output}\n")).unwrap();
+            let metadata = parse_omp_file_mode(&path, &Scope::Global, ParseMode::Metadata)
+                .unwrap()
+                .unwrap();
+            assert_eq!(metadata.title, native_title.unwrap_or("(unknown title)"));
+            assert_eq!(metadata.last_prompt_at, None);
+            assert_eq!(metadata.tokens, TokenUsage::default());
+            let full = parse_omp_file_mode(&path, &Scope::Global, ParseMode::Full)
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                full.title,
+                native_title.unwrap_or("Repair the hidden OMP task")
+            );
+            assert_eq!(full.last_prompt_at, parse_ts("2026-01-01T00:01:00Z"));
+        }
+    }
+
+    #[test]
     fn cold_metadata_windows_bound_bytes_and_skip_incomplete_seams() {
         use std::io::Write;
         let dir = tempfile::tempdir().unwrap();
@@ -1819,7 +2585,7 @@ mod tests {
         file.write_all(last).unwrap();
         drop(file);
         let original = std::fs::read(&path).unwrap();
-        let metadata = metadata_windows(&path).unwrap();
+        let metadata = metadata_windows(&path).unwrap().bytes;
         assert!(metadata.len() as u64 <= METADATA_HEAD_BYTES + METADATA_TAIL_BYTES);
         assert_eq!(metadata, [first.as_slice(), last.as_slice()].concat());
         assert_eq!(std::fs::read(path).unwrap(), original);

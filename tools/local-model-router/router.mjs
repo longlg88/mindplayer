@@ -1,3 +1,5 @@
+import { JevError } from './jev.mjs';
+
 const idKey = id => `${typeof id}:${id}`;
 const errorReply = (id, message, code = -32002) => ({ id, error: { code, message } });
 const JEV_FAILURES = Object.freeze({
@@ -5,6 +7,7 @@ const JEV_FAILURES = Object.freeze({
   'jev-key-unavailable': ['jev-key-unavailable', 'Jev credential is unavailable; nothing was sent'],
   'unauthorized': ['jev-unauthorized', 'Jev authentication failed; nothing was sent. Check the configured credential'],
   'payment-required': ['jev-payment-required', 'Jev billing authorization failed; nothing was sent'],
+  'budget-exceeded': ['jev-budget-exceeded', 'Jev budget exceeded; nothing was sent'],
   'rate-limited': ['jev-rate-limited', 'Jev rate limit reached; nothing was sent. No automatic retry'],
   'http-error': ['jev-http-error', 'Jev service returned an HTTP error; nothing was sent. No automatic retry'],
   'tls-error': ['jev-tls-error', 'Jev TLS certificate verification failed; nothing was sent. Check system certificate trust'],
@@ -261,13 +264,18 @@ export class ModelRouter {
         this.pending.delete(threadId);
         this.service?.cancelDecision?.(request);
         this.requests.delete(idKey(request.id));
-        // Copy only a fixed diagnostic, never an upstream message/cause.
+        // Copy only fixed diagnostics and validated monetary evidence, never upstream text.
+        const budgetFailure = error?.code === 'budget-exceeded' ? new JevError(error.code, error.budget) : null;
+        const code = budgetFailure?.code ?? error?.code;
         const knownFailure = state.phase === 'deciding' && failure === 'selector-error'
-          && Object.hasOwn(JEV_FAILURES, error?.code) ? JEV_FAILURES[error.code] : null;
+          && Object.hasOwn(JEV_FAILURES, code) ? JEV_FAILURES[code] : null;
+        const budget = knownFailure && budgetFailure?.budget;
         if (knownFailure) failure = knownFailure[0];
-        this.record({ event: 'route-failed', threadId, requestId: request.id, reason: failure, errorType: error?.name ?? 'UnknownError' });
+        this.record({ event: 'route-failed', threadId, requestId: request.id, reason: failure,
+          errorType: error instanceof JevError ? 'JevError' : 'Error', ...(budget ? { budget } : {}) });
         this.reject(request.id, state.phase === 'sending'
           ? 'Submission outcome unknown; not retried. Check thread before sending again'
+          : budget ? `${budgetFailure.message}; nothing was sent. Ask a team owner to review AI Gateway Budgets & Spend`
           : knownFailure ? knownFailure[1]
           : 'Model routing failed before submission; nothing was sent');
       }

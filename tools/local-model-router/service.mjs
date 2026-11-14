@@ -3,7 +3,7 @@ import { closeSync, fstatSync, openSync, readFileSync, writeFileSync, constants 
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
-import { createJevClient } from './jev.mjs';
+import { createJevClient, JevError } from './jev.mjs';
 import { buildSnapshot, filterConfigurations, chooseConfiguration } from './policy.mjs';
 import { CONFIGURATION_ABSTAIN, RUBRIC_VERSION, buildJudgmentSnapshot } from './rubric.mjs';
 import { snapshotFamilyRegistry, reviewFamilyRegistry } from './current-family.mjs';
@@ -604,10 +604,11 @@ export class JevService {
     }
     catch (error) {
       if (!current()) throw fail('stale-decision');
-      const failureCodes = new Set(['unauthorized', 'payment-required', 'rate-limited', 'http-error', 'tls-error', 'network-error', 'timeout', 'aborted', 'invalid-response', 'request-too-large', 'response-too-large', 'invalid-config', 'invalid-request']);
-      const reason = failureCodes.has(error?.code) ? error.code : 'jev-unavailable';
-      this.audit({ event: 'jev-failed', ...auditId, reason, latencyMs: this.now() - started });
-      throw fail(reason);
+      const failureCodes = new Set(['unauthorized', 'payment-required', 'budget-exceeded', 'rate-limited', 'http-error', 'tls-error', 'network-error', 'timeout', 'aborted', 'invalid-response', 'request-too-large', 'response-too-large', 'invalid-config', 'invalid-request']);
+      const failure = error?.code === 'budget-exceeded' ? new JevError(error.code, error.budget)
+        : fail(failureCodes.has(error?.code) ? error.code : 'jev-unavailable');
+      this.audit({ event: 'jev-failed', ...auditId, reason: failure.code, ...(failure.budget ? { budget: failure.budget } : {}), latencyMs: this.now() - started });
+      throw failure;
     }
     finally { void previous.then(release, release); }
     if (!current()) throw fail('stale-decision');

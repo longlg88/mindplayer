@@ -29,7 +29,7 @@ impl App {
         self.catalog_scan()
     }
 
-    /// Confirm the scope choice and kick off the initial scan (scan screen).
+    /// Confirm the scope choice and load the session list in the background.
     pub fn start_scan(&mut self) {
         self.cancel_catalog_work();
         self.working_set.epoch = self.working_set.epoch.wrapping_add(1);
@@ -43,6 +43,7 @@ impl App {
 
         self.scan_rx = Some(self.spawn_scan());
         self.screen = Screen::Scanning;
+        self.status.clear();
         self.spinner = 0;
     }
 
@@ -82,30 +83,42 @@ impl App {
         !self.state.pending_labels.is_empty() || !self.closed_extras.is_empty()
     }
 
-    /// Poll the scan thread; when finished, populate state and show the summary.
-    /// Returns true if results arrived (needs redraw).
+    /// Poll the initial scan; open the list on success or offer scope retry on failure.
+    /// Returns true when the worker finishes or disconnects (needs redraw).
     pub fn poll_scan(&mut self) -> bool {
-        if let Some(rx) = &self.scan_rx {
-            if let Ok(result) = rx.try_recv() {
+        let Some(rx) = &self.scan_rx else {
+            return false;
+        };
+        let result = match rx.try_recv() {
+            Ok(result) => result,
+            Err(mpsc::TryRecvError::Empty) => return false,
+            Err(mpsc::TryRecvError::Disconnected) => {
                 self.scan_rx = None;
-                let loaded = self.apply_catalog(result);
-                self.screen = if loaded {
-                    Screen::ScanSummary
-                } else {
-                    Screen::ScopeSelect
-                };
-                // If labels are still unresolved (their sessions don't exist
-                // yet), keep trying via background re-scans.
-                if self.awaits_rescan() {
-                    self.rescan_due = Some(Instant::now() + Duration::from_secs(6));
-                }
+                self.status = "session scan stopped before returning results; enter retry".into();
+                self.screen = Screen::ScopeSelect;
                 return true;
             }
+        };
+        self.scan_rx = None;
+        if self.apply_catalog(result) {
+            self.screen = Screen::Main;
+            // If labels are still unresolved (their sessions don't exist
+            // yet), keep trying via background re-scans.
+            if self.awaits_rescan() {
+                self.rescan_due = Some(Instant::now() + Duration::from_secs(6));
+            }
+        } else {
+            if self.status.is_empty() {
+                self.status = "session scan was superseded".into();
+            }
+            self.status.push_str("; enter retry");
+            self.screen = Screen::ScopeSelect;
         }
-        false
+        true
     }
 
     pub(crate) fn rebuild_visible(&mut self) {
+        self.refresh_handoff_archive_index();
         for session in &mut self.all_sessions {
             usage::restore(&self.manual_usage, session);
         }
@@ -306,6 +319,48 @@ impl App {
                 .map(|s| s.id.as_str())
                 .collect();
             self.marked.retain(|id| visible_ids.contains(id.as_str()));
+        }
+        self.rebuild_list_items();
+    }
+
+    /// Cache spacer geometry so drawing and selection never scan the full list.
+    pub(crate) fn rebuild_list_items(&mut self) {
+        self.list_item_rows.clear();
+        self.list_row_items.clear();
+        self.list_recent_sessions = 0;
+        self.list_older_sessions = 0;
+        self.list_multiple_cwds = false;
+        if self.visible.is_empty() {
+            return;
+        }
+        self.list_item_rows.push(None);
+        let mut has_header = false;
+        let mut first_cwd = None;
+        for (row, item) in self.visible.iter().enumerate() {
+            if let Row::Session(index) = item {
+                let cwd = &self.all_sessions[*index].cwd;
+                if let Some(first) = first_cwd {
+                    self.list_multiple_cwds |= first != cwd;
+                } else {
+                    first_cwd = Some(cwd);
+                }
+            }
+            if row > 0 && row == self.recent_count {
+                self.list_item_rows.extend([None, None]);
+                has_header = false;
+            }
+            if matches!(item, Row::Header(_)) {
+                if has_header {
+                    self.list_item_rows.push(None);
+                }
+                has_header = true;
+            } else if row < self.recent_count {
+                self.list_recent_sessions += 1;
+            } else {
+                self.list_older_sessions += 1;
+            }
+            self.list_row_items.push(self.list_item_rows.len());
+            self.list_item_rows.push(Some(row));
         }
     }
 
@@ -921,10 +976,6 @@ impl App {
             .filter(|s| !s.is_empty());
         let name = label.or(title).unwrap_or_else(|| short(id));
         truncate_chars(&name, max_chars.max(8))
-    }
-
-    pub fn session_depth(&self, id: &str) -> usize {
-        usize::from(self.state.handoff_parent(id).is_some())
     }
 
     pub fn toggle_archived_view(&mut self) {

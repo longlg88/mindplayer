@@ -28,6 +28,49 @@ function harness(options = {}) {
   return { router, service, audit, sent, received, lifecycle, calls: () => calls };
 }
 
+test('HTTP 402 budgets reach native failure with safe evidence, failed status and no downstream turn', async t => {
+  const dir = mkdtempSync(join(tmpdir(), 'mindplayer-budget-status-test-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  for (const [label, scope] of [['User', 'user'], ['Team', 'team'], ['Project', 'project'], ['API key', 'api-key'], ['Unknown', null]]) {
+    let calls = 0;
+    const f = harness({ catalog: descriptorCatalog, judgeFactory: options => createJevClient({ ...options, fetchImpl: () => {
+      calls++;
+      return Response.json({ error: { type: 'quota_for_entity_exceeded',
+        message: `${label} budget exceeded. Current spend: $51.00, limit: $50.00. Team owners can edit this budget in AI Gateway Budgets & Spend (https://untrusted.invalid/upstream-secret-canary).`,
+        apiKey: 'gateway-secret-canary', accountId: 'account-secret-canary' } }, { status: 402 });
+    } }) });
+    t.after(() => f.router.close());
+    const path = join(dir, `${label.replaceAll(' ', '-')}.json`);
+    writeFileSync(path, JSON.stringify({ schemaVersion: 2, generation: 'budget-test', revision: 0, stage: 'ready' }), { mode: 0o600 });
+    const sink = createStatusSink(path);
+    f.router.audit = f.service.audit = event => { f.audit.push(event); sink(event); };
+    f.lifecycle();
+    f.router.client(native()); await tick();
+    assert.equal(calls, 1);
+    assert.equal(f.sent.filter(event => event.method === 'turn/start').length, 0);
+    const failures = f.received.filter(event => event.id === 2);
+    assert.equal(failures.length, 1);
+    assert.equal(failures[0].error.message, scope
+      ? `${label} budget exceeded: $51.00 / $50.00; nothing was sent. Ask a team owner to review AI Gateway Budgets & Spend`
+      : 'Jev billing authorization failed; nothing was sent');
+    for (const [event, reason] of [['jev-failed', scope ? 'budget-exceeded' : 'payment-required'],
+      ['route-failed', scope ? 'jev-budget-exceeded' : 'jev-payment-required']]) {
+      const events = f.audit.filter(row => row.event === event);
+      assert.equal(events.length, 1); assert.equal(events[0].reason, reason);
+      assert.deepEqual(events[0].budget, scope ? { scope, used: 51, limit: 50 } : undefined);
+    }
+    assert.equal(f.audit.some(event => ['jev-judged', 'model-selected', 'route-requested'].includes(event.event)), false);
+    const status = JSON.parse(readFileSync(path, 'utf8'));
+    assert.equal(status.stage, 'failed');
+    assert.equal(status.reason, scope ? 'jev-budget-exceeded' : 'jev-payment-required');
+    assert.equal(status.turnId, null);
+    // The existing status schema intentionally stores only the fixed reason.
+    assert.equal(status.budget, undefined);
+    const publicEvidence = JSON.stringify({ received: f.received, audit: f.audit, status });
+    for (const privateText of ['canary', 'https://', 'untrusted.invalid', '\x1b']) assert.ok(!publicEvidence.includes(privateText));
+  }
+});
+
 test('managed native message metadata is required on every request, including repeated session modes', async () => {
   const f = harness({ requirePromptChoice: true }); f.lifecycle();
   for (const [index, mode] of ['native', 'native', 'jev', 'jev', 'native', 'jev', null].entries()) {

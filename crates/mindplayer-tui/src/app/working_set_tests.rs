@@ -784,8 +784,16 @@ impl NativeSwitch {
         let collision = write_session("native-target", &other, true, 999);
         let mut app = tests::isolated_app_at(directory.join("state.json"));
         app.cfg.codex_dir = directory.join("default/sessions");
+        app.cfg.claude_dir = directory.join("claude");
+        app.cfg.kiro_dir = directory.join("kiro");
+        app.cfg.cursor_dir = directory.join("cursor");
+        app.cfg.omp_dir = directory.join("omp");
         app.scope = Scope::Global;
         app.accounts = vec![account.clone(), other];
+        assert!(app
+            .scan_roots()
+            .iter()
+            .all(|root| root.dir.starts_with(&directory)));
         app.all_sessions = vec![original.clone()];
         app.archive_catalog = Arc::new(vec![collision.clone(), target.clone()]);
         app.panes.push(original.id.clone());

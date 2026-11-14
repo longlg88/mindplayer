@@ -14,11 +14,11 @@ use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{
-    Block, BorderType, Borders, Clear, Gauge, List, ListItem, ListState, Padding, Paragraph, Wrap,
+    Block, BorderType, Borders, Clear, List, ListItem, ListState, Padding, Paragraph, Wrap,
 };
 use ratatui::Frame;
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 const ACCENT: Color = Color::Rgb(126, 162, 247);
 const DIM: Color = Color::Rgb(140, 146, 158);
@@ -82,110 +82,122 @@ fn quota_label_color(label: &str) -> Color {
     }
 }
 
-/// Provider column text for the Vercel key's budget row.
 const VERCEL_HEAD: &str = "vercel";
 
-/// The Vercel key's budget as a quota row, so it shares the provider rows' columns.
-fn vercel_quota_row(app: &App) -> mindplayer_core::limits::QuotaRow {
-    use mindplayer_core::limits::{compact_decimal, QuotaRow};
+/// Authentication method and independent enforced budgets, never the local target.
+fn vercel_footer_lines(app: &App, width: u16) -> Vec<Line<'static>> {
+    use mindplayer_core::limits::compact_decimal;
     use mindplayer_core::vercel_usage::VercelUsageError;
 
-    let reading = if app.vercel_cwd.as_ref() == Some(&app.cwd) {
-        app.vercel_budget.as_ref()
-    } else {
-        None
-    };
-    let (label, used_percent, detail) = match reading {
-        Some(Ok(usage)) => match &usage.key {
-            Ok(budget) => {
-                let limit = usage.target.unwrap_or(budget.limit);
-                let limit_label = if usage.target.is_some() {
-                    "local target"
-                } else {
-                    "API key limit"
-                };
-                let used = budget.used / limit * 100.0;
-                (
-                    format!("key {}", budget.refresh_period)
-                        .trim_end()
-                        .to_string(),
-                    (limit > 0.0 && used.is_finite()).then_some(used),
-                    format!(
-                        "${:.2}/${} {limit_label}",
-                        budget.used,
-                        compact_decimal(limit)
-                    ),
-                )
+    let reading = (app.vercel_cwd.as_ref() == Some(&app.cwd))
+        .then_some(app.vercel_budget.as_ref())
+        .flatten();
+    let mut blocked = false;
+    let text = match reading {
+        None => "vercel · loading · blocked state unknown".to_string(),
+        Some(Err(VercelUsageError::NotConfigured)) => {
+            "vercel · not configured · blocked state unknown".to_string()
+        }
+        Some(Err(_)) => "vercel · lookup unavailable · blocked state unknown".to_string(),
+        Some(Ok(usage)) => {
+            let key_state = match &usage.key {
+                Ok(budget) => budget.used.map(|used| used >= budget.limit),
+                Err(VercelUsageError::NoBudget) => Some(false),
+                Err(_) => None,
+            };
+            let user_state = match &usage.user {
+                Ok(Some(budget)) => budget.used.map(|used| used >= budget.limit),
+                Ok(None) | Err(VercelUsageError::NoBudget) => Some(false),
+                Err(_) => None,
+            };
+            blocked = key_state == Some(true) || user_state == Some(true);
+            let state = if blocked {
+                "blocked"
+            } else if key_state.is_some() && user_state.is_some() {
+                "not blocked by budgets"
+            } else {
+                "blocked state unknown"
+            };
+            let mut text = format!("vercel API key · {state}");
+            match &usage.user {
+                Ok(Some(budget)) => {
+                    text.push_str(&format!(" · user {} ", budget.refresh_period));
+                    match budget.used {
+                        Some(used) => text.push_str(&format!(
+                            "${used:.2}/${}{}",
+                            compact_decimal(budget.limit),
+                            if user_state == Some(true) {
+                                " exceeded"
+                            } else {
+                                ""
+                            },
+                        )),
+                        None => text.push_str(&format!(
+                            "spend unknown / ${} limit (no meter)",
+                            compact_decimal(budget.limit),
+                        )),
+                    }
+                }
+                Ok(None) => text.push_str(" · team attributed"),
+                Err(VercelUsageError::NoBudget) => text.push_str(" · user no active budget"),
+                Err(VercelUsageError::UserNotIdentified) => {
+                    text.push_str(" · user attribution unknown")
+                }
+                Err(_) => text.push_str(" · user lookup unavailable"),
             }
-            Err(VercelUsageError::NoBudget) => {
-                ("key".to_string(), None, "no active budget".to_string())
+            match &usage.key {
+                Ok(budget) if key_state == Some(true) => text.push_str(&format!(
+                    " · key {} ${:.2}/${} exceeded",
+                    budget.refresh_period,
+                    budget.used.expect("blocked key has a meter"),
+                    compact_decimal(budget.limit),
+                )),
+                Ok(budget)
+                    if key_state == Some(false)
+                        && !matches!(&usage.user, Ok(Some(user)) if user.used.is_some()) =>
+                {
+                    text.push_str(&format!(
+                        " · key spend ${:.2}",
+                        budget.used.expect("known key meter")
+                    ));
+                }
+                Ok(_) if key_state.is_none() => text.push_str(" · key spend unknown"),
+                Err(VercelUsageError::NoBudget) => text.push_str(" · key no active budget"),
+                Err(_) => text.push_str(" · key lookup unavailable"),
+                _ => {}
             }
-            Err(_) => ("key".to_string(), None, "unavailable".to_string()),
-        },
-        Some(Err(_)) => (String::new(), None, "unavailable".to_string()),
-        None => (String::new(), None, "loading".to_string()),
+            text
+        }
     };
-    QuotaRow {
-        label,
-        used_percent,
-        detail,
-        ..Default::default()
-    }
-}
-
-/// The Vercel row in the provider rows' columns; a figure that would run past the edge moves to its own lines so no amount is cut short.
-fn vercel_footer_lines(
-    row: &mindplayer_core::limits::QuotaRow,
-    platform_width: usize,
-    name_width: usize,
-    width: u16,
-) -> Vec<Line<'static>> {
-    let head = Span::styled(
-        format!(" {VERCEL_HEAD:<platform_width$} "),
-        Style::default()
-            .fg(quota_label_color(VERCEL_HEAD))
-            .add_modifier(Modifier::BOLD),
-    );
+    // Wrap, never truncate: even exceptionally long amounts survive narrow terminals.
     let width = usize::from(width.max(1));
-    let mut full = vec![head.clone()];
-    full.extend(quota_row_spans(row, name_width, None));
-    if Line::from(full.clone()).width() <= width {
-        return vec![Line::from(full)];
-    }
-
-    let bare = mindplayer_core::limits::QuotaRow {
-        detail: String::new(),
-        ..row.clone()
-    };
-    let mut first = vec![head];
-    first.extend(quota_row_spans(&bare, name_width, None));
-    let indent = platform_width + 4;
-    let room = width.saturating_sub(indent);
-    let mut wrapped: Vec<String> = Vec::new();
-    for word in row.detail.split_whitespace() {
-        let word_width = Line::from(word).width();
-        match wrapped.last_mut() {
-            Some(line) if Line::from(line.as_str()).width() + 1 + word_width <= room => {
-                line.push(' ');
-                line.push_str(word);
+    let style = Style::default().fg(if blocked { ERROR } else { DIM });
+    let mut lines = Vec::new();
+    let mut line = String::new();
+    let mut cells = 0;
+    for word in text.split_whitespace() {
+        let word_cells = Span::raw(word).width();
+        if cells > 0 && cells + 1 + word_cells > width {
+            lines.push(Line::styled(std::mem::take(&mut line), style));
+            cells = 0;
+        }
+        if cells > 0 {
+            line.push(' ');
+            cells += 1;
+        }
+        for grapheme in Span::raw(word).styled_graphemes(Style::default()) {
+            let cell_width = Span::raw(grapheme.symbol).width();
+            if cells + cell_width > width {
+                lines.push(Line::styled(std::mem::take(&mut line), style));
+                cells = 0;
             }
-            _ => wrapped.push(word.to_string()),
+            line.push_str(grapheme.symbol);
+            cells += cell_width;
         }
     }
-    if wrapped.len() > 2
-        || wrapped
-            .iter()
-            .any(|line| Line::from(line.as_str()).width() > room)
-    {
-        wrapped = vec!["widen terminal".to_string()];
+    if !line.is_empty() {
+        lines.push(Line::styled(line, style));
     }
-    let style = Style::default().fg(quota_detail_color(row));
-    let mut lines = vec![Line::from(first)];
-    lines.extend(
-        wrapped
-            .into_iter()
-            .map(|text| Line::from(Span::styled(format!("{:indent$}{text}", ""), style))),
-    );
     lines
 }
 
@@ -312,7 +324,6 @@ pub fn render(f: &mut Frame, app: &mut App) {
     match app.screen {
         Screen::ScopeSelect => scope_select(f, app),
         Screen::Scanning => scanning(f, app),
-        Screen::ScanSummary => scan_summary(f, app),
         Screen::Main => main_view(f, app),
     }
 }
@@ -890,12 +901,21 @@ fn walker_picker(f: &mut Frame, area: Rect, app: &App, highlighted: usize) {
 }
 
 fn scope_select(f: &mut Frame, app: &App) {
+    let error_rows = if app.status.is_empty() {
+        0
+    } else {
+        (Span::raw(&app.status)
+            .width()
+            .div_ceil(usize::from(f.area().width.max(1)))
+            + 1)
+        .min(4) as u16
+    };
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(1),
             Constraint::Min(0),
-            Constraint::Length(1),
+            Constraint::Length(1 + error_rows),
         ])
         .split(f.area());
     title_bar(chunks[0], f);
@@ -967,11 +987,33 @@ fn scope_select(f: &mut Frame, app: &App) {
     }
     f.render_widget(List::new(items).block(block), inner);
 
-    footer(
-        chunks[2],
-        f,
-        "↑↓ choose   enter scan   c character   q quit",
-    );
+    if app.status.is_empty() {
+        footer(
+            chunks[2],
+            f,
+            "↑↓ choose   enter scan   c character   q quit",
+        );
+    } else {
+        let error_area = Rect {
+            height: error_rows,
+            ..chunks[2]
+        };
+        f.render_widget(
+            Paragraph::new(app.status.as_str())
+                .style(Style::default().fg(ERROR))
+                .wrap(Wrap { trim: false }),
+            error_area,
+        );
+        footer(
+            Rect {
+                y: chunks[2].y + error_rows,
+                height: 1,
+                ..chunks[2]
+            },
+            f,
+            "↑↓ choose · enter retry · q quit",
+        );
+    }
 
     // Drawn last so it sits above both the strip and the scope list.
     if let Some(highlighted) = app.walker_picker {
@@ -989,130 +1031,30 @@ fn scanning(f: &mut Frame, app: &App) {
             Constraint::Length(1),
         ])
         .split(f.area());
-    title_bar(chunks[0], f);
-
+    main_title_bar(chunks[0], f, app);
     let spin = SPINNER[app.spinner % SPINNER.len()];
-    let area = centered(chunks[1], 60, 5);
-    // See the matching guard in scope_select: bottom-anchored, and skipped on a
-    // terminal too small to clear this centered box without overlap.
-    let strip_y = chunks[1].y + chunks[1].height.saturating_sub(walker::HEIGHT);
-    if strip_y >= area.y + area.height {
-        draw_walker(
-            f,
-            Rect {
-                y: strip_y,
-                height: walker::HEIGHT,
-                ..chunks[1]
-            },
-            app,
-        );
-    }
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(ACCENT))
-        .title(" Collecting ");
-    let body = Paragraph::new(vec![
-        Line::from(Span::styled(
-            format!("{spin}  scanning {} ...", app.scope_label()),
-            Style::default().fg(ACCENT),
-        )),
-        Line::from(Span::styled(
-            "reading ~/.codex, ~/.claude, ~/.kiro, and ~/.cursor sessions",
-            Style::default().fg(DIM),
-        )),
-    ])
-    .block(block)
-    .alignment(Alignment::Center);
-    f.render_widget(body, area);
-
-    footer(chunks[2], f, "collecting…");
-}
-
-fn scan_summary(f: &mut Frame, app: &App) {
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(1),
-            Constraint::Min(0),
-            Constraint::Length(1),
-        ])
-        .split(f.area());
-    title_bar(chunks[0], f);
-
-    let a = &app.aggregate;
-    let total = a.session_count().max(1);
-    let codex_ratio = a.codex_count as f64 / total as f64;
-
-    let area = centered(chunks[1], 64, 11);
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(ACCENT))
-        .title(" Collected ");
-    let rows = Layout::default()
-        .direction(Direction::Vertical)
-        .margin(1)
-        .constraints([
-            Constraint::Length(1),
-            Constraint::Length(1),
-            Constraint::Length(1),
-            Constraint::Length(1),
-            Constraint::Length(1),
-            Constraint::Min(0),
-        ])
-        .split(area);
-    f.render_widget(block, area);
-
+        .title(" Sessions · loading ");
     f.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled("✓ ", Style::default().fg(Color::Green)),
-            Span::raw(format!("{} active sessions collected", a.session_count())),
-        ])),
-        rows[0],
-    );
-    f.render_widget(
-        Paragraph::new(Line::styled(
-            format!(
-                "{} archived · measure with r in list",
-                app.archive_catalog.len()
+        Paragraph::new(vec![
+            Line::from(""),
+            Line::styled(
+                format!("  {spin} Collecting sessions · {}", app.scope_label()),
+                Style::default().fg(ACCENT),
             ),
-            Style::default().fg(DIM),
-        )),
-        rows[1],
+            Line::styled("  Reading session metadata…", Style::default().fg(DIM)),
+        ])
+        .block(block)
+        .wrap(Wrap { trim: false }),
+        chunks[1],
     );
-    f.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled("codex  ", Style::default().fg(ACCENT)),
-            Span::raw(format!("{:>3}", a.codex_count)),
-            Span::styled("   claude  ", Style::default().fg(Color::Magenta)),
-            Span::raw(format!("{:>3}", a.claude_count)),
-            Span::styled("   kiro  ", Style::default().fg(Color::Cyan)),
-            Span::raw(format!("{:>3}", a.kiro_count)),
-            Span::styled("   cursor  ", Style::default().fg(Color::Rgb(242, 170, 76))),
-            Span::raw(format!("{:>3}", a.cursor_count)),
-            Span::styled("   omp  ", Style::default().fg(Color::Green)),
-            Span::raw(format!("{:>3}", a.omp_count)),
-        ])),
-        rows[2],
+    footer(
+        chunks[2],
+        f,
+        "Sessions appear here when collection finishes.",
     );
-    f.render_widget(
-        Gauge::default()
-            .gauge_style(Style::default().fg(ACCENT))
-            .ratio(codex_ratio)
-            .label(format!("codex {:.0}%", codex_ratio * 100.0)),
-        rows[3],
-    );
-    f.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled("active tokens  ", Style::default().fg(DIM)),
-            Span::styled(
-                app.manual_usage_summary(app.all_sessions.iter().filter(|s| !s.archived)),
-                Style::default().add_modifier(Modifier::BOLD),
-            ),
-        ])),
-        rows[4],
-    );
-
-    footer(chunks[2], f, "enter open mindplayer   q quit");
 }
 
 fn main_view(f: &mut Frame, app: &mut App) {
@@ -1164,9 +1106,8 @@ fn main_view(f: &mut Frame, app: &mut App) {
     let status_h = (status_line.width() as u16)
         .div_ceil(f.area().width.max(1))
         .clamp(1, 2);
-    // One row per account window. Each is gauged, so they cannot share a line
-    // the way plain numbers did — and giving each its own row is what lets the
-    // names align vertically enough to scan.
+    // Preserve every account window and reset; only one account's adjacent
+    // windows may share a row when their complete cell widths fit.
     let mut quota_rows = app.quota_rows();
     mindplayer_core::limits::order_for_display(&mut quota_rows, |agent| {
         app.account_for(agent).name
@@ -1214,10 +1155,8 @@ fn main_view(f: &mut Frame, app: &mut App) {
         }
         row.label = rest;
     }
-    let vercel_row = vercel_quota_row(app);
     let name_width = quota_rows
         .iter()
-        .chain(std::iter::once(&vercel_row))
         .map(|r| r.label.chars().count())
         .max()
         .unwrap_or(0);
@@ -1227,8 +1166,35 @@ fn main_view(f: &mut Frame, app: &mut App) {
         .chain(std::iter::once(VERCEL_HEAD.chars().count()))
         .max()
         .unwrap_or(0);
-    let vercel_lines = vercel_footer_lines(&vercel_row, platform_width, name_width, f.area().width);
-    let quota_h = (quota_rows.len() + vercel_lines.len()).min(u16::MAX as usize) as u16;
+    let mut quota_lines: Vec<Line<'static>> = Vec::new();
+    let mut previous = None;
+    for row in &quota_rows {
+        let spans = quota_row_spans(row, name_width, failure_hint(app, row));
+        let cells: usize = spans.iter().map(Span::width).sum();
+        if previous == Some((row.agent, row.account.as_str()))
+            && quota_lines
+                .last()
+                .is_some_and(|line| line.width() + 3 + cells <= usize::from(f.area().width))
+        {
+            let line = quota_lines.last_mut().expect("previous account line");
+            line.spans
+                .push(Span::styled(" · ", Style::default().fg(DIM)));
+            line.spans.extend(spans);
+        } else {
+            let mut line = Line::from(Span::styled(
+                format!(" {:<platform_width$} ", row.agent.as_str()),
+                Style::default()
+                    .fg(quota_label_color(row.agent.as_str()))
+                    .add_modifier(Modifier::BOLD),
+            ));
+            line.spans.extend(spans);
+            quota_lines.push(line);
+        }
+        previous = Some((row.agent, row.account.as_str()));
+    }
+    quota_lines.extend(vercel_footer_lines(app, f.area().width));
+    let quota = Paragraph::new(quota_lines).wrap(Wrap { trim: false });
+    let quota_h = quota.line_count(f.area().width).min(u16::MAX as usize) as u16;
     let footer_h: u16 = status_h + quota_h + 1 + u16::from(show_more_keys);
     let outer = Layout::default()
         .direction(Direction::Vertical)
@@ -1322,30 +1288,7 @@ fn main_view(f: &mut Frame, app: &mut App) {
         footer_rows[0],
     );
     if quota_h > 0 {
-        // The provider is named once per group. A blank there reads as "the
-        // one above", which is what makes the lines a group at a glance.
-        let mut previous: Option<Agent> = None;
-        let mut lines: Vec<Line> = quota_rows
-            .iter()
-            .map(|row| {
-                let head = if previous == Some(row.agent) {
-                    String::new()
-                } else {
-                    row.agent.as_str().to_string()
-                };
-                previous = Some(row.agent);
-                let mut spans = vec![Span::styled(
-                    format!(" {head:<platform_width$} "),
-                    Style::default()
-                        .fg(quota_label_color(row.agent.as_str()))
-                        .add_modifier(Modifier::BOLD),
-                )];
-                spans.extend(quota_row_spans(row, name_width, failure_hint(app, row)));
-                Line::from(spans)
-            })
-            .collect();
-        lines.extend(vercel_lines);
-        f.render_widget(Paragraph::new(lines), footer_rows[1]);
+        f.render_widget(quota, footer_rows[1]);
     }
     f.render_widget(
         Paragraph::new(Line::from(Span::styled(keys, Style::default().fg(DIM))))
@@ -1553,10 +1496,13 @@ fn label_input_popup(f: &mut Frame, agent: Option<Agent>, label: &str) {
     f.render_widget(Paragraph::new(lines).block(block), area);
 }
 
-/// Direct child counts and whole-thread activity for the requested viewport.
+/// Visible tree edges, direct child counts, and whole-thread activity.
 #[derive(Default)]
 pub(crate) struct ListThreadMetadata {
     pub(crate) child_count: usize,
+    visible_child_count: usize,
+    child_prefix: Option<&'static str>,
+    source_count: usize,
     pub(crate) live_now: bool,
     pub(crate) last_active: Option<DateTime<Utc>>,
     pub(crate) last_prompt_at: Option<DateTime<Utc>>,
@@ -1565,7 +1511,7 @@ pub(crate) struct ListThreadMetadata {
 /// Keeps only requested session/root IDs; unlinked sessions use their own fields.
 pub(crate) fn list_render_metadata(
     app: &App,
-    rows: impl Iterator<Item = usize>,
+    rows: impl Iterator<Item = usize> + Clone,
 ) -> HashMap<&str, ListThreadMetadata> {
     let mut metadata = HashMap::<_, ListThreadMetadata>::new();
     if app.state.handoff_links.is_empty() {
@@ -1573,7 +1519,7 @@ pub(crate) fn list_render_metadata(
     }
     // Keep only the on-screen sessions and their roots. Off-screen lanes still
     // contribute counts/activity, but need no strings or per-row allocations.
-    for session in rows.filter_map(|row| app.session_at(row)) {
+    for session in rows.clone().filter_map(|row| app.session_at(row)) {
         metadata.entry(session.id.as_str()).or_default();
         metadata
             .entry(app.state.thread_root(&session.id))
@@ -1583,6 +1529,9 @@ pub(crate) fn list_render_metadata(
         return metadata;
     }
     for session in &app.all_sessions {
+        if let Some(meta) = metadata.get_mut(session.id.as_str()) {
+            meta.source_count += 1;
+        }
         if let Some(parent) = app.state.handoff_parent(&session.id) {
             if let Some(meta) = metadata.get_mut(parent) {
                 meta.child_count += 1;
@@ -1592,6 +1541,51 @@ pub(crate) fn list_render_metadata(
             meta.live_now |= app.is_running(&session.id);
             meta.last_active = meta.last_active.max(session.last_active);
             meta.last_prompt_at = meta.last_prompt_at.max(session.last_prompt_at);
+        }
+    }
+    // Handoff lanes are root-linked. Only draw a tree for a contiguous run
+    // whose unambiguous parent is on screen; hidden rows and group boundaries
+    // must never make a lane appear attached to an unrelated preceding row.
+    let mut parent: Option<&Session> = None;
+    let mut last_child = None;
+    for row in rows {
+        if row == app.recent_count {
+            parent = None;
+            last_child = None;
+        }
+        let Some(session) = app.session_at(row) else {
+            parent = None;
+            last_child = None;
+            continue;
+        };
+        if metadata[session.id.as_str()].source_count != 1
+            || app.handoff_archive_source_conflicts(session)
+        {
+            parent = None;
+            last_child = None;
+            continue;
+        }
+        let connected_parent = parent
+            .filter(|parent| app.state.handoff_parent(&session.id) == Some(parent.id.as_str()));
+        if let Some(parent) = connected_parent {
+            if let Some(previous) = last_child {
+                metadata
+                    .get_mut(previous)
+                    .expect("visible child")
+                    .child_prefix = Some("  ├─ ");
+            }
+            metadata
+                .get_mut(session.id.as_str())
+                .expect("visible child")
+                .child_prefix = Some("  └─ ");
+            metadata
+                .get_mut(parent.id.as_str())
+                .expect("visible parent")
+                .visible_child_count += 1;
+            last_child = Some(session.id.as_str());
+        } else {
+            parent = Some(session);
+            last_child = None;
         }
     }
     metadata
@@ -1620,6 +1614,8 @@ fn session_list(f: &mut Frame, app: &mut App, area: Rect, now: DateTime<Utc>) {
     } else {
         String::new()
     };
+    // Hidden PTYs conservatively retain the state column.
+    let all_saved = app.ptys.is_empty();
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(if app.multi_select {
@@ -1631,71 +1627,79 @@ fn session_list(f: &mut Frame, app: &mut App, area: Rect, now: DateTime<Utc>) {
         }))
         .title(format!(
             " Sessions · recent first · {tab}{search}{multi} ({}) ",
-            app.visible.len()
+            app.visible_aggregate.session_count()
         ))
         .title_bottom(
             Line::from(format!(
-                " {} visible / {} running ",
+                " {} visible / {} running{} ",
                 app.visible_aggregate.session_count(),
                 app.live_pty_count(),
+                if all_saved {
+                    " · all saved in this instance"
+                } else {
+                    ""
+                },
             ))
             .alignment(Alignment::Right),
         );
 
-    // Fill the pane: title gets whatever width is left after border, status
-    // badge, agent, time, identity, and usage columns.
-    let show_id = area.width >= 58;
-    // One directory on every row says nothing, so the column only appears once the list spans two.
-    let show_cwd = area.width >= 78 && listed_cwds_differ(app);
-    let account_width = account_marks.as_ref().map_or(0, |m| m.width() + 1);
-    let identity_width = usize::from(show_id) * 11 + usize::from(show_cwd) * 11 + account_width;
-    // 39 = status badge + agent bar/tag + time + thread prefix + the 2-col
-    // multi-select mark column + the 1-col in-progress rail prepended to
-    // every row.
-    let max_title = (area.width as usize)
-        .saturating_sub(39 + identity_width)
-        .max(12);
-    // Top-level categories. rebuild_visible sorts every recent group (touched
-    // in the last 24h OR running live now) above the rest and records the
-    // boundary in `recent_count`, so the split is position-based — the
-    // headers always match the sort order and never recompute per row.
+    let content_width = usize::from(area.width.saturating_sub(4));
+    let mark_width = if app.multi_select { 2 } else { 0 };
+    let show_provider = area.width >= 40;
+    let mut show_id = area.width >= 58;
+    let mut show_age = show_provider;
+    let mut account_width = account_marks
+        .as_ref()
+        .filter(|_| show_provider)
+        .map_or(0, |m| m.width() + 1);
+    let mut status_width = if all_saved || !show_provider { 0 } else { 10 };
+    let mut metadata_width = 2
+        + usize::from(show_provider) * 7
+        + account_width
+        + status_width
+        + usize::from(show_age) * 5
+        + usize::from(show_id) * 9;
+    let metadata_budget = content_width.saturating_sub(5 + mark_width + 12);
+    if metadata_width > metadata_budget && show_id {
+        show_id = false;
+        metadata_width -= 9;
+    }
+    if metadata_width > metadata_budget && show_age {
+        show_age = false;
+        metadata_width -= 5;
+    }
+    let account_reduction = account_width.min(metadata_width.saturating_sub(metadata_budget));
+    account_width -= account_reduction;
+    metadata_width -= account_reduction;
+    if metadata_width > metadata_budget && status_width > 0 {
+        status_width = 2;
+        metadata_width -= 8;
+    }
+    let max_title = content_width.saturating_sub(5 + mark_width + metadata_width);
     let recent_count = app.recent_count.min(app.visible.len());
-    // Rows now include category headers, so count sessions for the band labels
-    // rather than rows — otherwise "recent N sessions" would count headers too.
-    let recent_sessions = (0..recent_count)
-        .filter(|&r| app.session_at(r).is_some())
-        .count();
-    let older_sessions = (recent_count..app.visible.len())
-        .filter(|&r| app.session_at(r).is_some())
-        .count();
-
-    // Each logical row occupies one terminal row, plus the two optional band
-    // dividers. Match a fresh ListState's selection-following offset without
-    // constructing the thousands of items ratatui would immediately skip.
-    let older_divider =
-        (recent_count > 0 && recent_count < app.visible.len()).then_some(recent_count + 1);
-    let rendered_rows = app.visible.len()
-        + usize::from(!app.visible.is_empty())
-        + usize::from(older_divider.is_some());
-    let selected_item =
-        (!app.startup_routing.active() && app.selected < app.visible.len()).then(|| {
-            app.selected + 1 + usize::from(older_divider.is_some() && app.selected >= recent_count)
-        });
+    if app.list_row_items.len() != app.visible.len() {
+        app.rebuild_list_items();
+    }
+    let recent_sessions = app.list_recent_sessions;
+    let older_sessions = app.list_older_sessions;
+    let older_divider = (recent_count > 0 && recent_count < app.visible.len())
+        .then(|| app.list_row_items[recent_count] - 1);
+    let rendered_rows = app.list_item_rows.len();
+    let selected_item = (!app.startup_routing.active() && app.selected < app.visible.len())
+        .then(|| app.list_row_items[app.selected]);
     let viewport_rows = usize::from(area.height.saturating_sub(2));
     let first_item =
         selected_item.map_or(0, |item| (item + 1).saturating_sub(viewport_rows.max(1)));
     let end_item = first_item.saturating_add(viewport_rows).min(rendered_rows);
-    let logical_row = |item| {
-        if item == 0 || older_divider == Some(item) {
-            None
-        } else {
-            Some(item - 1 - usize::from(older_divider.is_some_and(|divider| item > divider)))
-        }
-    };
+    let logical_row = |item: usize| app.list_item_rows[item];
     let metadata = list_render_metadata(app, (first_item..end_item).filter_map(logical_row));
     let mut items: Vec<ListItem> = Vec::with_capacity(end_item - first_item);
     for item in first_item..end_item {
         let Some(row) = logical_row(item) else {
+            if item != 0 && older_divider != Some(item) {
+                items.push(ListItem::new(""));
+                continue;
+            }
             let is_recent = item == 0 && recent_count > 0;
             let (label, count) = if is_recent {
                 ("recent", recent_sessions)
@@ -1749,20 +1753,12 @@ fn session_list(f: &mut Frame, app: &mut App, area: Rect, now: DateTime<Utc>) {
             ];
             // A one-session topic reads as a label, not a group — no tally.
             if count != 1 {
-                spans.push(Span::styled(
-                    format!("  · {count} {}", plural_session(count)),
-                    Style::default().fg(DIM),
-                ));
+                spans.push(Span::styled(format!("  {count}"), Style::default().fg(DIM)));
             }
-            // Auto-sync state, shown on every real category rather than only
-            // when enabled: not knowing a topic's sync is off is exactly how
-            // "why don't these sessions know about each other" happens.
             if let Some(id) = cat.as_deref() {
-                let on = app.state.category_auto_sync(id);
-                spans.push(Span::styled(
-                    if on { "  ⇄ auto" } else { "  ⇄ off" },
-                    Style::default().fg(if on { Color::Green } else { DIM }),
-                ));
+                if app.state.category_auto_sync(id) {
+                    spans.push(Span::styled("  ⇄ auto", Style::default().fg(Color::Green)));
+                }
             }
             items.push(ListItem::new(Line::from(spans)));
             continue;
@@ -1772,10 +1768,9 @@ fn session_list(f: &mut Frame, app: &mut App, area: Rect, now: DateTime<Utc>) {
         };
         {
             let marked = app.marked.contains(&s.id);
-            let depth = app.session_depth(&s.id);
-            let child_count = metadata
-                .get(s.id.as_str())
-                .map_or(0, |meta| meta.child_count);
+            let meta = metadata.get(s.id.as_str());
+            let child_count = meta.map_or(0, |meta| meta.child_count);
+            let visible_child_count = meta.map_or(0, |meta| meta.visible_child_count);
             let (tag, tag_color) = agent_tag(s.agent);
             // Clear, fixed-width status badge so it's easy to scan a column of
             // running / working / done sessions.
@@ -1785,21 +1780,28 @@ fn session_list(f: &mut Frame, app: &mut App, area: Rect, now: DateTime<Utc>) {
                 SessionStatus::Completed => ("✓ done   ", COMPLETED_BORDER, true),
                 SessionStatus::Idle => ("○ idle   ", UNCATEGORIZED_BORDER, false),
                 SessionStatus::Ended => ("○ ended  ", ENDED_BORDER, false),
-                SessionStatus::Inactive => ("         ", DIM, false),
+                SessionStatus::Inactive => ("  saved  ", DIM, false),
             };
             let mut badge_style = Style::default().fg(badge_color);
             if badge_bold {
                 badge_style = badge_style.add_modifier(Modifier::BOLD);
             }
-            let (thread_prefix, title_style) = if depth > 0 {
-                ("  └─ ", Style::default().fg(Color::Rgb(190, 196, 210)))
-            } else if child_count > 0 {
-                ("▾ ", Style::default().add_modifier(Modifier::BOLD))
-            } else {
-                ("  ", Style::default())
+            let connected = meta
+                .is_some_and(|meta| meta.child_prefix.is_some() || meta.visible_child_count > 0);
+            let (thread_prefix, title_style) = match meta.and_then(|meta| meta.child_prefix) {
+                Some(prefix) => (prefix, Style::default().fg(Color::Rgb(190, 196, 210))),
+                None if visible_child_count > 0 => {
+                    ("  ┌─ ", Style::default().add_modifier(Modifier::BOLD))
+                }
+                None if app.state.handoff_parent(&s.id).is_some()
+                    || s.title.starts_with("(handoff)") =>
+                {
+                    ("  ↳  ", Style::default())
+                }
+                None => ("     ", Style::default()),
             };
-            let title_suffix = if depth == 0 && child_count > 0 {
-                format!("  [{child_count} lanes]")
+            let title_suffix = if visible_child_count > 0 {
+                format!("  [{visible_child_count} lanes]")
             } else {
                 String::new()
             };
@@ -1849,63 +1851,89 @@ fn session_list(f: &mut Frame, app: &mut App, area: Rect, now: DateTime<Utc>) {
             } else {
                 Span::raw(" ")
             };
-            // Sessions inside a category sit one step in from their header, so
-            // the group reads as a group. Without this the rows line up with the
-            // header and the nesting is invisible — the whole point of grouping.
-            let in_category = app.state.category_of(&s.id).is_some()
-                || app
-                    .state
-                    .category_of(app.state.thread_root(&s.id))
-                    .is_some();
-            // A coloured guide, not blank indentation: two spaces alone were not
-            // enough to tell a topic's rows apart from the loose ones below it.
-            // Loose rows keep no lead at all — the offset is half the signal, so
-            // padding them to match would throw the distinction away again.
-            let nest = if in_category {
-                Span::styled("│ ", Style::default().fg(CATEGORY))
+            let measured = app.measured_usage(s);
+            let usage = if measured.is_some() || s.context_pct.is_some() {
+                format!(" · {}", usage_cell(s, measured))
             } else {
-                Span::raw("")
+                String::new()
             };
-            let mut spans = vec![
-                Span::styled(mark_glyph, mark_style),
-                rail,
-                nest,
-                Span::styled(format!("{badge} "), badge_style),
-                Span::styled(
-                    "▌",
-                    Style::default().fg(tag_color).add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(
-                    format!("{tag} "),
-                    Style::default().fg(tag_color).add_modifier(Modifier::BOLD),
-                ),
-                account_cell(account_marks.as_ref(), s),
-                // last-active recency: the list is sorted newest-first, so this
-                // column descends from top to bottom.
-                Span::styled(format!("{when:>4} "), Style::default().fg(DIM)),
-                Span::styled(thread_prefix, Style::default().fg(DIM)),
-                Span::styled(
-                    truncate(&format!("{}{title_suffix}", s.title), max_title),
-                    title_style,
-                ),
-            ];
-            if show_id {
-                spans.push(Span::styled(
-                    format!("  {}", short(&s.id)),
-                    Style::default().fg(Color::Rgb(104, 185, 132)),
-                ));
+            let extra_width = max_title.saturating_sub(12);
+            let usage_width = Span::raw(&usage).width();
+            let usage_width = if usage_width <= extra_width {
+                usage_width
+            } else {
+                0
+            };
+            let cwd_budget = extra_width.saturating_sub(usage_width);
+            let cwd = if app.list_multiple_cwds && cwd_budget >= 5 {
+                let leaf = s
+                    .cwd
+                    .file_name()
+                    .unwrap_or(s.cwd.as_os_str())
+                    .to_string_lossy();
+                format!(" · {}", truncate_cells(&leaf, (cwd_budget - 3).min(20)))
+            } else {
+                String::new()
+            };
+            let suffix_width = usage_width + Span::raw(&cwd).width();
+            let title = truncate_cells(
+                &format!("{}{title_suffix}", s.title),
+                max_title - suffix_width,
+            );
+            let padding = max_title.saturating_sub(Span::raw(&title).width() + suffix_width);
+            let mut spans = Vec::with_capacity(11);
+            if app.multi_select {
+                spans.push(Span::styled(mark_glyph, mark_style));
             }
-            if show_cwd {
+            spans.push(rail);
+            if show_provider {
                 spans.push(Span::styled(
-                    format!(" {}", truncate(&cwd_leaf(&s.cwd), 10)),
-                    Style::default().fg(DIM),
+                    format!("{tag} "),
+                    Style::default().fg(tag_color),
                 ));
             }
             spans.push(Span::styled(
-                format!("  {}", usage_cell(s, app.measured_usage(s))),
-                Style::default().fg(DIM),
+                &thread_prefix[1..],
+                Style::default().fg(if connected { ACCENT } else { DIM }),
             ));
-            items.push(ListItem::new(Line::from(spans)));
+            spans.push(Span::styled(title, title_style));
+            spans.push(Span::raw(" ".repeat(padding)));
+            if usage_width > 0 {
+                spans.push(Span::styled(
+                    truncate_cells(&usage, usage_width),
+                    Style::default().fg(DIM),
+                ));
+            }
+            if !cwd.is_empty() {
+                spans.push(Span::styled(cwd, Style::default().fg(DIM)));
+            }
+            spans.push(Span::raw("  "));
+            spans.push(account_cell(account_marks.as_ref(), s, account_width));
+            if status_width > 0 {
+                let label = if status_width == 2 {
+                    format!("{} ", badge.chars().next().unwrap_or(' '))
+                } else {
+                    format!("{badge} ")
+                };
+                spans.push(Span::styled(label, badge_style));
+            }
+            if show_age {
+                spans.push(Span::styled(
+                    format!("{when:>4} "),
+                    Style::default().fg(DIM),
+                ));
+            }
+            if show_id {
+                spans.push(Span::styled(
+                    format!(" {}", short(&s.id)),
+                    Style::default().fg(Color::Rgb(104, 185, 132)),
+                ));
+            }
+            items.push(ListItem::new(Line::from(spans)).style(if connected {
+                Style::default().bg(Color::Rgb(39, 47, 56))
+            } else {
+                Style::default()
+            }));
         }
     }
 
@@ -1922,7 +1950,7 @@ fn session_list(f: &mut Frame, app: &mut App, area: Rect, now: DateTime<Utc>) {
         .highlight_style(
             Style::default()
                 .fg(ACCENT)
-                .bg(Color::Rgb(48, 60, 96))
+                .bg(Color::Rgb(44, 56, 88))
                 .add_modifier(Modifier::BOLD),
         )
         // Arrow makes the current selection obvious; non-selected rows are
@@ -3513,36 +3541,53 @@ fn short(id: &str) -> String {
 /// Colors for a provider's logins in list order; the machine's own login stays quiet.
 const ACCOUNT_TONES: [Color; 4] = [DIM, CATEGORY, PREVIEW, ZOOM];
 
+/// Truncate by terminal cells without splitting a grapheme cluster.
+fn truncate_cells(text: &str, max: usize) -> String {
+    if max == 0 {
+        return String::new();
+    }
+    let span = Span::raw(text);
+    if span.width() <= max {
+        return text.to_string();
+    }
+    let mut out = String::new();
+    let mut width = 0;
+    for grapheme in span.styled_graphemes(Style::default()) {
+        let cells = Span::raw(grapheme.symbol).width();
+        if width + cells > max - 1 {
+            break;
+        }
+        out.push_str(grapheme.symbol);
+        width += cells;
+    }
+    out.push('…');
+    out
+}
+
 /// The account column: the login's name on rows of a provider with several, blank padding on the rest, nothing when no provider has a second login.
 fn account_cell(
     marks: Option<&crate::app::accounts_panel::AccountMarks>,
     s: &Session,
+    allocated_width: usize,
 ) -> Span<'static> {
     let Some(marks) = marks else {
         return Span::raw("");
     };
-    let width = marks.width();
+    if allocated_width == 0 {
+        return Span::raw("");
+    }
+    let width = allocated_width - 1;
     match marks.label_for(s) {
-        Some((name, tone)) => Span::styled(
-            format!("{:<width$} ", truncate(name, width)),
-            Style::default().fg(ACCOUNT_TONES[tone % ACCOUNT_TONES.len()]),
-        ),
+        Some((name, tone)) => {
+            let label = truncate_cells(name, width);
+            let padding = width.saturating_sub(Span::raw(&label).width()) + 1;
+            Span::styled(
+                format!("{label}{}", " ".repeat(padding)),
+                Style::default().fg(ACCOUNT_TONES[tone % ACCOUNT_TONES.len()]),
+            )
+        }
         None => Span::raw(" ".repeat(width + 1)),
     }
-}
-
-/// True when the listed sessions sit in more than one directory.
-fn listed_cwds_differ(app: &App) -> bool {
-    let mut first: Option<&Path> = None;
-    (0..app.visible.len())
-        .filter_map(|row| app.session_at(row))
-        .any(|s| match first {
-            None => {
-                first = Some(s.cwd.as_path());
-                false
-            }
-            Some(cwd) => cwd != s.cwd.as_path(),
-        })
 }
 
 /// Manual measurements distinguish unknown from zero and disclose bounded reads.
@@ -3561,14 +3606,6 @@ fn usage_cell(s: &Session, measured: Option<&mindplayer_core::catalog::UsageSnap
         human_tokens(value.tokens.total),
         if value.partial { " partial" } else { "" }
     )
-}
-
-fn cwd_leaf(cwd: &Path) -> String {
-    cwd.file_name()
-        .and_then(|name| name.to_str())
-        .filter(|name| !name.is_empty())
-        .map(str::to_string)
-        .unwrap_or_else(|| cwd.display().to_string())
 }
 
 /// Compact "time since last active": now, 5m, 2h, 3d, 4w, 6mo, 2y.
@@ -3850,6 +3887,7 @@ mod tests {
     use super::*;
     use crate::pty::PtySession;
     use crate::startup_routing::StartupRouting;
+    use std::path::Path;
 
     fn startup_app() -> App {
         let mut app = isolated_app();
@@ -3887,6 +3925,638 @@ mod tests {
             .map(|row| rendered_row(buffer, row))
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    fn list_fixture(ids: &[&str]) -> App {
+        let mut app = isolated_app();
+        app.focus = Focus::List;
+        app.all_sessions = ids
+            .iter()
+            .map(|id| {
+                let mut source = session(Agent::Claude, 0);
+                source.id = (*id).into();
+                source.title = (*id).into();
+                source.file = PathBuf::from(format!("/work/{id}"));
+                source.last_active = Some(Utc::now());
+                source
+            })
+            .collect();
+        app.rebuild_visible();
+        app
+    }
+
+    fn list_frame(app: &mut App, height: u16) -> ratatui::buffer::Buffer {
+        use ratatui::{backend::TestBackend, Terminal};
+        app.rebuild_list_items();
+        let mut terminal = Terminal::new(TestBackend::new(140, height)).unwrap();
+        terminal
+            .draw(|frame| session_list(frame, app, frame.area(), Utc::now()))
+            .unwrap();
+        terminal.backend().buffer().clone()
+    }
+
+    fn list_title_row(buffer: &ratatui::buffer::Buffer, title: &str) -> String {
+        frame_text(buffer)
+            .lines()
+            .find(|line| line.contains(title))
+            .unwrap_or_else(|| panic!("missing title {title}: {}", frame_text(buffer)))
+            .to_string()
+    }
+
+    fn link_list_child(app: &mut App, child: &str, parent: &str) {
+        app.state
+            .set_handoff_link(child, parent, PathBuf::from("/work/handoff.md"), Utc::now());
+    }
+
+    #[test]
+    fn session_list_counts_sessions_across_groups_filters_and_folds() {
+        let mut app = list_fixture(&["match-first", "match-second", "other"]);
+        let first = app
+            .state
+            .create_category("first-topic", Utc::now())
+            .unwrap();
+        let second = app
+            .state
+            .create_category("second-topic", Utc::now())
+            .unwrap();
+        app.state.assign_category("match-first", &first);
+        app.state.assign_category("match-second", &first);
+        app.state.assign_category("other", &second);
+
+        for (query, folded, sessions, headers) in [
+            (None, false, 3, 2),
+            (Some("match"), false, 2, 1),
+            (Some("match-first"), false, 1, 1),
+            (None, true, 1, 2),
+            (Some("match"), true, 0, 1),
+            (Some("absent"), false, 0, 0),
+            (None, false, 3, 2),
+        ] {
+            app.search_query = query.map(str::to_string);
+            app.state.set_collapsed(&first, folded);
+            app.rebuild_visible();
+            assert_eq!(app.visible_aggregate.session_count(), sessions);
+            assert_eq!(
+                app.visible.iter().filter(|row| row.is_header()).count(),
+                headers
+            );
+            let buffer = list_frame(&mut app, 12);
+            let header = rendered_row(&buffer, 0);
+            let footer = rendered_row(&buffer, 11);
+            assert!(
+                header.contains(&format!("({sessions})")),
+                "query={query:?}, folded={folded}: {header}"
+            );
+            assert!(
+                footer.contains(&format!("{sessions} visible / 0 running")),
+                "query={query:?}, folded={folded}: {footer}"
+            );
+        }
+    }
+
+    #[test]
+    fn list_saved_status_is_visible_without_claiming_live_activity() {
+        let mut app = list_fixture(&["saved-source"]);
+        // A fresh transcript is not evidence of a process owned by this instance.
+        for last_active in [None, Some(Utc::now())] {
+            app.all_sessions[0].last_active = last_active;
+            app.rebuild_visible();
+            let buffer = list_frame(&mut app, 8);
+            let row = list_title_row(&buffer, "saved-source");
+            assert!(frame_text(&buffer).contains("all saved in this instance"));
+            assert!(
+                !row.split_whitespace().any(|word| word == "saved"),
+                "saved is contextual, not repeated: {row}"
+            );
+            for live in ["working", "idle", "blocked", "done", "ended"] {
+                assert!(!row.contains(live), "unowned source claims {live}: {row}");
+            }
+            assert_eq!(
+                app.session_status_for(&app.all_sessions[0]),
+                SessionStatus::Inactive
+            );
+        }
+        app.all_sessions.clear();
+        app.rebuild_visible();
+        assert!(!frame_text(&list_frame(&mut app, 8)).contains("saved-source"));
+    }
+
+    #[test]
+    fn list_status_preserves_owned_states_and_rejects_source_collisions() {
+        use ratatui::{backend::TestBackend, Terminal};
+        let mut fixture = QuietPtyFixture::new(8, 40);
+        let id = fixture.app.panes[0].clone();
+        let mut source = session(Agent::Claude, 0);
+        source.id = id.clone();
+        source.title = "owned-source".into();
+        fixture.app.all_sessions = vec![source.clone()];
+        fixture.app.focus = Focus::List;
+        fixture.app.rebuild_visible();
+        let mut provider_column = None;
+        for (status, badge, glyph) in [
+            (SessionStatus::Working, "working", '●'),
+            (SessionStatus::Idle, "idle", '○'),
+            (SessionStatus::Blocked, "blocked", '!'),
+            (SessionStatus::Completed, "done", '✓'),
+            (SessionStatus::Ended, "ended", '○'),
+        ] {
+            fixture.app.hook_status.insert(
+                id.clone(),
+                crate::agent_hooks::HookReading {
+                    status,
+                    event_epoch_secs: 1,
+                    revision: 0,
+                },
+            );
+            assert_eq!(fixture.app.session_status_for(&source), status);
+            let row = list_title_row(&list_frame(&mut fixture.app, 8), "owned-source");
+            assert!(row.contains(badge), "{row}");
+            let column = Span::raw(&row[..row.find("claude").unwrap()]).width();
+            assert_eq!(*provider_column.get_or_insert(column), column);
+            fixture.app.multi_select = true;
+            let mut terminal = Terminal::new(TestBackend::new(40, 12)).unwrap();
+            terminal
+                .draw(|frame| session_list(frame, &mut fixture.app, frame.area(), Utc::now()))
+                .unwrap();
+            let row = list_title_row(terminal.backend().buffer(), "owned-source");
+            assert!(row.contains(glyph), "{row}");
+            fixture.app.multi_select = false;
+        }
+        let mut collision = source.clone();
+        collision.file = PathBuf::from("/other-account/session");
+        collision.title = "collision-source".into();
+        fixture.app.all_sessions.push(collision);
+        fixture.app.rebuild_visible();
+        for source in &fixture.app.all_sessions {
+            assert_eq!(
+                fixture.app.session_status_for(source),
+                SessionStatus::Inactive
+            );
+        }
+        let buffer = list_frame(&mut fixture.app, 8);
+        for title in ["owned-source", "collision-source"] {
+            let row = list_title_row(&buffer, title);
+            assert!(
+                row.contains("saved"),
+                "ambiguous ownership must remain saved: {row}"
+            );
+            assert!(
+                !row.contains("ended"),
+                "collision borrowed live status: {row}"
+            );
+            let column = Span::raw(&row[..row.find("claude").unwrap()]).width();
+            assert_eq!(Some(column), provider_column);
+        }
+    }
+
+    #[test]
+    fn list_handoff_siblings_use_branch_then_final_connectors() {
+        let mut app = list_fixture(&["tree-parent", "lane-first", "lane-last"]);
+        link_list_child(&mut app, "lane-first", "tree-parent");
+        link_list_child(&mut app, "lane-last", "tree-parent");
+        app.all_sessions[1].last_active = Some(Utc::now());
+        app.all_sessions[2].last_active = None;
+        app.rebuild_visible();
+        let buffer = list_frame(&mut app, 10);
+        assert!(list_title_row(&buffer, "lane-first").contains("├─ lane-first"));
+        assert!(list_title_row(&buffer, "lane-last").contains("└─ lane-last"));
+        assert!(list_title_row(&buffer, "tree-parent").contains("[2 lanes]"));
+        assert!(list_title_row(&buffer, "tree-parent").contains("┌─"));
+        let thread_backgrounds: Vec<_> = (1..buffer.area.height - 1)
+            .filter(|&y| {
+                let text = rendered_row(&buffer, y);
+                text.contains("tree-parent")
+                    || text.contains("lane-first")
+                    || text.contains("lane-last")
+            })
+            .filter(|&y| buffer[(1, y)].symbol() != "▶")
+            .map(|y| buffer[(8, y)].bg)
+            .collect();
+        assert!(thread_backgrounds
+            .iter()
+            .all(|color| *color == Color::Rgb(39, 47, 56)));
+    }
+
+    #[test]
+    fn list_title_and_identity_columns_are_cell_aligned_at_supported_widths() {
+        use ratatui::{backend::TestBackend, Terminal};
+        let mut app = list_fixture(&["identity-first", "identity-second"]);
+        app.all_sessions[0].title = "한글🙂e\u{301}".repeat(40);
+        app.all_sessions[1].title = "short title".into();
+        app.rebuild_visible();
+        for width in [40, 45, 58, 80, 120, 144, 220] {
+            let mut terminal = Terminal::new(TestBackend::new(width, 12)).unwrap();
+            terminal
+                .draw(|frame| session_list(frame, &mut app, frame.area(), Utc::now()))
+                .unwrap();
+            let buffer = terminal.backend().buffer();
+            let provider_cells: Vec<_> = (1..11)
+                .filter_map(|y| {
+                    let row = rendered_row(buffer, y);
+                    row.contains("claude").then(|| {
+                        (1..width - 1)
+                            .find(|&x| {
+                                buffer[(x, y)].symbol() == "c" && buffer[(x + 1, y)].symbol() == "l"
+                            })
+                            .unwrap()
+                    })
+                })
+                .collect();
+            assert_eq!(provider_cells.len(), 2, "{}", frame_text(buffer));
+            assert!(
+                provider_cells.iter().all(|&column| column < 8),
+                "provider identity must stay in the left gutter at width {width}:\n{}",
+                frame_text(buffer)
+            );
+            assert_eq!(
+                provider_cells[0],
+                provider_cells[1],
+                "{}",
+                frame_text(buffer)
+            );
+            assert!(frame_text(buffer).contains("short title"));
+            if width >= 58 {
+                assert_eq!(frame_text(buffer).matches("identity").count(), 2);
+            }
+        }
+        for max in 0..12 {
+            assert!(Span::raw(truncate_cells("한글🙂e\u{301}", max)).width() <= max);
+        }
+    }
+
+    #[test]
+    fn list_account_cells_keep_full_lookup_identity_and_unicode_width() {
+        use mindplayer_core::accounts::Account;
+        let mut app = list_fixture(&["account-a", "account-b"]);
+        app.accounts = ["업무-계정", "personal-account-full"]
+            .into_iter()
+            .map(|name| {
+                let mut account = Account::inherited(Agent::Claude);
+                account.name = name.into();
+                account
+            })
+            .collect();
+        for (id, name) in [
+            ("account-a", "업무-계정"),
+            ("account-b", "personal-account-full"),
+        ] {
+            app.pane_accounts
+                .insert(id.into(), (Agent::Claude, name.into()));
+        }
+        let marks = app.account_marks().expect("two account labels");
+        assert_eq!(
+            marks.label_for(&app.all_sessions[1]).unwrap().0,
+            "personal-account-full"
+        );
+        let first = account_cell(Some(&marks), &app.all_sessions[0], marks.width() + 1);
+        let second = account_cell(Some(&marks), &app.all_sessions[1], marks.width() + 1);
+        assert_eq!(first.width(), second.width());
+        assert_eq!(first.width(), marks.width() + 1);
+        assert!(first.content.contains("업무-계정"));
+        assert!(second.content.contains('…'));
+        assert_ne!(first.style.fg, second.style.fg);
+        for width in [80, 120, 144] {
+            use ratatui::{backend::TestBackend, Terminal};
+            let mut terminal = Terminal::new(TestBackend::new(width, 12)).unwrap();
+            terminal
+                .draw(|frame| session_list(frame, &mut app, frame.area(), Utc::now()))
+                .unwrap();
+            let text = frame_text(terminal.backend().buffer());
+            assert!(
+                text.contains("업무-계정") && text.contains("personal-ac"),
+                "{text}"
+            );
+        }
+    }
+
+    #[test]
+    fn narrow_mixed_account_rows_keep_titles_after_usage_measurement() {
+        use mindplayer_core::accounts::Account;
+        use ratatui::{backend::TestBackend, Terminal};
+        use std::time::{Duration, Instant};
+
+        let mut fixture = QuietPtyFixture::new(8, 40);
+        fixture.state_dir = std::env::temp_dir().join(format!(
+            "mindplayer-narrow-usage-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir(&fixture.state_dir).unwrap();
+        fixture.app.state_path = fixture.state_dir.join("state.json");
+        fixture.app.audit_path = fixture.state_dir.join("audit.jsonl");
+        let mut first = session(Agent::Claude, 0);
+        first.id = fixture.app.panes[0].clone();
+        first.title = "FIRST-TASK".into();
+        first.file = fixture.state_dir.join("source.jsonl");
+        first.cwd = fixture.state_dir.clone();
+        std::fs::write(
+            &first.file,
+            serde_json::json!({
+                "type": "assistant",
+                "sessionId": first.id,
+                "cwd": first.cwd,
+                "timestamp": Utc::now().to_rfc3339(),
+                "message": {"usage": {"input_tokens": 1000, "output_tokens": 200}}
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let mut second = first.clone();
+        second.id = "second-source".into();
+        second.title = "SECOND-TASK".into();
+        fixture.app.accounts = ["account-first-long", "account-second-long"]
+            .into_iter()
+            .map(|name| {
+                let mut account = Account::inherited(Agent::Claude);
+                account.name = name.into();
+                account
+            })
+            .collect();
+        for (source, account) in [
+            (&first, "account-first-long"),
+            (&second, "account-second-long"),
+        ] {
+            fixture
+                .app
+                .pane_accounts
+                .insert(source.id.clone(), (Agent::Claude, account.into()));
+        }
+        fixture.app.all_sessions = vec![first, second];
+        fixture.app.focus = Focus::List;
+        fixture.app.rebuild_visible();
+        fixture.app.measure_selected_usage();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while fixture
+            .app
+            .measured_usage(&fixture.app.all_sessions[0])
+            .is_none()
+        {
+            fixture.app.poll_manual_usage();
+            assert!(Instant::now() < deadline, "{}", fixture.app.status);
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        for width in [40, 45, 58, 80] {
+            let mut terminal = Terminal::new(TestBackend::new(width, 12)).unwrap();
+            terminal
+                .draw(|frame| session_list(frame, &mut fixture.app, frame.area(), Utc::now()))
+                .unwrap();
+            let text = frame_text(terminal.backend().buffer());
+            assert!(
+                text.contains("FIRST-TASK") && text.contains("SECOND-TASK"),
+                "{width}: {text}"
+            );
+        }
+    }
+
+    #[test]
+    fn narrow_provider_quotas_preserve_complete_amounts_and_reset_times() {
+        use mindplayer_core::limits::QuotaRow;
+        let mut app = startup_app();
+        app.startup_routing = StartupRouting::confirmed(RoutingMode::Native);
+        app.limits = Some(vec![
+            QuotaRow {
+                label: "cursor included".into(),
+                agent: Agent::Cursor,
+                used_percent: Some(0.3),
+                detail: "$0.06/$20".into(),
+                ..Default::default()
+            },
+            QuotaRow {
+                label: "codex weekly".into(),
+                agent: Agent::Codex,
+                used_percent: Some(32.0),
+                resets: Some("10-22 15:14".into()),
+                ..Default::default()
+            },
+        ]);
+        for width in [40, 43, 80] {
+            let text = frame_text(&startup_frame(&mut app, width, 40));
+            let flat = text.split_whitespace().collect::<Vec<_>>().join(" ");
+            assert!(flat.contains("$0.06/$20"), "{width}: {text}");
+            assert!(flat.contains("10-22 15:14"), "{width}: {text}");
+        }
+    }
+
+    #[test]
+    fn quota_footer_separates_accounts_but_packs_their_own_windows() {
+        use mindplayer_core::{accounts::Account, limits::QuotaRow};
+        let mut app = startup_app();
+        app.startup_routing = StartupRouting::confirmed(RoutingMode::Native);
+        app.accounts = ["work", "personal"]
+            .into_iter()
+            .map(|name| {
+                let mut account = Account::inherited(Agent::Codex);
+                account.name = name.into();
+                account
+            })
+            .collect();
+        app.limits = Some(vec![
+            QuotaRow {
+                agent: Agent::Codex,
+                account: "work".into(),
+                label: "codex weekly".into(),
+                used_percent: Some(100.0),
+                detail: "blocked".into(),
+                blocked: true,
+                ..Default::default()
+            },
+            QuotaRow {
+                agent: Agent::Codex,
+                account: "work".into(),
+                label: "codex 5h".into(),
+                used_percent: Some(12.0),
+                ..Default::default()
+            },
+            QuotaRow {
+                agent: Agent::Codex,
+                account: "personal".into(),
+                label: "codex weekly".into(),
+                used_percent: Some(36.0),
+                ..Default::default()
+            },
+        ]);
+        for width in [80, 144, 220] {
+            let text = frame_text(&startup_frame(&mut app, width, 40));
+            let work = text
+                .lines()
+                .find(|line| line.contains("work weekly"))
+                .unwrap();
+            let personal = text
+                .lines()
+                .find(|line| line.contains("personal weekly"))
+                .unwrap();
+            assert!(!work.contains("personal"), "{width}: {text}");
+            assert!(!personal.contains("work"), "{width}: {text}");
+            assert!(
+                work.contains("100.0%") && work.contains("blocked"),
+                "{text}"
+            );
+            assert!(personal.contains("36.0%"), "{text}");
+            if width >= 144 {
+                assert!(work.contains("work 5h"), "{width}: {text}");
+            }
+        }
+    }
+
+    #[test]
+    fn scan_loading_and_retry_errors_keep_their_true_state_on_narrow_screens() {
+        let mut app = startup_app();
+        for width in [40, 80, 144] {
+            app.screen = Screen::Scanning;
+            let text = frame_text(&startup_frame(&mut app, width, 24));
+            assert!(text.contains("Sessions · loading"), "{text}");
+            assert!(!text.contains("Collected"), "{text}");
+            app.screen = Screen::ScopeSelect;
+            app.status = "Session collection failed: catalog unavailable · enter retry".into();
+            let text = frame_text(&startup_frame(&mut app, width, 24));
+            assert!(text.contains("collection failed"), "{text}");
+            assert!(
+                text.contains("enter retry") && text.contains("q quit"),
+                "{text}"
+            );
+        }
+    }
+
+    #[test]
+    fn list_handoff_invisible_parents_never_attach_to_the_previous_row() {
+        for hidden in ["missing", "archived", "filtered", "subagent"] {
+            let mut app = list_fixture(&["hidden-parent", "visible-child", "unrelated"]);
+            link_list_child(&mut app, "visible-child", "hidden-parent");
+            match hidden {
+                "missing" => {
+                    app.all_sessions.remove(0);
+                }
+                "archived" => app.all_sessions[0].archived = true,
+                "filtered" => app.search_query = Some("visible-child".into()),
+                "subagent" => app.all_sessions[0].is_subagent = true,
+                _ => unreachable!(),
+            }
+            app.rebuild_visible();
+            let buffer = list_frame(&mut app, 10);
+            let row = list_title_row(&buffer, "visible-child");
+            assert!(
+                !row.contains("└─") && !row.contains("├─"),
+                "{hidden}: {row}"
+            );
+            assert_eq!(
+                app.state.handoff_parent("visible-child"),
+                Some("hidden-parent")
+            );
+        }
+    }
+
+    #[test]
+    fn list_handoff_connectors_respect_category_and_band_boundaries() {
+        let mut app = list_fixture(&["group-parent", "group-child"]);
+        link_list_child(&mut app, "group-child", "group-parent");
+        let parent_category = app
+            .state
+            .create_category("parent-topic", Utc::now())
+            .unwrap();
+        let child_category = app
+            .state
+            .create_category("child-topic", Utc::now())
+            .unwrap();
+        app.state.assign_category("group-parent", &parent_category);
+        app.state.assign_category("group-child", &child_category);
+        app.rebuild_visible();
+        let buffer = list_frame(&mut app, 12);
+        let row = list_title_row(&buffer, "group-child");
+        // Thread grouping deliberately uses the root's topic, even when a lane
+        // has a different stored category. Both rows share this visible header.
+        assert!(row.contains("└─ group-child"), "{row}");
+        assert!(list_title_row(&buffer, "group-parent").contains("[1 lanes]"));
+
+        // A viewport can contain adjacent source rows separated by a group header
+        // or the recent/older divider; neither is a tree edge.
+        app.visible = vec![
+            Row::Session(0),
+            Row::Header(Some(child_category.clone())),
+            Row::Session(1),
+        ];
+        app.recent_count = 3;
+        let row = list_title_row(&list_frame(&mut app, 12), "group-child");
+        assert!(!row.contains("└─") && !row.contains("├─"), "{row}");
+        app.state.clear_category("group-parent");
+        app.state.clear_category("group-child");
+        app.visible = vec![Row::Session(0), Row::Session(1)];
+        app.recent_count = 1;
+        let row = list_title_row(&list_frame(&mut app, 12), "group-child");
+        assert!(!row.contains("└─") && !row.contains("├─"), "{row}");
+    }
+
+    #[test]
+    fn list_handoff_viewport_and_collapsed_groups_do_not_leave_dangling_branches() {
+        let mut app = list_fixture(&["screen-parent", "screen-first", "screen-last"]);
+        link_list_child(&mut app, "screen-first", "screen-parent");
+        link_list_child(&mut app, "screen-last", "screen-parent");
+        app.all_sessions[1].last_active = Some(Utc::now());
+        app.all_sessions[2].last_active = None;
+        app.rebuild_visible();
+        app.selected = app.row_of_session("screen-last").unwrap();
+        let buffer = list_frame(&mut app, 4);
+        assert!(!frame_text(&buffer).contains("screen-parent"));
+        for title in ["screen-first", "screen-last"] {
+            let row = list_title_row(&buffer, title);
+            assert!(!row.contains("└─") && !row.contains("├─"), "{row}");
+        }
+        app.selected = app.row_of_session("screen-parent").unwrap();
+        let buffer = list_frame(&mut app, 5);
+        assert!(list_title_row(&buffer, "screen-first").contains("└─ screen-first"));
+        assert!(!frame_text(&buffer).contains("screen-last"));
+
+        let category = app
+            .state
+            .create_category("folded-topic", Utc::now())
+            .unwrap();
+        app.state.assign_category("screen-parent", &category);
+        app.state.set_collapsed(&category, true);
+        app.rebuild_visible();
+        let text = frame_text(&list_frame(&mut app, 8));
+        assert!(text.contains("folded-topic"));
+        assert!(!text.contains("screen-first") && !text.contains("screen-last"));
+        for row in text.lines().filter(|row| row.starts_with('│')) {
+            assert!(!row.contains("└─") && !row.contains("├─"), "{row}");
+        }
+    }
+
+    #[test]
+    fn list_handoff_off_page_source_collisions_never_claim_a_unique_edge() {
+        for archived in [false, true] {
+            for duplicate in [0, 1] {
+                let mut app = list_fixture(&["family-parent", "family-child"]);
+                link_list_child(&mut app, "family-child", "family-parent");
+                for source in &mut app.all_sessions {
+                    source.archived = archived;
+                }
+                app.show_archived = archived;
+                let originals = app.all_sessions.clone();
+                let mut collision = originals[duplicate].clone();
+                collision.file = PathBuf::from("/other-account/hidden-source.jsonl");
+                collision.archived = true;
+                let mut catalog = originals.clone();
+                catalog.push(collision);
+                app.archive_catalog = std::sync::Arc::new(catalog);
+                app.rebuild_visible();
+                let buffer = list_frame(&mut app, 10);
+                let child = list_title_row(&buffer, "family-child");
+                assert!(
+                    !child.contains("└─") && !child.contains("├─"),
+                    "off-page duplicate {duplicate}, archive view {archived}: {child}"
+                );
+                assert!(!list_title_row(&buffer, "family-parent").contains("lanes"));
+
+                // A page and its catalog contain the same source, not two
+                // identities. A replaced census must restore that real edge.
+                app.archive_catalog = std::sync::Arc::new(originals);
+                app.rebuild_visible();
+                let buffer = list_frame(&mut app, 10);
+                assert!(list_title_row(&buffer, "family-child").contains("└─ family-child"));
+            }
+        }
     }
 
     #[test]
@@ -4288,7 +4958,7 @@ mod tests {
     #[test]
     fn startup_sheet_waits_for_main_and_never_reappears_after_confirmation() {
         let mut app = startup_app();
-        for screen in [Screen::ScopeSelect, Screen::Scanning, Screen::ScanSummary] {
+        for screen in [Screen::ScopeSelect, Screen::Scanning] {
             app.screen = screen;
             let text = frame_text(&startup_frame(&mut app, 88, 29));
             assert!(!text.contains("MindPlayer / 실행 설정표"), "{text}");
@@ -4445,209 +5115,257 @@ mod tests {
         rows[0].split_whitespace().collect::<Vec<_>>().join(" ")
     }
 
-    #[test]
-    fn vercel_usage_renders_local_target_for_only_the_key() {
-        use mindplayer_core::vercel_usage::{VercelBudget, VercelUsage};
-        let mut app = startup_app();
-        app.startup_routing = StartupRouting::confirmed(RoutingMode::Native);
-        app.vercel_cwd = Some(app.cwd.clone());
-        app.vercel_budget = Some(Ok(VercelUsage {
-            key: Ok(VercelBudget {
-                used: 33.0,
-                limit: 1000.0,
-                refresh_period: "monthly".into(),
-            }),
-            target: Some(200.0),
-        }));
-
-        for width in [40, 88, 140] {
-            let frame = frame_text(&startup_frame(&mut app, width, 29));
-            assert!(
-                vercel_line(&frame).starts_with("vercel key monthly ▰▱▱▱▱▱ 16.5%"),
-                "{frame}"
-            );
-            assert!(frame.contains("$33.00/$200 local target"), "{frame}");
-            assert!(!frame.contains("vercel user"), "{frame}");
-            assert!(!frame.contains("vercel team"), "{frame}");
-            assert!(!frame.contains("API key limit"), "{frame}");
-            assert!(!frame.contains("$1000"), "{frame}");
+    fn vercel_test_budget(
+        used: Option<f64>,
+        limit: f64,
+    ) -> mindplayer_core::vercel_usage::VercelBudget {
+        mindplayer_core::vercel_usage::VercelBudget {
+            used,
+            limit,
+            source: mindplayer_core::vercel_usage::BudgetSource::Default,
+            refresh_period: "weekly".into(),
         }
     }
 
-    #[test]
-    fn vercel_usage_uses_real_key_limit_without_a_local_target() {
-        use mindplayer_core::vercel_usage::{VercelBudget, VercelUsage};
-        let mut app = startup_app();
-        app.startup_routing = StartupRouting::confirmed(RoutingMode::Native);
-        app.vercel_cwd = Some(app.cwd.clone());
-        app.vercel_budget = Some(Ok(VercelUsage {
-            key: Ok(VercelBudget {
-                used: 33.0,
-                limit: 1000.0,
-                refresh_period: "monthly".into(),
-            }),
-            target: None,
-        }));
-        let frame = frame_text(&startup_frame(&mut app, 140, 29));
-        assert_eq!(
-            vercel_line(&frame),
-            "vercel key monthly ▱▱▱▱▱▱ 3.3% $33.00/$1000 API key limit",
-            "{frame}"
-        );
-        assert!(!frame.contains("local target"), "{frame}");
-        assert!(!frame.contains("vercel user"), "{frame}");
-        assert!(!frame.contains("vercel team"), "{frame}");
-
-        if let Some(Ok(usage)) = &mut app.vercel_budget {
-            usage.key = Ok(VercelBudget {
-                used: 123.75,
-                limit: 100.0,
-                refresh_period: "weekly".into(),
-            });
-        }
-        let frame = frame_text(&startup_frame(&mut app, 140, 29));
-        assert_eq!(
-            vercel_line(&frame),
-            "vercel key weekly ▰▰▰▰▰▰ 123.8% $123.75/$100 API key limit",
-            "{frame}"
-        );
+    fn vercel_text(app: &App, width: u16) -> String {
+        let lines = vercel_footer_lines(app, width);
+        assert!(lines.iter().all(|line| line.width() <= usize::from(width)));
+        lines
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(" ")
     }
 
     #[test]
-    fn vercel_usage_keeps_key_failures_and_absence_distinct() {
+    fn vercel_user_block_is_independent_of_key_spend() {
         use mindplayer_core::vercel_usage::{VercelUsage, VercelUsageError};
         let mut app = startup_app();
         app.startup_routing = StartupRouting::confirmed(RoutingMode::Native);
         app.vercel_cwd = Some(app.cwd.clone());
-        for (error, expected) in [
-            (VercelUsageError::Unavailable, "vercel key — unavailable"),
-            (VercelUsageError::NoBudget, "vercel key — no active budget"),
+        for key in [
+            Ok(vercel_test_budget(Some(12.25), 1000.0)),
+            Ok(vercel_test_budget(None, 1000.0)),
+            Err(VercelUsageError::Unavailable),
+        ] {
+            let key_meter_known = key.as_ref().is_ok_and(|budget| budget.used.is_some());
+            app.vercel_budget = Some(Ok(VercelUsage {
+                key,
+                user: Ok(Some(vercel_test_budget(Some(51.007682468), 50.0))),
+            }));
+            for width in [20, 40, 80, 144] {
+                let text = vercel_text(&app, width);
+                assert!(text.contains("API key · blocked"), "{text}");
+                assert!(text.contains("user weekly $51.01/$50 exceeded"), "{text}");
+                assert!(!text.contains("$1000"), "{text}");
+                assert!(
+                    !text.contains("$12.25"),
+                    "key meter is not user spend: {text}"
+                );
+            }
+            if key_meter_known {
+                assert_eq!(vercel_footer_lines(&app, 80).len(), 1);
+                let frame = frame_text(&startup_frame(&mut app, 80, 29));
+                assert!(
+                    vercel_line(&frame).contains("user weekly $51.01/$50 exceeded"),
+                    "{frame}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn vercel_key_block_remains_visible_independently_of_user_budget() {
+        use mindplayer_core::vercel_usage::VercelUsage;
+        let mut app = startup_app();
+        app.vercel_cwd = Some(app.cwd.clone());
+        app.vercel_budget = Some(Ok(VercelUsage {
+            key: Ok(vercel_test_budget(Some(123.75), 100.0)),
+            user: Ok(Some(vercel_test_budget(Some(2.0), 50.0))),
+        }));
+        for width in [20, 40, 80, 144] {
+            let text = vercel_text(&app, width);
+            assert!(text.contains("API key · blocked"), "{text}");
+            assert!(text.contains("key weekly $123.75/$100 exceeded"), "{text}");
+            assert!(text.contains("user weekly $2.00/$50"), "{text}");
+            assert!(!text.contains("$1000"), "{text}");
+        }
+    }
+
+    #[test]
+    fn vercel_unknown_key_never_promotes_known_user_to_unblocked() {
+        use mindplayer_core::vercel_usage::{VercelUsage, VercelUsageError};
+        let mut app = startup_app();
+        app.vercel_cwd = Some(app.cwd.clone());
+        for user in [
+            Ok(Some(vercel_test_budget(Some(0.0), 50.0))),
+            Ok(Some(vercel_test_budget(Some(25.0), 50.0))),
+            Err(VercelUsageError::NoBudget),
         ] {
             app.vercel_budget = Some(Ok(VercelUsage {
-                key: Err(error),
-                target: None,
+                key: Err(VercelUsageError::Unavailable),
+                user,
             }));
-            let frame = frame_text(&startup_frame(&mut app, 140, 29));
-            assert_eq!(vercel_line(&frame), expected, "{frame}");
-            assert!(!frame.contains('$'), "{frame}");
+            let text = vercel_text(&app, 80);
+            assert!(text.contains("blocked state unknown"), "{text}");
+            assert!(!text.contains("not blocked"), "{text}");
+            assert!(text.contains("key lookup unavailable"), "{text}");
         }
+    }
 
-        for error in [
-            VercelUsageError::NotConfigured,
-            VercelUsageError::Unavailable,
-            VercelUsageError::InvalidResponse,
-            VercelUsageError::KeyNotIdentified,
-            VercelUsageError::NoBudget,
+    #[test]
+    fn vercel_unknown_user_preserves_valid_key_meter_without_inventing_user_spend() {
+        use mindplayer_core::vercel_usage::{VercelUsage, VercelUsageError};
+        let mut app = startup_app();
+        app.vercel_cwd = Some(app.cwd.clone());
+        for (user, expected) in [
+            (
+                Err(VercelUsageError::UserNotIdentified),
+                "user attribution unknown",
+            ),
+            (
+                Err(VercelUsageError::Unavailable),
+                "user lookup unavailable",
+            ),
+            (
+                Ok(Some(vercel_test_budget(None, 50.0))),
+                "spend unknown / $50 limit (no meter)",
+            ),
         ] {
-            app.vercel_budget = Some(Err(error));
-            let frame = frame_text(&startup_frame(&mut app, 140, 29));
-            assert_eq!(vercel_line(&frame), "vercel — unavailable", "{frame}");
-            assert!(!frame.contains('$'), "{frame}");
+            app.vercel_budget = Some(Ok(VercelUsage {
+                key: Ok(vercel_test_budget(Some(12.25), 1000.0)),
+                user,
+            }));
+            let text = vercel_text(&app, 80);
+            assert!(text.contains(expected), "{text}");
+            assert!(text.contains("blocked state unknown"), "{text}");
+            assert!(!text.contains("$0.00"), "{text}");
+            if !expected.contains("no meter") {
+                assert!(text.contains("key spend $12.25"), "{text}");
+            }
+        }
+    }
+
+    #[test]
+    fn vercel_team_meter_zero_absence_and_lookup_states_are_distinct() {
+        use mindplayer_core::vercel_usage::{VercelUsage, VercelUsageError};
+        let mut app = startup_app();
+        app.vercel_cwd = Some(app.cwd.clone());
+        for (key, expected, known) in [
+            (
+                Ok(vercel_test_budget(None, 1000.0)),
+                "key spend unknown",
+                false,
+            ),
+            (
+                Ok(vercel_test_budget(Some(0.0), 1000.0)),
+                "key spend $0.00",
+                true,
+            ),
+            (
+                Ok(vercel_test_budget(Some(33.0), 1000.0)),
+                "key spend $33.00",
+                true,
+            ),
+            (
+                Err(VercelUsageError::NoBudget),
+                "key no active budget",
+                true,
+            ),
+            (
+                Err(VercelUsageError::Unavailable),
+                "key lookup unavailable",
+                false,
+            ),
+        ] {
+            app.vercel_budget = Some(Ok(VercelUsage {
+                key,
+                user: Ok(None),
+            }));
+            let text = vercel_text(&app, 80);
+            assert!(
+                text.contains("team attributed") && text.contains(expected),
+                "{text}"
+            );
+            assert_eq!(text.contains("not blocked by budgets"), known, "{text}");
+            assert!(!text.contains("$1000"), "{text}");
+        }
+        for (reading, expected) in [
+            (None, "loading"),
+            (Some(Err(VercelUsageError::NotConfigured)), "not configured"),
+            (
+                Some(Err(VercelUsageError::Unavailable)),
+                "lookup unavailable",
+            ),
+            (
+                Some(Err(VercelUsageError::InvalidResponse)),
+                "lookup unavailable",
+            ),
+        ] {
+            app.vercel_budget = reading;
+            let text = vercel_text(&app, 80);
+            assert!(
+                text.contains(expected) && text.contains("blocked state unknown"),
+                "{text}"
+            );
+            assert!(!text.contains("API key") && !text.contains('$'), "{text}");
         }
         app.cwd.push("different-workspace");
-        let frame = frame_text(&startup_frame(&mut app, 140, 29));
-        assert_eq!(vercel_line(&frame), "vercel — loading", "{frame}");
+        assert!(vercel_text(&app, 80).contains("loading"));
     }
 
     #[test]
-    fn vercel_usage_never_displays_clipped_amounts() {
-        use mindplayer_core::vercel_usage::{VercelBudget, VercelUsage};
+    fn vercel_wraps_long_amounts_without_discarding_digits_or_blocked_state() {
+        use mindplayer_core::vercel_usage::VercelUsage;
         let mut app = startup_app();
-        app.startup_routing = StartupRouting::confirmed(RoutingMode::Native);
         app.vercel_cwd = Some(app.cwd.clone());
         app.vercel_budget = Some(Ok(VercelUsage {
-            key: Ok(VercelBudget {
-                used: 1234567890123456.0,
-                limit: 0.0,
-                refresh_period: "monthly".into(),
-            }),
-            target: None,
+            key: Ok(vercel_test_budget(Some(1234567890123456.0), 0.0)),
+            user: Ok(None),
         }));
-        let frame = frame_text(&startup_frame(&mut app, 88, 29));
-        assert_eq!(
-            vercel_line(&frame),
-            "vercel key monthly — $1234567890123456.00/$0 API key limit",
-            "{frame}"
-        );
-        let frame = frame_text(&startup_frame(&mut app, 40, 29));
-        assert!(frame.contains("$1234567890123456.00/$0"), "{frame}");
-        let frame = frame_text(&startup_frame(&mut app, 12, 29));
-        assert!(!frame.contains('$'), "{frame}");
-    }
-
-    #[test]
-    fn vercel_row_shares_the_provider_rows_columns_and_rounds_dollars() {
-        use mindplayer_core::limits::QuotaRow;
-        use mindplayer_core::vercel_usage::{VercelBudget, VercelUsage};
-        let mut app = startup_app();
-        app.startup_routing = StartupRouting::confirmed(RoutingMode::Native);
-        app.limits = Some(vec![
-            QuotaRow {
-                label: "codex weekly".into(),
-                agent: Agent::Codex,
-                used_percent: Some(43.0),
-                resets: Some("11-04 17:02".into()),
-                ..Default::default()
-            },
-            QuotaRow {
-                label: "claude 5h".into(),
-                agent: Agent::Claude,
-                used_percent: Some(3.0),
-                resets: Some("14:30".into()),
-                ..Default::default()
-            },
-        ]);
-        app.vercel_cwd = Some(app.cwd.clone());
-        app.vercel_budget = Some(Ok(VercelUsage {
-            key: Ok(VercelBudget {
-                used: 34.336196356,
-                limit: 1000.0,
-                refresh_period: "monthly".into(),
-            }),
-            target: Some(200.0),
-        }));
-
-        for width in [88, 140] {
-            let buffer = startup_frame(&mut app, width, 29);
-            let frame = frame_text(&buffer);
-            let quota_line = |provider: &str| {
-                frame
-                    .lines()
-                    .find(|line| {
-                        line.trim_start().starts_with(provider)
-                            && line.chars().any(|c| matches!(c, '▰' | '▱'))
-                    })
-                    .unwrap_or_else(|| panic!("no {provider} quota row: {frame}"))
-                    .to_string()
-            };
-            let column = |line: &str, mark: fn(char) -> bool| line.chars().position(mark).unwrap();
-            let gauge = |c: char| matches!(c, '▰' | '▱');
-            let percent = |c: char| c == '%';
-            let rows = ["codex", "claude", "vercel"].map(quota_line);
-            for row in &rows[1..] {
-                assert_eq!(column(row, gauge), column(&rows[0], gauge), "{frame}");
-                assert_eq!(column(row, percent), column(&rows[0], percent), "{frame}");
-            }
-            assert_eq!(
-                vercel_line(&frame),
-                "vercel key monthly ▰▱▱▱▱▱ 17.2% $34.34/$200 local target",
-                "{frame}"
+        for width in [8, 12, 20, 40, 80] {
+            let text = vercel_text(&app, width);
+            let compact: String = text.chars().filter(|ch| !ch.is_whitespace()).collect();
+            assert!(compact.contains("$1234567890123456.00/$0"), "{text}");
+            assert!(
+                compact.contains("blocked") && compact.contains("exceeded"),
+                "{text}"
             );
-            assert!(!frame.contains("34.336"), "{frame}");
+        }
+    }
 
-            let y = (buffer.area.y..buffer.area.bottom())
-                .find(|&y| {
-                    rendered_row(&buffer, y)
-                        .trim_start()
-                        .starts_with(super::VERCEL_HEAD)
-                })
-                .unwrap();
-            let line = rendered_row(&buffer, y);
-            let fg = |mark: fn(char) -> bool| buffer[(column(&line, mark) as u16, y)].fg;
-            assert_eq!(fg(|c| c == 'v'), Color::White, "{frame}");
-            assert_eq!(fg(gauge), quota_tier(17.2), "{frame}");
-            assert_eq!(fg(percent), quota_tier(17.2), "{frame}");
-            assert_eq!(fg(|c| c == '$'), DIM, "{frame}");
+    #[test]
+    fn provider_windows_share_wide_rows_without_losing_reset_information() {
+        use mindplayer_core::limits::QuotaRow;
+        let mut app = startup_app();
+        app.startup_routing = StartupRouting::confirmed(RoutingMode::Native);
+        app.limits = Some(
+            [
+                ("claude 5h", 92.0, "01:39"),
+                ("claude weekly", 16.0, "11-17"),
+            ]
+            .into_iter()
+            .map(|(label, used, reset)| QuotaRow {
+                label: label.into(),
+                agent: Agent::Claude,
+                used_percent: Some(used),
+                resets: Some(reset.into()),
+                ..Default::default()
+            })
+            .collect(),
+        );
+        for width in [80, 144] {
+            let text = frame_text(&startup_frame(&mut app, width, 29));
+            for value in ["92.0%", "16.0%", "resets 01:39", "resets 11-17"] {
+                assert!(text.contains(value), "{text}");
+            }
+            let windows: Vec<_> = text
+                .lines()
+                .filter(|line| line.contains("resets"))
+                .collect();
+            if width == 144 {
+                assert_eq!(windows.len(), 1, "{text}");
+            }
         }
     }
 
@@ -4688,7 +5406,8 @@ mod tests {
                     .lines()
                     .filter(|line| line.contains("weekly") || line.contains("credits"))
                     .collect();
-                assert_eq!(quotas.len(), 4, "{text}");
+                assert_eq!(text.matches("32.0%").count(), 4, "{text}");
+                assert_eq!(text.matches("resets 10-22 15:14").count(), 4, "{text}");
                 for account in ["work", "personal"] {
                     for window in ["weekly", "credits"] {
                         let row = quotas
@@ -6410,12 +7129,6 @@ mod tests {
         for id in ["cat_1", "cat_2", "cat_3", "pulse", "tower"] {
             assert_ne!(category_color(id), DIM, "{id}");
         }
-    }
-
-    #[test]
-    fn cwd_leaf_uses_last_path_component() {
-        assert_eq!(cwd_leaf(Path::new("/Users/alex/project")), "project");
-        assert_eq!(cwd_leaf(Path::new("/")), "/");
     }
 
     #[test]

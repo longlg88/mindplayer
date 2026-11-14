@@ -1,8 +1,7 @@
-//! Read-only budget for OMP's configured Vercel AI Gateway API key.
+//! Read-only budgets for OMP's configured Vercel AI Gateway key and attributed user.
 
 use std::collections::HashSet;
 use std::fmt;
-use std::io::Read;
 use std::path::Path;
 use std::process::{Command, Output};
 use std::time::{Duration, Instant};
@@ -10,22 +9,33 @@ use std::time::{Duration, Instant};
 const TIMEOUT: Duration = Duration::from_secs(60);
 const QUOTAS_URL: &str = "https://ai-gateway.vercel.sh/v1/quotas";
 const MAX_PAGES: usize = 100;
-const MAX_TARGET_CONFIG_BYTES: u64 = 16 * 1024;
+// Keep CLI JSON pages below the shared subprocess reader's 64 KiB cap.
+const PAGE_SIZE: &str = "20";
 
-/// The selected API key's spending and budget limit, in dollars.
+/// Where a spending limit is configured.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BudgetSource {
+    ApiKey,
+    User,
+    Default,
+}
+
+/// A scope's observed spending and budget limit, in dollars.
 #[derive(Debug, Clone, PartialEq)]
 pub struct VercelBudget {
-    pub used: f64,
+    /// Budget-period spend; a default policy alone does not supply a meter.
+    pub used: Option<f64>,
+    pub source: BudgetSource,
     pub limit: f64,
     pub refresh_period: String,
 }
 
-/// The selected API key's budget and optional local spending target.
+/// Independent key and attributed-user budgets reported by Vercel.
 #[derive(Debug, Clone, PartialEq)]
 pub struct VercelUsage {
     pub key: Result<VercelBudget, VercelUsageError>,
-    /// A local target in dollars, not a Vercel-enforced limit.
-    pub target: Option<f64>,
+    /// `Ok(None)` means the key is explicitly team-attributed, not an unknown user.
+    pub user: Result<Option<VercelBudget>, VercelUsageError>,
 }
 
 /// Sanitized failure to read or identify a Vercel budget.
@@ -39,7 +49,9 @@ pub enum VercelUsageError {
     InvalidResponse,
     /// The selected key could not be uniquely identified.
     KeyNotIdentified,
-    /// The selected key has no active budget.
+    /// The selected key did not identify its budget attribution.
+    UserNotIdentified,
+    /// The identified scope has no active budget.
     NoBudget,
 }
 
@@ -50,6 +62,7 @@ impl fmt::Display for VercelUsageError {
             Self::Unavailable => "vercel budget unavailable",
             Self::InvalidResponse => "invalid vercel budget response",
             Self::KeyNotIdentified => "vercel gateway key not uniquely identified",
+            Self::UserNotIdentified => "vercel key user attribution unknown",
             Self::NoBudget => "vercel scope has no active budget",
         })
     }
@@ -57,10 +70,10 @@ impl fmt::Display for VercelUsageError {
 
 impl std::error::Error for VercelUsageError {}
 
-/// Fetch the configured key's budget and its optional local target.
+/// Fetch the configured key's budget and its attributed user's budget.
 ///
 /// # Errors
-/// Returns a sanitized error if the credential, key identity, or local target is unusable.
+/// Returns a sanitized error if the credential or key identity is unusable.
 /// A budget lookup failure is retained in the returned usage.
 pub fn fetch_vercel_usage(cwd: &Path) -> Result<VercelUsage, VercelUsageError> {
     let deadline = Instant::now() + TIMEOUT;
@@ -106,25 +119,25 @@ pub fn fetch_vercel_usage(cwd: &Path) -> Result<VercelUsage, VercelUsageError> {
     let mut cursors = HashSet::new();
     let mut cursor: Option<String> = None;
     for _ in 0..MAX_PAGES {
+        // The high-level list command projects away spend-attribution metadata.
+        let endpoint = paged_endpoint(
+            format!("/v1/api-keys?purpose=ai-gateway&limit={PAGE_SIZE}"),
+            "until",
+            cursor.as_deref(),
+        );
         let mut cli = Command::new("vercel");
         cli.current_dir(cwd).args([
-            "ai-gateway",
-            "api-keys",
-            "list",
-            "--json",
-            "--state",
-            "active",
-            "--limit",
-            "100",
+            "api",
+            &endpoint,
+            "--method",
+            "GET",
+            "--raw",
             "--scope",
             &team,
             "--non-interactive",
         ]);
         cli.env_remove("AI_GATEWAY_API_KEY")
             .env_remove("VERCEL_OIDC_TOKEN");
-        if let Some(next) = &cursor {
-            cli.arg(format!("--next={next}"));
-        }
         let output = run(&mut cli, &[], deadline)?;
         if !output.status.success() {
             return Err(VercelUsageError::Unavailable);
@@ -136,83 +149,205 @@ pub fn fetch_vercel_usage(cwd: &Path) -> Result<VercelUsage, VercelUsageError> {
             Some(_) => return Err(VercelUsageError::KeyNotIdentified),
         }
     }
-    let key_id = selected_key(&matches, cursor.as_deref())?;
+    let selected = selected_key(&matches, cursor.as_deref())?;
+    let key_id = &selected.id;
     if key_id.contains(suffix) {
         return Err(VercelUsageError::KeyNotIdentified);
     }
-    let key = inspect_budget(cwd, &team, key_id, deadline);
-    let target = match std::env::var_os("HOME") {
-        Some(home) => read_target(
-            &Path::new(&home).join(".mindplayer/vercel-key-target.json"),
-            key_id,
-            key.as_ref().ok(),
-        )?,
-        None => None,
+    let key = inspect_budget(cwd, &team, "api-key", key_id, deadline);
+    let user = match &selected.user {
+        Ok(Some(user_id)) => inspect_budget(cwd, &team, "user", user_id, deadline).map(Some),
+        Ok(None) => Ok(None),
+        Err(error) => Err(error.clone()),
     };
-    Ok(VercelUsage { key, target })
+    Ok(VercelUsage { key, user })
 }
 
-fn read_target(
-    path: &Path,
-    key_id: &str,
-    budget: Option<&VercelBudget>,
-) -> Result<Option<f64>, VercelUsageError> {
-    let file = match std::fs::File::open(path) {
-        Ok(file) => file,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(_) => return Err(VercelUsageError::Unavailable),
-    };
-    let mut bytes = Vec::new();
-    file.take(MAX_TARGET_CONFIG_BYTES + 1)
-        .read_to_end(&mut bytes)
-        .map_err(|_| VercelUsageError::Unavailable)?;
-    if bytes.len() as u64 > MAX_TARGET_CONFIG_BYTES {
-        return Err(VercelUsageError::InvalidResponse);
+fn budget_endpoint(scope_type: &str, cursor: Option<&str>) -> String {
+    paged_endpoint(
+        format!(
+            "/ai-gateway/budgets/list?scopeType={scope_type}&includeDefaultCovered=true&limit={PAGE_SIZE}"
+        ),
+        "cursor",
+        cursor,
+    )
+}
+
+fn paged_endpoint(mut endpoint: String, parameter: &str, cursor: Option<&str>) -> String {
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    if let Some(value) = cursor {
+        endpoint.reserve(parameter.len() + 2 + value.len() * 3);
+        endpoint.push('&');
+        endpoint.push_str(parameter);
+        endpoint.push('=');
+        for byte in value.bytes() {
+            if byte.is_ascii_alphanumeric() || b"-._~".contains(&byte) {
+                endpoint.push(char::from(byte));
+            } else {
+                endpoint.extend([
+                    '%',
+                    char::from(HEX[usize::from(byte >> 4)]),
+                    char::from(HEX[usize::from(byte & 15)]),
+                ]);
+            }
+        }
     }
-    let value: serde_json::Value =
-        serde_json::from_slice(&bytes).map_err(|_| VercelUsageError::InvalidResponse)?;
-    let configured_key = value
-        .get("key_id")
-        .and_then(|v| v.as_str())
-        .ok_or(VercelUsageError::InvalidResponse)?;
-    if configured_key != key_id {
-        return Ok(None);
-    }
-    let target = value
-        .get("target_usd")
-        .and_then(|v| v.as_f64())
-        .filter(|value| value.is_finite() && *value > 0.0)
-        .ok_or(VercelUsageError::InvalidResponse)?;
-    let period = value
-        .get("refresh_period")
-        .and_then(|v| v.as_str())
-        .ok_or(VercelUsageError::InvalidResponse)?;
-    let Some(budget) = budget else {
-        return Ok(None);
-    };
-    if period != budget.refresh_period {
-        return Err(VercelUsageError::InvalidResponse);
-    }
-    Ok(Some(target))
+    endpoint
 }
 
 fn inspect_budget(
     cwd: &Path,
     team: &str,
-    key_id: &str,
+    scope_type: &str,
+    scope_id: &str,
+    deadline: Instant,
+) -> Result<VercelBudget, VercelUsageError> {
+    let mut cursor: Option<String> = None;
+    let mut cursors = HashSet::new();
+    let mut budget = None;
+    for _ in 0..MAX_PAGES {
+        // The high-level CLI omits default-covered meters. Read the complete API
+        // through its existing login, keeping credentials out of arguments.
+        let endpoint = budget_endpoint(scope_type, cursor.as_deref());
+        let mut cli = Command::new("vercel");
+        cli.current_dir(cwd).args([
+            "api",
+            &endpoint,
+            "--method",
+            "GET",
+            "--raw",
+            "--scope",
+            team,
+            "--non-interactive",
+        ]);
+        cli.env_remove("AI_GATEWAY_API_KEY")
+            .env_remove("VERCEL_OIDC_TOKEN");
+        let output = run(&mut cli, &[], deadline)?;
+        if !output.status.success() {
+            return Err(VercelUsageError::Unavailable);
+        }
+        cursor = parse_budget_page(&output.stdout, scope_type, scope_id, &mut budget)?;
+        match &cursor {
+            None => {
+                return match budget {
+                    Some(result) => result,
+                    None => inspect_default_budget(cwd, team, scope_type, deadline),
+                };
+            }
+            Some(next) if cursors.insert(next.clone()) => {}
+            Some(_) => return Err(VercelUsageError::InvalidResponse),
+        }
+    }
+    Err(VercelUsageError::Unavailable)
+}
+
+fn inspect_default_budget(
+    cwd: &Path,
+    team: &str,
+    scope_type: &str,
     deadline: Instant,
 ) -> Result<VercelBudget, VercelUsageError> {
     let mut cli = Command::new("vercel");
-    cli.current_dir(cwd)
-        .args(["ai-gateway", "budgets", "inspect", "api-key", key_id]);
-    cli.args(["--json", "--scope", team, "--non-interactive"])
-        .env_remove("AI_GATEWAY_API_KEY")
+    cli.current_dir(cwd).args([
+        "api",
+        "/ai-gateway/budgets/defaults/list",
+        "--method",
+        "GET",
+        "--raw",
+        "--scope",
+        team,
+        "--non-interactive",
+    ]);
+    cli.env_remove("AI_GATEWAY_API_KEY")
         .env_remove("VERCEL_OIDC_TOKEN");
     let output = run(&mut cli, &[], deadline)?;
     if !output.status.success() {
         return Err(VercelUsageError::Unavailable);
     }
-    parse_budget(&output.stdout, "api-key", key_id)
+    parse_default_budget(&output.stdout, scope_type)
+}
+
+fn parse_default_budget(output: &[u8], scope_type: &str) -> Result<VercelBudget, VercelUsageError> {
+    let value: serde_json::Value =
+        serde_json::from_slice(output).map_err(|_| VercelUsageError::InvalidResponse)?;
+    let defaults = value
+        .get("defaults")
+        .and_then(|v| v.as_array())
+        .ok_or(VercelUsageError::InvalidResponse)?;
+    let mut selected = None;
+    for row in defaults {
+        let scope = row
+            .get("scopeType")
+            .and_then(|v| v.as_str())
+            .filter(|scope| matches!(*scope, "team" | "project" | "user" | "api-key"))
+            .ok_or(VercelUsageError::InvalidResponse)?;
+        if scope == scope_type {
+            if selected.is_some() {
+                return Err(VercelUsageError::InvalidResponse);
+            }
+            selected = Some(row);
+        }
+    }
+    let row = selected.ok_or(VercelUsageError::NoBudget)?;
+    match row.get("active").and_then(|v| v.as_bool()) {
+        Some(true) => {}
+        Some(false) => return Err(VercelUsageError::NoBudget),
+        None => return Err(VercelUsageError::InvalidResponse),
+    }
+    let limit = decimal(row.get("limitAmount"))?;
+    if limit <= 0.0 {
+        return Err(VercelUsageError::InvalidResponse);
+    }
+    Ok(VercelBudget {
+        used: None,
+        source: BudgetSource::Default,
+        limit,
+        refresh_period: budget_period(row)?.to_owned(),
+    })
+}
+
+fn parse_budget_page(
+    output: &[u8],
+    scope_type: &str,
+    scope_id: &str,
+    budget: &mut Option<Result<VercelBudget, VercelUsageError>>,
+) -> Result<Option<String>, VercelUsageError> {
+    let value: serde_json::Value =
+        serde_json::from_slice(output).map_err(|_| VercelUsageError::InvalidResponse)?;
+    let budgets = value
+        .get("budgets")
+        .and_then(|v| v.as_array())
+        .filter(|rows| rows.len() <= 100)
+        .ok_or(VercelUsageError::InvalidResponse)?;
+    for row in budgets {
+        if row.get("scopeType").and_then(|v| v.as_str()) != Some(scope_type) {
+            return Err(VercelUsageError::InvalidResponse);
+        }
+        let id = row
+            .get("scopeId")
+            .and_then(|v| v.as_str())
+            .filter(|id| safe_id(id))
+            .ok_or(VercelUsageError::InvalidResponse)?;
+        if id == scope_id {
+            if row.get("archived").and_then(|v| v.as_bool()) == Some(true) {
+                continue;
+            }
+            if budget.is_some() {
+                return Err(VercelUsageError::InvalidResponse);
+            }
+            *budget = Some(parse_budget_value(row, scope_type, scope_id));
+        }
+    }
+    let next = value
+        .get("nextCursor")
+        .ok_or(VercelUsageError::InvalidResponse)?;
+    if next.is_null() {
+        return Ok(None);
+    }
+    next.as_str()
+        .filter(|s| !s.is_empty() && s.len() <= 4096)
+        .map(|s| Some(s.to_owned()))
+        .ok_or(VercelUsageError::InvalidResponse)
 }
 
 fn run(command: &mut Command, input: &[u8], deadline: Instant) -> Result<Output, VercelUsageError> {
@@ -279,11 +414,38 @@ fn parse_quotas(output: &Output) -> Result<String, VercelUsageError> {
         .ok_or(VercelUsageError::KeyNotIdentified)
 }
 
+#[derive(Debug, PartialEq)]
+struct SelectedKey {
+    id: String,
+    user: Result<Option<String>, VercelUsageError>,
+}
+
+fn attributed_user(key: &serde_json::Value) -> Result<Option<String>, VercelUsageError> {
+    match key
+        .get("metadata")
+        .and_then(|metadata| metadata.get("spendAttribution"))
+        .and_then(|value| value.as_str())
+    {
+        Some("team") => Ok(None),
+        Some("user") => {
+            // User-attributed keys count against their creator, never the CLI login.
+            let id = key
+                .get("createdBy")
+                .and_then(|value| value.as_str())
+                .map(|id| id.strip_prefix("usr_").unwrap_or(id))
+                .filter(|id| safe_id(id))
+                .ok_or(VercelUsageError::UserNotIdentified)?;
+            Ok(Some(format!("usr_{id}")))
+        }
+        _ => Err(VercelUsageError::UserNotIdentified),
+    }
+}
+
 fn parse_keys(
     output: &[u8],
     team: &str,
     suffix: &str,
-    matches: &mut Vec<String>,
+    matches: &mut Vec<SelectedKey>,
 ) -> Result<Option<String>, VercelUsageError> {
     let value: serde_json::Value =
         serde_json::from_slice(output).map_err(|_| VercelUsageError::InvalidResponse)?;
@@ -309,7 +471,10 @@ fn parse_keys(
             .filter(|s| s.len() == 6 && s.is_ascii())
             .ok_or(VercelUsageError::InvalidResponse)?;
         if partial == suffix {
-            matches.push(id.to_owned());
+            matches.push(SelectedKey {
+                id: id.to_owned(),
+                user: attributed_user(key),
+            });
         }
     }
     let next = value
@@ -321,23 +486,18 @@ fn parse_keys(
     } else {
         let next = next
             .as_str()
-            .filter(|s| {
-                !s.is_empty()
-                    && s.len() <= 4096
-                    && s.bytes()
-                        .all(|b| b.is_ascii_alphanumeric() || b"_-".contains(&b))
-            })
+            .filter(|s| !s.is_empty() && s.len() <= 4096)
             .ok_or(VercelUsageError::InvalidResponse)?;
         Ok(Some(next.to_owned()))
     }
 }
 
 fn selected_key<'a>(
-    matches: &'a [String],
+    matches: &'a [SelectedKey],
     cursor: Option<&str>,
-) -> Result<&'a str, VercelUsageError> {
+) -> Result<&'a SelectedKey, VercelUsageError> {
     match (matches, cursor) {
-        ([id], None) => Ok(id),
+        ([key], None) => Ok(key),
         _ => Err(VercelUsageError::KeyNotIdentified),
     }
 }
@@ -354,6 +514,7 @@ fn decimal(value: Option<&serde_json::Value>) -> Result<f64, VercelUsageError> {
         .ok_or(VercelUsageError::InvalidResponse)
 }
 
+#[cfg(test)]
 fn parse_budget(
     output: &[u8],
     scope_type: &str,
@@ -361,6 +522,14 @@ fn parse_budget(
 ) -> Result<VercelBudget, VercelUsageError> {
     let value: serde_json::Value =
         serde_json::from_slice(output).map_err(|_| VercelUsageError::InvalidResponse)?;
+    parse_budget_value(&value, scope_type, scope_id)
+}
+
+fn parse_budget_value(
+    value: &serde_json::Value,
+    scope_type: &str,
+    scope_id: &str,
+) -> Result<VercelBudget, VercelUsageError> {
     if value.is_null() {
         return Err(VercelUsageError::NoBudget);
     }
@@ -382,16 +551,27 @@ fn parse_budget(
     if limit <= 0.0 || used < 0.0 {
         return Err(VercelUsageError::InvalidResponse);
     }
-    let period = value
-        .get("refreshPeriod")
-        .and_then(|v| v.as_str())
-        .filter(|s| matches!(*s, "daily" | "weekly" | "monthly" | "none"))
-        .ok_or(VercelUsageError::InvalidResponse)?;
+    let period = budget_period(value)?;
+    let source = match value.get("source") {
+        None if scope_type == "user" => BudgetSource::User,
+        None => BudgetSource::ApiKey,
+        Some(serde_json::Value::String(source)) if source == "default" => BudgetSource::Default,
+        Some(_) => return Err(VercelUsageError::InvalidResponse),
+    };
     Ok(VercelBudget {
-        used,
+        used: Some(used),
+        source,
         limit,
         refresh_period: period.to_owned(),
     })
+}
+
+fn budget_period(value: &serde_json::Value) -> Result<&str, VercelUsageError> {
+    value
+        .get("refreshPeriod")
+        .and_then(|v| v.as_str())
+        .filter(|s| matches!(*s, "daily" | "weekly" | "monthly" | "none"))
+        .ok_or(VercelUsageError::InvalidResponse)
 }
 
 #[cfg(all(test, unix))]
@@ -467,7 +647,7 @@ mod tests {
             selected_key(&matches[..1], Some("cursor_2")),
             Err(VercelUsageError::KeyNotIdentified)
         );
-        assert_eq!(selected_key(&matches[..1], None), Ok("key_one"));
+        assert_eq!(selected_key(&matches[..1], None).unwrap().id, "key_one");
         assert_eq!(
             selected_key(&[], None),
             Err(VercelUsageError::KeyNotIdentified)
@@ -483,7 +663,8 @@ mod tests {
         assert_eq!(
             parse_budget(valid, "api-key", "key_one"),
             Ok(VercelBudget {
-                used: 12.25,
+                used: Some(12.25),
+                source: BudgetSource::ApiKey,
                 limit: 100.0,
                 refresh_period: "monthly".into()
             })
@@ -517,78 +698,220 @@ mod tests {
     }
 
     #[test]
-    fn local_target_is_scoped_to_key_and_preserves_actual_budget() {
-        let dir = tempfile::tempdir().expect("temporary config directory");
-        let path = dir.path().join("target.json");
-        let budget = parse_budget(
-            br#"{"scopeType":"api-key","scopeId":"key_one","limitAmount":1000,"currentSpend":12.25,"refreshPeriod":"monthly","active":true,"archived":false}"#,
-            "api-key",
-            "key_one",
-        ).expect("actual key budget");
-        assert_eq!(read_target(&path, "key_one", Some(&budget)), Ok(None));
-        std::fs::write(
-            &path,
-            r#"{"key_id":"key_one","refresh_period":"monthly","target_usd":200}"#,
-        )
-        .expect("write config");
-        let usage = VercelUsage {
-            target: read_target(&path, "key_one", Some(&budget)).expect("matching target"),
-            key: Ok(budget),
-        };
-        assert_eq!(usage.target, Some(200.0));
+    fn budget_listing_distinguishes_absence_from_failed_or_incomplete_reads() {
+        let mut budget = None;
         assert_eq!(
-            usage.key,
+            parse_budget_page(
+                br#"{"budgets":[],"nextCursor":"page2"}"#,
+                "api-key",
+                "key_new",
+                &mut budget
+            ),
+            Ok(Some("page2".into()))
+        );
+        assert!(budget.is_none());
+        let second = br#"{"budgets":[{"scopeType":"api-key","scopeId":"key_new","source":"default","limitAmount":"200","currentSpend":"12.50","refreshPeriod":"monthly","active":true,"archived":false}],"nextCursor":null}"#;
+        assert_eq!(
+            parse_budget_page(second, "api-key", "key_new", &mut budget),
+            Ok(None)
+        );
+        assert_eq!(budget.as_ref().unwrap().as_ref().unwrap().used, Some(12.5));
+        assert_eq!(
+            budget.as_ref().unwrap().as_ref().unwrap().source,
+            BudgetSource::Default
+        );
+        assert_eq!(
+            parse_budget_page(second, "api-key", "key_new", &mut budget),
+            Err(VercelUsageError::InvalidResponse)
+        );
+        let mut absent = None;
+        assert_eq!(
+            parse_budget_page(second, "api-key", "key_other", &mut absent),
+            Ok(None)
+        );
+        assert_eq!(
+            absent.unwrap_or(Err(VercelUsageError::NoBudget)),
+            Err(VercelUsageError::NoBudget)
+        );
+        for malformed in [
+            br#"{"budgets":[]}"#.as_slice(),
+            br#"{"budgets":[],"nextCursor":""}"#,
+            br#"{"budgets":[{"scopeType":"team","scopeId":"key_new"}],"nextCursor":null}"#,
+            b"Unauthorized",
+        ] {
+            assert_eq!(
+                parse_budget_page(malformed, "api-key", "key_new", &mut None),
+                Err(VercelUsageError::InvalidResponse)
+            );
+        }
+    }
+
+    #[test]
+    fn archived_overrides_allow_default_lookup_but_inactive_overrides_do_not() {
+        let archived = br#"{"budgets":[{"scopeType":"api-key","scopeId":"key_one","archived":true}],"nextCursor":null}"#;
+        let mut budget = None;
+        assert_eq!(
+            parse_budget_page(archived, "api-key", "key_one", &mut budget),
+            Ok(None)
+        );
+        assert!(
+            budget.is_none(),
+            "a removed override leaves room for a default"
+        );
+        let inactive = br#"{"budgets":[{"scopeType":"api-key","scopeId":"key_one","archived":false,"active":false}],"nextCursor":null}"#;
+        assert_eq!(
+            parse_budget_page(inactive, "api-key", "key_one", &mut budget),
+            Ok(None)
+        );
+        assert_eq!(
+            budget,
+            Some(Err(VercelUsageError::NoBudget)),
+            "do not reinterpret a disabled override as absence"
+        );
+    }
+
+    #[test]
+    fn default_budget_keeps_unknown_spending_distinct_from_zero() {
+        let output = br#"{"defaults":[{"scopeType":"team","active":true,"limitAmount":99,"refreshPeriod":"daily"},{"scopeType":"api-key","active":true,"limitAmount":"1000","refreshPeriod":"monthly"}]}"#;
+        assert_eq!(
+            parse_default_budget(output, "api-key"),
             Ok(VercelBudget {
-                used: 12.25,
+                used: None,
+                source: BudgetSource::Default,
                 limit: 1000.0,
                 refresh_period: "monthly".into(),
             })
         );
         assert_eq!(
-            read_target(&path, "key_other", usage.key.as_ref().ok()),
-            Ok(None)
+            parse_default_budget(br#"{"defaults":[]}"#, "api-key"),
+            Err(VercelUsageError::NoBudget)
         );
-        assert_eq!(read_target(&path, "key_one", None), Ok(None));
+        assert_eq!(
+            parse_default_budget(
+                br#"{"defaults":[{"scopeType":"api-key","active":false}]}"#,
+                "api-key"
+            ),
+            Err(VercelUsageError::NoBudget)
+        );
+        for body in [
+            r#"{}"#,
+            r#"{"defaults":null}"#,
+            r#"{"defaults":[{}]}"#,
+            r#"{"defaults":[{"scopeType":"api-key","active":true}]}"#,
+            r#"{"defaults":[{"scopeType":"api-key","limitAmount":1,"refreshPeriod":"monthly"}]}"#,
+            r#"{"defaults":[{"scopeType":"api-key","active":true,"limitAmount":-1,"refreshPeriod":"monthly"}]}"#,
+            r#"{"defaults":[{"scopeType":"api-key","active":true,"limitAmount":"NaN","refreshPeriod":"monthly"}]}"#,
+            r#"{"defaults":[{"scopeType":"api-key","active":true,"limitAmount":1000,"refreshPeriod":"yearly"}]}"#,
+            r#"{"defaults":[{"scopeType":"api-key","active":false},{"scopeType":"api-key","active":true,"limitAmount":1,"refreshPeriod":"monthly"}]}"#,
+            "Unauthorized",
+        ] {
+            assert_eq!(
+                parse_default_budget(body.as_bytes(), "api-key"),
+                Err(VercelUsageError::InvalidResponse),
+                "{body}"
+            );
+        }
     }
 
     #[test]
-    fn local_target_rejects_invalid_config_and_wrong_period() {
-        let dir = tempfile::tempdir().expect("temporary config directory");
-        let path = dir.path().join("target.json");
-        let budget = VercelBudget {
-            used: 12.25,
-            limit: 1000.0,
-            refresh_period: "monthly".into(),
-        };
-        for config in [
-            r#"{"key_id":"key_one","refresh_period":"weekly","target_usd":200}"#,
-            r#"{"key_id":"key_one","refresh_period":"monthly","target_usd":0}"#,
-            r#"{"key_id":"key_one","refresh_period":"monthly","target_usd":-1}"#,
-            r#"{"key_id":"key_one","refresh_period":"monthly","target_usd":"NaN"}"#,
-            r#"{"key_id":"key_one","refresh_period":"monthly","target_usd":1e999}"#,
-            r#"{"key_id":"key_one","target_usd":200}"#,
-            r#"{"refresh_period":"monthly","target_usd":200}"#,
-            "not json",
-        ] {
-            std::fs::write(&path, config).expect("write config");
+    fn user_attribution_uses_key_creator_not_cli_identity() {
+        for creator in ["other_member", "usr_other_member"] {
+            let page = serde_json::json!({
+                "apiKeys": [{
+                    "id": "key_one", "teamId": "team_a", "partialKey": "abcdef",
+                    "createdBy": creator, "metadata": {"spendAttribution": "user"}
+                }],
+                "pagination": {"next": null},
+                "user": {"id": "cli_member"}
+            });
+            let mut matches = Vec::new();
+            parse_keys(
+                &serde_json::to_vec(&page).unwrap(),
+                "team_a",
+                "abcdef",
+                &mut matches,
+            )
+            .unwrap();
             assert_eq!(
-                read_target(&path, "key_one", Some(&budget)),
-                Err(VercelUsageError::InvalidResponse),
-                "{config}"
+                selected_key(&matches, None).unwrap().user,
+                Ok(Some("usr_other_member".into()))
             );
         }
-        std::fs::write(&path, r#"{"key_id":"key_other","target_usd":-1}"#)
-            .expect("write other key config");
-        assert_eq!(read_target(&path, "key_one", Some(&budget)), Ok(None));
-        std::fs::write(&path, vec![b' '; MAX_TARGET_CONFIG_BYTES as usize + 1])
-            .expect("write oversized config");
+    }
+
+    #[test]
+    fn team_attribution_and_missing_metadata_never_inherit_creator_budget() {
         assert_eq!(
-            read_target(&path, "key_one", Some(&budget)),
-            Err(VercelUsageError::InvalidResponse)
+            attributed_user(&serde_json::json!({
+                "createdBy": "cli_member", "metadata": {"spendAttribution": "team"}
+            })),
+            Ok(None)
+        );
+        for key in [
+            serde_json::json!({"createdBy": "cli_member"}),
+            serde_json::json!({"metadata": null}),
+            serde_json::json!({"metadata": {}}),
+            serde_json::json!({"metadata": {"spendAttribution": "unknown"}}),
+            serde_json::json!({"metadata": {"spendAttribution": "user"}}),
+            serde_json::json!({"createdBy": "usr_", "metadata": {"spendAttribution": "user"}}),
+            serde_json::json!({"createdBy": "\u{1b}[31m", "metadata": {"spendAttribution": "user"}}),
+        ] {
+            assert_eq!(
+                attributed_user(&key),
+                Err(VercelUsageError::UserNotIdentified)
+            );
+        }
+    }
+
+    #[test]
+    fn user_default_policy_requires_a_meter_for_spend_and_blocked_state() {
+        let defaults = br#"{"defaults":[{"scopeType":"api-key","active":true,"limitAmount":1000,"refreshPeriod":"monthly"},{"scopeType":"user","active":true,"limitAmount":50,"refreshPeriod":"weekly"}]}"#;
+        let policy = parse_default_budget(defaults, "user").unwrap();
+        assert_eq!(policy.used, None);
+        assert_eq!(policy.limit, 50.0);
+        assert_eq!(policy.refresh_period, "weekly");
+        assert_eq!(policy.source, BudgetSource::Default);
+        let mut meter = None;
+        let page = br#"{"budgets":[{"scopeType":"user","scopeId":"usr_other_member","source":"default","limitAmount":50,"currentSpend":51.007682468,"refreshPeriod":"weekly","active":true,"archived":false}],"nextCursor":null}"#;
+        assert_eq!(
+            parse_budget_page(page, "user", "usr_cli_member", &mut meter),
+            Ok(None)
+        );
+        assert_eq!(meter, None);
+        assert_eq!(
+            parse_budget_page(page, "user", "usr_other_member", &mut meter),
+            Ok(None)
+        );
+        let observed = meter.unwrap().unwrap();
+        assert_eq!(observed.used, Some(51.007682468));
+        assert_eq!(observed.source, BudgetSource::Default);
+        assert!(observed.used.unwrap() >= observed.limit);
+        for malformed in [
+            br#"{"budgets":[]}"#.as_slice(),
+            br#"{"budgets":[],"nextCursor":""}"#,
+            b"Unauthorized",
+        ] {
+            assert_eq!(
+                parse_budget_page(malformed, "user", "usr_other_member", &mut None),
+                Err(VercelUsageError::InvalidResponse)
+            );
+        }
+    }
+
+    #[test]
+    fn opaque_key_and_budget_cursors_cannot_inject_query_parameters() {
+        let cursor = "page2=+/&scopeType=team";
+        assert_eq!(
+            budget_endpoint("user", Some(cursor)),
+            "/ai-gateway/budgets/list?scopeType=user&includeDefaultCovered=true&limit=20&cursor=page2%3D%2B%2F%26scopeType%3Dteam"
         );
         assert_eq!(
-            read_target(dir.path(), "key_one", Some(&budget)),
-            Err(VercelUsageError::Unavailable)
+            paged_endpoint(
+                "/v1/api-keys?purpose=ai-gateway".into(),
+                "until",
+                Some(cursor)
+            ),
+            "/v1/api-keys?purpose=ai-gateway&until=page2%3D%2B%2F%26scopeType%3Dteam"
         );
     }
 

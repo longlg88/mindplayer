@@ -388,7 +388,7 @@ mod tests {
         let header =
             serde_json::json!({"type":"session_meta","payload":{"id":source.id,"cwd":source.cwd}});
         let padding = serde_json::json!({"type":"response_item","payload":{
-            "type":"message","role":"assistant","content":[{"type":"output_text","text":"x".repeat(300 * 1024)}]
+            "type":"message","role":"assistant","content":[{"type":"output_text","text":"x".repeat(2 * 1024 * 1024)}]
         }});
         let prompt = serde_json::json!({"type":"response_item","timestamp":prompt_at,"payload":{
             "type":"message","role":"user","content":[{"type":"input_text","text":"new human prompt"}]

@@ -127,6 +127,12 @@ globalThis.fetch = async function (...args) {
     response = await Reflect.apply(originalFetch, this, args);
   } else if (existsSync(join(markerDir, 'jev-rate-limited'))) {
     response = new Response('raw-upstream-secret-canary', { status: 429 });
+  } else if (existsSync(join(markerDir, 'jev-user-budget-exceeded'))) {
+    // Synthetic official-shaped envelope on the offline canary transport, not a live Gateway call.
+    response = Response.json({ error: {
+      type: 'quota_for_entity_exceeded',
+      message: 'User budget exceeded. Current spend: $51.00, limit: $50.00. Team owners can edit this budget in AI Gateway Budgets & Spend (https://untrusted.invalid/raw-upstream-secret-canary).',
+    } }, { status: 402 });
   } else {
     const capability = ['A', 'C'].includes(label) ? 'bounded_routine' : label === 'B' ? 'open_problem' : 'multistep_coordination';
     const entries = Object.entries(criteria ?? {});

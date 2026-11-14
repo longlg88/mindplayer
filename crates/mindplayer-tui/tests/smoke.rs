@@ -2455,20 +2455,37 @@ fn startup_scope_scan_opens_the_list_without_a_routing_choice() {
 
 #[test]
 fn completed_vercel_probe_does_not_recreate_fixture_after_cleanup() {
-    let mut mp = Mp::launch();
+    let mut mp = Mp::launch_with_fixture_hooks(
+        (ROWS, COLS),
+        false,
+        false,
+        true,
+        false,
+        CodexFixture::Echo,
+        (
+            |root| {
+                // Fence this test's subject from unrelated account-probe workers.
+                let path = root.join("home/.mindplayer/accounts.json");
+                let mut accounts: serde_json::Value =
+                    serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+                for account in accounts.as_array_mut().unwrap() {
+                    account["disabled"] = serde_json::json!(true);
+                }
+                std::fs::write(path, serde_json::to_vec(&accounts).unwrap()).unwrap();
+            },
+            |_, _| {},
+        ),
+    );
     mp.start_into_main_list();
-    // The row is column-aligned, so compare it with its padding collapsed.
-    let vercel_unavailable = |screen: &str| {
-        screen.lines().any(|line| {
-            line.split_whitespace()
-                .collect::<Vec<_>>()
-                .join(" ")
-                .starts_with("vercel — unavailable")
-        })
+    let probe_finished = |screen: &str| {
+        screen
+            .lines()
+            .any(|line| line.trim_start().starts_with("vercel") && !line.contains("loading"))
+            && mp._tmp.join("home/.mindplayer/omp-token-probe").exists()
     };
     assert!(
-        mp.wait_until(STARTUP_TIMEOUT, vercel_unavailable),
-        "the asynchronous Vercel probe completed: expected the vercel row to read unavailable.\n\
+        mp.wait_until(STARTUP_TIMEOUT, probe_finished),
+        "the isolated token probe must finish before teardown.\n\
          ---- screen ----\n{}\n----------------",
         mp.screen()
     );
@@ -3770,6 +3787,65 @@ fn session_toggle_judge_failure_is_visible_without_retry_or_native_fallback() {
             .count(),
         1
     );
+    assert!(!audit.iter().any(|row| [
+        "jev-judged",
+        "route-requested",
+        "route-skipped",
+        "start-acknowledged"
+    ]
+    .contains(&row["event"].as_str().unwrap_or_default())));
+    assert!(!mp.screen().contains("raw-upstream-secret-canary"));
+}
+
+#[test]
+fn session_toggle_user_budget_block_is_visible_without_backend_dispatch() {
+    // Real installed PTY path when MINDPLAYER_TEST_BINARY is set; HTTP402 is synthetic.
+    let mut mp = Mp::launch_actual_router_fixture();
+    mp.resume_router_fixture();
+    std::fs::write(
+        mp.router_marker("jev-user-budget-exceeded"),
+        "synthetic 402\n",
+    )
+    .unwrap();
+    mp.submit_jev(b"analyze B\r");
+    mp.expect(
+        "User budget exceeded: $51.00 / $50.00",
+        STEP_TIMEOUT,
+        "attributed user cap is visible, not an authentication or rate-limit error",
+    );
+    mp.expect(
+        "nothing was sent",
+        STEP_TIMEOUT,
+        "no silent native fallback",
+    );
+    assert_eq!(mp.router_rows("ui-errors.jsonl").len(), 1);
+    assert!(mp.router_rows("routes.jsonl").is_empty());
+    let events = mp.router_rows("jev.jsonl");
+    assert_eq!(
+        events.iter().filter(|row| row["event"] == "start").count(),
+        1
+    );
+    let responses: Vec<_> = events
+        .iter()
+        .filter(|row| row["event"] == "response")
+        .collect();
+    assert_eq!(responses.len(), 1);
+    assert_eq!(responses[0]["status"], 402);
+    let audit = mp.router_audit_rows();
+    for (event, reason) in [
+        ("jev-failed", "budget-exceeded"),
+        ("route-failed", "jev-budget-exceeded"),
+    ] {
+        let failures: Vec<_> = audit
+            .iter()
+            .filter(|row| row["event"] == event && row["reason"] == reason)
+            .collect();
+        assert_eq!(failures.len(), 1);
+        assert_eq!(
+            failures[0]["budget"],
+            serde_json::json!({"scope":"user","used":51,"limit":50})
+        );
+    }
     assert!(!audit.iter().any(|row| [
         "jev-judged",
         "route-requested",
@@ -7899,4 +7975,569 @@ fn ctrl_p_ctrl_t_and_plain_r_reach_the_native_pty_consumer() {
         STEP_TIMEOUT,
         "consumer finished the exact byte read",
     );
+}
+
+#[test]
+fn session_list_distinguishes_saved_sources_and_visible_handoff_families() {
+    const ROOT: &str = "MPROOT 한글";
+    const SIBLING: &str = "MPSIBLING";
+    const ORPHAN: &str = "MPORPHAN";
+    const CROSS_TOPIC: &str = "MPCROSSTOPIC";
+    const CLAUDE_TASK: &str = "MPCLAUDETASK";
+    const SLACK_TASK: &str = "MPRELEASENOTE";
+    let mut mp = Mp::launch_with_fixture_hooks(
+        (40, 140),
+        false,
+        false,
+        false,
+        false,
+        CodexFixture::Echo,
+        (
+            |tmp| {
+                let scope = tmp.join("scope");
+                let codex = tmp.join("codex");
+                for (id, title) in [
+                    ("codex-sibling", SIBLING),
+                    ("codex-orphan", ORPHAN),
+                    ("codex-cross-topic", CROSS_TOPIC),
+                    (
+                        "codex-slack",
+                        "Slack posting task in THIS ROOT THREAD only: no subagents, no delegation.\nPost MPRELEASENOTE to the release channel.",
+                    ),
+                ] {
+                    seed_codex_session(&codex, &scope, id, title);
+                }
+                let claude = seed_claude_session(
+                    &tmp.join("claude"),
+                    &scope,
+                    "claude-real-task",
+                    CLAUDE_TASK,
+                );
+                let original = std::fs::read_to_string(&claude).unwrap();
+                let notice = serde_json::json!({
+                    "type":"user", "sessionId":"claude-real-task", "cwd":scope,
+                    "isMeta":true, "timestamp":chrono::Utc::now(),
+                    "message":{"role":"user","content":
+                        "<local-command-caveat>The command below was run directly in Claude Code, not sent to the model.</local-command-caveat>"}
+                });
+                std::fs::write(&claude, format!("{notice}\n{original}")).unwrap();
+                let now = chrono::Utc::now();
+                let mut state = mindplayer_core::State::default();
+                let main = state.create_category("MAIN", now).unwrap();
+                let other = state.create_category("OTHER", now).unwrap();
+                for id in [
+                    "codex-alfa-0001",
+                    "codex-brvo-0002",
+                    "codex-sibling",
+                    "codex-orphan",
+                ] {
+                    assert!(state.assign_category(id, &main));
+                }
+                assert!(state.assign_category("codex-cross-topic", &other));
+                state.set_label("codex-alfa-0001", ROOT);
+                for (child, parent) in [
+                    ("codex-brvo-0002", "codex-alfa-0001"),
+                    ("codex-sibling", "codex-alfa-0001"),
+                    ("codex-orphan", "missing-parent"),
+                    ("codex-cross-topic", "codex-alfa-0001"),
+                ] {
+                    state.set_handoff_link(child, parent, tmp.join("fixture-handoff"), now);
+                }
+                let path = tmp.join("state");
+                std::fs::remove_dir(&path).unwrap();
+                state.save_to(&path).unwrap();
+            },
+            |_, _| {},
+        ),
+    );
+    mp.start_into_main_list_with_count(7, STARTUP_TIMEOUT);
+    mp.capture_ui_evidence_at_size("session-list-wide", 40, 140);
+    let screen = mp.screen();
+    assert!(
+        screen.contains("all saved"),
+        "unattached sources must remain explicit without repeating the state per row:\n{screen}"
+    );
+    for title in [
+        ROOT,
+        TITLE_B,
+        SIBLING,
+        ORPHAN,
+        CROSS_TOPIC,
+        CLAUDE_TASK,
+        SLACK_TASK,
+    ] {
+        assert!(
+            screen.lines().any(|row| row.contains(title)),
+            "missing task {title}:\n{screen}"
+        );
+    }
+    assert!(!screen.contains("The command below"));
+    assert!(!screen.contains("THIS ROOT THREAD"));
+    let root = screen.lines().find(|row| row.contains(ROOT)).unwrap();
+    assert!(
+        root.find("codex").unwrap() < root.find(ROOT).unwrap(),
+        "provider identity must precede the handoff title: {root}"
+    );
+    assert!(
+        root.contains("[3 lanes]"),
+        "the atomic thread keeps all three visible lanes under its root's topic: {root}"
+    );
+    let siblings: Vec<_> = screen
+        .lines()
+        .filter(|row| row.contains(TITLE_B) || row.contains(SIBLING) || row.contains(CROSS_TOPIC))
+        .collect();
+    assert_eq!(siblings.len(), 3, "{siblings:?}");
+    assert!(
+        siblings[0].contains("├─") && siblings[1].contains("├─") && siblings[2].contains("└─"),
+        "{siblings:?}"
+    );
+    let orphan = screen.lines().find(|row| row.contains(ORPHAN)).unwrap();
+    assert!(
+        !orphan.contains("└─") && !orphan.contains("├─"),
+        "missing parent must not attach to the preceding family: {orphan}"
+    );
+    mp.resize(29, 88);
+    mp.expect(
+        CLAUDE_TASK,
+        STEP_TIMEOUT,
+        "task identity survives narrower list",
+    );
+    mp.capture_ui_evidence_at_size("session-list-narrow", 29, 88);
+    mp.assert_no_session_child();
+    mp.quit_from_list();
+}
+
+#[test]
+fn session_list_grouped_counts_follow_filter_and_fold() {
+    const OTHER: &str = "MPTHIRDTASK";
+    let mut mp = Mp::launch_with_fixture_hooks(
+        (ROWS, COLS),
+        false,
+        false,
+        false,
+        false,
+        CodexFixture::Echo,
+        (
+            |tmp| {
+                let third = seed_codex_session_at(
+                    &tmp.join("codex"),
+                    &tmp.join("scope"),
+                    "codex-third",
+                    OTHER,
+                    chrono::Utc::now() - chrono::Duration::minutes(1),
+                );
+                std::fs::File::open(third)
+                    .unwrap()
+                    .set_times(
+                        std::fs::FileTimes::new()
+                            .set_modified(SystemTime::now() - Duration::from_secs(60)),
+                    )
+                    .unwrap();
+                let mut state = mindplayer_core::State::default();
+                let first = state
+                    .create_category("COUNT-FIRST", chrono::Utc::now())
+                    .unwrap();
+                let second = state
+                    .create_category("COUNT-SECOND", chrono::Utc::now())
+                    .unwrap();
+                assert!(state.assign_category("codex-alfa-0001", &first));
+                assert!(state.assign_category("codex-brvo-0002", &first));
+                assert!(state.assign_category("codex-third", &second));
+                let path = tmp.join("state");
+                std::fs::remove_dir(&path).unwrap();
+                state.save_to(&path).unwrap();
+            },
+            |_, _| {},
+        ),
+    );
+    let expect_count = |mp: &Mp, count: usize| {
+        assert!(
+            mp.wait_until(STEP_TIMEOUT, |screen| {
+                screen.lines().any(|row| {
+                    row.contains("Sessions · recent first") && row.contains(&format!("({count})"))
+                }) && screen.contains(&format!("{count} visible / 0 running"))
+            }),
+            "header and footer must both count {count} sessions, not category rows:\n{}",
+            mp.screen()
+        );
+    };
+    mp.start_into_main_list_with_count(3, STARTUP_TIMEOUT);
+    mp.capture_ui_evidence_at_size("session-list-count", ROWS, COLS);
+    expect_count(&mp, 3);
+    for title in ["COUNT-FIRST", "COUNT-SECOND", TITLE_A, TITLE_B, OTHER] {
+        assert!(
+            mp.screen().contains(title),
+            "missing {title}:\n{}",
+            mp.screen()
+        );
+    }
+
+    mp.send(b"/MPTESTALFA");
+    expect_count(&mp, 1);
+    assert!(mp.screen().contains(TITLE_A));
+    assert!(!mp.screen().contains(TITLE_B) && !mp.screen().contains(OTHER));
+    mp.send(b"\x1b");
+    expect_count(&mp, 3);
+    // The first category is newer than the third session. Move to its header,
+    // fold it, then unfold without ever invoking a provider session.
+    mp.send(b"\x1b[A\x1b[A\x1b[A\x1b[A\x1b[A\x1b[D");
+    expect_count(&mp, 1);
+    assert!(mp.screen().contains(OTHER));
+    assert!(!mp.screen().contains(TITLE_A) && !mp.screen().contains(TITLE_B));
+    mp.send(b"\x1b[C");
+    expect_count(&mp, 3);
+    assert!(mp.screen().contains(TITLE_A) && mp.screen().contains(TITLE_B));
+    mp.send(b"/NO-MATCHING-TASK");
+    expect_count(&mp, 0);
+    mp.send(b"\x1b");
+    expect_count(&mp, 3);
+    mp.assert_no_session_child();
+    mp.quit_from_list();
+}
+
+#[test]
+fn session_list_recovers_buried_codex_title_before_usage_and_keeps_it_after_refresh() {
+    use std::fmt::Write as _;
+
+    let title = format!("Repair {} task", "codex-alfa-0001");
+    let mut mp = Mp::launch_with_fixture_hooks(
+        (ROWS, COLS),
+        false,
+        false,
+        false,
+        false,
+        CodexFixture::Echo,
+        (
+            |tmp| {
+                let file = seed_codex_session(
+                    &tmp.join("codex"),
+                    &tmp.join("scope"),
+                    "codex-alfa-0001",
+                    &title,
+                );
+                let original = std::fs::read_to_string(&file).unwrap();
+                let (metadata, request) = original.split_once('\n').unwrap();
+                let context = serde_json::json!({
+                    "type":"response_item",
+                    "payload":{"type":"message","role":"user","content":[{
+                        "type":"input_text",
+                        "text":format!(
+                            "# AGENTS.md instructions for /work\n\n<INSTRUCTIONS>\n{}\n</INSTRUCTIONS>",
+                            "x".repeat(660 * 1024)
+                        )
+                    }]}
+                });
+                let mut transcript = format!("{metadata}\n{context}\n");
+                let request_offset = transcript.len();
+                assert!((660 * 1024..662 * 1024).contains(&request_offset));
+                transcript.push_str(request);
+                let assistant = serde_json::json!({
+                    "type":"response_item",
+                    "payload":{"type":"message","role":"assistant","content":[{
+                        "type":"output_text","text":"y".repeat(8 * 1024)
+                    }]}
+                });
+                let tail_start = transcript.len();
+                for _ in 0..48 {
+                    writeln!(transcript, "{assistant}").unwrap();
+                }
+                assert!(transcript.len() - tail_start > 256 * 1024);
+                std::fs::write(&file, transcript).unwrap();
+                // Both native session_meta records have the same cwd. Their
+                // distinct mtimes make a later automatic refresh observable.
+                let now = SystemTime::now();
+                std::fs::File::open(file)
+                    .unwrap()
+                    .set_times(
+                        std::fs::FileTimes::new().set_modified(now - Duration::from_secs(120)),
+                    )
+                    .unwrap();
+                let brvo = seed_codex_session(
+                    &tmp.join("codex"),
+                    &tmp.join("scope"),
+                    "codex-brvo-0002",
+                    TITLE_B,
+                );
+                std::fs::File::open(brvo)
+                    .unwrap()
+                    .set_times(
+                        std::fs::FileTimes::new().set_modified(now - Duration::from_secs(60)),
+                    )
+                    .unwrap();
+            },
+            |_, _| {},
+        ),
+    );
+    mp.start_into_main_list_with_count(2, STARTUP_TIMEOUT);
+    mp.capture_ui_evidence_at_size("session-list-buried-title", ROWS, COLS);
+    // No manual `r` usage measurement or session launch precedes this check.
+    mp.expect(
+        &title,
+        STEP_TIMEOUT,
+        "bounded startup metadata recovers the real request",
+    );
+    let screen = mp.screen();
+    assert!(
+        screen.find(TITLE_B).unwrap() < screen.find(&title).unwrap(),
+        "fixture starts with the older recovered task below its same-cwd peer:\n{screen}"
+    );
+    let mut file = std::fs::OpenOptions::new()
+        .append(true)
+        .open(&mp.codex_alfa_file)
+        .unwrap();
+    writeln!(
+        file,
+        "{}",
+        serde_json::json!({
+            "type":"response_item",
+            "payload":{"type":"message","role":"assistant","content":[{
+                "type":"output_text","text":"background refresh marker"
+            }]}
+        })
+    )
+    .unwrap();
+    drop(file);
+    assert!(
+        mp.wait_until(STEP_TIMEOUT, |screen| {
+            matches!(
+                (screen.find(&title), screen.find(TITLE_B)),
+                (Some(task), Some(peer)) if task < peer
+            )
+        }),
+        "mtime-driven metadata refresh must reorder the task without losing its title:\n{}",
+        mp.screen()
+    );
+    mp.assert_no_session_child();
+    mp.quit_from_list();
+}
+
+#[test]
+fn vercel_large_key_catalog_resolves_default_and_absent_budgets() {
+    for (scenario, used, default) in [
+        ("unmetered", None, true),
+        ("inherited", Some(45.5), true),
+        ("zero", Some(0.0), true),
+        ("explicit", Some(12.25), false),
+        ("absent", None, false),
+        ("failed-page", None, true),
+        ("repeated-cursor", None, true),
+        ("user-blocked", Some(12.25), true),
+        ("user-unmetered", Some(12.25), true),
+        ("user-failed-page", Some(12.25), true),
+        ("user-incomplete-page", Some(12.25), true),
+        ("user-repeated-cursor", Some(12.25), true),
+        ("user-missing-metadata", Some(12.25), true),
+        ("user-team-attribution", Some(12.25), true),
+        ("user-key-failed", None, true),
+    ] {
+        let mut mp = Mp::launch_with_fixture_hooks(
+            (ROWS, COLS),
+            false,
+            false,
+            false,
+            false,
+            CodexFixture::Echo,
+            (
+                |tmp| {
+                    if scenario == "user-blocked" {
+                        std::fs::write(
+                            tmp.join("home/.mindplayer/vercel-key-target.json"),
+                            "invalid obsolete display target",
+                        )
+                        .expect("write obsolete local target without changing server budgets");
+                    }
+                    std::fs::write(
+                        tmp.join("budget-fixture.json"),
+                        serde_json::json!({
+                            "scenario": scenario,
+                            "used": used,
+                            "default": default,
+                        })
+                        .to_string(),
+                    )
+                    .expect("write default budget response");
+                    write_script(
+                        &tmp.join("bin/omp"),
+                        "#!/bin/sh\n[ \"$1\" = token ] || exit 1\nprintf 'fixture_abcdef\\n'\n",
+                    );
+                    write_script(
+                        &tmp.join("bin/curl"),
+                        r#"#!/usr/bin/env python3
+import sys
+sys.stdin.read()
+print('{"quotas":[{"teamId":"team_fixture"}]}')
+print('200', end='')
+"#,
+                    );
+                    write_script(
+                        &tmp.join("bin/vercel"),
+                        r#"#!/usr/bin/env python3
+import json, sys
+from pathlib import Path
+from urllib.parse import urlsplit, parse_qs
+args = sys.argv[1:]
+fixture = json.loads(Path(__file__).resolve().parent.parent.joinpath('budget-fixture.json').read_text())
+assert args[0] == 'api', 'only read-only raw API calls are allowed'
+assert args[args.index('--method') + 1] == 'GET'
+assert args[args.index('--scope') + 1] == 'team_fixture'
+endpoint = urlsplit(args[1])
+query = parse_qs(endpoint.query)
+if endpoint.path == '/v1/api-keys':
+    assert query.get('purpose') == ['ai-gateway']
+    limit = int(query['limit'][0])
+    assert limit == 20
+    start = int(query.get('until', ['0'])[0])
+    end = min(start + limit, 128)
+    attribution = 'user' if fixture['scenario'].startswith('user-') else 'team'
+    if fixture['scenario'] == 'user-team-attribution':
+        attribution = 'team'
+    keys = [{'id': f'key_{i}', 'teamId': 'team_fixture',
+             'partialKey': 'abcdef' if i == 125 else 'xxxxxx',
+             'createdBy': 'other_member', 'metadata': {'spendAttribution': attribution},
+             'name': 'large key metadata ' + 'x' * 700} for i in range(start, end)]
+    if fixture['scenario'] == 'user-missing-metadata':
+        for key in keys:
+            del key['metadata']
+    print(json.dumps({'apiKeys': keys, 'pagination': {'next': str(end) if end < 128 else None},
+                      'user': {'id': 'cli_member'}}))
+elif endpoint.path == '/ai-gateway/budgets/list':
+    assert query.get('includeDefaultCovered') == ['true']
+    if query.get('scopeType') == ['user']:
+        assert fixture['scenario'] not in ['user-team-attribution', 'user-missing-metadata']
+        next_cursor = 'user2=+/&scopeType=team'
+        if 'cursor' not in query:
+            print(json.dumps({'budgets': [], 'nextCursor': next_cursor}))
+        else:
+            assert query['cursor'] == [next_cursor]
+            if fixture['scenario'] == 'user-failed-page':
+                print('raw-upstream-secret-canary', file=sys.stderr)
+                sys.exit(1)
+            if fixture['scenario'] == 'user-incomplete-page':
+                print(json.dumps({'budgets': []}))
+            elif fixture['scenario'] == 'user-repeated-cursor':
+                print(json.dumps({'budgets': [], 'nextCursor': next_cursor}))
+            else:
+                rows = [{'scopeType': 'user', 'scopeId': 'usr_cli_member', 'active': True,
+                         'archived': False, 'limitAmount': 50, 'currentSpend': 3,
+                         'refreshPeriod': 'weekly', 'source': 'default'}]
+                if fixture['scenario'] != 'user-unmetered':
+                    rows.append(dict(rows[0], scopeId='usr_other_member', currentSpend=51.007682468))
+                print(json.dumps({'budgets': rows, 'nextCursor': None}))
+    else:
+        assert query.get('scopeType') == ['api-key']
+        next_cursor = 'page2=+/&scopeType=team'
+        if 'cursor' in query:
+            assert query['cursor'] == [next_cursor], 'opaque cursor did not round-trip'
+        if 'cursor' not in query:
+            print(json.dumps({'budgets': [], 'nextCursor': next_cursor}))
+        elif fixture['scenario'] in ['failed-page', 'user-key-failed']:
+            print('Unauthorized', file=sys.stderr)
+            sys.exit(1)
+        elif fixture['scenario'] == 'repeated-cursor':
+            print(json.dumps({'budgets': [], 'nextCursor': next_cursor}))
+        else:
+            rows = []
+            if fixture['used'] is not None and query.get('includeDefaultCovered') == ['true']:
+                row = {'scopeType': 'api-key', 'scopeId': 'key_125',
+                       'active': True, 'archived': False,
+                       'limitAmount': 1000 if fixture['default'] else 200,
+                       'currentSpend': fixture['used'], 'refreshPeriod': 'monthly'}
+                if fixture['default']:
+                    row['source'] = 'default'
+                rows.append(row)
+            print(json.dumps({'budgets': rows, 'nextCursor': None}))
+elif endpoint.path == '/ai-gateway/budgets/defaults/list':
+    assert fixture['used'] is None or fixture['scenario'] == 'user-unmetered', 'a meter must not be replaced'
+    defaults = [{'scopeType': 'api-key', 'active': True, 'limitAmount': 1000,
+                 'refreshPeriod': 'monthly'}, {'scopeType': 'user', 'active': True,
+                 'limitAmount': 50, 'refreshPeriod': 'weekly'}] if fixture['default'] else []
+    print(json.dumps({'defaults': defaults}))
+else:
+    sys.exit(1)
+"#,
+                    );
+                },
+                |_, _| {},
+            ),
+        );
+        mp.start_into_main_list();
+        assert!(
+            mp.wait_until(STEP_TIMEOUT, |screen| {
+                screen.lines().any(|line| {
+                    line.trim_start().starts_with("vercel") && !line.contains("loading")
+                })
+            }),
+            "budget lookup did not settle for {scenario}:\n{}",
+            mp.screen()
+        );
+        let screen = mp.screen();
+        assert_eq!(
+            screen
+                .lines()
+                .filter(|line| line.trim_start().starts_with("vercel"))
+                .count(),
+            1,
+            "independent budgets must share one summary: {screen}"
+        );
+        assert!(!screen.contains("$1000"), "{screen}");
+        assert!(
+            !screen.contains("$3.00"),
+            "CLI login is not key attribution: {screen}"
+        );
+        match scenario {
+            "inherited" => assert!(screen.contains("$45.50"), "{screen}"),
+            "zero" => assert!(screen.contains("$0.00"), "{screen}"),
+            "explicit" => assert!(screen.contains("$12.25"), "{screen}"),
+            "unmetered" => {
+                assert!(screen.contains("unknown"), "{screen}");
+                assert!(!screen.contains("$0.00"), "{screen}");
+                assert!(!screen.contains("no active budget"), "{screen}");
+            }
+            "absent" => {
+                assert!(screen.contains("no active budget"), "{screen}");
+                assert!(!screen.contains("lookup unavailable"), "{screen}");
+            }
+            "failed-page" | "repeated-cursor" => {
+                assert!(screen.contains("lookup unavailable"), "{screen}");
+                assert!(screen.contains("blocked state unknown"), "{screen}");
+                assert!(!screen.contains("no active budget"), "{screen}");
+            }
+            "user-blocked" | "user-key-failed" => {
+                assert!(screen.contains("$51.01/$50"), "{screen}");
+                assert!(screen.contains("user weekly"), "{screen}");
+                assert!(screen.contains("exceeded"), "{screen}");
+                assert!(!screen.contains("not blocked"), "{screen}");
+                if scenario == "user-key-failed" {
+                    assert!(screen.contains("key lookup unavailable"), "{screen}");
+                }
+            }
+            "user-unmetered" => {
+                assert!(screen.contains("$12.25"), "{screen}");
+                assert!(screen.contains("$50"), "{screen}");
+                assert!(screen.contains("blocked state unknown"), "{screen}");
+                assert!(!screen.contains("$0.00"), "{screen}");
+            }
+            "user-failed-page" | "user-incomplete-page" | "user-repeated-cursor" => {
+                assert!(screen.contains("$12.25"), "{screen}");
+                assert!(screen.contains("user lookup unavailable"), "{screen}");
+                assert!(screen.contains("blocked state unknown"), "{screen}");
+                assert!(!screen.contains("$51.01"), "{screen}");
+            }
+            "user-missing-metadata" => {
+                assert!(screen.contains("$12.25"), "{screen}");
+                assert!(screen.contains("attribution unknown"), "{screen}");
+                assert!(screen.contains("blocked state unknown"), "{screen}");
+            }
+            "user-team-attribution" => {
+                assert!(screen.contains("$12.25"), "{screen}");
+                assert!(screen.contains("team attributed"), "{screen}");
+                assert!(!screen.contains("user weekly"), "{screen}");
+            }
+            _ => unreachable!("unhandled budget scenario {scenario}"),
+        }
+        assert!(!mp.screen().contains("raw-upstream-secret-canary"));
+        mp.capture_ui_evidence_at_size(&format!("vercel-{scenario}"), ROWS, COLS);
+        mp.assert_no_session_child();
+        mp.quit_from_list();
+    }
 }

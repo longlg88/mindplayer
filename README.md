@@ -452,6 +452,19 @@ Archive token usage is shown
 as unknown until loaded, not measured zero. `Ctrl-q` only hides a live pane; the
 running count includes it, and it can be reopened from Active.
 
+New and handoff sessions have one temporary row until their native transcript
+appears. Refresh preserves that owner; discovery replaces the temporary row and
+its selection together. Closing with `x` before startup cancels that session's
+queued launch and pending authentication, without canceling neighboring sessions.
+Pending labels and handoff links stay with their in-process owner rather than
+being assigned to another recently created session in the same directory.
+Closing an ended, unwritten session removes its temporary row; native transcript
+files are never deleted by this action.
+
+Late files from children that actually ran still use the existing bounded
+account/directory/start-time matching. This does not establish exact ownership
+between simultaneous external sessions in the same account and directory.
+
 The rebuildable `session-catalog.json` cache lives beside `state.json`. Catalog
 indexing, Archive search, and restoration run on workers. Unchanged archived
 files are not reparsed; periodic usage refresh and conversation-log ingestion

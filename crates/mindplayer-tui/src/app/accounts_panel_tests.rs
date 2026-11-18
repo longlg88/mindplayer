@@ -644,7 +644,7 @@ fn such_a_pane_never_turns_into_a_session() {
     real.started_at = Some(chrono::Utc::now());
     app.all_sessions.push(real);
 
-    app.merge_extras();
+    app.merge_extras(&mut None);
     assert!(
         app.extra_sessions
             .iter()

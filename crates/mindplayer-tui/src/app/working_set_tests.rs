@@ -627,7 +627,7 @@ fn synthetic_adoption_can_find_a_real_source_outside_the_current_page() {
     real.archived = true;
     app.extra_sessions.push(extra);
     app.archive_catalog = Arc::new(vec![real.clone()]);
-    app.merge_extras();
+    app.merge_extras(&mut None);
     assert!(app.extra_sessions.is_empty());
     let active = app
         .all_sessions

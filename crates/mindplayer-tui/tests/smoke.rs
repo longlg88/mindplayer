@@ -45,6 +45,10 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 #[path = "support/active_archive.rs"]
 mod active_archive;
 
+#[cfg(unix)]
+#[path = "support/session_lifecycle.rs"]
+mod session_lifecycle;
+
 const ROWS: u16 = 40;
 const COLS: u16 = 140;
 

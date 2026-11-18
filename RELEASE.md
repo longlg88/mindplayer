@@ -82,6 +82,19 @@ the resulting minimum version.)
 
 ### Unreleased
 
+- **2.0.1:** keep one temporary session row across catalog refreshes and replace
+  it when the native transcript is discovered. Preserve selection through adoption
+  so an immediate close targets the intended session rather than its neighbor.
+- Cancel only the selected session's pending/queued launch and authentication
+  when closing it. Remove new/handoff placeholders consistently, including ended
+  sessions without transcripts. Never claim a late file for a child that did not run.
+- Correlate pending labels and handoff metadata with their in-process owner.
+  Adoption consumes and persists only that owner's records; recent neighboring
+  sessions and same-parent handoff siblings retain their metadata.
+- Add isolated real-TUI coverage for refresh before transcript creation,
+  delayed transcript adoption, close during held authentication, and persistence
+  across restart. Preserve native transcript files and Ctrl-Q's hide-live behavior.
+
 - **2.0.0 — breaking:** use the installed PATH CLI for Codex and Claude
   new/resume/handoff/login launches instead of the private frozen Codex build.
   Remove integrated F6 Jev routing, embedded Node launcher assets and router UI.

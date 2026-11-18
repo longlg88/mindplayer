@@ -448,6 +448,17 @@ fn write_large_codex_fixture(
     (dir, transcript)
 }
 
+/// Launch only a local echo child for tests that need a real pre-rollout owner.
+fn launch_test_placeholder(app: &mut App) {
+    let mut pending = app.pending.take().expect("test requested a new session");
+    pending.command.program = "/bin/cat".into();
+    pending.command.args.clear();
+    pending.command.cwd = fresh_login_test_home();
+    let pty = PtySession::spawn(&pending.command, &pending.session_id, 6, 40)
+        .expect("spawn isolated placeholder child");
+    app.ptys.insert(pending.session_id, pty);
+}
+
 #[test]
 fn new_session_persists_then_reconciles() {
     let tmp = std::env::temp_dir().join(format!("mp-newstate-{}.json", std::process::id()));
@@ -458,6 +469,7 @@ fn new_session_persists_then_reconciles() {
 
     // New labeled session shows up immediately (no disk file yet).
     app.request_new(Agent::Codex, "deploy check");
+    launch_test_placeholder(&mut app);
     assert_eq!(app.visible.len(), 1);
     let syn = app.session_at(0).unwrap();
     assert!(syn.id.starts_with("new:"));
@@ -482,7 +494,7 @@ fn new_session_persists_then_reconciles() {
         context_pct: None,
     };
     app.all_sessions = vec![real];
-    app.merge_extras();
+    app.merge_extras(&mut None);
     app.rebuild_visible();
 
     // Placeholder reconciled away; the real session remains.
@@ -551,13 +563,14 @@ fn a_closed_new_sessions_late_file_is_archived_not_shown() {
     let mut app = isolated_app_at(tmp.clone());
     app.scope = Scope::WorkingDir(PathBuf::from("/work"));
     app.request_new(Agent::Codex, "bar");
+    launch_test_placeholder(&mut app);
     app.selected = 0;
     app.close_selected();
 
     // The agent writes the file after the close; the scan picks it up.
     let late = late_disk_session(&app, "real-late", Agent::Codex, "/work");
     app.all_sessions = vec![late.clone()];
-    app.merge_extras();
+    app.merge_extras(&mut None);
     app.rebuild_visible();
 
     assert!(
@@ -584,6 +597,7 @@ fn a_closed_placeholder_does_not_take_the_session_an_open_pane_just_wrote() {
 
     // Closed a few seconds ago, still inside the grace window.
     app.request_new(Agent::Codex, "first try");
+    launch_test_placeholder(&mut app);
     app.selected = 0;
     app.close_selected();
     assert_eq!(
@@ -594,6 +608,7 @@ fn a_closed_placeholder_does_not_take_the_session_an_open_pane_just_wrote() {
 
     // Started straight after, still open, and this is the one that writes.
     app.request_new(Agent::Codex, "test codex");
+    launch_test_placeholder(&mut app);
     let live = app
         .extra_sessions
         .last()
@@ -606,7 +621,7 @@ fn a_closed_placeholder_does_not_take_the_session_an_open_pane_just_wrote() {
         Agent::Codex,
         "/work",
     )];
-    app.merge_extras();
+    app.merge_extras(&mut None);
     app.rebuild_visible();
 
     assert!(
@@ -633,6 +648,7 @@ fn a_closed_new_session_stops_claiming_files_after_the_grace_window() {
     let mut app = isolated_app_at(tmp.clone());
     app.scope = Scope::WorkingDir(PathBuf::from("/work"));
     app.request_new(Agent::Codex, "bar");
+    launch_test_placeholder(&mut app);
     app.selected = 0;
     app.close_selected();
 
@@ -646,7 +662,7 @@ fn a_closed_new_session_stops_claiming_files_after_the_grace_window() {
         Agent::Codex,
         "/work",
     )];
-    app.merge_extras();
+    app.merge_extras(&mut None);
     app.rebuild_visible();
 
     assert!(
@@ -672,7 +688,7 @@ fn reaping_never_archives_a_pre_existing_session() {
     app.close_selected();
 
     app.all_sessions = vec![late_disk_session(&app, "older", Agent::Codex, "/work")];
-    app.merge_extras();
+    app.merge_extras(&mut None);
     app.rebuild_visible();
 
     assert!(
@@ -843,7 +859,7 @@ fn new_session_stays_until_reconciled() {
 
     // A scan that finds nothing matching must NOT drop the new session.
     app.all_sessions = vec![session("unrelated", Agent::Codex, false)];
-    app.merge_extras();
+    app.merge_extras(&mut None);
     app.rebuild_visible();
     assert_eq!(app.extra_sessions.len(), 1);
     assert!(app
@@ -1592,7 +1608,7 @@ fn merge_extras_ignores_preexisting_session() {
     // A rescan: the new session's rollout file isn't on disk yet, so the
     // scan still only sees the pre-existing session.
     app.all_sessions = vec![pre];
-    app.merge_extras();
+    app.merge_extras(&mut None);
 
     // The synthetic survives (not adopted onto the pre-existing session).
     assert_eq!(
@@ -4672,13 +4688,14 @@ mod account_selection {
         app.request_new_on(&second, "");
         let pending_id = app.pending.as_ref().unwrap().session_id.clone();
         let cwd = app.pending.as_ref().unwrap().command.cwd.clone();
+        launch_test_placeholder(&mut app);
 
         let mut other = session("other-account-session", Agent::Codex, false);
         other.cwd = cwd.clone();
         other.started_at = Some(Utc::now());
         other.file = app.accounts[0].session_root(&home).join("other.jsonl");
         app.all_sessions = vec![other];
-        app.merge_extras();
+        app.merge_extras(&mut None);
         assert_eq!(app.active.as_deref(), Some(pending_id.as_str()));
 
         let mut owned = session("selected-account-session", Agent::Codex, false);
@@ -4687,7 +4704,7 @@ mod account_selection {
         owned.file = second.session_root(&home).join("owned.jsonl");
         app.all_sessions.retain(|s| s.id != pending_id);
         app.all_sessions.push(owned);
-        app.merge_extras();
+        app.merge_extras(&mut None);
         assert_eq!(app.active.as_deref(), Some("selected-account-session"));
     }
 }

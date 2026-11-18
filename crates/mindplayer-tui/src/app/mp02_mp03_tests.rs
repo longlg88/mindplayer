@@ -103,6 +103,193 @@ fn wait_until(mut ready: impl FnMut() -> bool) {
     }
 }
 
+fn transient_fixture(id: &str) -> LifecyclePane {
+    let mut fixture = LifecyclePane::new();
+    let mut placeholder = session(id, Agent::Codex, false);
+    placeholder.cwd = fixture.directory.0.clone();
+    placeholder.started_at = Some(Utc::now());
+    placeholder.title = "new conversation".into();
+    let pty = fixture.app.ptys.remove(&fixture.original.id).unwrap();
+    fixture.app.ptys.insert(id.into(), pty);
+    fixture.app.panes.clear();
+    fixture.app.focus_or_add_pane(id);
+    fixture.app.all_sessions = vec![placeholder.clone()];
+    fixture.app.extra_sessions = vec![placeholder];
+    fixture.app.archive_catalog = Arc::new(Vec::new());
+    fixture.app.new_baselines.insert(id.into(), HashSet::new());
+    fixture
+        .app
+        .pane_accounts
+        .insert(id.into(), (Agent::Codex, "first".into()));
+    fixture.app.rebuild_visible();
+    fixture
+}
+
+fn apply_lifecycle_snapshot(app: &mut App, active: Vec<Session>) {
+    assert!(app.apply_catalog((
+        app.working_set.epoch,
+        Instant::now(),
+        Ok(mindplayer_core::catalog::CatalogSnapshot {
+            active,
+            ..Default::default()
+        }),
+    )));
+}
+
+fn lifecycle_pending(fixture: &LifecyclePane, id: &str) -> PendingSpawn {
+    PendingSpawn {
+        command: mindplayer_core::Command {
+            program: "/bin/false".into(),
+            args: Vec::new(),
+            cwd: fixture.directory.0.clone(),
+            env: fixture.app.accounts[0].launch_env(),
+        },
+        session_id: id.into(),
+        initial_input: None,
+        focus_after_spawn: false,
+    }
+}
+
+#[test]
+fn mp04_repeated_live_snapshots_keep_one_placeholder_and_close_it() {
+    let id = "new:codex:refresh";
+    let mut fixture = transient_fixture(id);
+    fixture.app.remove_pane(id);
+    assert!(
+        fixture.app.ptys.get_mut(id).unwrap().is_alive(),
+        "Ctrl-Q hides, not kills"
+    );
+    for _ in 0..3 {
+        apply_lifecycle_snapshot(&mut fixture.app, Vec::new());
+        assert_eq!(
+            fixture.app.all_sessions.len(),
+            1,
+            "one lifecycle owner, one row"
+        );
+        assert_eq!(fixture.app.visible_sessions().count(), 1);
+    }
+    fixture.app.selected = fixture.app.row_of_session(id).unwrap();
+    fixture.app.close_selected();
+    assert!(!fixture.app.ptys.contains_key(id));
+    assert!(fixture.app.extra_sessions.is_empty());
+    apply_lifecycle_snapshot(&mut fixture.app, Vec::new());
+    assert!(fixture.app.all_sessions.is_empty());
+}
+
+#[test]
+fn mp04_adoption_replaces_preserved_placeholder_without_losing_child_or_metadata() {
+    let id = "new:codex:adoption";
+    let mut fixture = transient_fixture(id);
+    let parser = Arc::clone(fixture.app.ptys[id].parser());
+    fixture.target.started_at = Some(Utc::now());
+    apply_lifecycle_snapshot(&mut fixture.app, vec![fixture.target.clone()]);
+    assert!(fixture.app.extra_sessions.is_empty());
+    assert_eq!(fixture.app.all_sessions.len(), 1);
+    assert_eq!(
+        working_set::source_key(&fixture.app.all_sessions[0]),
+        working_set::source_key(&fixture.target),
+        "adoption keeps the native transcript path, account source and cwd"
+    );
+    assert!(Arc::ptr_eq(
+        &parser,
+        fixture.app.ptys[&fixture.target.id].parser()
+    ));
+    assert_eq!(
+        fixture.app.active.as_deref(),
+        Some(fixture.target.id.as_str())
+    );
+}
+
+#[test]
+fn mp04_close_cancels_exact_pending_or_queued_launch_without_claiming_neighbors() {
+    for queued in [false, true] {
+        let id = "new:codex:cancel";
+        let mut fixture = transient_fixture(id);
+        fixture.app.ptys.remove(id).unwrap().kill();
+        let target = lifecycle_pending(&fixture, id);
+        let neighbor = lifecycle_pending(&fixture, "new:codex:neighbor");
+        if queued {
+            fixture.app.enqueue_spawn(neighbor);
+            fixture.app.enqueue_spawn(target);
+        } else {
+            fixture.app.enqueue_spawn(target);
+            fixture.app.enqueue_spawn(neighbor);
+        }
+        fixture.app.selected = fixture.app.row_of_session(id).unwrap();
+        fixture.app.close_selected();
+        let remaining: Vec<_> = fixture
+            .app
+            .pending
+            .iter()
+            .chain(&fixture.app.pending_queue)
+            .map(|pending| pending.session_id.as_str())
+            .collect();
+        assert_eq!(remaining, ["new:codex:neighbor"]);
+        assert!(
+            fixture.app.closed_extras.is_empty(),
+            "an unlaunched child owns no late file"
+        );
+        fixture.target.started_at = Some(Utc::now());
+        apply_lifecycle_snapshot(&mut fixture.app, vec![fixture.target.clone()]);
+        assert!(!fixture.app.state.is_session_archived(&fixture.target));
+        assert_eq!(fixture.app.visible_sessions().count(), 1);
+    }
+}
+
+#[test]
+fn mp04_close_auth_delayed_launch_does_not_archive_another_accounts_file() {
+    let id = "new:codex:auth";
+    let mut fixture = transient_fixture(id);
+    fixture.app.ptys.remove(id).unwrap().kill();
+    let mut account = fixture.app.accounts[0].clone();
+    account.set_identity_fingerprint(Some("fixture-owner".into()));
+    fixture.app.accounts[0] = account.clone();
+    let pending = lifecycle_pending(&fixture, id);
+    assert!(fixture
+        .app
+        .verify_account_launch(&account, pending)
+        .is_none());
+    let sibling = lifecycle_pending(&fixture, "new:codex:sibling");
+    fixture.app.hold_account_launch(&account, sibling);
+    fixture.app.selected = fixture.app.row_of_session(id).unwrap();
+    fixture.app.close_selected();
+    assert!(!fixture.app.account_auth.owns_launch(id));
+    assert!(fixture.app.account_auth.owns_launch("new:codex:sibling"));
+    assert!(fixture.app.closed_extras.is_empty());
+    fixture
+        .app
+        .complete_account_checks_for_test(Ok(mindplayer_core::limits::AccountIdentity {
+            fingerprint: "fixture-owner".into(),
+            email: "fixture@example.test".into(),
+            workspace: "fixture".into(),
+        }));
+    assert!(fixture.app.pending.is_none());
+    fixture.target.started_at = Some(Utc::now());
+    fixture.collision.started_at = Some(Utc::now());
+    apply_lifecycle_snapshot(
+        &mut fixture.app,
+        vec![fixture.target.clone(), fixture.collision.clone()],
+    );
+    assert!(!fixture.app.state.is_session_archived(&fixture.target));
+    assert!(!fixture.app.state.is_session_archived(&fixture.collision));
+    assert_eq!(fixture.app.visible_sessions().count(), 2);
+}
+
+#[test]
+fn mp04_close_ended_and_handoff_placeholders_removes_them_across_refresh() {
+    for id in ["new:codex:ended", "handoff:codex:ended"] {
+        let mut fixture = transient_fixture(id);
+        fixture.app.ptys.get_mut(id).unwrap().kill();
+        fixture.app.ended.insert(id.into());
+        fixture.app.selected = fixture.app.row_of_session(id).unwrap();
+        fixture.app.close_selected();
+        assert!(fixture.app.extra_sessions.is_empty());
+        assert!(fixture.app.all_sessions.is_empty());
+        apply_lifecycle_snapshot(&mut fixture.app, Vec::new());
+        assert!(fixture.app.visible_sessions().next().is_none());
+    }
+}
+
 #[test]
 fn mp02_resume_reuses_native_owner_and_close_reaps_only_that_child() {
     let mut fixture = LifecyclePane::new();
@@ -423,4 +610,338 @@ fn mp05_activity_refresh_preserves_duplicate_archive_source_and_restore() {
     assert_eq!(pending.session_id, selected.id);
     assert_eq!(pending.command.env.set, expected.env.set);
     assert_eq!(pending.command.args, expected.args);
+}
+
+#[test]
+fn mp04_adoption_preserves_selected_source_for_immediate_close() {
+    for select_placeholder in [false, true] {
+        let id = "new:codex:selected";
+        let mut fixture = transient_fixture(id);
+        fixture.app.all_sessions.push(fixture.original.clone());
+        fixture.app.rebuild_visible();
+        let selected = if select_placeholder {
+            id
+        } else {
+            &fixture.original.id
+        };
+        fixture.app.selected = fixture.app.row_of_session(selected).unwrap();
+        fixture.target.started_at = Some(Utc::now());
+        apply_lifecycle_snapshot(
+            &mut fixture.app,
+            vec![fixture.original.clone(), fixture.target.clone()],
+        );
+        let expected = if select_placeholder {
+            &fixture.target
+        } else {
+            &fixture.original
+        };
+        assert_eq!(fixture.app.selected_session().unwrap().file, expected.file);
+        fixture.app.close_selected();
+        assert!(fixture.app.state.is_session_archived(expected));
+        let untouched = if select_placeholder {
+            &fixture.original
+        } else {
+            &fixture.target
+        };
+        assert!(!fixture.app.state.is_session_archived(untouched));
+    }
+}
+
+#[test]
+fn mp04_live_adoption_cannot_collapse_distinct_native_id_sources() {
+    let id = "new:codex:collision";
+    let mut fixture = transient_fixture(id);
+    fixture.target.started_at = Some(Utc::now());
+    fixture.collision.started_at = fixture.target.started_at;
+    apply_lifecycle_snapshot(
+        &mut fixture.app,
+        vec![fixture.target.clone(), fixture.collision.clone()],
+    );
+    assert_eq!(fixture.app.all_sessions.len(), 3);
+    assert_eq!(fixture.app.extra_sessions.len(), 1);
+    assert!(fixture.app.ptys.get_mut(id).unwrap().is_alive());
+    assert!(!fixture.app.ptys.contains_key(&fixture.target.id));
+    assert!(fixture
+        .app
+        .all_sessions
+        .iter()
+        .any(|s| s.file == fixture.target.file));
+    assert!(fixture
+        .app
+        .all_sessions
+        .iter()
+        .any(|s| s.file == fixture.collision.file));
+}
+
+#[test]
+fn mp04_closing_handoff_removes_only_its_pending_metadata() {
+    let id = "handoff:codex:cancel";
+    let mut fixture = transient_fixture(id);
+    fixture.app.ptys.remove(id).unwrap().kill();
+    let started = fixture.app.extra_sessions[0].started_at.unwrap();
+    let sibling_started = started + chrono::Duration::seconds(1);
+    let artifact = fixture.directory.0.join("handoff.txt");
+    std::fs::write(&artifact, "shared handoff artifact").unwrap();
+    for (child, at) in [(id, started), ("handoff:codex:sibling", sibling_started)] {
+        fixture
+            .app
+            .state
+            .set_handoff_link(child, "parent", artifact.clone(), at);
+        fixture.app.state.add_pending_handoff(
+            "parent",
+            "codex",
+            fixture.directory.0.clone(),
+            at - chrono::Duration::seconds(5),
+            artifact.clone(),
+        );
+        fixture.app.state.add_pending_label(
+            "codex",
+            fixture.directory.0.clone(),
+            at - chrono::Duration::seconds(5),
+            "same label",
+        );
+    }
+    fixture.app.extra_sessions[0].title = "🏷 same label".into();
+    fixture.app.all_sessions[0].title = "🏷 same label".into();
+    fixture.app.selected = fixture.app.row_of_session(id).unwrap();
+    fixture.app.close_selected();
+    assert!(!fixture.app.state.handoff_links.contains_key(id));
+    assert!(fixture
+        .app
+        .state
+        .handoff_links
+        .contains_key("handoff:codex:sibling"));
+    assert_eq!(fixture.app.state.pending_handoffs.len(), 1);
+    assert_eq!(
+        fixture.app.state.pending_handoffs[0].after,
+        sibling_started - chrono::Duration::seconds(5),
+    );
+    assert_eq!(fixture.app.state.pending_labels.len(), 1);
+    assert_eq!(
+        fixture.app.state.pending_labels[0].after,
+        sibling_started - chrono::Duration::seconds(5),
+    );
+    assert!(artifact.exists());
+    let saved = State::load_from(&fixture.app.state_path);
+    assert!(!saved.handoff_links.contains_key(id));
+    assert_eq!(saved.pending_handoffs.len(), 1);
+}
+
+#[test]
+fn mp04_pending_launch_cannot_adopt_a_neighbors_new_file() {
+    let id = "new:codex:prelaunch";
+    let mut fixture = transient_fixture(id);
+    fixture.app.ptys.remove(id).unwrap().kill();
+    let pending = lifecycle_pending(&fixture, id);
+    fixture.app.enqueue_spawn(pending);
+    fixture.target.started_at = Some(Utc::now());
+    apply_lifecycle_snapshot(&mut fixture.app, vec![fixture.target.clone()]);
+    assert_eq!(fixture.app.extra_sessions.len(), 1);
+    assert_eq!(fixture.app.pending.as_ref().unwrap().session_id, id);
+    assert_eq!(fixture.app.all_sessions.len(), 2);
+}
+
+#[test]
+fn mp04_live_pending_metadata_waits_for_owned_adoption_not_recent_baseline_neighbor() {
+    for id in ["new:codex:owned-label", "handoff:codex:owned-label"] {
+        let mut fixture = transient_fixture(id);
+        let started = fixture.app.extra_sessions[0].started_at.unwrap();
+        let after = started - chrono::Duration::seconds(5);
+        fixture.app.extra_sessions[0].title = "🏷 owned label".into();
+        fixture.app.all_sessions[0].title = "🏷 owned label".into();
+        fixture.original.started_at = Some(started - chrono::Duration::seconds(1));
+        fixture.app.all_sessions.push(fixture.original.clone());
+        fixture
+            .app
+            .new_baselines
+            .get_mut(id)
+            .unwrap()
+            .insert(fixture.original.id.clone());
+        fixture.app.state.add_pending_label(
+            "codex",
+            fixture.directory.0.clone(),
+            after,
+            "owned label",
+        );
+        let artifact = fixture.directory.0.join("owned-handoff.txt");
+        if id.starts_with("handoff:") {
+            fixture
+                .app
+                .state
+                .set_handoff_link(id, "parent", artifact.clone(), started);
+            fixture.app.state.add_pending_handoff(
+                "parent",
+                "codex",
+                fixture.directory.0.clone(),
+                after,
+                artifact,
+            );
+        }
+        fixture.app.rebuild_visible();
+
+        for _ in 0..2 {
+            apply_lifecycle_snapshot(&mut fixture.app, vec![fixture.original.clone()]);
+            assert!(fixture.app.state.label_for(&fixture.original.id).is_none());
+            assert!(fixture
+                .app
+                .state
+                .handoff_parent(&fixture.original.id)
+                .is_none());
+            assert_eq!(fixture.app.state.pending_labels.len(), 1);
+            assert_eq!(
+                fixture.app.state.pending_handoffs.len(),
+                usize::from(id.starts_with("handoff:"))
+            );
+            assert_eq!(
+                fixture
+                    .app
+                    .all_sessions
+                    .iter()
+                    .filter(|s| s.title == "🏷 owned label")
+                    .count(),
+                1,
+                "the baseline neighbor must not acquire the transient's title",
+            );
+        }
+
+        fixture.target.started_at = Some(started + chrono::Duration::seconds(1));
+        apply_lifecycle_snapshot(
+            &mut fixture.app,
+            vec![fixture.original.clone(), fixture.target.clone()],
+        );
+        assert!(fixture.app.extra_sessions.is_empty());
+        assert!(fixture.app.state.pending_labels.is_empty());
+        assert!(fixture.app.state.pending_handoffs.is_empty());
+        assert_eq!(
+            fixture.app.state.label_for(&fixture.target.id),
+            Some("owned label")
+        );
+        assert!(fixture.app.state.label_for(&fixture.original.id).is_none());
+        let saved = State::load_from(&fixture.app.state_path);
+        assert_eq!(saved.label_for(&fixture.target.id), Some("owned label"));
+        assert!(saved.pending_labels.is_empty());
+        assert!(saved.pending_handoffs.is_empty());
+        if id.starts_with("handoff:") {
+            assert_eq!(saved.handoff_parent(&fixture.target.id), Some("parent"));
+            assert!(saved.handoff_parent(id).is_none());
+        }
+        // No leftover owned queue may label a subsequent same-directory row.
+        fixture.collision.id = "next-native-session".into();
+        fixture.collision.started_at = Some(started + chrono::Duration::seconds(2));
+        apply_lifecycle_snapshot(
+            &mut fixture.app,
+            vec![
+                fixture.original.clone(),
+                fixture.target.clone(),
+                fixture.collision.clone(),
+            ],
+        );
+        assert!(fixture.app.state.label_for(&fixture.collision.id).is_none());
+        assert!(fixture
+            .app
+            .state
+            .handoff_parent(&fixture.collision.id)
+            .is_none());
+    }
+}
+
+#[test]
+fn mp04_live_metadata_guard_preserves_prior_run_pending_recovery() {
+    let id = "new:codex:guarded";
+    let mut fixture = transient_fixture(id);
+    let started = fixture.app.extra_sessions[0].started_at.unwrap();
+    let after = started - chrono::Duration::seconds(5);
+    fixture.app.extra_sessions[0].title = "🏷 in process".into();
+    fixture.app.all_sessions[0].title = "🏷 in process".into();
+    fixture
+        .app
+        .state
+        .add_pending_label("codex", fixture.directory.0.clone(), after, "in process");
+    let mut recovered = session("prior-run-session", Agent::Claude, false);
+    recovered.cwd = fixture.directory.0.join("prior-run");
+    recovered.started_at = Some(started);
+    fixture
+        .app
+        .state
+        .add_pending_label("claude", recovered.cwd.clone(), after, "recovered label");
+    fixture.app.state.add_pending_handoff(
+        "prior-parent",
+        "claude",
+        recovered.cwd.clone(),
+        after,
+        fixture.directory.0.join("prior-handoff.txt"),
+    );
+    apply_lifecycle_snapshot(&mut fixture.app, vec![recovered.clone()]);
+    assert_eq!(
+        fixture.app.state.label_for(&recovered.id),
+        Some("recovered label")
+    );
+    assert_eq!(
+        fixture.app.state.handoff_parent(&recovered.id),
+        Some("prior-parent")
+    );
+    assert_eq!(fixture.app.state.pending_labels.len(), 1);
+    assert_eq!(fixture.app.state.pending_labels[0].label, "in process");
+    assert!(fixture.app.state.pending_handoffs.is_empty());
+    let saved = State::load_from(&fixture.app.state_path);
+    assert_eq!(saved.label_for(&recovered.id), Some("recovered label"));
+    assert_eq!(
+        saved.pending_labels.len(),
+        1,
+        "held metadata must survive the recovery save"
+    );
+}
+
+#[test]
+fn mp04_adopting_handoff_consumes_only_its_correlated_pending_metadata() {
+    let id = "handoff:codex:first";
+    let mut fixture = transient_fixture(id);
+    let started = fixture.app.extra_sessions[0].started_at.unwrap();
+    let sibling_started = started + chrono::Duration::seconds(1);
+    fixture.app.extra_sessions[0].title = "🏷 shared label".into();
+    fixture.app.all_sessions[0].title = "🏷 shared label".into();
+    let mut sibling = fixture.app.extra_sessions[0].clone();
+    sibling.id = "handoff:codex:sibling".into();
+    sibling.started_at = Some(sibling_started);
+    fixture.app.extra_sessions.push(sibling.clone());
+    fixture.app.all_sessions.push(sibling.clone());
+    let artifact = fixture.directory.0.join("shared-handoff.txt");
+    for (child, at) in [(id, started), (sibling.id.as_str(), sibling_started)] {
+        fixture
+            .app
+            .state
+            .set_handoff_link(child, "parent", artifact.clone(), at);
+        fixture.app.state.add_pending_handoff(
+            "parent",
+            "codex",
+            fixture.directory.0.clone(),
+            at - chrono::Duration::seconds(5),
+            artifact.clone(),
+        );
+        fixture.app.state.add_pending_label(
+            "codex",
+            fixture.directory.0.clone(),
+            at - chrono::Duration::seconds(5),
+            "shared label",
+        );
+    }
+    fixture.target.started_at = Some(started + chrono::Duration::seconds(2));
+    apply_lifecycle_snapshot(&mut fixture.app, vec![fixture.target.clone()]);
+    assert_eq!(fixture.app.extra_sessions.len(), 1);
+    assert_eq!(fixture.app.extra_sessions[0].id, sibling.id);
+    assert_eq!(fixture.app.state.pending_labels.len(), 1);
+    assert_eq!(fixture.app.state.pending_handoffs.len(), 1);
+    assert_eq!(
+        fixture.app.state.pending_handoffs[0].after,
+        sibling_started - chrono::Duration::seconds(5),
+    );
+    assert_eq!(
+        fixture.app.state.pending_labels[0].after,
+        sibling_started - chrono::Duration::seconds(5),
+    );
+    let saved = State::load_from(&fixture.app.state_path);
+    assert_eq!(saved.handoff_parent(&fixture.target.id), Some("parent"));
+    assert_eq!(saved.handoff_parent(&sibling.id), Some("parent"));
+    assert_eq!(saved.pending_handoffs.len(), 1);
+    assert_eq!(saved.pending_labels.len(), 1);
 }

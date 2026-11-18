@@ -1572,6 +1572,7 @@ impl App {
             .and_then(|r| r.session_index())
             .and_then(|i| self.all_sessions.get(i))
             .cloned();
+        let was_spawned = self.ptys.contains_key(&owner);
         if let Some(mut pty) = self.ptys.remove(&owner) {
             pty.kill();
         }
@@ -1584,23 +1585,32 @@ impl App {
         } else {
             self.remove_pane(&owner);
         }
-        if session.id.starts_with("new:") {
-            // Synthetic placeholder: drop the row, but the agent may still write
-            // the rollout file for it. Un-queue the label so it can't be stamped
-            // onto the next session in this dir, and keep the placeholder aside
-            // so `reap_closed_extras` archives the file when it lands — either
-            // one alone would let the closed session reappear.
-            if let Some(label) = session.title.strip_prefix("🏷 ") {
-                if self
-                    .state
-                    .remove_pending_label(session.agent.as_str(), &session.cwd, label)
-                {
-                    let _ = self.save_state();
-                }
+        if session.id.starts_with("new:") || session.id.starts_with("handoff:") {
+            // Only a child that actually ran can own a late-written rollout.
+            // Cancelled prelaunch/auth rows must not claim their neighbor's file.
+            let mut state_changed = self.clear_transient_pending(&session);
+            state_changed |= self.state.handoff_links.remove(&session.id).is_some();
+            if state_changed {
+                let _ = self.save_state();
             }
-            self.extra_sessions.retain(|s| s.id != session.id);
-            self.all_sessions.retain(|s| s.id != session.id);
-            self.closed_extras.push(session.clone());
+            self.extra_sessions.retain(|s| {
+                s.id != session.id
+                    || s.agent != session.agent
+                    || s.file != session.file
+                    || s.cwd != session.cwd
+            });
+            self.all_sessions.retain(|s| {
+                s.id != session.id
+                    || s.agent != session.agent
+                    || s.file != session.file
+                    || s.cwd != session.cwd
+            });
+            if was_spawned {
+                self.closed_extras.push(session.clone());
+            } else {
+                self.new_baselines.remove(&owner);
+                self.pane_accounts.remove(&owner);
+            }
             self.status = "closed new session".to_string();
         } else {
             self.state.set_session_archived(&session, true);

@@ -154,7 +154,7 @@ fn performance_report_rejects_unchanged_transcripts() {
 
 /// Keep native fixture children bounded even if a screen assertion unwinds.
 /// Passing cleanup is checked *before* this fallback can mask a product leak.
-struct OfflineApp(Mp, Vec<u32>);
+pub(super) struct OfflineApp(pub(super) Mp, pub(super) Vec<u32>);
 
 impl Drop for OfflineApp {
     fn drop(&mut self) {
@@ -199,7 +199,7 @@ impl Drop for OfflineApp {
 }
 
 impl Mp {
-    fn restart_offline_fixture(&mut self) {
+    pub(super) fn restart_offline_fixture(&mut self) {
         assert!(
             self.child.try_wait().unwrap().is_some(),
             "restart requires natural app exit"

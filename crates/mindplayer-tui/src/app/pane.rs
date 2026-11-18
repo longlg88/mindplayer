@@ -202,6 +202,17 @@ impl App {
     }
 
     pub(crate) fn remove_pane(&mut self, sid: &str) {
+        // A removed prelaunch pane must never appear again when its queued
+        // command reaches the front. Keep every other launch in order.
+        self.pending_queue
+            .retain(|pending| pending.session_id != sid);
+        if self
+            .pending
+            .as_ref()
+            .is_some_and(|pending| pending.session_id == sid)
+        {
+            self.pending = self.pending_queue.pop_front();
+        }
         if self.is_running(sid) {
             // Ctrl-Q only hides a live PTY. Its login still owns this home
             // until reap_pty observes exit and resumes any held launch.

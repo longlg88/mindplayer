@@ -230,7 +230,7 @@ impl App {
         for session in snapshot.active.iter_mut().chain(&mut snapshot.archive) {
             merge_kiro_context(&mut self.context_observations, session, started_at);
         }
-        let selected = self.selected_session().map(source_key);
+        let mut selected = self.selected_session().map(source_key);
         let mut migrated_use = false;
         for (id, sources) in std::mem::take(&mut snapshot.use_sources) {
             if let std::collections::btree_map::Entry::Vacant(entry) =
@@ -269,7 +269,35 @@ impl App {
                 .filter(|s| s.started_at.is_some_and(|at| at >= after))
                 .cloned()
                 .collect();
-            if self.state.resolve_pending(&candidates) {
+            // In-process placeholders already own these records. Generic
+            // timestamp matching cannot distinguish their baseline neighbors.
+            // Leave records from earlier runs eligible for normal recovery.
+            let extras = &self.extra_sessions;
+            let held_labels: Vec<_> = self
+                .state
+                .pending_labels
+                .extract_if(.., |pending| {
+                    extras
+                        .iter()
+                        .any(|extra| spawn::owns_pending_label(extra, pending))
+                })
+                .collect();
+            let links = &self.state.handoff_links;
+            let held_handoffs: Vec<_> = self
+                .state
+                .pending_handoffs
+                .extract_if(.., |pending| {
+                    extras.iter().any(|extra| {
+                        links
+                            .get(&extra.id)
+                            .is_some_and(|link| spawn::owns_pending_handoff(extra, link, pending))
+                    })
+                })
+                .collect();
+            let resolved = self.state.resolve_pending(&candidates);
+            self.state.pending_labels.extend(held_labels);
+            self.state.pending_handoffs.extend(held_handoffs);
+            if resolved {
                 let _ = self.save_state();
             }
         }
@@ -318,7 +346,7 @@ impl App {
         self.archive_catalog = Arc::new(snapshot.archive);
         self.working_set.archive_overrides.clear();
         self.working_set.next_scan = Some(Instant::now() + CATALOG_INTERVAL);
-        self.merge_extras();
+        self.merge_extras(&mut selected);
         self.rebuild_visible();
         if self.show_archived {
             self.request_archive_page();

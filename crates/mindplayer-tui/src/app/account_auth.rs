@@ -1062,7 +1062,7 @@ macro_rules! lifecycle_tests {
                 other.cwd = pending.command.cwd.clone();
                 app.verify_account_launch(&account, pending);
                 app.all_sessions.push(other);
-                app.merge_extras();
+                app.merge_extras(&mut None);
                 assert!(app.extra_sessions.iter().any(|s| s.id == synthetic_id));
                 assert_eq!(app.active.as_deref(), Some(synthetic_id.as_str()));
             }

@@ -212,15 +212,7 @@ impl Mp {
         for entry in std::fs::read_dir(&self.codex_marker_dir).unwrap() {
             std::fs::remove_file(entry.unwrap().path()).unwrap();
         }
-        assert_no_provider_requests(self);
-        // Launch markers describe this run only. Preserve all provider-turn
-        // logs so restarting cannot conceal a request from the first run.
-        for name in ["private-ui", "ui.pid"] {
-            let path = self.router_marker(name);
-            if path.exists() {
-                std::fs::remove_file(path).unwrap();
-            }
-        }
+        self.assert_native_without_router();
         let (rows, cols) = self.parser.lock().unwrap().screen().size();
         let pair = native_pty_system()
             .openpty(PtySize {
@@ -258,14 +250,6 @@ impl Mp {
 }
 
 fn offline_fixture(prepare: impl FnOnce(&Path)) -> OfflineApp {
-    assert!(
-        std::env::var_os("MINDPLAYER_TEST_REAL_JEV").is_none_or(|v| v != "1"),
-        "offline evaluator refuses live Jev opt-in"
-    );
-    assert!(
-        std::env::var_os("MINDPLAYER_TEST_PRIVATE_CODEX").is_none(),
-        "offline evaluator requires synthetic Codex"
-    );
     OfflineApp(
         Mp::launch_with_fixture_hooks(
             (60, 240),
@@ -330,20 +314,6 @@ process.stdout.write(JSON.stringify({ files: count, sha256: hash.digest('hex') }
         String::from_utf8_lossy(&output.stderr)
     );
     serde_json::from_slice(&output.stdout).expect("fixture source SHA-256")
-}
-
-fn assert_no_provider_requests(mp: &Mp) {
-    // Native Codex still prepares its local router while Jev is OFF. Its
-    // existence is not a provider request; these are the fixture's actual
-    // inference/judgment consumers, and neither may receive a turn here.
-    for name in ["jev.jsonl", "routes.jsonl"] {
-        assert!(
-            std::fs::read(mp.router_marker(name))
-                .unwrap_or_default()
-                .is_empty(),
-            "offline echo must never request a provider turn: {name}"
-        );
-    }
 }
 
 fn assert_native_cleanup(mp: &Mp, pids: &[u32]) {
@@ -421,7 +391,7 @@ fn active_archive_enter_restores_the_original_native_id() {
         originals,
         "restore never rewrites provider transcripts"
     );
-    assert_no_provider_requests(mp);
+    mp.assert_native_without_router();
 }
 
 #[test]
@@ -476,7 +446,7 @@ fn active_archive_restored_membership_survives_a_restart() {
         originals,
         "restart preserves source bytes"
     );
-    assert_no_provider_requests(mp);
+    mp.assert_native_without_router();
 }
 
 /// Executed only as a fake provider inside a native PTY. TTY echo is disabled:
@@ -562,7 +532,7 @@ struct Resources {
     rss_kib: u64,
 }
 
-/// Observe descendants, including the native UI and its local router/backend,
+/// Observe descendants, including the native CLI and its child processes,
 /// without inspecting command lines or any other user's process environment.
 fn resources(root: u32) -> BTreeMap<u32, Resources> {
     let output = std::process::Command::new("ps")
@@ -1012,7 +982,6 @@ fn load_fixture(children: usize, archived: usize) -> (OfflineApp, TranscriptGrow
             "replace only the native echo consumer"
         );
         write_script(&script, &original.replace("exec cat", &replacement));
-        seed_private_codex(&root.join("home"), &script);
     });
     (
         fixture,
@@ -1135,7 +1104,7 @@ fn load_fixture_restore_smoke(children: usize) {
     assert_native_cleanup(mp, &fixture.1);
     growth.verify();
     assert_eq!(immutable_source_fingerprint(mp, &growth.paths()), immutable);
-    assert_no_provider_requests(mp);
+    mp.assert_native_without_router();
     assert!(samples
         .iter()
         .any(|sample| sample.phase == "archive_search"));
@@ -1423,7 +1392,7 @@ fn latency_evaluation(children: usize, archived: usize) {
         immutable_sources,
         "all other provider sources remain byte-exact"
     );
-    assert_no_provider_requests(mp);
+    mp.assert_native_without_router();
     let mut latencies: Vec<_> = samples.iter().map(|sample| sample.ms).collect();
     latencies.sort_by(f64::total_cmp);
     let percentile = |q: usize| latencies[(latencies.len() * q).div_ceil(100) - 1];

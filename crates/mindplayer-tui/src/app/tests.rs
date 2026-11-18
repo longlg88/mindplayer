@@ -90,9 +90,7 @@ pub(super) fn fresh_login_test_home() -> PathBuf {
 
 pub(crate) fn isolated_app() -> App {
     let mut app = App::new();
-    app.startup_routing = crate::startup_routing::StartupRouting::confirmed(
-        crate::startup_routing::RoutingMode::Native,
-    );
+
     match TEST_STATE_PATH.with(|c| c.borrow().clone()) {
         // The test named a path: load whatever is there, so it can assert that a
         // fresh `App` reads back what an earlier one persisted.
@@ -118,9 +116,7 @@ pub(crate) fn isolated_app() -> App {
 /// reads better at the call site.
 pub(crate) fn isolated_app_at(state_path: PathBuf) -> App {
     let mut app = App::new();
-    app.startup_routing = crate::startup_routing::StartupRouting::confirmed(
-        crate::startup_routing::RoutingMode::Native,
-    );
+
     app.state_path = state_path;
     app.state = mindplayer_core::State::default();
     app.walker_choice = crate::walker::index_of(crate::walker::DEFAULT_ID);
@@ -337,29 +333,7 @@ fn list_item_mapping_handles_folded_single_band_and_empty_lists() {
 }
 
 #[test]
-fn unconfirmed_startup_keeps_pending_work_without_creating_a_pty() {
-    let mut app = isolated_app();
-    app.startup_routing = crate::startup_routing::StartupRouting::default();
-    app.pending = Some(PendingSpawn {
-        command: mindplayer_core::Command {
-            program: "sh".into(),
-            args: vec!["-c".into(), "exit 99".into()],
-            cwd: std::env::temp_dir(),
-            env: Default::default(),
-        },
-        session_id: "not-before-choice".into(),
-        initial_input: None,
-        focus_after_spawn: true,
-    });
-    app.spawn_pending();
-    assert!(app.pending.is_some());
-    assert!(app.ptys.is_empty());
-    assert!(app.status.contains("시작바"));
-    assert_eq!(app.startup_routing.mode(), None);
-}
-
-#[test]
-fn unverified_provider_accounts_are_blocked_before_native_or_wrapped_process_starts() {
+fn unverified_provider_accounts_are_blocked_before_native_process_starts() {
     for (provider, program) in [
         (Agent::Codex, "codex"),
         (Agent::Codex, "node"),
@@ -2550,18 +2524,7 @@ fn buffered_escape_and_consumed_cpr_preserve_completion_tracking() {
         cwd: PathBuf::new(),
         env: Default::default(),
     };
-    let mut pty = PtySession::spawn(&command, id, 6, 20).unwrap();
-    let channel =
-        crate::local_router::RoutingStatusChannel::create_at(&tmp.0.join("private")).unwrap();
-    let status_path = channel.path().to_path_buf();
-    let mut status = channel.snapshot().unwrap();
-    status.revision = 1;
-    status.stage = crate::local_router::RoutingStage::Completed;
-    status.thread_id = Some(id.into());
-    status.turn_id = Some("active".into());
-    status.request_id = serde_json::json!(1);
-    std::fs::write(&status_path, serde_json::to_vec(&status).unwrap()).unwrap();
-    pty.set_routing_status_for_test(channel);
+    let pty = PtySession::spawn(&command, id, 6, 20).unwrap();
     pty.take_dirty();
     app.ptys.insert(id.into(), pty);
     app.focus_or_add_pane(id);
@@ -2582,7 +2545,6 @@ fn buffered_escape_and_consumed_cpr_preserve_completion_tracking() {
         assert_eq!(app.codex_turns[id].status(), Some(SessionStatus::Completed));
         assert_eq!(app.hook_status.get(id), Some(&reading));
         assert_eq!(app.submitted_at.get(id), Some(&at));
-        assert!(app.ptys[id].routing_status().is_some());
     }
     app.send_to_pty(b"\x1b");
     app.ptys
@@ -2594,110 +2556,6 @@ fn buffered_escape_and_consumed_cpr_preserve_completion_tracking() {
     assert_eq!(app.codex_turns[id].status(), Some(SessionStatus::Completed));
     assert_eq!(app.hook_status.get(id), Some(&reading));
     assert_eq!(app.submitted_at.get(id), Some(&at));
-    assert!(app.ptys[id].routing_status().is_some());
-    app.ptys.clear();
-}
-
-#[test]
-fn codex_status_follows_the_verified_pty_thread_not_its_original_pane_id() {
-    use std::io::Write;
-    let tmp = FreshLoginTestHome::new();
-    let old_file = tmp.0.join("old.jsonl");
-    let current_file = tmp.0.join("current.jsonl");
-    let event = |kind: &str, turn: &str| {
-        format!("{{\"type\":\"event_msg\",\"payload\":{{\"type\":\"{kind}\",\"turn_id\":\"{turn}\"}}}}\n")
-    };
-    std::fs::write(&old_file, event("task_started", "old-turn")).unwrap();
-    std::fs::write(
-        &current_file,
-        event("task_started", "historical") + &event("task_complete", "historical"),
-    )
-    .unwrap();
-    let mut old = session("original-pane", Agent::Codex, false);
-    old.file = old_file.clone();
-    let mut current = session("current-thread", Agent::Codex, false);
-    current.file = current_file.clone();
-    let mut app = app_with(vec![old, current]);
-    let command = mindplayer_core::Command {
-        program: "cat".into(),
-        args: Vec::new(),
-        cwd: PathBuf::new(),
-        env: Default::default(),
-    };
-    let mut pty = PtySession::spawn(&command, "original-pane", 6, 20).unwrap();
-    let channel =
-        crate::local_router::RoutingStatusChannel::create_at(&tmp.0.join("private")).unwrap();
-    let status_path = channel.path().to_path_buf();
-    let mut status = channel.snapshot().unwrap();
-    status.revision = 1;
-    status.stage = crate::local_router::RoutingStage::Completed;
-    status.thread_id = Some("current-thread".into());
-    status.turn_id = Some("current-turn".into());
-    status.request_id = serde_json::json!(1);
-    std::fs::write(&status_path, serde_json::to_vec(&status).unwrap()).unwrap();
-    pty.set_routing_status_for_test(channel);
-    pty.take_dirty();
-    app.ptys.insert("original-pane".into(), pty);
-    let mut reader = crate::turn_status::TurnStatusReader::new_from_start(old_file);
-    assert!(reader.poll());
-    app.codex_turns.insert("original-pane".into(), reader);
-
-    assert_eq!(
-        app.session_status("original-pane"),
-        SessionStatus::Completed,
-        "an old thread's working state cannot override the verified current thread"
-    );
-    app.poll_hook_status();
-    assert_eq!(app.codex_turns["original-pane"].file(), current_file);
-    assert_eq!(
-        app.codex_turns["original-pane"].status(),
-        None,
-        "do not replay historical completion when binding a different thread"
-    );
-    assert_eq!(
-        app.session_status("original-pane"),
-        SessionStatus::Completed
-    );
-
-    for (kind, expected) in [
-        ("task_started", SessionStatus::Working),
-        ("task_complete", SessionStatus::Completed),
-    ] {
-        writeln!(
-            std::fs::OpenOptions::new()
-                .append(true)
-                .open(&current_file)
-                .unwrap(),
-            "{}",
-            event(kind, "automatic-continuation").trim_end()
-        )
-        .unwrap();
-        app.hook_status_due = None;
-        app.poll_hook_status();
-        assert_eq!(
-            app.session_status("original-pane"),
-            expected,
-            "native automatic continuation must supersede the previous routed completion"
-        );
-    }
-
-    status.revision += 1;
-    status.thread_id = Some("undiscovered-thread".into());
-    status.turn_id = None;
-    status.request_id = serde_json::Value::Null;
-    status.stage = crate::local_router::RoutingStage::Ready;
-    std::fs::write(&status_path, serde_json::to_vec(&status).unwrap()).unwrap();
-    app.ptys["original-pane"].take_dirty();
-    assert_ne!(
-        app.session_status("original-pane"),
-        SessionStatus::Completed
-    );
-    app.hook_status_due = None;
-    app.poll_hook_status();
-    assert!(
-        !app.codex_turns.contains_key("original-pane"),
-        "do not keep a stale source while discovery catches up"
-    );
     app.ptys.clear();
 }
 
@@ -5158,9 +5016,7 @@ mod new_session_account_picker {
     #[test]
     fn another_codex_account_signs_in_before_it_can_be_used() {
         let mut app = app_with(base());
-        app.startup_routing = crate::startup_routing::StartupRouting::confirmed(
-            crate::startup_routing::RoutingMode::Jev,
-        );
+
         app.choose_new_fresh_login(Agent::Codex);
         app.confirm_new_session();
 

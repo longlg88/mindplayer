@@ -1393,11 +1393,6 @@ impl App {
         };
         let rows = reading.rows;
         self.limits_rx = None;
-        self.limits_observed_at = self.limits_started.and_then(|started| {
-            chrono::Duration::from_std(started.elapsed())
-                .ok()
-                .map(|age| Utc::now() - age)
-        });
         self.limits_started = None;
         // Asked once per account per run, and only when no other key is spoken for.
         for account in reading.unusable {
@@ -1549,7 +1544,7 @@ impl App {
         let Some(session) = self.selected_session().cloned() else {
             return;
         };
-        self.refresh_native_owners();
+
         if !self.can_resume_source(&session) {
             return;
         }

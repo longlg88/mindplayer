@@ -337,8 +337,6 @@ pub struct App {
     pub observe_prompt_bounds: Option<(u16, u16, u16, u16)>,
     pub observe_detail_bounds: Option<(u16, u16, u16, u16)>,
     pub screen: Screen,
-    /// Codex input policy. The child UI keeps a session toggle and stamps each submission.
-    pub(crate) startup_routing: crate::startup_routing::StartupRouting,
     /// 0 = working dir, 1 = global.
     pub scope_choice: usize,
     /// Index into [`crate::walker::ALL`] for the character walking the strip
@@ -535,8 +533,6 @@ pub struct App {
     /// Subscription rate-limit windows for the usage popup. `None` until the
     /// first fetch lands; the fetch does network I/O so it never blocks a keypress.
     pub limits: Option<Vec<mindplayer_core::limits::QuotaRow>>,
-    /// Start time of the last completed live fetch; disk fallback never stamps it.
-    pub(crate) limits_observed_at: Option<DateTime<Utc>>,
     pub(crate) limits_rx: Option<Receiver<UsageReading>>,
     /// Usage is local to this working directory and never enters the account cache.
     pub(crate) vercel_budget: Option<Result<VercelUsage, VercelUsageError>>,
@@ -701,7 +697,6 @@ impl App {
             observe_prompt_bounds: None,
             observe_detail_bounds: None,
             screen: Screen::ScopeSelect,
-            startup_routing: crate::startup_routing::StartupRouting::per_prompt(),
             scope_choice: 0,
             walker_choice,
             walker_picker: None,
@@ -780,7 +775,6 @@ impl App {
             audit_path: audit_path_for_app(),
             prompts_dir: prompts_dir_for_app(),
             limits: None,
-            limits_observed_at: None,
             limits_rx: None,
             vercel_budget: None,
             vercel_cwd: None,
@@ -1382,7 +1376,6 @@ mod link_copy;
 mod modals;
 mod pane;
 mod selection;
-mod session_continuity;
 mod session_list;
 mod spawn;
 mod usage;
@@ -1392,21 +1385,3 @@ mod working_set_tests;
 
 #[cfg(test)]
 mod tests;
-
-#[cfg(test)]
-mod per_prompt_tests {
-    use super::*;
-    use crate::startup_routing::{RoutingMode, StartupStage};
-
-    #[test]
-    fn new_app_is_ready_for_per_prompt_routing_before_scanning() {
-        let app = App::new_in(std::env::temp_dir());
-        assert_eq!(app.screen, Screen::ScopeSelect);
-        assert_eq!(app.startup_routing.mode(), Some(RoutingMode::PerPrompt));
-        assert_eq!(app.startup_routing.stage, StartupStage::Complete);
-        assert!(!app.startup_routing.active());
-        assert!(app.startup_routing.error.is_none());
-        assert!(app.pending.is_none());
-        assert!(app.ptys.is_empty());
-    }
-}

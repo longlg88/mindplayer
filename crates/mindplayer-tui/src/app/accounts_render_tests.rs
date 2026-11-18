@@ -29,9 +29,7 @@ fn painted(app: &mut App, width: u16, height: u16) -> String {
 fn app_on_main() -> App {
     let mut app = App::new_in(std::env::temp_dir());
     app.screen = Screen::Main;
-    app.startup_routing = crate::startup_routing::StartupRouting::confirmed(
-        crate::startup_routing::RoutingMode::Native,
-    );
+
     app.accounts = MULTI_ACCOUNT_AGENTS.map(Account::inherited).to_vec();
     app
 }

@@ -82,6 +82,21 @@ the resulting minimum version.)
 
 ### Unreleased
 
+- **2.0.0 — breaking:** use the installed PATH CLI for Codex and Claude
+  new/resume/handoff/login launches instead of the private frozen Codex build.
+  Remove integrated F6 Jev routing, embedded Node launcher assets and router UI.
+  CLI replacement or symlink retargeting affects subsequent launches without
+  replacing existing panes; changing PATH itself requires restarting MindPlayer.
+  MindPlayer does not download or update provider CLIs.
+- Preserve account environments, cwd, resume arguments, handoff context, Claude
+  fullscreen settings and OMP launch behavior. Leave existing credentials and
+  private Codex installations untouched.
+- Add native PTY regressions for executable replacement and symlink retargeting
+  across resume, new session and handoff, plus an opt-in installed-CLI version smoke.
+- Remove private-router-only list identity migration after in-CLI `/clear`,
+  `/resume` and `/fork`. The native commands remain available, but the list keeps
+  the launch-time session binding; rediscover/select the new session for list actions.
+
 - In 1.0.9, move provider identity to a fixed left column beside the handoff tree
   and task title, retaining the title's cell budget and right-side account/status
   metadata. Start each account's quota on its own row; only that account's windows

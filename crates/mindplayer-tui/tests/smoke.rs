@@ -37,7 +37,6 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::io::stdout;
 use std::io::{Read, Write};
-use std::net::TcpStream;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
@@ -68,8 +67,6 @@ const FIXTURE_CONFIG_NEW: &str = "model = \"fixture-new\"\n";
 const FIXTURE_AUTH_SENTINEL: &str = "fixture-auth-sentinel\n";
 const INLINE_FIXTURE_TEST: &str = "ratatui_inline_painter_fixture";
 const STARTUP_CHOICE: &str = "MindPlayer / 실행 설정표";
-const PROMPT_JEV: &str = "[F6] Jev ON · 외부 전송 동의";
-const PROMPT_NATIVE: &str = "[F6] Jev OFF · 기본 모델 유지";
 const F6: &[u8] = b"\x1b[17~";
 const F7: &[u8] = b"\x1b[18~";
 
@@ -97,10 +94,6 @@ enum CodexFixture {
     AccountQuota,
     AuthRecovery,
     ClaudeAuthRecovery,
-    KeylessRouter,
-    ActualRouter,
-    LifecycleRouter,
-    RealJevRouter,
 }
 
 // Per-scenario overall bounds. A genuine hang trips these and fails the test
@@ -377,83 +370,6 @@ fn seed_claude_session(root: &Path, cwd: &Path, id: &str, title: &str) -> PathBu
     file
 }
 
-/// Seed a synthetic private UI, or an explicitly supplied native candidate,
-/// without changing the global Codex or the developer's HOME.
-fn seed_private_codex(home: &Path, fake_codex: &Path) {
-    use std::os::unix::fs::PermissionsExt;
-
-    let staged = home.join("private-codex-fixture");
-    let staged_host = home.join("private-code-mode-host-fixture");
-    if let Some(real) = std::env::var_os("MINDPLAYER_TEST_PRIVATE_CODEX") {
-        let real = PathBuf::from(real);
-        assert!(
-            real.is_absolute() && real.is_file(),
-            "explicit private Codex"
-        );
-        let host = real.parent().unwrap().join("codex-code-mode-host");
-        std::fs::copy(&real, &staged).expect("copy the explicit native Codex");
-        std::fs::copy(host, &staged_host).expect("copy the matching native host");
-        for path in [&staged, &staged_host] {
-            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
-                .expect("private native fixture permissions");
-        }
-    } else {
-        let source = std::fs::read_to_string(fake_codex).expect("read fake Codex");
-        write_script(
-            &staged,
-            &format!(
-                "#!/bin/sh\nif [ \"$1\" = \"--mindplayer-ui-contract\" ]; then printf '%s\\n' 'mindplayer-native-routing-v4'; exit 0; fi\nif [ -n \"$MINDPLAYER_ROUTER_MARKER_DIR\" ]; then\n  case \" $* \" in\n    *\" app-server \"*) marker=private-app-server ;;\n    *) marker=private-ui ;;\n  esac\n  printf '%s\\n' \"$0\" > \"$MINDPLAYER_ROUTER_MARKER_DIR/$marker\"\nfi\n{source}"
-            ),
-        );
-        // Explicit no-op host: this synthetic fixture does not prove native tools.
-        write_script(&staged_host, "#!/bin/sh\nexit 0\n");
-    }
-    let digest = std::process::Command::new("node")
-        .args([
-            "--input-type=module",
-            "--eval",
-            "import { createHash } from 'node:crypto'; import { readFileSync } from 'node:fs'; process.stdout.write(JSON.stringify(process.argv.slice(1).map(path => createHash('sha256').update(readFileSync(path)).digest('hex'))));",
-        ])
-        .arg(&staged)
-        .arg(&staged_host)
-        .env_remove("NODE_OPTIONS")
-        .output()
-        .expect("hash isolated private Codex fixture");
-    assert!(digest.status.success(), "hash private Codex fixture");
-    let [digest, host_digest]: [String; 2] =
-        serde_json::from_slice(&digest.stdout).expect("fixture SHA-256 hashes");
-    assert_eq!(digest.len(), 64);
-    assert_eq!(host_digest.len(), 64);
-    let root = home.join(".mindplayer/native-codex");
-    let build = root.join("builds").join(&digest);
-    std::fs::create_dir_all(&build).expect("create private Codex fixture directories");
-    for directory in [&root, &root.join("builds"), &build] {
-        std::fs::set_permissions(directory, std::fs::Permissions::from_mode(0o700))
-            .expect("private fixture directory permissions");
-    }
-    std::fs::rename(staged, build.join("codex")).expect("publish private Codex fixture");
-    std::fs::rename(staged_host, build.join("codex-code-mode-host"))
-        .expect("publish private code-mode host fixture");
-    let manifest = root.join("active.json");
-    std::fs::write(
-        &manifest,
-        serde_json::to_vec(&serde_json::json!({
-            "schemaVersion": 1,
-            "sourceRevision": "092d3acd6bec3e3a14bdc7e7a2810ab628ab759d",
-            "contract": "mindplayer-native-routing-v4",
-            "version": "0.162.1",
-            "binarySha256": digest,
-            "binary": format!("builds/{digest}/codex"),
-            "codeModeHostSha256": host_digest,
-            "codeModeHost": format!("builds/{digest}/codex-code-mode-host"),
-        }))
-        .expect("serialize private Codex fixture manifest"),
-    )
-    .expect("write private Codex fixture manifest");
-    std::fs::set_permissions(manifest, std::fs::Permissions::from_mode(0o600))
-        .expect("private fixture manifest permissions");
-}
-
 /// Seed one minimal-but-valid synthetic Codex transcript that `discovery.rs`
 /// recognizes: a first `session_meta` line (id + cwd) and a `response_item`
 /// user message that becomes the session title.
@@ -613,6 +529,395 @@ fn contains_observer_total(screen: &str) -> bool {
         .any(|needle| panel.contains(needle))
 }
 
+/// Publish the PATH entry atomically, as package managers do on upgrade.
+#[cfg(unix)]
+fn publish_native_launcher(tmp: &Path, provider: &str, revision: u8, symlink: bool) {
+    let bin = tmp.join("bin");
+    let receipt = tmp.join(format!("launcher-{provider}-{revision}.txt"));
+    let candidate = bin.join(format!("{provider}-revision-{revision}"));
+    write_script(
+        &candidate,
+        &format!(
+            r#"#!/bin/sh
+case "$1" in app-server|auth|login|logout) ;;
+*)
+  if [ -n "$MINDPLAYER_PANE_ID" ]; then
+    {{
+      printf 'REVISION=%s\nPID=%s\nCWD=%s\nCODEX_HOME=%s\nCLAUDE_CONFIG_DIR=%s\nPANE=%s\n' '{revision}' "$$" "$PWD" "$CODEX_HOME" "$CLAUDE_CONFIG_DIR" "$MINDPLAYER_PANE_ID"
+      for arg in "$@"; do printf 'ARG=%s\n' "$arg"; done
+      printf 'COMPLETE\n'
+    }} > '{receipt}'
+  fi
+  ;;
+esac
+exec '{original}' "$@"
+"#,
+            receipt = receipt.display(),
+            original = bin.join(format!("{provider}-fixture")).display(),
+        ),
+    );
+    let launcher = bin.join(provider);
+    if symlink {
+        let staged = bin.join(format!("{provider}-next"));
+        std::os::unix::fs::symlink(&candidate, &staged).expect("stage updated CLI symlink");
+        std::fs::rename(staged, launcher).expect("atomically retarget PATH CLI symlink");
+    } else {
+        std::fs::rename(candidate, launcher).expect("atomically replace PATH CLI launcher");
+    }
+}
+
+/// Exercise three entry routes in one app process while its PATH entry changes.
+/// Receipts are written by the actual selected child, not by the test parent.
+#[cfg(unix)]
+fn native_launcher_updates_between_entry_routes(provider: &str, symlink: bool) {
+    let claude = provider == "claude";
+    let mut mp = Mp::launch_with_fixture_hooks(
+        (ROWS, COLS),
+        false,
+        false,
+        true,
+        false,
+        if claude {
+            CodexFixture::ClaudeAuthRecovery
+        } else {
+            CodexFixture::Echo
+        },
+        (
+            |tmp: &Path| {
+                std::fs::rename(
+                    tmp.join("bin").join(provider),
+                    tmp.join("bin").join(format!("{provider}-fixture")),
+                )
+                .expect("retain offline account probe and PTY fixture");
+                publish_native_launcher(tmp, provider, 1, symlink);
+            },
+            |_: &Path, _: Option<u32>| {},
+        ),
+    );
+    let app_pid = mp.child.process_id().expect("same MindPlayer process");
+    let home = if claude {
+        claude_fixture_home(&mp, true)
+    } else {
+        isolated_codex_home(&mp)
+    };
+    let credential = home.join(if claude {
+        ".credentials.json"
+    } else {
+        "auth.json"
+    });
+    let original_credential = std::fs::read(&credential).expect("isolated account credential");
+    mp.start_into_main_list();
+    let mut children = Vec::new();
+    for (index, entry) in ["resume", "new", "handoff"].into_iter().enumerate() {
+        let revision = u8::try_from(index + 1).unwrap();
+        if index != 0 {
+            publish_native_launcher(&mp._tmp, provider, revision, symlink);
+        }
+        match entry {
+            "resume" => mp.send(b"/alfa\r"),
+            "new" => {
+                mp.send(b"n");
+                mp.expect("New session", STEP_TIMEOUT, "new-session account picker");
+                mp.send(b"\x1b[B");
+                mp.expect(
+                    if claude {
+                        "▶ claude · spruce7"
+                    } else {
+                        "▶ codex · isolated"
+                    },
+                    STEP_TIMEOUT,
+                    "select the same isolated account after launcher upgrade",
+                );
+                mp.send(if claude { b"\r\r" } else { b"\r\r\r" });
+            }
+            "handoff" => {
+                if claude {
+                    let source = mp
+                        ._tmp
+                        .join("claude")
+                        .join(
+                            mp._tmp
+                                .join("scope")
+                                .to_string_lossy()
+                                .replace(['/', '.'], "-"),
+                        )
+                        .join("claude-brvo-0002.jsonl");
+                    append_claude_turn(&source, "user", "launcher upgrade handoff question");
+                    append_claude_turn(&source, "assistant", "launcher upgrade handoff answer");
+                } else {
+                    append_handoff_turn(&mp.codex_brvo_file);
+                }
+                // Esc cancels filtering and rebuilds the unfiltered selection;
+                // it does not retain the matching source row. Navigate the real
+                // list and observe its selection before opening the handoff.
+                let selected_row =
+                    |screen: &str| screen.lines().position(|line| line.starts_with("│▶"));
+                for _ in 0..8 {
+                    let screen = mp.screen();
+                    let selected = selected_row(&screen).expect("selected native session row");
+                    if screen.lines().nth(selected).unwrap().contains(TITLE_B) {
+                        break;
+                    }
+                    mp.send(b"\x1b[B");
+                    assert!(
+                        mp.wait_until(STEP_TIMEOUT, |screen| selected_row(screen)
+                            != Some(selected)),
+                        "list must consume the source-selection key"
+                    );
+                }
+                assert!(
+                    mp.screen()
+                        .lines()
+                        .any(|line| line.starts_with("│▶") && line.contains(TITLE_B)),
+                    "handoff must originate from BRVO, not a newly launched isolated session"
+                );
+                mp.send(b"h");
+                mp.expect("Handoff", STEP_TIMEOUT, "handoff account picker");
+                mp.send(b"\x1b[B");
+                mp.expect(
+                    if claude {
+                        "▶ spruce7"
+                    } else {
+                        "▶ isolated"
+                    },
+                    STEP_TIMEOUT,
+                    "preserve handoff account after launcher upgrade",
+                );
+                mp.send(b"\r");
+            }
+            _ => unreachable!(),
+        }
+        let receipt = mp._tmp.join(format!("launcher-{provider}-{revision}.txt"));
+        assert!(
+            mp.wait_until(STEP_TIMEOUT, |_| std::fs::read_to_string(&receipt)
+                .is_ok_and(|text| text.ends_with("COMPLETE\n"))),
+            "{provider} {entry} did not execute launcher revision {revision}: {}",
+            mp.screen()
+        );
+        mp.expect(PANE_READY, STEP_TIMEOUT, "updated native child is ready");
+        let text = std::fs::read_to_string(receipt).unwrap();
+        let fields: Vec<_> = text.lines().collect();
+        let cwd = mp._tmp.join(if claude && entry == "resume" {
+            "scope/session-cwd"
+        } else {
+            "scope"
+        });
+        assert!(
+            fields.contains(&format!("CWD={}", cwd.display()).as_str()),
+            "{text}"
+        );
+        let account_key = if claude {
+            "CLAUDE_CONFIG_DIR"
+        } else {
+            "CODEX_HOME"
+        };
+        assert!(
+            fields.contains(&format!("{account_key}={}", home.display()).as_str()),
+            "{text}"
+        );
+        let args: Vec<_> = fields
+            .iter()
+            .filter_map(|line| line.strip_prefix("ARG="))
+            .collect();
+        assert_eq!(
+            args.contains(&if claude { "--resume" } else { "resume" }),
+            entry == "resume",
+            "{text}"
+        );
+        if entry == "resume" {
+            assert!(
+                args.contains(&if claude {
+                    "claude-alfa-0001"
+                } else {
+                    "codex-alfa-0001"
+                }),
+                "{text}"
+            );
+        }
+        assert!(
+            !args.iter().any(|arg| arg.starts_with("--remote")),
+            "{text}"
+        );
+        if claude {
+            assert!(
+                args.windows(2)
+                    .any(|pair| pair == ["--settings", "{\"tui\":\"fullscreen\"}"]),
+                "native Claude fullscreen settings must survive {entry}: {text}"
+            );
+        }
+        let child: u32 = fields
+            .iter()
+            .find_map(|line| line.strip_prefix("PID="))
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert!(
+            !children.contains(&child),
+            "each route starts a fresh child"
+        );
+        children.push(child);
+        assert!(children.iter().all(|pid| fixture_process_exists(*pid)));
+        assert_eq!(
+            mp.child.process_id(),
+            Some(app_pid),
+            "MindPlayer must not restart"
+        );
+        assert_eq!(std::fs::read(&credential).unwrap(), original_credential);
+        if entry == "handoff" {
+            mp.expect(
+                "submitted initial context to",
+                STEP_TIMEOUT,
+                "upgraded CLI receives initial context",
+            );
+            mp.expect(
+                if claude {
+                    "launcher upgrade handoff question"
+                } else {
+                    "handoff smoke request"
+                },
+                STEP_TIMEOUT,
+                "original handoff text reaches the actual child",
+            );
+        }
+        mp.send(b"\x18");
+        mp.expect(
+            "multi-select",
+            STEP_TIMEOUT,
+            "return to list without ending the child",
+        );
+    }
+    mp.assert_native_without_router();
+    mp.quit_from_list();
+    assert!(
+        mp.wait_until(STEP_TIMEOUT, |_| children
+            .iter()
+            .all(|pid| !fixture_process_exists(*pid))),
+        "natural application exit must reap every version's native child"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn codex_path_launcher_replacement_is_used_for_new_resume_and_handoff() {
+    native_launcher_updates_between_entry_routes("codex", false);
+}
+
+#[cfg(unix)]
+#[test]
+fn codex_path_symlink_retarget_is_used_for_new_resume_and_handoff() {
+    native_launcher_updates_between_entry_routes("codex", true);
+}
+
+#[cfg(unix)]
+#[test]
+fn claude_path_launcher_replacement_is_used_for_new_resume_and_handoff() {
+    native_launcher_updates_between_entry_routes("claude", false);
+}
+
+#[cfg(unix)]
+#[test]
+fn claude_path_symlink_retarget_is_used_for_new_resume_and_handoff() {
+    native_launcher_updates_between_entry_routes("claude", true);
+}
+
+/// Set MINDPLAYER_TEST_CODEX_BINARY and MINDPLAYER_TEST_CLAUDE_BINARY to
+/// absolute installed executables. MINDPLAYER_TEST_BINARY optionally selects an
+/// installed MindPlayer. Only --version reaches either real CLI; account probes
+/// stay synthetic, and the real commands receive empty temporary config homes.
+#[cfg(unix)]
+#[test]
+#[ignore = "requires explicit installed Codex and Claude binaries; --version only, no inference/auth"]
+fn installed_codex_and_claude_versions_reach_native_panes_without_inference() {
+    for (provider, variable) in [
+        ("codex", "MINDPLAYER_TEST_CODEX_BINARY"),
+        ("claude", "MINDPLAYER_TEST_CLAUDE_BINARY"),
+    ] {
+        let executable = PathBuf::from(std::env::var_os(variable).expect(variable));
+        assert!(
+            executable.is_absolute() && executable.is_file(),
+            "{variable} must be an absolute executable"
+        );
+        let claude = provider == "claude";
+        let mut mp = if claude {
+            Mp::launch_claude_auth_fixture()
+        } else {
+            Mp::launch_with_options(ROWS, COLS, false, false, true, false)
+        };
+        let version_home = mp._tmp.join("real-cli-version-home");
+        for directory in [
+            &version_home,
+            &version_home.join("codex"),
+            &version_home.join("claude"),
+        ] {
+            std::fs::create_dir_all(directory).expect("create isolated version-only config");
+        }
+        let version = std::process::Command::new(&executable)
+            .arg("--version")
+            .env_clear()
+            .env("HOME", &version_home)
+            .env("CODEX_HOME", version_home.join("codex"))
+            .env("CLAUDE_CONFIG_DIR", version_home.join("claude"))
+            .env(
+                "CLAUDE_SECURESTORAGE_CONFIG_DIR",
+                version_home.join("claude"),
+            )
+            .env("DISABLE_AUTOUPDATER", "1")
+            .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+            .current_dir(&version_home)
+            .output()
+            .expect("read explicitly selected native CLI version without inference");
+        assert!(version.status.success(), "{provider} --version failed");
+        let version = String::from_utf8(version.stdout).expect("native CLI version text");
+        let version = version.trim();
+        assert!(
+            !version.is_empty(),
+            "{provider} --version must identify the executable"
+        );
+        let launcher = mp._tmp.join("bin").join(provider);
+        let original = mp
+            ._tmp
+            .join("bin")
+            .join(format!("{provider}-probe-fixture"));
+        std::fs::rename(&launcher, &original).expect("keep account probes offline");
+        write_script(
+            &launcher,
+            &format!(
+                r#"#!/bin/sh
+case "$1" in app-server|auth|login|logout) exec '{original}' "$@" ;; esac
+exec env -i HOME='{home}' CODEX_HOME='{home}/codex' CLAUDE_CONFIG_DIR='{home}/claude' CLAUDE_SECURESTORAGE_CONFIG_DIR='{home}/claude' DISABLE_AUTOUPDATER=1 PATH="$PATH" TERM="$TERM" '{executable}' --version
+"#,
+                original = original.display(),
+                home = version_home.display(),
+                executable = executable.display(),
+            ),
+        );
+        mp.start_into_main_list();
+        mp.send(b"/alfa\r");
+        mp.expect(
+            version,
+            STEP_TIMEOUT,
+            "actual installed CLI version rendered in the pane",
+        );
+        mp.expect(
+            "session ended",
+            STEP_TIMEOUT,
+            "version-only CLI exits without inference",
+        );
+        mp.assert_native_without_router();
+        mp.send(b"\x18");
+        mp.expect(
+            "multi-select",
+            STEP_TIMEOUT,
+            "return after version-only native execution",
+        );
+        mp.quit_from_list();
+        println!(
+            "NATIVE_VERSION provider={provider} executable={} version={version}",
+            executable.display()
+        );
+    }
+}
+
 fn contains_observer_native_usage(screen: &str) -> bool {
     let panel = observer_panel_text(screen);
     contains_observer_total(screen)
@@ -623,14 +928,6 @@ fn contains_observer_native_usage(screen: &str) -> bool {
 
 /// A live mindplayer process running in a PTY, with a background reader feeding
 /// a shared vt100 parser we can snapshot at any time.
-struct FixtureJevCredentials(PathBuf);
-
-impl Drop for FixtureJevCredentials {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.0);
-    }
-}
-
 struct Mp {
     parser: Arc<Mutex<vt100::Parser>>,
     raw_output: Arc<Mutex<Vec<u8>>>,
@@ -640,11 +937,6 @@ struct Mp {
     _master: Box<dyn MasterPty + Send>,
     _tmp: PathBuf,
     codex_marker_dir: PathBuf,
-    router_marker_dir: PathBuf,
-    jev_provider: String,
-    /// The router fixture was given a Jev key, so its sessions start with Jev ON.
-    jev_key: bool,
-    _jev_credentials: Option<FixtureJevCredentials>,
     codex_alfa_file: PathBuf,
     codex_brvo_file: PathBuf,
     // Fields are dropped in declaration order, after the child and PTY handles.
@@ -746,14 +1038,6 @@ impl Mp {
         )
     }
 
-    fn launch_actual_router_fixture() -> Mp {
-        Self::launch_router_fixture(CodexFixture::ActualRouter)
-    }
-
-    fn launch_router_fixture(fixture: CodexFixture) -> Mp {
-        Self::launch_with_options_and_fixture(ROWS, COLS, false, false, true, false, fixture)
-    }
-
     fn launch_with_options_and_fixture(
         rows: u16,
         cols: u16,
@@ -807,24 +1091,10 @@ impl Mp {
         let (rows, cols) = dimensions;
         let inline_fixture = matches!(fixture, CodexFixture::InlinePainter);
         let stale_completion = matches!(fixture, CodexFixture::TaskStatus);
-        let actual_router = matches!(
-            fixture,
-            CodexFixture::ActualRouter
-                | CodexFixture::LifecycleRouter
-                | CodexFixture::RealJevRouter
-                | CodexFixture::KeylessRouter
-        );
-        let real_jev = matches!(fixture, CodexFixture::RealJevRouter);
         let claude_auth = matches!(fixture, CodexFixture::ClaudeAuthRecovery);
         let fixture_dir = unique_tmp();
         let tmp = fixture_dir.0.clone();
-        let (identity_workspace, default_email, isolated_email) = if actual_router {
-            (
-                "fixture-account",
-                "fixture@example.com",
-                "fixture@example.com",
-            )
-        } else if matches!(
+        let (identity_workspace, default_email, isolated_email) = if matches!(
             fixture,
             CodexFixture::AccountQuota | CodexFixture::AuthRecovery
         ) {
@@ -851,8 +1121,6 @@ impl Mp {
         let audit_dir = tmp.join("audit");
         let prompts_dir = tmp.join("prompts");
         let codex_marker_dir = tmp.join("codex-markers");
-        let router_marker_dir = tmp.join("router-markers");
-        let router_audit_dir = tmp.join("router-audits");
         let scope = tmp.join("scope"); // session cwd + launch dir
         let bindir = tmp.join("bin");
         for d in [
@@ -866,8 +1134,6 @@ impl Mp {
             &audit_dir,
             &prompts_dir,
             &codex_marker_dir,
-            &router_marker_dir,
-            &router_audit_dir,
             &scope,
             &bindir,
         ] {
@@ -1018,9 +1284,9 @@ while IFS= read -r line; do
     *'"method":"initialize"'*) printf '%s\n' '{"id":1,"result":{"serverInfo":{"name":"smoke"}}}' ;;
     *'"method":"model/list"'*) printf '%s\n' '{"id":2,"result":{"data":[{"model":"fixture-simple","id":"fixture-simple","isDefault":true,"inputModalities":["text"]},{"model":"fixture-complex","id":"fixture-complex","inputModalities":["text"]}],"nextCursor":null}}' ;;
     *'"method":"account/read"'*)
-      printf '{"id":3,"result":{"account":{"type":"chatgpt","email":"%s","planType":"business"}}}\n' "$email" ;;
+      printf '{"id":3,"result":{"account":{"type":"chatgpt","email":"%s","planType":"business"},"workspaceRouting":{"chatgptAccountId":"fixture-account"}}}\n' "$email" ;;
     *'"method":"account/rateLimits/read"'*)
-      printf '{"id":2,"result":{"accountId":"workspace-shared","ordinaryUsageAllowed":true,"rateLimits":{"primary":{"usedPercent":%s,"windowDurationMins":10080},"individualLimit":{"limit":"%s","used":"%s","remainingPercent":0},"spendControlReached":true}}}\n' "$percent" "$cap" "$cap" ;;
+      printf '{"id":2,"result":{"accountId":"fixture-account","ordinaryUsageAllowed":true,"rateLimits":{"primary":{"usedPercent":%s,"windowDurationMins":10080},"individualLimit":{"limit":"%s","used":"%s","remainingPercent":0},"spendControlReached":true}}}\n' "$percent" "$cap" "$cap" ;;
   esac
 done
 exit 0"#
@@ -1029,38 +1295,21 @@ exit 0"#
   case "$line" in
     *'"method":"initialize"'*) printf '%s\n' '{"id":1,"result":{"serverInfo":{"name":"smoke"}}}' ;;
     *'"method":"model/list"'*) printf '%s\n' '{"id":2,"result":{"data":[{"model":"fixture-simple","id":"fixture-simple","isDefault":true,"inputModalities":["text"]},{"model":"fixture-complex","id":"fixture-complex","inputModalities":["text"]}],"nextCursor":null}}' ;;
-    *'"method":"account/read"'*) printf '%s\n' '{"id":3,"result":{"account":{"type":"chatgpt","email":"fixture@example.com","planType":"business"}}}' ;;
-    *'"method":"account/rateLimits/read"'*) printf '%s\n' '{"id":2,"result":{"accountId":"workspace-shared","ordinaryUsageAllowed":true,"rateLimits":{"primary":{"usedPercent":5,"windowDurationMins":10080}}}}' ;;
+    *'"method":"account/read"'*) printf '%s\n' '{"id":3,"result":{"account":{"type":"chatgpt","email":"fixture@example.com","planType":"business"},"workspaceRouting":{"chatgptAccountId":"fixture-account"}}}' ;;
+    *'"method":"account/rateLimits/read"'*) printf '%s\n' '{"id":2,"result":{"accountId":"fixture-account","ordinaryUsageAllowed":true,"rateLimits":{"primary":{"usedPercent":5,"windowDurationMins":10080}}}}' ;;
   esac
 done
 exit 0"#
         };
-        // Native's execution sentinel must not confuse fixture quota probes
-        // with the application's router. This fixture answers probes in sh.
+        // Account and quota probes remain entirely synthetic and offline.
         let auth_fixture = tmp.join("codex-auth-fixture.mjs");
         let app_server = if matches!(fixture, CodexFixture::AuthRecovery) {
             seed_codex_auth_fixture(&auth_fixture);
             format!("exec node '{}' \"$@\"", auth_fixture.display())
         } else {
-            format!(
-                "if [ -n \"$MINDPLAYER_ROUTER_FIXTURE\" ]; then exec node \"$MINDPLAYER_ROUTER_FIXTURE\" \"$@\"; fi\n{app_server}"
-            )
+            app_server.to_owned()
         };
         write_script(
-            &bindir.join("codex"),
-            &format!(
-                "#!/bin/sh\n\nif [ \"$1 $2\" = \"login status\" ]; then\n  printf 'logged in\\n'\n  exit 0\nfi\nif [ \"$1\" = \"app-server\" ]; then\n  {app_server}\nfi\nif [ \"$MINDPLAYER_RATATUI_FIXTURE\" = \"1\" ]; then\n  exec \"$MINDPLAYER_SMOKE_TEST_BINARY\" --exact {} --ignored --nocapture\nfi\nif [ -n \"$MINDPLAYER_PANE_ID\" ]; then\n  marker='{}'\n  printf 'CODEX_HOME=%s\\n' \"$CODEX_HOME\" > \"$marker/$MINDPLAYER_PANE_ID.txt\"\n  for arg in \"$@\"; do printf 'ARG=%s\\n' \"$arg\" >> \"$marker/$MINDPLAYER_PANE_ID.txt\"; done\n  printf 'CONFIG_CONTENT_BEGIN\\n' >> \"$marker/$MINDPLAYER_PANE_ID.txt\"\n  cat \"$CODEX_HOME/config.toml\" >> \"$marker/$MINDPLAYER_PANE_ID.txt\" 2>/dev/null\n  printf 'CONFIG_CONTENT_END\\n' >> \"$marker/$MINDPLAYER_PANE_ID.txt\"\nfi\nprintf 'PANE-READY\\n'\nexec cat\n",
-                INLINE_FIXTURE_TEST,
-                codex_marker_dir.display()
-            ),
-        );
-        if actual_router {
-            write_script(
-                &bindir.join("codex"),
-                "#!/bin/sh\nexec node \"$MINDPLAYER_ROUTER_FIXTURE\" \"$@\"\n",
-            );
-        } else {
-            write_script(
                 &bindir.join("codex"),
                 &format!(
                     "#!/bin/sh\n\nif [ \"$1 $2\" = \"login status\" ]; then\n  printf 'logged in\\n'\n  exit 0\nfi\ncase \" $* \" in\n  *app-server*)\n    {app_server}\n    exit $?\n    ;;\nesac\nif [ \"$MINDPLAYER_RATATUI_FIXTURE\" = \"1\" ]; then\n  exec \"$MINDPLAYER_SMOKE_TEST_BINARY\" --exact {INLINE_FIXTURE_TEST} --ignored --nocapture\nfi\nif [ -n \"$MINDPLAYER_PANE_ID\" ]; then\n  marker='{marker}'\n  printf 'CODEX_HOME=%s\\nPID=%s\\n' \"$CODEX_HOME\" \"$$\" > \"$marker/$MINDPLAYER_PANE_ID.txt\"\n  printf '%s\\n' \"$$\" >> \"$marker/../native-launches.log\"\n  for key in TYPESAFE_API_KEY AI_GATEWAY_API_KEY VERCEL_OIDC_TOKEN; do\n    case \"$key\" in\n      TYPESAFE_API_KEY) present=${{TYPESAFE_API_KEY:+1}} ;;\n      AI_GATEWAY_API_KEY) present=${{AI_GATEWAY_API_KEY:+1}} ;;\n      VERCEL_OIDC_TOKEN) present=${{VERCEL_OIDC_TOKEN:+1}} ;;\n    esac\n    printf '%s_PRESENT=%s\\n' \"$key\" \"${{present:-0}}\" >> \"$marker/$MINDPLAYER_PANE_ID.txt\"\n  done\n  for arg in \"$@\"; do printf 'ARG=%s\\n' \"$arg\" >> \"$marker/$MINDPLAYER_PANE_ID.txt\"; done\n  printf 'CONFIG_CONTENT_BEGIN\\n' >> \"$marker/$MINDPLAYER_PANE_ID.txt\"\n  cat \"$CODEX_HOME/config.toml\" >> \"$marker/$MINDPLAYER_PANE_ID.txt\" 2>/dev/null\n  printf 'CONFIG_CONTENT_END\\n' >> \"$marker/$MINDPLAYER_PANE_ID.txt\"\nfi\nprintf 'PANE-READY\\n'\nexec cat\n",
@@ -1069,7 +1318,6 @@ exit 0"#
                     marker = codex_marker_dir.display(),
                 ),
             );
-        }
         if matches!(fixture, CodexFixture::AuthRecovery) {
             let codex = bindir.join("codex");
             let original = std::fs::read_to_string(&codex).expect("read echo Codex fixture");
@@ -1089,7 +1337,6 @@ exit 0"#
                 tmp.join("native-key-receipt").display()
             ));
         }
-        seed_private_codex(&home, &bindir.join("codex"));
         if enable_cursor {
             write_script(
                 &bindir.join("agent"),
@@ -1216,73 +1463,6 @@ exit 0"#
         cmd.env("MINDPLAYER_HANDOFF_DIR", tmp.join("handoffs"));
         cmd.env("MINDPLAYER_CONVO_DIR", tmp.join("conversations"));
         cmd.env("MINDPLAYER_TEST_MARKER_DIR", &codex_marker_dir);
-        let fixture_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../tools/local-model-router/mindplayer-fixture.mjs");
-        cmd.env("MINDPLAYER_ROUTER_FIXTURE", fixture_path);
-        cmd.env("MINDPLAYER_ROUTER_MARKER_DIR", &router_marker_dir);
-        let mut jev_provider = "typesafe".to_string();
-        let mut jev_credentials = None;
-        if actual_router {
-            cmd.env(
-                "MINDPLAYER_ROUTER_LIFECYCLE_GATES",
-                if matches!(fixture, CodexFixture::LifecycleRouter) {
-                    "1"
-                } else {
-                    "0"
-                },
-            );
-            let preload = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("../../tools/local-model-router/mindplayer-jev-fixture.mjs")
-                .canonicalize()
-                .expect("locate Jev fixture preload");
-            cmd.env(
-                "NODE_OPTIONS",
-                format!("--import=\"{}\"", preload.display()),
-            );
-            // Production's own private audit files remain observable even when
-            // Gateway uses OS trust and never calls the fetch preload.
-            cmd.env("TMPDIR", &router_audit_dir);
-            cmd.env("TMP", &router_audit_dir);
-            cmd.env("TEMP", &router_audit_dir);
-            if real_jev {
-                assert_eq!(
-                    std::env::var("MINDPLAYER_TEST_REAL_JEV").as_deref(),
-                    Ok("1"),
-                    "authenticated Jev requires explicit opt-in"
-                );
-                let credential =
-                    FixtureJevCredentials(home.join(".mindplayer/jev-credentials.json"));
-                let output = std::process::Command::new("node")
-                    .arg(&preload)
-                    .arg("--prepare-credentials")
-                    .arg(&credential.0)
-                    .env_remove("NODE_OPTIONS")
-                    .output()
-                    .expect("select the current Jev credential without inference");
-                assert!(
-                    output.status.success(),
-                    "current Jev credential is unavailable"
-                );
-                let metadata: serde_json::Value = serde_json::from_slice(&output.stdout)
-                    .expect("credential fixture returns provider metadata only");
-                jev_provider = metadata["provider"]
-                    .as_str()
-                    .filter(|provider| ["typesafe", "gateway"].contains(provider))
-                    .expect("supported current Jev provider")
-                    .to_string();
-                jev_credentials = Some(credential);
-                cmd.env("MINDPLAYER_TEST_REAL_JEV", "1");
-            } else {
-                cmd.env("MINDPLAYER_TEST_REAL_JEV", "0");
-                if !matches!(fixture, CodexFixture::KeylessRouter) {
-                    cmd.env("TYPESAFE_API_KEY", "mindplayer-smoke-typesafe-canary");
-                }
-            }
-            cmd.env("MINDPLAYER_TEST_JEV_PROVIDER", &jev_provider);
-        }
-        if matches!(fixture, CodexFixture::AccountQuota) {
-            cmd.env("MINDPLAYER_ROUTER_QUOTA", "1");
-        }
         cmd.env(
             "MINDPLAYER_SMOKE_TEST_BINARY",
             std::env::current_exe().expect("locate smoke test binary"),
@@ -1340,10 +1520,6 @@ exit 0"#
             _master: pair.master,
             _tmp: tmp,
             codex_marker_dir,
-            router_marker_dir,
-            jev_provider,
-            jev_key: actual_router && !matches!(fixture, CodexFixture::KeylessRouter),
-            _jev_credentials: jev_credentials,
             codex_alfa_file,
             codex_brvo_file,
             _fixture_dir: fixture_dir,
@@ -1435,8 +1611,8 @@ exit 0"#
             "binary": std::env::var_os("MINDPLAYER_TEST_BINARY").map(PathBuf::from)
                 .unwrap_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_mindplayer"))),
             "sourceVersion": env!("CARGO_PKG_VERSION"),
-            "nativeUiContract": "mindplayer-native-routing-v4", "buffer": frame, "cells": cells,
-            "scope": "actual MindPlayer PTY and vt100 cell attributes; synthetic native UI/backend/judge; no auth/inference or OS styling/IME proof"
+            "launchPolicy": "installed-path-cli", "buffer": frame, "cells": cells,
+            "scope": "actual MindPlayer PTY and vt100 cell attributes; synthetic PATH CLI and account probes; no real auth/inference or OS styling/IME proof"
         });
         write_new("json", &serde_json::to_vec_pretty(&metadata).unwrap());
     }
@@ -1721,567 +1897,6 @@ exit 0"#
         );
     }
 
-    fn wait_for_router_route(&self, label: &str, model: &str) {
-        let deadline = Instant::now() + STEP_TIMEOUT;
-        let needle = format!("\"label\":\"{label}\",\"model\":\"{model}\"");
-        loop {
-            let routes = std::fs::read_to_string(self.router_marker_dir.join("routes.jsonl"))
-                .unwrap_or_default();
-            if routes.contains(&needle) {
-                return;
-            }
-            if Instant::now() >= deadline {
-                panic!("router did not record {label} -> {model}; routes: {routes}");
-            }
-            std::thread::sleep(Duration::from_millis(20));
-        }
-    }
-
-    fn router_rows(&self, name: &str) -> Vec<serde_json::Value> {
-        std::fs::read_to_string(self.router_marker(name))
-            .unwrap_or_default()
-            .lines()
-            .map(|line| serde_json::from_str(line).expect("valid metadata-only router marker"))
-            .collect()
-    }
-
-    fn wait_for_router_turn(&self, label: &str) -> serde_json::Value {
-        let deadline = Instant::now() + STEP_TIMEOUT;
-        loop {
-            let rows = self.router_rows("routes.jsonl");
-            let routes: Vec<_> = rows.iter().filter(|row| row["label"] == label).collect();
-            if !routes.is_empty() {
-                assert_eq!(
-                    routes.len(),
-                    1,
-                    "exactly one synthetic turn/start for {label}"
-                );
-                return routes[0].clone();
-            }
-            assert!(
-                Instant::now() < deadline,
-                "missing synthetic turn/start for {label}"
-            );
-            std::thread::sleep(Duration::from_millis(20));
-        }
-    }
-
-    fn router_audit_rows(&self) -> Vec<serde_json::Value> {
-        std::fs::read_dir(self._tmp.join("router-audits"))
-            .into_iter()
-            .flatten()
-            .flatten()
-            .filter_map(|entry| std::fs::read_to_string(entry.path().join("routing.jsonl")).ok())
-            .flat_map(|contents| {
-                contents
-                    .lines()
-                    .map(|line| serde_json::from_str(line).expect("valid service audit metadata"))
-                    .collect::<Vec<_>>()
-            })
-            .collect()
-    }
-
-    fn assert_router_audit_turn_once(&self, label: &str) {
-        let deadline = Instant::now() + STEP_TIMEOUT;
-        let turn_id = format!("fixture-turn-{label}");
-        loop {
-            let audit = self.router_audit_rows();
-            let acknowledgments: Vec<_> = audit
-                .iter()
-                .filter(|row| row["event"] == "start-acknowledged" && row["turnId"] == turn_id)
-                .collect();
-            let completions: Vec<_> = audit
-                .iter()
-                .filter(|row| row["event"] == "turn-completed" && row["turnId"] == turn_id)
-                .collect();
-            if !acknowledgments.is_empty() && !completions.is_empty() {
-                assert_eq!(acknowledgments.len(), 1);
-                assert_eq!(completions.len(), 1);
-                assert_eq!(completions[0]["status"], "completed");
-                let ack = acknowledgments[0];
-                let one = |event: &str| {
-                    let rows: Vec<_> = audit
-                        .iter()
-                        .filter(|row| {
-                            row["event"] == event
-                                && row["requestId"] == ack["requestId"]
-                                && row["threadId"] == ack["threadId"]
-                        })
-                        .collect();
-                    assert_eq!(rows.len(), 1, "exactly one {event} for {label}");
-                    rows[0]
-                };
-                let started = one("jev-started");
-                let judged = one("jev-judged");
-                let selected = one("model-selected");
-                let requested = one("route-requested");
-                for row in [started, judged, selected] {
-                    assert_eq!(row["provider"], self.jev_provider);
-                }
-                assert_eq!(started["rubricVersion"], "mindplayer-capacity-v2");
-                assert_eq!(judged["rubricVersion"], started["rubricVersion"]);
-                for field in ["inputTokens", "outputTokens"] {
-                    assert!(judged["usage"][field]
-                        .as_u64()
-                        .is_some_and(|tokens| tokens > 0));
-                }
-                assert!([
-                    "bounded_routine",
-                    "multistep_coordination",
-                    "open_problem",
-                    "unknown"
-                ]
-                .contains(&judged["capability"].as_str().expect("valid Jev capability")));
-                for field in ["contextSufficient", "highConsequence"] {
-                    assert!(judged[field]
-                        .as_f64()
-                        .is_some_and(|value| (0.0..=1.0).contains(&value)));
-                }
-                let route = self.wait_for_router_turn(label);
-                for field in ["model", "effort"] {
-                    assert_eq!(
-                        selected[field], route[field],
-                        "selected configuration was accepted"
-                    );
-                    assert_eq!(requested[field], route[field]);
-                }
-                return;
-            }
-            assert!(
-                Instant::now() < deadline,
-                "missing Jev audit and accepted turn for {label}"
-            );
-            std::thread::sleep(Duration::from_millis(20));
-        }
-    }
-
-    fn assert_router_jev_turn_once(&self, label: &str) {
-        self.assert_router_audit_turn_once(label);
-        // macOS Gateway uses system-fetch.mjs; the service audit observes the
-        // validated result without intercepting or replacing its OS transport.
-        if self.jev_provider == "gateway" && cfg!(target_os = "macos") {
-            return;
-        }
-        let read_rows = |name: &str| -> Vec<serde_json::Value> {
-            std::fs::read_to_string(self.router_marker(name))
-                .unwrap_or_default()
-                .lines()
-                .map(|line| serde_json::from_str(line).expect("valid router marker JSON"))
-                .filter(|row: &serde_json::Value| row["label"] == label)
-                .collect()
-        };
-        let deadline = Instant::now() + STEP_TIMEOUT;
-        loop {
-            let events = read_rows("jev.jsonl");
-            let responses: Vec<_> = events
-                .iter()
-                .filter(|row| row["event"] == "response")
-                .collect();
-            let routes = read_rows("routes.jsonl");
-            if !responses.is_empty() && !routes.is_empty() {
-                assert_eq!(routes.len(), 1, "exactly one turn/start for {label}");
-                assert_eq!(
-                    events.iter().filter(|row| row["event"] == "start").count(),
-                    1,
-                    "exactly one Jev start for {label}"
-                );
-                assert_eq!(responses.len(), 1, "exactly one Jev response for {label}");
-                let response = responses[0];
-                assert_eq!(response["provider"], self.jev_provider);
-                assert_eq!(
-                    response["status"], 200,
-                    "successful Jev response for {label}"
-                );
-                if self.jev_provider == "typesafe" {
-                    let version: Vec<_> = response["model"]
-                        .as_str()
-                        .expect("physical Jev model")
-                        .strip_prefix("jev-")
-                        .expect("resolved physical Jev version")
-                        .split('.')
-                        .collect();
-                    assert_eq!(version.len(), 3);
-                    assert!(version.iter().all(|part| !part.is_empty()
-                        && (part.len() == 1 || !part.starts_with('0'))
-                        && part.bytes().all(|byte| byte.is_ascii_digit())));
-                } else {
-                    assert_eq!(response["model"], "typesafe-ai/jev");
-                }
-                let start = events.iter().find(|row| row["event"] == "start").unwrap();
-                assert_eq!(start["rubricVersion"], "mindplayer-capacity-v2");
-                assert_eq!(start["configurationRubricMatches"], true);
-                assert_eq!(start["questionsHaveRubric"], true);
-                assert_eq!(
-                    start["recentCount"], 0,
-                    "prompt-first state excludes transcript history"
-                );
-                assert!(start["stateBytes"]
-                    .as_u64()
-                    .is_some_and(|bytes| bytes <= 8192));
-                assert_eq!(
-                    start["stateKeys"],
-                    serde_json::json!([
-                        "attachments",
-                        "baseline",
-                        "contextKnown",
-                        "currentFamily",
-                        "currentInput",
-                        "previousDecision",
-                        "recent",
-                        "rubricVersion",
-                        "schemaVersion",
-                        "truncated"
-                    ])
-                );
-                let all = self.router_rows("jev.jsonl");
-                let starts: Vec<_> = all.iter().filter(|row| row["event"] == "start").collect();
-                let position = starts.iter().position(|row| row["label"] == label).unwrap();
-                if position == 0 {
-                    assert_eq!(start["previousDecision"], serde_json::Value::Null);
-                    assert_eq!(start["previousDecisionKeys"], serde_json::json!([]));
-                } else {
-                    assert_eq!(
-                        start["previousDecisionKeys"],
-                        serde_json::json!([
-                            "capability",
-                            "contextSufficient",
-                            "effort",
-                            "highConsequence",
-                            "model",
-                            "turnOutcome"
-                        ])
-                    );
-                    let previous_label = starts[position - 1]["label"].as_str().unwrap();
-                    let route = self.wait_for_router_turn(previous_label);
-                    let prior_response = all
-                        .iter()
-                        .find(|row| row["event"] == "response" && row["label"] == previous_label)
-                        .unwrap();
-                    for field in ["model", "effort"] {
-                        assert_eq!(start["previousDecision"][field], route[field]);
-                    }
-                    for field in ["capability", "contextSufficient", "highConsequence"] {
-                        assert_eq!(start["previousDecision"][field], prior_response[field]);
-                    }
-                    assert_eq!(start["previousDecision"]["turnOutcome"], "completed");
-                }
-                assert!([
-                    "bounded_routine",
-                    "multistep_coordination",
-                    "open_problem",
-                    "unknown"
-                ]
-                .contains(&response["capability"].as_str().expect("Jev capability")));
-                for field in ["inputTokens", "outputTokens"] {
-                    assert!(response["usage"][field]
-                        .as_u64()
-                        .is_some_and(|tokens| tokens > 0));
-                }
-                for field in ["contextSufficient", "highConsequence"] {
-                    assert!(response[field]
-                        .as_f64()
-                        .is_some_and(|value| (0.0..=1.0).contains(&value)));
-                }
-                #[cfg(unix)]
-                {
-                    use std::os::unix::fs::PermissionsExt;
-                    for path in [&self.router_marker_dir, &self.router_marker("jev.jsonl")] {
-                        assert_eq!(
-                            std::fs::metadata(path).unwrap().permissions().mode() & 0o077,
-                            0
-                        );
-                    }
-                }
-                return;
-            }
-            assert!(
-                Instant::now() < deadline,
-                "missing Jev response and turn/start for {label}"
-            );
-            std::thread::sleep(Duration::from_millis(20));
-        }
-    }
-
-    fn router_marker(&self, name: &str) -> PathBuf {
-        self.router_marker_dir.join(name)
-    }
-
-    fn assert_router_consecutive_totals(&self, labels: &[&str]) {
-        self.assert_router_mixed_totals(labels, labels.len());
-    }
-
-    fn assert_router_mixed_totals(&self, labels: &[&str], judgments: usize) {
-        let audit = self.router_audit_rows();
-        for event in [
-            "jev-started",
-            "jev-judged",
-            "model-selected",
-            "route-requested",
-            "start-acknowledged",
-            "turn-completed",
-        ] {
-            assert_eq!(
-                audit.iter().filter(|row| row["event"] == event).count(),
-                if ["start-acknowledged", "turn-completed"].contains(&event) {
-                    labels.len()
-                } else {
-                    judgments
-                },
-                "exact consecutive {event} count; no retries or extra turns"
-            );
-        }
-        assert_eq!(
-            audit
-                .iter()
-                .filter(|row| row["event"] == "route-skipped")
-                .count(),
-            labels.len() - judgments,
-            "only explicit native prompts bypass judgment"
-        );
-        assert!(!audit
-            .iter()
-            .any(|row| ["jev-failed", "route-failed", "start-rejected"]
-                .contains(&row["event"].as_str().unwrap_or_default())));
-        let starts: Vec<_> = audit
-            .iter()
-            .filter(|row| row["event"] == "jev-started")
-            .collect();
-        for (index, started) in starts.iter().enumerate() {
-            assert_eq!(
-                started["previousDecisionKnown"],
-                index > 0,
-                "same-thread accepted prior judgment is bound to the next turn"
-            );
-            assert_eq!(started["catalogRevision"], starts[0]["catalogRevision"]);
-            assert_eq!(started["threadId"], starts[0]["threadId"]);
-        }
-        let routes = self.router_rows("routes.jsonl");
-        assert_eq!(routes.len(), labels.len());
-        for (route, label) in routes.iter().zip(labels) {
-            assert_eq!(route["label"], *label);
-            assert_eq!(route["threadId"], starts[0]["threadId"]);
-        }
-        if self.jev_provider == "typesafe" || !cfg!(target_os = "macos") {
-            let responses = self.router_rows("jev.jsonl");
-            for event in ["start", "response"] {
-                assert_eq!(
-                    responses.iter().filter(|row| row["event"] == event).count(),
-                    judgments
-                );
-            }
-        }
-    }
-
-    fn assert_router_status(&self, model: &str) {
-        self.wait_for_router_status(model, "completed", None);
-    }
-
-    fn wait_for_router_status(
-        &self,
-        model: &str,
-        stage: &str,
-        turn_id: Option<&str>,
-    ) -> serde_json::Value {
-        let root = self._tmp.join("home/.mindplayer/routing-status");
-        let deadline = Instant::now() + STEP_TIMEOUT;
-        loop {
-            let states: Vec<serde_json::Value> = std::fs::read_dir(&root)
-                .into_iter()
-                .flatten()
-                .flatten()
-                .filter_map(|entry| std::fs::read(entry.path().join("status.json")).ok())
-                .filter_map(|bytes| serde_json::from_slice(&bytes).ok())
-                .collect();
-            if let Some(status) = states.iter().find(|status| {
-                status["stage"] == stage
-                    && status["model"] == model
-                    && turn_id.is_none_or(|turn_id| status["turnId"] == turn_id)
-            }) {
-                assert_eq!(status["schemaVersion"], 2);
-                assert!(
-                    status.get("executionVerified").is_none(),
-                    "schema v1 field must be absent"
-                );
-                assert_eq!(
-                    status["serverModelReported"], false,
-                    "normal lifecycle requires no server model reroute"
-                );
-                assert_eq!(status["observedModel"], serde_json::Value::Null);
-                return status.clone();
-            }
-            assert!(
-                Instant::now() < deadline,
-                "pane status did not reflect {stage} {model} {turn_id:?}: {states:?}"
-            );
-            std::thread::sleep(Duration::from_millis(20));
-        }
-    }
-
-    fn release_router_lifecycle(&self, label: &str, event: &str) {
-        assert!(["A", "B", "C"].contains(&label));
-        assert!(["ack", "started", "completed"].contains(&event));
-        std::fs::write(
-            self.router_marker(&format!("{label}.{event}")),
-            b"release\n",
-        )
-        .expect("release one synthetic backend lifecycle event");
-    }
-
-    fn wait_for_router_audit_event(&self, event: &str, turn_id: &str) {
-        let deadline = Instant::now() + STEP_TIMEOUT;
-        loop {
-            if self
-                .router_audit_rows()
-                .iter()
-                .any(|row| row["event"] == event && row["turnId"] == turn_id)
-            {
-                return;
-            }
-            assert!(Instant::now() < deadline, "missing {event} for {turn_id}");
-            std::thread::sleep(Duration::from_millis(20));
-        }
-    }
-
-    fn assert_router_rendered_lifecycle(&self, model: &str, effort: &str, label: &str) {
-        let configuration = format!("{model} {effort}");
-        // This synthetic Codex has no native model footer: routing is painted
-        // on the pane's bottom border, never the launcher's lifecycle legend.
-        let is_border = |line: &str| {
-            matches!(
-                line.trim_start().chars().next(),
-                Some('▝' | '╰' | '└' | '╚')
-            )
-        };
-        assert!(
-            self.wait_until(STEP_TIMEOUT, |screen| screen.lines().any(|line| {
-                is_border(line) && line.contains(&configuration) && line.contains(label)
-            })),
-            "expected {label:?} beside {configuration:?} on the rendered model line:\n{}",
-            self.screen()
-        );
-        let screen = self.screen();
-        let borders: Vec<_> = screen.lines().filter(|line| is_border(line)).collect();
-        assert_eq!(
-            borders.len(),
-            1,
-            "exactly one synthetic pane border: {screen}"
-        );
-        let line = borders[0];
-        assert!(
-            line.contains(&configuration) && line.contains(label),
-            "{line}"
-        );
-        assert_eq!(
-            screen.matches("Jev 선택 · 요청 ").count(),
-            1,
-            "the pane must not show duplicate routing labels: {screen}"
-        );
-        for other in ["요청 수락", "실행 중", "완료"] {
-            if other != label {
-                assert!(
-                    !line.contains(other),
-                    "conflicting lifecycle labels: {line}"
-                );
-            }
-        }
-        for obsolete in ["실행 모델 미확인", "실행 미확인", "완료·미확인"] {
-            assert!(
-                !line.contains(obsolete),
-                "normal lifecycle is not unverified: {line}"
-            );
-        }
-    }
-
-    fn resume_router_fixture(&mut self) {
-        self.start_into_main_list();
-        self.send(b"/");
-        self.expect("type to filter", STEP_TIMEOUT, "session search opened");
-        self.send(b"alfa\r");
-        self.expect(PANE_READY, STARTUP_TIMEOUT, "embedded router pane came up");
-        let keyed = self.jev_key;
-        self.expect(
-            if keyed { PROMPT_JEV } else { PROMPT_NATIVE },
-            STEP_TIMEOUT,
-            "a session starts ON only when a Jev key loaded",
-        );
-        assert!(self.router_rows("ui-requests.jsonl").is_empty());
-        // These scenarios begin from OFF, which one F6 reaches before any prompt is sent.
-        if keyed {
-            self.send(F6);
-            self.expect(
-                PROMPT_NATIVE,
-                STEP_TIMEOUT,
-                "F6 turns the default ON session OFF",
-            );
-        }
-        assert!(!self.raw_output_contains("Jev 미선택"));
-        assert!(!self.raw_output_contains("[F7]"));
-        assert!(self.router_rows("ui-requests.jsonl").is_empty());
-        self.embedded_router_bundle();
-    }
-
-    fn router_json(&self, name: &str) -> serde_json::Value {
-        let deadline = Instant::now() + STEP_TIMEOUT;
-        loop {
-            if let Ok(contents) = std::fs::read_to_string(self.router_marker(name)) {
-                if let Ok(value) = serde_json::from_str(&contents) {
-                    return value;
-                }
-            }
-            assert!(
-                Instant::now() < deadline,
-                "missing router JSON marker: {name}"
-            );
-            std::thread::sleep(Duration::from_millis(20));
-        }
-    }
-
-    fn assert_router_gateway_key_is_private(&self) {
-        for name in ["ui.json", "backend-env.json"] {
-            assert_eq!(
-                self.router_json(name)["gatewayKeyPresent"],
-                false,
-                "gateway canary reached {name}"
-            );
-            assert_eq!(
-                self.router_json(name)["typesafeKeyPresent"],
-                false,
-                "typesafe canary reached {name}"
-            );
-        }
-    }
-
-    fn embedded_router_bundle(&self) -> PathBuf {
-        let runtime = self._tmp.join("home/.mindplayer/runtime");
-        let bundles: Vec<_> = std::fs::read_dir(runtime)
-            .expect("embedded router runtime directory")
-            .map(|entry| entry.unwrap().path())
-            .filter(|path| {
-                path.file_name()
-                    .unwrap()
-                    .to_string_lossy()
-                    .starts_with("codex-router-")
-            })
-            .collect();
-        assert_eq!(bundles.len(), 1, "one complete runtime bundle per fixture");
-        let names: BTreeSet<_> = std::fs::read_dir(&bundles[0])
-            .unwrap()
-            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
-            .collect();
-        let checkout =
-            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tools/local-model-router");
-        for name in names {
-            let installed =
-                std::fs::read(bundles[0].join(&name)).expect("read extracted binary router asset");
-            let source = std::fs::read(checkout.join(&name)).expect("read checkout router asset");
-            assert!(
-                installed == source,
-                "binary router asset differs from checkout: {name}"
-            );
-        }
-        bundles.into_iter().next().unwrap()
-    }
-
     fn canonical_config(&self) -> PathBuf {
         self._tmp.join("home/.codex/config.toml")
     }
@@ -2327,26 +1942,6 @@ exit 0"#
         }
     }
 
-    fn choose_prompt(&mut self, jev: bool) {
-        let mode = if jev { "jev" } else { "native" };
-        let label = if jev { PROMPT_JEV } else { PROMPT_NATIVE };
-        if self.router_json("composer-state.json")["mode"] != mode {
-            self.send(F6);
-        }
-        self.expect(
-            label,
-            STEP_TIMEOUT,
-            "session toggle matches the requested mode",
-        );
-        assert_eq!(self.router_json("composer-state.json")["mode"], mode);
-    }
-
-    fn submit_jev(&mut self, input: &[u8]) {
-        self.choose_prompt(true);
-        self.send(input);
-        self.expect(PROMPT_JEV, STEP_TIMEOUT, "submission keeps the session ON");
-    }
-
     fn quit_from_list(&mut self) {
         self.send(b"q");
         let deadline = Instant::now() + STEP_TIMEOUT;
@@ -2374,12 +1969,6 @@ exit 0"#
             0,
             "startup must not launch a native session"
         );
-        for marker in ["ui.pid", "private-ui", "routes.jsonl", "jev.jsonl"] {
-            assert!(
-                !self.router_marker(marker).exists(),
-                "startup must not launch a routed UI or submit a turn: {marker}"
-            );
-        }
         assert!(
             self.claude_auth_events(None, "conversation").is_empty(),
             "a blocked launch must not start a Claude conversation"
@@ -2389,17 +1978,15 @@ exit 0"#
 
     fn assert_native_without_router(&self) {
         for path in [
-            "node-invocations.log",
             "home/.mindplayer/runtime",
+            "home/.mindplayer/native-codex",
             "home/.mindplayer/routing-status",
         ] {
             assert!(
                 !self._tmp.join(path).exists(),
-                "Native must not execute Node or create router artifacts: {path}"
+                "native CLI launches must not stage a private Codex or router runtime: {path}"
             );
         }
-        assert!(!self.router_marker("jev.jsonl").exists());
-        assert!(!self.router_marker("routes.jsonl").exists());
     }
 
     fn native_launches(&self) -> Vec<u32> {
@@ -2410,8 +1997,7 @@ exit 0"#
             .collect()
     }
 
-    /// Complete only the existing scope/scan flow. The first real list is
-    /// immediately usable; each Codex session starts with its own Jev OFF mode.
+    /// Complete the scope/scan flow; the first list is immediately usable.
     fn start_into_main_list(&mut self) {
         self.start_into_main_list_with_count(2, STARTUP_TIMEOUT);
         self.expect(TITLE_A, STARTUP_TIMEOUT, "main list (session A)");
@@ -2757,11 +2343,6 @@ process.stdin.on("data", (data) => {
     assert!(delivered.contains(artifacts[0].to_string_lossy().as_ref()));
     assert!(!delivered.contains("unrelated input"));
     assert!(mp.native_launches().is_empty(), "no Codex pane launched");
-    assert!(mp.router_rows("jev.jsonl").is_empty(), "no Jev inference");
-    assert!(
-        mp.router_rows("routes.jsonl").is_empty(),
-        "no provider routing"
-    );
     mp.send(b"\x11");
     mp.quit_from_list();
 }
@@ -2851,8 +2432,6 @@ fn actual_omp_handoff_picker_can_cancel_and_retry_without_inference() {
     assert!(!mp.screen().contains("handoff smoke request"));
     assert!(!mp.screen().contains("handoff smoke answer"));
     assert!(mp.native_launches().is_empty());
-    assert!(mp.router_rows("jev.jsonl").is_empty());
-    assert!(mp.router_rows("routes.jsonl").is_empty());
     // No model is selected, so no handoff can be sent to a provider.
     mp.send(b"\x11");
     mp.quit_from_list();
@@ -3013,8 +2592,6 @@ fn actual_omp_handoff_delivers_context_after_local_only_model_selection() {
     .unwrap();
     drop(connection);
     assert!(mp.native_launches().is_empty());
-    assert!(mp.router_rows("jev.jsonl").is_empty());
-    assert!(mp.router_rows("routes.jsonl").is_empty());
     mp.send(b"\x11");
     mp.quit_from_list();
     drop(mp);
@@ -3224,657 +2801,6 @@ fn actual_omp_resumes_discovered_session() {
     mp.capture_stable_ui_evidence("omp-native-resume");
     mp.send(b"\x1bq");
     mp.quit_from_list();
-}
-
-/// Real Rust PTY + embedded router, with a synthetic native composer/backend.
-/// The native lane separately proves private Codex composer/queue behavior.
-#[test]
-fn session_toggle_one_f6_judges_two_followups_until_f6_turns_off() {
-    let mut mp = Mp::launch_actual_router_fixture();
-    mp.resume_router_fixture();
-    let pid = std::fs::read_to_string(mp.router_marker("ui.pid")).unwrap();
-    mp.send(F6);
-    mp.expect(PROMPT_JEV, STEP_TIMEOUT, "one F6 enables this session");
-    for (text, jev, label, model, effort) in [
-        ("analyze B", true, "B", "gpt-6-astra", "high"),
-        ("A", true, "A", "gpt-6-luna", "low"),
-        ("C", false, "C", "gpt-6-luna", "low"),
-    ] {
-        if !jev {
-            mp.send(F6);
-            mp.expect(PROMPT_NATIVE, STEP_TIMEOUT, "next F6 turns Jev OFF");
-        }
-        mp.send(text.as_bytes());
-        mp.expect(&format!("> {text}"), STEP_TIMEOUT, "directly typed draft");
-        mp.send(b"\r");
-        let route = mp.wait_for_router_turn(label);
-        assert_eq!(route["model"], model);
-        assert_eq!(route["effort"], effort);
-        assert_eq!(
-            route["routingChoicePresent"], false,
-            "local metadata stays private"
-        );
-        mp.wait_for_router_audit_event("turn-completed", &format!("fixture-turn-{label}"));
-        if jev {
-            mp.assert_router_jev_turn_once(label);
-        }
-        mp.expect(
-            if jev { PROMPT_JEV } else { PROMPT_NATIVE },
-            STEP_TIMEOUT,
-            "submitted inputs retain the session toggle",
-        );
-    }
-    assert_eq!(
-        std::fs::read_to_string(mp.router_marker("ui.pid")).unwrap(),
-        pid
-    );
-    let requests: Vec<_> = mp
-        .router_rows("ui-requests.jsonl")
-        .into_iter()
-        .filter(|row| row["method"] == "turn/start")
-        .collect();
-    let routes = mp.router_rows("routes.jsonl");
-    assert_eq!(requests.len(), 3);
-    let mut identities = BTreeSet::new();
-    for ((request, route), mode) in requests.iter().zip(&routes).zip(["jev", "jev", "native"]) {
-        identities.insert(
-            request["params"]["clientUserMessageId"]
-                .as_str()
-                .unwrap()
-                .to_owned(),
-        );
-        assert_eq!(
-            request["params"]["mindplayerRoutingChoice"],
-            serde_json::json!({ "mode": mode, "includeRecent": false })
-        );
-        assert_eq!(request["params"]["model"], "gpt-6-luna");
-        assert_eq!(
-            request["params"]["effort"], "low",
-            "a prior Jev selection cannot rewrite native settings"
-        );
-        assert_eq!(route["requestId"], request["id"]);
-        assert_eq!(
-            route["clientUserMessageId"],
-            request["params"]["clientUserMessageId"]
-        );
-        assert_eq!(route["params"]["input"], request["params"]["input"]);
-        if mode == "native" {
-            let mut expected = request["params"].clone();
-            expected
-                .as_object_mut()
-                .unwrap()
-                .remove("mindplayerRoutingChoice");
-            expected["mindplayerRequireNewTurn"] = serde_json::json!(true);
-            assert_eq!(
-                route["params"], expected,
-                "OFF preserves every incoming native parameter"
-            );
-        }
-    }
-    assert_eq!(
-        identities.len(),
-        3,
-        "each input snapshots its own native identity"
-    );
-    mp.assert_router_mixed_totals(&["B", "A", "C"], 2);
-    let skipped: Vec<_> = mp
-        .router_audit_rows()
-        .into_iter()
-        .filter(|row| row["event"] == "route-skipped")
-        .collect();
-    assert_eq!(skipped.len(), 1);
-    assert_eq!(skipped[0]["requestId"], requests[2]["id"]);
-    assert_eq!(skipped[0]["reason"], "prompt-native");
-    assert_eq!(skipped[0]["model"], "gpt-6-luna");
-    assert_eq!(skipped[0]["effort"], "low");
-}
-
-#[test]
-fn session_toggle_off_enter_submits_native_without_f6_or_judgment() {
-    let mut mp = Mp::launch_actual_router_fixture();
-    mp.resume_router_fixture();
-    mp.send(b"A\r");
-    let route = mp.wait_for_router_turn("A");
-    assert_eq!(route["model"], "gpt-6-luna");
-    assert_eq!(route["effort"], "low");
-    assert_eq!(route["routingChoicePresent"], false);
-    let sent = mp.router_rows("ui-requests.jsonl");
-    assert_eq!(sent.len(), 1);
-    assert_eq!(
-        sent[0]["params"]["mindplayerRoutingChoice"],
-        serde_json::json!({"mode": "native", "includeRecent": false})
-    );
-    assert_eq!(
-        route["clientUserMessageId"],
-        sent[0]["params"]["clientUserMessageId"]
-    );
-    mp.wait_for_router_audit_event("turn-completed", "fixture-turn-A");
-    assert!(mp.router_rows("jev.jsonl").is_empty());
-    assert!(!mp
-        .router_audit_rows()
-        .iter()
-        .any(|row| row["event"] == "jev-started"));
-    mp.expect(
-        PROMPT_NATIVE,
-        STEP_TIMEOUT,
-        "OFF remains the session default",
-    );
-}
-
-#[test]
-fn session_toggle_f6_changes_mode_without_submitting_the_draft() {
-    let mut mp = Mp::launch_actual_router_fixture();
-    mp.resume_router_fixture();
-    mp.send(b"A");
-    mp.choose_prompt(true);
-    assert_eq!(mp.router_json("composer-state.json")["draft"], "A");
-    mp.choose_prompt(false);
-    assert_eq!(mp.router_json("composer-state.json")["draft"], "A");
-    assert!(!mp.screen().contains("JEV-CONTEXT"));
-    assert!(mp.router_rows("ui-requests.jsonl").is_empty());
-    assert!(mp.router_rows("routes.jsonl").is_empty());
-    assert!(mp.router_rows("jev.jsonl").is_empty());
-}
-
-fn session_toggle_f7_is_inert(jev: bool) {
-    let mut mp = Mp::launch_actual_router_fixture();
-    mp.resume_router_fixture();
-    mp.choose_prompt(jev);
-    mp.send(b"analyze B");
-    mp.expect("> analyze B", STEP_TIMEOUT, "typed input before F7");
-    let before = mp.router_json("composer-state.json");
-    mp.send(F7);
-    assert!(
-        mp.wait_until(STEP_TIMEOUT, |_| {
-            mp.router_json("composer-state.json")["revision"]
-                .as_u64()
-                .unwrap()
-                > before["revision"].as_u64().unwrap()
-        }),
-        "the synthetic child must actually consume F7"
-    );
-    let after = mp.router_json("composer-state.json");
-    assert_eq!(after["draft"], before["draft"]);
-    assert_eq!(after["mode"], before["mode"]);
-    assert_eq!(
-        after.as_object().unwrap().len(),
-        3,
-        "only revision, draft and mode remain"
-    );
-    assert!(!mp.raw_output_contains("JEV-CONTEXT"));
-    assert!(!mp.raw_output_contains("[F7]"));
-    assert!(!mp.router_marker("previews.jsonl").exists());
-    assert!(mp.router_rows("ui-requests.jsonl").is_empty());
-    assert!(mp.router_rows("routes.jsonl").is_empty());
-    assert!(mp.router_rows("jev.jsonl").is_empty());
-    mp.send(b"\r");
-    let route = mp.wait_for_router_turn("B");
-    assert_eq!(
-        route["model"],
-        if jev { "gpt-6-astra" } else { "gpt-6-luna" }
-    );
-    assert_eq!(route["effort"], if jev { "high" } else { "low" });
-    if jev {
-        mp.assert_router_jev_turn_once("B");
-        let starts: Vec<_> = mp
-            .router_rows("jev.jsonl")
-            .into_iter()
-            .filter(|row| row["event"] == "start")
-            .collect();
-        assert_eq!(starts.len(), 1);
-        let snapshot = &starts[0]["state"];
-        assert_eq!(snapshot["currentInput"], "analyze B");
-        assert_eq!(
-            snapshot["baseline"],
-            serde_json::json!({"model": "gpt-6-luna", "effort": "low"})
-        );
-        assert_eq!(snapshot["recent"], serde_json::json!([]));
-        assert_eq!(snapshot["contextKnown"], false);
-        assert_eq!(snapshot["attachments"], false);
-        assert_eq!(snapshot["truncated"], false);
-        assert!(starts[0]["stateBytes"].as_u64().unwrap() <= 8192);
-    } else {
-        mp.wait_for_router_audit_event("turn-completed", "fixture-turn-B");
-        assert!(mp.router_rows("jev.jsonl").is_empty());
-    }
-    let sent = mp.router_rows("ui-requests.jsonl");
-    assert_eq!(sent.len(), 1, "F7 adds no local RPC or hidden request");
-    assert_eq!(sent[0]["method"], "turn/start");
-    assert_eq!(
-        sent[0]["params"]["mindplayerRoutingChoice"],
-        serde_json::json!({"mode": if jev { "jev" } else { "native" }, "includeRecent": false})
-    );
-    assert_eq!(
-        route["clientUserMessageId"],
-        sent[0]["params"]["clientUserMessageId"]
-    );
-    assert_eq!(route["routingChoicePresent"], false);
-}
-
-#[test]
-fn session_toggle_f7_has_no_ui_or_rpc_effect_while_off() {
-    session_toggle_f7_is_inert(false);
-}
-
-#[test]
-fn session_toggle_f7_has_no_ui_or_rpc_effect_while_on() {
-    session_toggle_f7_is_inert(true);
-}
-
-#[test]
-fn session_toggle_draft_edits_preserve_on_until_submission() {
-    let mut mp = Mp::launch_actual_router_fixture();
-    mp.resume_router_fixture();
-    mp.choose_prompt(true);
-    mp.send(b"discard this draft");
-    mp.expect("> discard this draft", STEP_TIMEOUT, "draft before editing");
-    mp.send(b"\x15analyze Bx\x7f");
-    mp.expect(
-        "> analyze B",
-        STEP_TIMEOUT,
-        "replacement after clear and backspace",
-    );
-    assert_eq!(mp.router_json("composer-state.json")["mode"], "jev");
-    assert!(mp.router_rows("jev.jsonl").is_empty());
-    mp.send(b"\r");
-    let route = mp.wait_for_router_turn("B");
-    assert_eq!(route["model"], "gpt-6-astra");
-    assert_eq!(route["effort"], "high");
-    mp.assert_router_jev_turn_once("B");
-    mp.expect(
-        PROMPT_JEV,
-        STEP_TIMEOUT,
-        "edited input leaves the session ON",
-    );
-    let sent = mp.router_rows("ui-requests.jsonl");
-    assert_eq!(sent.len(), 1);
-    assert_eq!(sent[0]["params"]["input"][0]["text"], "analyze B");
-    assert_eq!(
-        sent[0]["params"]["mindplayerRoutingChoice"],
-        serde_json::json!({"mode": "jev", "includeRecent": false})
-    );
-}
-
-#[test]
-fn session_toggle_followup_uses_the_actual_preceding_terminal_outcome() {
-    let mut mp = Mp::launch_router_fixture(CodexFixture::LifecycleRouter);
-    mp.resume_router_fixture();
-    mp.submit_jev(b"A\r");
-    mp.wait_for_router_route("A", "gpt-6-luna");
-    mp.release_router_lifecycle("A", "ack");
-    mp.wait_for_router_audit_event("start-acknowledged", "fixture-turn-A");
-    mp.release_router_lifecycle("A", "started");
-    mp.wait_for_router_status("gpt-6-luna", "running", Some("fixture-turn-A"));
-
-    // This synthetic child only holds a draft. The actual native suite proves
-    // queue ownership; do not manufacture its queue or reviewed-token behavior.
-    mp.send(b"analyze B");
-    mp.expect("> analyze B", STEP_TIMEOUT, "followup draft remains local");
-    assert_eq!(mp.router_json("composer-state.json")["mode"], "jev");
-    assert_eq!(
-        mp.router_rows("jev.jsonl")
-            .iter()
-            .filter(|row| row["event"] == "start")
-            .count(),
-        1
-    );
-    mp.release_router_lifecycle("A", "completed");
-    mp.assert_router_jev_turn_once("A");
-    mp.send(b"\r");
-    mp.wait_for_router_route("B", "gpt-6-astra");
-    for event in ["ack", "started", "completed"] {
-        mp.release_router_lifecycle("B", event);
-    }
-    mp.assert_router_audit_turn_once("B");
-    let requests = mp.router_rows("jev.jsonl");
-    let start = requests
-        .iter()
-        .find(|row| row["event"] == "start" && row["label"] == "B")
-        .unwrap();
-    assert_eq!(start["state"]["currentInput"], "analyze B");
-    assert_eq!(
-        start["state"]["previousDecision"],
-        serde_json::json!({
-            "model": "gpt-6-luna", "effort": "low", "capability": "bounded_routine",
-            "contextSufficient": 1, "highConsequence": 0, "turnOutcome": "completed"
-        })
-    );
-    assert!(!mp.router_marker("previews.jsonl").exists());
-    mp.assert_router_consecutive_totals(&["A", "B"]);
-    mp.expect(
-        PROMPT_JEV,
-        STEP_TIMEOUT,
-        "native terminal notifications keep ON",
-    );
-}
-
-#[test]
-fn session_toggle_separate_panes_keep_independent_modes() {
-    let mut mp = Mp::launch_actual_router_fixture();
-    mp.resume_router_fixture();
-    let first_pid = std::fs::read_to_string(mp.router_marker("ui.pid")).unwrap();
-    mp.send(b"\x18");
-    mp.expect(
-        "multi-select",
-        STEP_TIMEOUT,
-        "list after hiding the first pane",
-    );
-    mp.send(b"/brvo\r");
-    assert!(
-        mp.wait_until(STEP_TIMEOUT, |screen| {
-            screen.matches(PROMPT_JEV).count() == 1 && screen.matches(PROMPT_NATIVE).count() == 1
-        }),
-        "second pane must start at the default ON without taking the first pane's OFF: {}",
-        mp.screen()
-    );
-    let second_pid = std::fs::read_to_string(mp.router_marker("ui.pid")).unwrap();
-    assert_ne!(first_pid, second_pid, "independent native child processes");
-    mp.send(F6);
-    assert!(
-        mp.wait_until(STEP_TIMEOUT, |screen| screen.matches(PROMPT_NATIVE).count()
-            == 2),
-        "disabling the focused pane must preserve the first pane: {}",
-        mp.screen()
-    );
-    mp.send(F6);
-    assert!(
-        mp.wait_until(STEP_TIMEOUT, |screen| {
-            screen.matches(PROMPT_JEV).count() == 1 && screen.matches(PROMPT_NATIVE).count() == 1
-        }),
-        "enabling the focused pane must leave the first pane OFF: {}",
-        mp.screen()
-    );
-    assert!(mp.router_rows("ui-requests.jsonl").is_empty());
-    assert!(mp.router_rows("routes.jsonl").is_empty());
-    assert!(mp.router_rows("jev.jsonl").is_empty());
-}
-
-#[test]
-fn session_toggle_bound_account_survives_split_and_zoom_at_40x120() {
-    let mut mp = Mp::launch_with_options_and_fixture(
-        40,
-        120,
-        false,
-        false,
-        true,
-        false,
-        CodexFixture::ActualRouter,
-    );
-    mp.resume_router_fixture();
-    let bound_account = "codex · isolated";
-    mp.expect(
-        bound_account,
-        STEP_TIMEOUT,
-        "split pane identifies its bound account",
-    );
-    assert_eq!(
-        mp.screen().matches(bound_account).count(),
-        1,
-        "account label is pane-bound"
-    );
-    mp.capture_stable_ui_evidence("split-native-off");
-    mp.choose_prompt(true);
-    mp.expect(
-        bound_account,
-        STEP_TIMEOUT,
-        "split ON retains the bound account",
-    );
-    mp.capture_stable_ui_evidence("split-jev-on");
-    mp.send(b"\x1a"); // Native outer-app Ctrl-Z zooms the same running pane.
-    mp.expect("ZOOMED", STEP_TIMEOUT, "zoom the same running pane");
-    mp.expect(
-        bound_account,
-        STEP_TIMEOUT,
-        "zoom title identifies the same account",
-    );
-    mp.expect(PROMPT_JEV, STEP_TIMEOUT, "zoom keeps the native session ON");
-    assert_eq!(mp.screen().matches(bound_account).count(), 1);
-    mp.capture_stable_ui_evidence("zoom-jev-on");
-    mp.choose_prompt(false);
-    mp.expect(
-        bound_account,
-        STEP_TIMEOUT,
-        "OFF retains the zoomed account label",
-    );
-    mp.capture_stable_ui_evidence("zoom-native-off");
-    assert!(mp.router_rows("ui-requests.jsonl").is_empty());
-    assert!(mp.router_rows("jev.jsonl").is_empty());
-}
-
-#[test]
-fn session_toggle_reattach_preserves_the_same_child_draft_and_on_mode() {
-    let mut mp = Mp::launch_actual_router_fixture();
-    mp.resume_router_fixture();
-    let original = std::fs::read_to_string(mp.router_marker("ui.pid")).unwrap();
-    mp.send(b"A");
-    mp.choose_prompt(true);
-    mp.send(b"\x18");
-    mp.expect("multi-select", STEP_TIMEOUT, "Ctrl-X returns to the list");
-    mp.assert_no_startup_choice();
-    assert!(mp.router_rows("routes.jsonl").is_empty());
-    assert!(mp.router_rows("jev.jsonl").is_empty());
-    mp.send(b"\r");
-    mp.expect(
-        "> A",
-        STEP_TIMEOUT,
-        "reattach retains the same unsubmitted draft",
-    );
-    mp.expect(
-        PROMPT_JEV,
-        STEP_TIMEOUT,
-        "reattaching the same child preserves its session ON mode",
-    );
-    assert_eq!(
-        std::fs::read_to_string(mp.router_marker("ui.pid")).unwrap(),
-        original
-    );
-    mp.send(b"\r");
-    mp.wait_for_router_route("A", "gpt-6-luna");
-    mp.assert_router_jev_turn_once("A");
-    mp.expect(
-        PROMPT_JEV,
-        STEP_TIMEOUT,
-        "follow-up keeps ON without another F6",
-    );
-}
-
-#[test]
-fn session_toggle_keyless_native_preserves_model_and_effort_without_judgment() {
-    let mut mp = Mp::launch_router_fixture(CodexFixture::KeylessRouter);
-    mp.resume_router_fixture();
-    mp.send(b"A");
-    mp.choose_prompt(false);
-    mp.send(b"\r");
-    let route = mp.wait_for_router_turn("A");
-    assert_eq!(route["model"], "gpt-6-luna");
-    assert_eq!(route["effort"], "low");
-    mp.wait_for_router_audit_event("turn-completed", "fixture-turn-A");
-    assert!(mp.router_rows("jev.jsonl").is_empty());
-    assert!(!mp
-        .router_audit_rows()
-        .iter()
-        .any(|row| row["event"] == "jev-started"));
-}
-
-#[test]
-fn session_toggle_missing_key_blocks_jev_without_retry_or_native_fallback() {
-    let mut mp = Mp::launch_router_fixture(CodexFixture::KeylessRouter);
-    mp.resume_router_fixture();
-    mp.submit_jev(b"analyze B\r");
-    mp.expect(
-        "PROMPT-ERROR",
-        STEP_TIMEOUT,
-        "missing key is visible in the actual pane",
-    );
-    let errors = mp.router_rows("ui-errors.jsonl");
-    assert_eq!(errors.len(), 1);
-    assert!(mp.router_rows("routes.jsonl").is_empty());
-    assert!(mp.router_rows("jev.jsonl").is_empty());
-    assert_eq!(
-        mp.router_audit_rows()
-            .iter()
-            .filter(|row| row["event"] == "route-failed" && row["reason"] == "jev-key-unavailable")
-            .count(),
-        1
-    );
-}
-
-#[test]
-fn session_toggle_policy_denial_blocks_jev_without_transfer_or_fallback() {
-    use std::os::unix::fs::PermissionsExt;
-
-    let mut mp = Mp::launch_actual_router_fixture();
-    let policy = mp._tmp.join("home/.mindplayer/jev-policy.json");
-    std::fs::write(
-        &policy,
-        serde_json::to_vec(&serde_json::json!({
-            "schemaVersion": 1, "version": "smoke-denied", "profiles": [],
-            "consent": { "externalPromptTransfer": false }
-        }))
-        .unwrap(),
-    )
-    .unwrap();
-    std::fs::set_permissions(&policy, std::fs::Permissions::from_mode(0o600)).unwrap();
-    mp.resume_router_fixture();
-    mp.submit_jev(b"analyze B\r");
-    mp.expect(
-        "PROMPT-ERROR",
-        STEP_TIMEOUT,
-        "policy denial is visible in the pane",
-    );
-    assert_eq!(mp.router_rows("ui-errors.jsonl").len(), 1);
-    assert!(mp.router_rows("routes.jsonl").is_empty());
-    assert!(mp.router_rows("jev.jsonl").is_empty());
-    assert_eq!(
-        mp.router_audit_rows()
-            .iter()
-            .filter(|row| row["event"] == "route-failed"
-                && row["reason"] == "external-transfer-policy-unset")
-            .count(),
-        1
-    );
-}
-
-#[test]
-fn session_toggle_judge_failure_is_visible_without_retry_or_native_fallback() {
-    let mut mp = Mp::launch_actual_router_fixture();
-    mp.resume_router_fixture();
-    std::fs::write(mp.router_marker("jev-rate-limited"), "synthetic 429\n").unwrap();
-    mp.submit_jev(b"analyze B\r");
-    mp.expect(
-        "Jev rate limit reached",
-        STEP_TIMEOUT,
-        "bounded judge failure is visible",
-    );
-    assert_eq!(mp.router_rows("ui-errors.jsonl").len(), 1);
-    assert!(mp.router_rows("routes.jsonl").is_empty());
-    let events = mp.router_rows("jev.jsonl");
-    assert_eq!(
-        events.iter().filter(|row| row["event"] == "start").count(),
-        1
-    );
-    let responses: Vec<_> = events
-        .iter()
-        .filter(|row| row["event"] == "response")
-        .collect();
-    assert_eq!(responses.len(), 1);
-    assert_eq!(responses[0]["status"], 429);
-    let audit = mp.router_audit_rows();
-    assert_eq!(
-        audit
-            .iter()
-            .filter(|row| row["event"] == "route-failed" && row["reason"] == "jev-rate-limited")
-            .count(),
-        1
-    );
-    assert!(!audit.iter().any(|row| [
-        "jev-judged",
-        "route-requested",
-        "route-skipped",
-        "start-acknowledged"
-    ]
-    .contains(&row["event"].as_str().unwrap_or_default())));
-    assert!(!mp.screen().contains("raw-upstream-secret-canary"));
-}
-
-#[test]
-fn session_toggle_user_budget_block_is_visible_without_backend_dispatch() {
-    // Real installed PTY path when MINDPLAYER_TEST_BINARY is set; HTTP402 is synthetic.
-    let mut mp = Mp::launch_actual_router_fixture();
-    mp.resume_router_fixture();
-    std::fs::write(
-        mp.router_marker("jev-user-budget-exceeded"),
-        "synthetic 402\n",
-    )
-    .unwrap();
-    mp.submit_jev(b"analyze B\r");
-    mp.expect(
-        "User budget exceeded: $51.00 / $50.00",
-        STEP_TIMEOUT,
-        "attributed user cap is visible, not an authentication or rate-limit error",
-    );
-    mp.expect(
-        "nothing was sent",
-        STEP_TIMEOUT,
-        "no silent native fallback",
-    );
-    assert_eq!(mp.router_rows("ui-errors.jsonl").len(), 1);
-    assert!(mp.router_rows("routes.jsonl").is_empty());
-    let events = mp.router_rows("jev.jsonl");
-    assert_eq!(
-        events.iter().filter(|row| row["event"] == "start").count(),
-        1
-    );
-    let responses: Vec<_> = events
-        .iter()
-        .filter(|row| row["event"] == "response")
-        .collect();
-    assert_eq!(responses.len(), 1);
-    assert_eq!(responses[0]["status"], 402);
-    let audit = mp.router_audit_rows();
-    for (event, reason) in [
-        ("jev-failed", "budget-exceeded"),
-        ("route-failed", "jev-budget-exceeded"),
-    ] {
-        let failures: Vec<_> = audit
-            .iter()
-            .filter(|row| row["event"] == event && row["reason"] == reason)
-            .collect();
-        assert_eq!(failures.len(), 1);
-        assert_eq!(
-            failures[0]["budget"],
-            serde_json::json!({"scope":"user","used":51,"limit":50})
-        );
-    }
-    assert!(!audit.iter().any(|row| [
-        "jev-judged",
-        "route-requested",
-        "route-skipped",
-        "start-acknowledged"
-    ]
-    .contains(&row["event"].as_str().unwrap_or_default())));
-    assert!(!mp.screen().contains("raw-upstream-secret-canary"));
-}
-
-#[test]
-fn session_toggle_missing_private_ui_fails_visibly_without_native_fallback() {
-    let mut mp = Mp::launch_actual_router_fixture();
-    std::fs::remove_file(mp._tmp.join("home/.mindplayer/native-codex/active.json")).unwrap();
-    mp.start_into_main_list();
-    mp.send(b"/alfa\r");
-    mp.expect(
-        "MindPlayer 전용 Codex 설치 파일이 없습니다",
-        STARTUP_TIMEOUT,
-        "missing private UI is a bounded launch failure",
-    );
-    for marker in ["ui.pid", "private-ui", "routes.jsonl", "jev.jsonl"] {
-        assert!(
-            !mp.router_marker(marker).exists(),
-            "no fallback child or transfer: {marker}"
-        );
-    }
-    assert!(mp.native_launches().is_empty());
-    assert!(!mp.screen().contains(PANE_READY));
 }
 
 #[test]
@@ -4892,24 +3818,14 @@ fn signed_out_login_resumes_exact_home(isolated: bool) {
     assert_eq!(conversations.len(), 1);
     assert_eq!(conversations[0]["cwd"], logins[0]["cwd"]);
     assert_eq!(conversations[0]["pane"], session);
-    // The native UI now connects through the local router before receiving
-    // the preserved resume command. Check the complete consumer argv, not an
-    // obsolete assumption that `resume` is the first process argument.
     let args = conversations[0]["args"].as_array().unwrap();
-    let remote = args[1].as_str().expect("native loopback URL");
-    assert!(remote
-        .strip_prefix("ws://127.0.0.1:")
-        .and_then(|port| port.parse::<u16>().ok())
-        .is_some_and(|port| port != 0));
     let mut expected = vec![
-        serde_json::json!("--remote"),
-        serde_json::json!(remote),
-        serde_json::json!("--remote-auth-token-env"),
-        serde_json::json!("MINDPLAYER_LOCAL_ROUTER_TOKEN"),
-        serde_json::json!("--cd"),
-        serde_json::json!(mp._tmp.join("scope")),
         serde_json::json!("resume"),
         serde_json::json!(session),
+        serde_json::json!("--ask-for-approval"),
+        serde_json::json!("never"),
+        serde_json::json!("--sandbox"),
+        serde_json::json!("danger-full-access"),
     ];
     if isolated {
         expected.extend([
@@ -4920,7 +3836,7 @@ fn signed_out_login_resumes_exact_home(isolated: bool) {
             )),
         ]);
     }
-    assert_eq!(args, &expected, "preserve the exact routed resume command");
+    assert_eq!(args, &expected, "preserve the exact native resume command");
     assert!(home.join("fixture-signed-in").is_file());
     assert!(!other_home.join("fixture-signed-in").exists());
     assert!(mp.codex_auth_events(&home, "logout").is_empty());
@@ -5841,10 +4757,6 @@ fn claude_launcher_preserves_context(entry: &str) {
             "complete initial context must reach the original Claude child"
         );
     }
-    assert!(
-        mp.router_rows("jev.jsonl").is_empty(),
-        "launcher fixture executes no judgments"
-    );
     claude_hide_then_quit_cleans_up(&mut mp, entry, native_pid);
 }
 
@@ -6758,1096 +5670,6 @@ fn default_new_session_prefers_ambient_isolated_codex_home() {
     mp.wait_for_codex_home(&isolated_codex_home(&mp), STEP_TIMEOUT);
 }
 
-fn prepare_jev_fixture_credentials(
-    home: &Path,
-    destination: &Path,
-    keys: &[(&str, &str)],
-) -> std::process::Output {
-    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../tools/local-model-router/mindplayer-jev-fixture.mjs");
-    let mut command = std::process::Command::new("node");
-    command
-        .arg(fixture)
-        .arg("--prepare-credentials")
-        .arg(destination)
-        .env("HOME", home)
-        .env_remove("NODE_OPTIONS")
-        .env_remove("TYPESAFE_API_KEY")
-        .env_remove("AI_GATEWAY_API_KEY")
-        .env_remove("VERCEL_OIDC_TOKEN");
-    for (name, value) in keys {
-        command.env(name, value);
-    }
-    command.output().expect("run credential fixture")
-}
-
-#[test]
-fn jev_fixture_preserves_gateway_precedence_without_printing_credentials() {
-    let tmp = unique_tmp();
-    let destination = tmp.join("isolated/.mindplayer/jev-credentials.json");
-    let output = prepare_jev_fixture_credentials(
-        &tmp,
-        &destination,
-        &[
-            ("TYPESAFE_API_KEY", "typesafe-selection-canary"),
-            ("AI_GATEWAY_API_KEY", "gateway-selection-canary"),
-        ],
-    );
-    assert!(output.status.success(), "credential staging succeeded");
-    assert_eq!(output.stdout, b"{\"provider\":\"gateway\"}\n");
-    assert!(output.stderr.is_empty());
-    let credential: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(&destination).unwrap()).unwrap();
-    assert_eq!(credential["provider"], "gateway");
-    assert_eq!(credential["apiKey"], "gateway-selection-canary");
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        for path in [&destination, destination.parent().unwrap()] {
-            assert_eq!(
-                std::fs::metadata(path).unwrap().permissions().mode() & 0o077,
-                0
-            );
-        }
-    }
-}
-
-#[test]
-fn jev_fixture_uses_the_current_saved_provider_without_environment_keys() {
-    let tmp = unique_tmp();
-    let source = tmp.join(".mindplayer/jev-credentials.json");
-    let prepared = prepare_jev_fixture_credentials(
-        &tmp,
-        &source,
-        &[("TYPESAFE_API_KEY", "saved-typesafe-selection-canary")],
-    );
-    assert!(prepared.status.success(), "seed private saved credential");
-    let destination = tmp.join("isolated/.mindplayer/jev-credentials.json");
-    let output = prepare_jev_fixture_credentials(&tmp, &destination, &[]);
-    assert!(output.status.success(), "load saved credential");
-    assert_eq!(output.stdout, b"{\"provider\":\"typesafe\"}\n");
-    assert!(output.stderr.is_empty());
-    assert_eq!(
-        std::fs::read(source).unwrap(),
-        std::fs::read(destination).unwrap()
-    );
-}
-
-#[test]
-fn jev_fixture_refuses_missing_credentials_without_creating_a_file() {
-    let tmp = unique_tmp();
-    let destination = tmp.join("isolated/.mindplayer/jev-credentials.json");
-    let output = prepare_jev_fixture_credentials(&tmp, &destination, &[]);
-    assert!(!output.status.success());
-    assert!(output.stdout.is_empty());
-    assert!(!destination.exists());
-}
-
-#[test]
-fn resume_uses_embedded_router_protocol_and_cleans_up_remote_children() {
-    let mut mp = Mp::launch_router_fixture(CodexFixture::LifecycleRouter);
-    mp.resume_router_fixture();
-
-    let metadata = mp.router_json("ui.json");
-    let private_ui = std::fs::read_to_string(mp._tmp.join("router-markers/private-ui"))
-        .expect("the integrated pane launched its private Codex UI");
-    assert!(Path::new(private_ui.trim())
-        .starts_with(mp._tmp.join("home/.mindplayer/native-codex/builds")));
-    let private_backend =
-        std::fs::read_to_string(mp._tmp.join("router-markers/private-app-server"))
-            .expect("the integrated backend used private Codex");
-    assert_eq!(private_backend, private_ui);
-    assert_eq!(metadata["cwd"], mp._tmp.join("scope").display().to_string());
-    assert_eq!(
-        metadata["codexHome"],
-        isolated_codex_home(&mp).display().to_string()
-    );
-    let args = metadata["args"].as_array().expect("router UI args");
-    assert!(args.iter().any(|arg| arg == "resume"));
-    assert!(args.iter().any(|arg| arg == "codex-alfa-0001"));
-    assert!(!args.iter().any(|arg| arg == "--model"));
-    mp.assert_router_gateway_key_is_private();
-    mp.embedded_router_bundle();
-
-    for (input, label, model, effort) in [
-        (b"A\r".as_slice(), "A", "gpt-6-luna", "low"),
-        (b"analyze B\r".as_slice(), "B", "gpt-6-astra", "high"),
-        (b"C\r".as_slice(), "C", "gpt-6-luna", "low"),
-    ] {
-        let turn_id = format!("fixture-turn-{label}");
-        mp.submit_jev(input);
-        mp.wait_for_router_route(label, model);
-        mp.release_router_lifecycle(label, "ack");
-        let accepted = mp.wait_for_router_status(model, "accepted", Some(&turn_id));
-        assert_eq!(accepted["effort"], effort);
-        mp.assert_router_rendered_lifecycle(model, effort, "요청 수락");
-        assert!(!mp
-            .router_audit_rows()
-            .iter()
-            .any(|row| row["turnId"] == turn_id
-                && ["turn-started", "turn-completed"]
-                    .contains(&row["event"].as_str().unwrap_or_default())));
-
-        mp.release_router_lifecycle(label, "started");
-        let running = mp.wait_for_router_status(model, "running", Some(&turn_id));
-        assert_eq!(running["effort"], effort);
-        mp.assert_router_rendered_lifecycle(model, effort, "실행 중");
-
-        mp.release_router_lifecycle(label, "completed");
-        mp.assert_router_jev_turn_once(label);
-        let completed = mp.wait_for_router_status(model, "completed", Some(&turn_id));
-        assert_eq!(completed["effort"], effort);
-        mp.assert_router_rendered_lifecycle(model, effort, "완료");
-    }
-    mp.assert_router_consecutive_totals(&["A", "B", "C"]);
-    assert_eq!(
-        mp.router_audit_rows()
-            .iter()
-            .filter(|row| row["event"] == "turn-started")
-            .count(),
-        3
-    );
-    assert!(!mp
-        .router_audit_rows()
-        .iter()
-        .any(|row| row["event"] == "model/rerouted"));
-    let routes = std::fs::read_to_string(mp.router_marker("routes.jsonl")).unwrap();
-    assert!(routes.contains("\"threadId\":\"codex-alfa-0001\""));
-    assert!(routes.contains(&format!("\"cwd\":\"{}\"", mp._tmp.join("scope").display())));
-
-    let proxy = std::fs::read_to_string(mp.router_marker("proxy-url")).unwrap();
-    let port = proxy
-        .trim()
-        .rsplit(':')
-        .next()
-        .unwrap()
-        .parse::<u16>()
-        .unwrap();
-    let ui_pid = std::fs::read_to_string(mp.router_marker("ui.pid")).unwrap();
-    let app_pid = std::fs::read_to_string(mp.router_marker("app-server.pid")).unwrap();
-    let status_root = mp._tmp.join("home/.mindplayer/routing-status");
-    let statuses: Vec<_> = std::fs::read_dir(&status_root)
-        .unwrap()
-        .map(|entry| entry.unwrap().path())
-        .collect();
-    assert_eq!(statuses.len(), 1, "one owned routing-status directory");
-    mp.send(b"\x11");
-    mp.expect(
-        "closed live pane",
-        STEP_TIMEOUT,
-        "hide routed pane without ending its PTY",
-    );
-    assert!(fixture_process_exists(ui_pid.trim().parse().unwrap()));
-    assert!(fixture_process_exists(app_pid.trim().parse().unwrap()));
-    assert!(TcpStream::connect(("127.0.0.1", port)).is_ok());
-    assert!(
-        statuses[0].is_dir(),
-        "hidden pane retains its routing channel"
-    );
-    mp.quit_from_list();
-
-    let deadline = Instant::now() + STEP_TIMEOUT;
-    while Instant::now() < deadline {
-        let ui_gone = !fixture_process_exists(ui_pid.trim().parse().unwrap());
-        let app_gone = !fixture_process_exists(app_pid.trim().parse().unwrap());
-        let proxy_closed = TcpStream::connect(("127.0.0.1", port)).is_err();
-        if ui_gone && app_gone && proxy_closed && !statuses[0].exists() {
-            return;
-        }
-        std::thread::sleep(Duration::from_millis(25));
-    }
-    panic!(
-        "genuine q exit left router resources: UI {}, backend {}, port {}, status {}",
-        ui_pid.trim(),
-        app_pid.trim(),
-        port,
-        statuses[0].display()
-    );
-}
-
-#[test]
-fn embedded_router_jev_menu_excludes_legacy_models_before_current_family() {
-    // MINDPLAYER_TEST_BINARY selects the installed executable for this same
-    // regression. Both servers remain synthetic: this proves menu/wire
-    // compatibility, not genuine model inference or native effort application.
-    let mut mp = Mp::launch_actual_router_fixture();
-    mp.resume_router_fixture();
-    let catalog = mp.router_json("model-catalog.json");
-    let ids: Vec<_> = catalog
-        .as_array()
-        .expect("synthetic served catalog")
-        .iter()
-        .map(|model| model["model"].as_str().unwrap())
-        .collect();
-    assert_eq!(
-        ids,
-        [
-            "gpt-5.4",
-            "gpt-5.3-codex",
-            "gpt-6-luna",
-            "gpt-6.1-sol",
-            "gpt-6-astra"
-        ],
-        "legacy models must precede current models in the actual served catalog"
-    );
-    let expected: BTreeSet<_> = [
-        ("gpt-6-luna", "low"),
-        ("gpt-6.1-sol", "medium"),
-        ("gpt-6-astra", "high"),
-    ]
-    .into_iter()
-    .collect();
-    for (input, label, model, effort) in [
-        (b"A\r".as_slice(), "A", "gpt-6-luna", "low"),
-        (b"analyze B\r".as_slice(), "B", "gpt-6-astra", "high"),
-        (b"C\r".as_slice(), "C", "gpt-6-luna", "low"),
-    ] {
-        mp.submit_jev(input);
-        let route = mp.wait_for_router_turn(label);
-        assert_eq!(route["model"], model);
-        assert_eq!(route["effort"], effort);
-        mp.assert_router_jev_turn_once(label);
-        mp.assert_router_status(model);
-        let rows = mp.router_rows("jev.jsonl");
-        let start = rows
-            .iter()
-            .find(|row| row["event"] == "start" && row["label"] == label)
-            .expect("actual outbound Jev request metadata");
-        let menu = start["configurationMenu"]
-            .as_array()
-            .expect("configuration choices offered to Jev");
-        let actual: BTreeSet<_> = menu
-            .iter()
-            .map(|choice| {
-                (
-                    choice["model"].as_str().unwrap(),
-                    choice["effort"].as_str().unwrap(),
-                )
-            })
-            .collect();
-        assert_eq!(menu.len(), expected.len(), "no duplicate menu choices");
-        assert_eq!(
-            actual, expected,
-            "Jev sees only current-family choices for {label}"
-        );
-    }
-    mp.assert_router_consecutive_totals(&["A", "B", "C"]);
-}
-
-#[test]
-fn embedded_router_accepts_the_selected_terra_baseline() {
-    // Runs the selected installed executable when MINDPLAYER_TEST_BINARY is
-    // set. The model catalog and Jev response are isolated synthetic fixtures.
-    let mut mp = Mp::launch_actual_router_fixture();
-    std::fs::write(mp.router_marker("synthetic-terra-baseline"), b"opt-in\n").unwrap();
-    mp.resume_router_fixture();
-    mp.submit_jev(b"A\r");
-    let route = mp.wait_for_router_turn("A");
-    assert_eq!(route["model"], "gpt-6.1-terra");
-    assert_eq!(route["effort"], "xhigh");
-    mp.assert_router_jev_turn_once("A");
-    let rows = mp.router_rows("jev.jsonl");
-    let start = rows
-        .iter()
-        .find(|row| row["event"] == "start" && row["label"] == "A")
-        .expect("synthetic Jev request");
-    assert_eq!(start["state"]["baseline"]["model"], "gpt-6.1-terra");
-    assert_eq!(start["state"]["baseline"]["effort"], "xhigh");
-}
-
-#[test]
-fn embedded_router_excludes_capacity_failures_until_explicit_followup() {
-    // The installed MINDPLAYER_TEST_BINARY runs in a real PTY. Both provider
-    // responses are SYNTHETIC; this does not prove real inference or capacity.
-    let mut mp = Mp::launch_actual_router_fixture();
-    std::fs::write(mp.router_marker("synthetic-capacity-failure"), b"opt-in\n").unwrap();
-    let status_root = mp._tmp.join("home/.mindplayer/routing-status");
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        mp.resume_router_fixture();
-        mp.assert_router_gateway_key_is_private();
-        mp.submit_jev(b"A\r");
-        let first = mp.wait_for_router_turn("A");
-        assert_eq!(first["model"], "gpt-6-luna");
-        assert_eq!(first["effort"], "low");
-        mp.wait_for_router_audit_event("start-acknowledged", "fixture-turn-A");
-        mp.wait_for_router_audit_event("turn-completed", "fixture-turn-A");
-        mp.wait_for_router_status("gpt-6-luna", "failed", Some("fixture-turn-A"));
-        assert!(mp.wait_until(STEP_TIMEOUT, |_| mp
-            .router_rows("capacity-events.jsonl")
-            .len()
-            == 2));
-        let events = mp.router_rows("capacity-events.jsonl");
-        assert_eq!(events[0]["method"], "error");
-        assert_eq!(events[0]["params"]["threadId"], first["threadId"]);
-        assert_eq!(events[0]["params"]["turnId"], "fixture-turn-A");
-        assert_eq!(
-            events[0]["params"]["error"]["codexErrorInfo"],
-            "serverOverloaded"
-        );
-        assert_eq!(events[0]["params"]["willRetry"], false);
-        assert_eq!(events[1]["method"], "turn/completed");
-        assert_eq!(events[1]["params"]["turn"]["id"], "fixture-turn-A");
-        assert_eq!(events[1]["params"]["turn"]["status"], "failed");
-        // Terminal status and delivered events synchronize the next explicit
-        // input. A fixed sleep would not establish native queue ownership.
-        assert_eq!(
-            mp.router_rows("routes.jsonl").len(),
-            1,
-            "no automatic resubmit after failure"
-        );
-        assert_eq!(mp.router_rows("ui-requests.jsonl").len(), 1);
-        assert_eq!(mp.router_rows("jev.jsonl").len(), 2);
-
-        for (input, label, model, effort) in [
-            (b"C\r".as_slice(), "C", "gpt-6.1-sol", "medium"),
-            (b"analyze B\r".as_slice(), "B", "gpt-6-astra", "high"),
-        ] {
-            mp.send(input);
-            let route = mp.wait_for_router_turn(label);
-            assert_eq!(route["model"], model);
-            assert_eq!(route["effort"], effort);
-            mp.wait_for_router_status(model, "completed", Some(&format!("fixture-turn-{label}")));
-            mp.assert_router_audit_turn_once(label);
-        }
-        let judgments = mp.router_rows("jev.jsonl");
-        let starts: Vec<_> = judgments
-            .iter()
-            .filter(|row| row["event"] == "start")
-            .collect();
-        assert_eq!(
-            starts.len(),
-            3,
-            "exactly one judgment per explicit ON prompt"
-        );
-        for (index, start) in starts.iter().enumerate() {
-            assert_eq!(start["label"], ["A", "C", "B"][index]);
-            assert_eq!(start["configurationRubricMatches"], true);
-            assert_eq!(start["questionsHaveRubric"], true);
-            assert_eq!(start["capacityRecovery"], index > 0);
-            assert_eq!(
-                start["configurationInstructions"]
-                    .as_str()
-                    .unwrap()
-                    .contains("CAPACITY_RECOVERY:"),
-                index > 0
-            );
-            assert_eq!(
-                start["stateKeys"],
-                serde_json::json!([
-                    "attachments",
-                    "baseline",
-                    "contextKnown",
-                    "currentFamily",
-                    "currentInput",
-                    "previousDecision",
-                    "recent",
-                    "rubricVersion",
-                    "schemaVersion",
-                    "truncated"
-                ])
-            );
-            let criteria: serde_json::Value =
-                serde_json::from_str(start["configurationCriteriaJson"].as_str().unwrap()).unwrap();
-            let menu = criteria
-                .as_object()
-                .expect("actual serialized Jev criteria");
-            assert_eq!(menu.contains_key("abstain"), index > 0);
-            if index > 0 {
-                assert!(
-                    menu["abstain"].is_string(),
-                    "abstain has no model or effort"
-                );
-            }
-            let candidates: Vec<_> = menu
-                .iter()
-                .filter(|(key, _)| key.as_str() != "abstain")
-                .map(|(_, value)| value)
-                .collect();
-            let models: BTreeSet<_> = candidates
-                .iter()
-                .map(|choice| choice["model"].as_str().unwrap())
-                .collect();
-            let mut expected = BTreeSet::from(["gpt-6.1-sol", "gpt-6-astra"]);
-            if index == 0 {
-                expected.insert("gpt-6-luna");
-            }
-            assert_eq!(
-                models, expected,
-                "the failed model must stay absent from every later Jev menu"
-            );
-            assert_eq!(
-                candidates.len(),
-                expected.len(),
-                "no duplicate model/effort candidates"
-            );
-            assert_eq!(menu.len(), expected.len() + usize::from(index > 0));
-            let response = judgments
-                .iter()
-                .find(|row| row["event"] == "response" && row["label"] == start["label"])
-                .unwrap();
-            assert!(
-                candidates.iter().any(|choice| choice["model"]
-                    == response["configuration"]["model"]
-                    && choice["effort"] == response["configuration"]["effort"]),
-                "synthetic Jev must choose a supplied candidate"
-            );
-            let probabilities = response["configuration"]["probabilities"]
-                .as_object()
-                .unwrap();
-            assert_eq!(
-                probabilities.keys().collect::<BTreeSet<_>>(),
-                menu.keys().collect::<BTreeSet<_>>(),
-                "probabilities include every actual criterion, including abstain"
-            );
-        }
-
-        mp.choose_prompt(false);
-        mp.send(b"D\r");
-        let native = mp.wait_for_router_turn("bootstrap");
-        assert_eq!(native["params"]["input"][0]["text"], "D");
-        assert_eq!(
-            native["model"], "gpt-6-luna",
-            "OFF preserves the native configuration"
-        );
-        assert_eq!(native["effort"], "low");
-        mp.wait_for_router_audit_event("turn-completed", "fixture-turn-bootstrap");
-        assert_eq!(
-            mp.router_rows("jev.jsonl").len(),
-            judgments.len(),
-            "OFF never judges"
-        );
-        let sent = mp.router_rows("ui-requests.jsonl");
-        let routes = mp.router_rows("routes.jsonl");
-        assert_eq!(sent.len(), 4);
-        assert_eq!(
-            routes.len(),
-            sent.len(),
-            "no silent retry or ping-pong submission"
-        );
-        let identities: BTreeSet<_> = sent
-            .iter()
-            .map(|request| request["params"]["clientUserMessageId"].as_str().unwrap())
-            .collect();
-        assert_eq!(
-            identities.len(),
-            4,
-            "every explicit input has its own identity"
-        );
-        for ((request, route), text) in sent.iter().zip(&routes).zip(["A", "C", "analyze B", "D"]) {
-            assert_eq!(request["params"]["input"][0]["text"], text);
-            assert_eq!(route["params"]["input"][0]["text"], text);
-            assert_eq!(
-                route["clientUserMessageId"],
-                request["params"]["clientUserMessageId"]
-            );
-            assert_eq!(route["threadId"], first["threadId"]);
-            assert_eq!(route["routingChoicePresent"], false);
-        }
-        let audit = mp.router_audit_rows();
-        for event in ["start-acknowledged", "turn-completed"] {
-            assert_eq!(audit.iter().filter(|row| row["event"] == event).count(), 4);
-        }
-        assert!(!mp
-            ._tmp
-            .join("home/.mindplayer/jev-credentials.json")
-            .exists());
-    }));
-    let children: Vec<u32> = ["ui.pid", "app-server.pid"]
-        .into_iter()
-        .filter_map(|name| {
-            std::fs::read_to_string(mp.router_marker(name))
-                .ok()?
-                .trim()
-                .parse()
-                .ok()
-        })
-        .collect();
-    let port = std::fs::read_to_string(mp.router_marker("proxy-url"))
-        .ok()
-        .and_then(|url| url.trim().rsplit(':').next()?.parse::<u16>().ok());
-    mp.send(b"\x11");
-    mp.expect(
-        "closed live pane",
-        STEP_TIMEOUT,
-        "hide capacity fixture before natural quit",
-    );
-    mp.quit_from_list();
-    assert!(
-        mp.wait_until(STEP_TIMEOUT, |_| {
-            children.iter().all(|pid| !fixture_process_exists(*pid))
-                && port.is_none_or(|port| TcpStream::connect(("127.0.0.1", port)).is_err())
-                && std::fs::read_dir(&status_root)
-                    .map_or(true, |mut entries| entries.next().is_none())
-        }),
-        "natural quit must clean up synthetic children, proxy, and owned status channel"
-    );
-    if let Err(panic) = result {
-        std::panic::resume_unwind(panic);
-    }
-}
-
-#[test]
-fn embedded_router_late_ack_preserves_running_without_reroute() {
-    let mut mp = Mp::launch_router_fixture(CodexFixture::LifecycleRouter);
-    mp.resume_router_fixture();
-    mp.submit_jev(b"A\r");
-    mp.wait_for_router_route("A", "gpt-6-luna");
-    mp.release_router_lifecycle("A", "started");
-    mp.wait_for_router_status("gpt-6-luna", "running", Some("fixture-turn-A"));
-    mp.release_router_lifecycle("A", "ack");
-    mp.wait_for_router_audit_event("start-acknowledged", "fixture-turn-A");
-    mp.wait_for_router_status("gpt-6-luna", "running", Some("fixture-turn-A"));
-    mp.assert_router_rendered_lifecycle("gpt-6-luna", "low", "실행 중");
-    mp.release_router_lifecycle("A", "completed");
-    mp.assert_router_jev_turn_once("A");
-    mp.assert_router_consecutive_totals(&["A"]);
-}
-
-#[test]
-fn embedded_router_status_tracks_the_owned_thread_after_resume() {
-    let mut mp = Mp::launch_router_fixture(CodexFixture::LifecycleRouter);
-    // Native /resume stays inside its launching account. The shared fixture
-    // puts ALFA in an isolated home and BRVO in the inherited home; move only
-    // this fixture's BRVO into ALFA's store before scanning, retaining its ID.
-    let current_file = mp
-        .codex_alfa_file
-        .parent()
-        .unwrap()
-        .join(mp.codex_brvo_file.file_name().unwrap());
-    std::fs::rename(&mp.codex_brvo_file, &current_file).unwrap();
-    mp.codex_brvo_file = current_file;
-    mp.resume_router_fixture();
-    append_codex_task_event(&mp.codex_alfa_file, "task_started", "old-thread-turn");
-    mp.expect_foreground(WORKING_BORDER, STEP_TIMEOUT, "original thread is working");
-
-    // Inject only the already-validated protocol's ownership snapshot. The real
-    // binary must stop consuming the original file, then tail the current file
-    // without replaying its historical completion. No live login is involved.
-    let paths: Vec<_> = std::fs::read_dir(mp._tmp.join("home/.mindplayer/routing-status"))
-        .unwrap()
-        .map(|entry| entry.unwrap().path().join("status.json"))
-        .collect();
-    assert_eq!(paths.len(), 1);
-    let mut status: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(&paths[0]).unwrap()).unwrap();
-    status["revision"] = serde_json::json!(status["revision"].as_u64().unwrap() + 1);
-    status["threadId"] = serde_json::json!("codex-brvo-0002");
-    status["requestId"] = serde_json::json!(1);
-    status["turnId"] = serde_json::json!("current-thread-turn");
-    status["stage"] = serde_json::json!("completed");
-    std::fs::write(&paths[0], serde_json::to_vec(&status).unwrap()).unwrap();
-    mp.expect_foreground(
-        COMPLETED_BORDER,
-        STEP_TIMEOUT,
-        "current thread completion supersedes the original thread's working reader",
-    );
-    // Allow the interval-gated reader to bind at EOF before appending a fresh
-    // automatic turn; its native lifecycle must beat the old router snapshot.
-    std::thread::sleep(Duration::from_millis(650));
-    append_codex_task_event(
-        &mp.codex_brvo_file,
-        "task_started",
-        "automatic-current-turn",
-    );
-    mp.expect_foreground(
-        WORKING_BORDER,
-        STEP_TIMEOUT,
-        "current rollout starts a new turn",
-    );
-    append_codex_task_event(
-        &mp.codex_brvo_file,
-        "task_complete",
-        "automatic-current-turn",
-    );
-    mp.expect_foreground(
-        COMPLETED_BORDER,
-        STEP_TIMEOUT,
-        "current rollout completes its own turn",
-    );
-}
-
-#[test]
-fn embedded_router_clear_preserves_the_label_live_pty_and_resume_target() {
-    // Offline app-consumer proof: the actual binary/router run in PTYs, but
-    // ownership metadata and native UI/backend are synthetic. Select the exact
-    // installed consumer with MINDPLAYER_TEST_BINARY; native /clear is separate.
-    let mut mp = Mp::launch_router_fixture(CodexFixture::KeylessRouter);
-    let state_path = mp._tmp.join("state");
-    // The shared fixture creates an empty directory at MINDPLAYER_STATE.
-    // This scenario needs that exact isolated path to become a durable file.
-    std::fs::remove_dir(&state_path).expect("remove empty fixture state directory");
-    mp.start_into_main_list();
-    let status_root = mp._tmp.join("home/.mindplayer/routing-status");
-    let mut child_pids = Vec::new();
-    let mut proxy_ports = Vec::new();
-    // Preserve natural app/router cleanup even when the old installed consumer
-    // fails the continuity assertion. Mp::drop alone kills the outer process.
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        const OLD_ID: &str = "codex-alfa-0001";
-        const NEW_ID: &str = "codex-clear-0003";
-        const LABEL: &str = "MPCLEARCONTINUITY";
-        // Recency can put BRVO first; anchor label editing to the actual ALFA
-        // pane rather than assuming the first visible row's identity.
-        mp.send(b"/alfa\r");
-        mp.expect(
-            PANE_READY,
-            STARTUP_TIMEOUT,
-            "resume the original fixture row",
-        );
-        mp.send(b"\x18");
-        mp.expect(
-            "multi-select",
-            STEP_TIMEOUT,
-            "return to the resumed row in the list",
-        );
-        mp.send(b"e");
-        mp.expect(
-            "Set label",
-            STEP_TIMEOUT,
-            "label the first native fixture row",
-        );
-        mp.send(format!("{LABEL}\r").as_bytes());
-        mp.expect_absent("Set label", STEP_TIMEOUT, "save the fixture label");
-        let saved = mindplayer_core::State::load_from(&state_path);
-        assert_eq!(saved.label_for(OLD_ID), Some(LABEL));
-        mp.send(format!("/{LABEL}\r").as_bytes());
-        mp.expect(
-            PANE_READY,
-            STARTUP_TIMEOUT,
-            "resume the labeled native fixture",
-        );
-        mp.expect(PROMPT_NATIVE, STEP_TIMEOUT, "offline session has Jev OFF");
-        let original_ui = std::fs::read_to_string(mp.router_marker("ui.pid")).unwrap();
-        let original_backend = std::fs::read_to_string(mp.router_marker("app-server.pid")).unwrap();
-        child_pids.push(original_ui.trim().parse::<u32>().unwrap());
-        child_pids.push(original_backend.trim().parse::<u32>().unwrap());
-        let port = std::fs::read_to_string(mp.router_marker("proxy-url"))
-            .unwrap()
-            .trim()
-            .rsplit(':')
-            .next()
-            .unwrap()
-            .parse::<u16>()
-            .unwrap();
-        proxy_ports.push(port);
-        let original_args = mp.router_json("ui.json")["args"].clone();
-        assert!(original_args
-            .as_array()
-            .unwrap()
-            .windows(2)
-            .any(|args| args == ["resume", OLD_ID]));
-        let original_transcript = std::fs::read(&mp.codex_alfa_file).unwrap();
-        let paths: Vec<_> = std::fs::read_dir(&status_root)
-            .unwrap()
-            .map(|entry| entry.unwrap().path().join("status.json"))
-            .collect();
-        assert_eq!(paths.len(), 1, "one pane-owned status channel");
-        let mut status: serde_json::Value =
-            serde_json::from_slice(&std::fs::read(&paths[0]).unwrap()).unwrap();
-        assert_eq!(status["schemaVersion"], 2);
-        assert_eq!(status["threadId"], OLD_ID);
-        assert_eq!(status["stage"], "ready");
-        status["revision"] = serde_json::json!(status["revision"].as_u64().unwrap() + 1);
-        status["threadId"] = serde_json::json!(NEW_ID);
-        status["clearAncestors"] = serde_json::json!([OLD_ID]);
-        assert_eq!(status.as_object().unwrap().len(), 13);
-        // Preserve the real generation and private file permissions, as in the
-        // adjacent /resume ownership test. No native transcript is rewritten.
-        std::fs::write(&paths[0], serde_json::to_vec(&status).unwrap()).unwrap();
-        mp.send(b"\x11");
-        mp.expect(
-            "closed live pane",
-            STEP_TIMEOUT,
-            "hide the original live PTY",
-        );
-        // Deliberately delay the producer's first rollout beyond one status
-        // polling interval. Only automatic discovery can find this new row.
-        std::thread::sleep(Duration::from_millis(650));
-        assert_eq!(
-            mindplayer_core::State::load_from(&state_path).label_for(OLD_ID),
-            Some(LABEL),
-            "retain the old label until the target transcript exists"
-        );
-        let current_file = seed_codex_session(
-            &isolated_codex_home(&mp).join("sessions"),
-            &mp._tmp.join("scope"),
-            NEW_ID,
-            "MPCLEAREDTRANSCRIPT",
-        );
-        let current_transcript = std::fs::read(&current_file).unwrap();
-        assert!(
-            mp.wait_until(STEP_TIMEOUT, |_| {
-                let saved = mindplayer_core::State::load_from(&state_path);
-                saved.label_for(NEW_ID) == Some(LABEL) && saved.label_for(OLD_ID).is_none()
-            }),
-            "/clear must persist the label on {NEW_ID}, remove it from {OLD_ID}, and discover the late rollout without manual refresh; saved labels: {:?}",
-            mindplayer_core::State::load_from(&state_path).labels
-        );
-        assert!(fixture_process_exists(child_pids[0]));
-        assert!(fixture_process_exists(child_pids[1]));
-        assert!(TcpStream::connect(("127.0.0.1", port)).is_ok());
-        assert!(
-            paths[0].is_file(),
-            "hidden PTY retains its owned status channel"
-        );
-        mp.send(format!("/{LABEL}\r").as_bytes());
-        mp.expect(
-            PANE_READY,
-            STEP_TIMEOUT,
-            "reattach the cleared label's live PTY",
-        );
-        mp.send(b"A");
-        mp.expect(
-            "> A",
-            STEP_TIMEOUT,
-            "input still reaches the original native composer after clear and reattach",
-        );
-        assert_eq!(
-            std::fs::read_to_string(mp.router_marker("ui.pid")).unwrap(),
-            original_ui,
-            "clear and label reattach must not respawn the UI"
-        );
-        assert_eq!(
-            std::fs::read_to_string(mp.router_marker("app-server.pid")).unwrap(),
-            original_backend,
-            "clear and label reattach must not respawn the backend"
-        );
-        assert_eq!(std::fs::read_dir(&status_root).unwrap().count(), 1);
-        mp.send(b"\r");
-        let input = mp.wait_for_router_turn("A");
-        assert_eq!(input["params"]["input"][0]["text"], "A");
-        mp.wait_for_router_audit_event("turn-completed", "fixture-turn-A");
-
-        // End only the recorded synthetic UI, then resume by label. This
-        // exercises a fresh native command without requiring a real login.
-        assert!(std::process::Command::new("kill")
-            .args(["-TERM", original_ui.trim()])
-            .status()
-            .unwrap()
-            .success());
-        mp.expect(
-            "session ended",
-            STEP_TIMEOUT,
-            "fixture child has genuinely exited",
-        );
-        mp.send(b"\x11");
-        mp.expect("closed live pane", STEP_TIMEOUT, "close the ended pane");
-        mp.send(format!("/{LABEL}\r").as_bytes());
-        assert!(
-            mp.wait_until(STARTUP_TIMEOUT, |_| {
-                let metadata = std::fs::read(mp.router_marker("ui.json"))
-                    .ok()
-                    .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok());
-                metadata.as_ref().is_some_and(|metadata| {
-                    metadata["args"]
-                        .as_array()
-                        .is_some_and(|args| args.windows(2).any(|args| args == ["resume", NEW_ID]))
-                })
-            }),
-            "resuming the migrated label must launch the exact new native thread ID"
-        );
-        let metadata = mp.router_json("ui.json");
-        assert_eq!(metadata["cwd"], mp._tmp.join("scope").display().to_string());
-        assert_eq!(
-            metadata["codexHome"],
-            isolated_codex_home(&mp).display().to_string()
-        );
-        assert_ne!(
-            std::fs::read_to_string(mp.router_marker("ui.pid")).unwrap(),
-            original_ui
-        );
-        mp.send(b"C\r");
-        assert_eq!(mp.wait_for_router_turn("C")["threadId"], NEW_ID);
-        mp.wait_for_router_audit_event("turn-completed", "fixture-turn-C");
-        assert!(mp.router_rows("jev.jsonl").is_empty());
-        let saved = mindplayer_core::State::load_from(&state_path);
-        assert_eq!(saved.label_for(NEW_ID), Some(LABEL));
-        assert_eq!(saved.label_for(OLD_ID), None);
-        assert_eq!(
-            std::fs::read(&mp.codex_alfa_file).unwrap(),
-            original_transcript
-        );
-        assert_eq!(std::fs::read(&current_file).unwrap(), current_transcript);
-    }));
-    for name in ["ui.pid", "app-server.pid"] {
-        if let Ok(pid) = std::fs::read_to_string(mp.router_marker(name)) {
-            child_pids.push(pid.trim().parse().unwrap());
-        }
-    }
-    if let Ok(proxy) = std::fs::read_to_string(mp.router_marker("proxy-url")) {
-        proxy_ports.push(proxy.trim().rsplit(':').next().unwrap().parse().unwrap());
-    }
-    for modal in ["Set label", "type to filter"] {
-        if mp.screen().contains(modal) {
-            mp.send(b"\x1b");
-            mp.expect_absent(modal, STEP_TIMEOUT, "close fixture modal before cleanup");
-        }
-    }
-    mp.send(b"\x11");
-    mp.quit_from_list();
-    assert!(
-        mp.wait_until(STEP_TIMEOUT, |_| {
-            child_pids.iter().all(|pid| !fixture_process_exists(*pid))
-                && proxy_ports
-                    .iter()
-                    .all(|port| TcpStream::connect(("127.0.0.1", *port)).is_err())
-                && std::fs::read_dir(&status_root)
-                    .map_or(true, |mut entries| entries.next().is_none())
-        }),
-        "natural app quit must clean up the synthetic children, proxies, and owned status channels"
-    );
-    if let Err(panic) = result {
-        std::panic::resume_unwind(panic);
-    }
-}
-
-#[test]
-fn embedded_router_late_ack_preserves_completed_without_reroute() {
-    let mut mp = Mp::launch_router_fixture(CodexFixture::LifecycleRouter);
-    mp.resume_router_fixture();
-    mp.submit_jev(b"A\r");
-    mp.wait_for_router_route("A", "gpt-6-luna");
-    mp.release_router_lifecycle("A", "started");
-    mp.wait_for_router_status("gpt-6-luna", "running", Some("fixture-turn-A"));
-    mp.release_router_lifecycle("A", "completed");
-    mp.wait_for_router_status("gpt-6-luna", "completed", Some("fixture-turn-A"));
-    mp.release_router_lifecycle("A", "ack");
-    mp.wait_for_router_audit_event("start-acknowledged", "fixture-turn-A");
-    mp.wait_for_router_status("gpt-6-luna", "completed", Some("fixture-turn-A"));
-    mp.assert_router_rendered_lifecycle("gpt-6-luna", "low", "완료");
-    mp.expect_foreground(
-        COMPLETED_BORDER,
-        STEP_TIMEOUT,
-        "correlated router completion makes the pane green without rollout tail events",
-    );
-    mp.assert_router_jev_turn_once("A");
-    mp.assert_router_consecutive_totals(&["A"]);
-}
-
-/// Main runs this once against the newly installed executable. The ordinary
-/// embedded tests always mock Jev, even if the opt-in flag is inherited.
-#[test]
-#[ignore = "two authenticated Jev calls; requires explicit installed-binary opt-in"]
-fn installed_binary_uses_current_jev_provider_for_consecutive_turns() {
-    assert_eq!(
-        std::env::var("MINDPLAYER_TEST_REAL_JEV").as_deref(),
-        Ok("1")
-    );
-    let binary = PathBuf::from(
-        std::env::var_os("MINDPLAYER_TEST_BINARY")
-            .expect("set the exact installed MINDPLAYER_TEST_BINARY"),
-    );
-    assert!(
-        binary.is_absolute() && binary.is_file(),
-        "installed executable must exist"
-    );
-    let binary = binary.canonicalize().expect("resolve installed executable");
-    assert_ne!(
-        binary,
-        PathBuf::from(env!("CARGO_BIN_EXE_mindplayer"))
-            .canonicalize()
-            .expect("resolve Cargo binary"),
-        "select the installed executable"
-    );
-    let version = std::process::Command::new(&binary)
-        .arg("--version")
-        .output()
-        .expect("read installed executable version");
-    assert!(version.status.success());
-    let version = String::from_utf8(version.stdout).expect("installed version text");
-    assert!(
-        version
-            .split_whitespace()
-            .any(|part| part == env!("CARGO_PKG_VERSION")),
-        "installed version must match this checkout"
-    );
-    let mut proof_file = std::env::var_os("MINDPLAYER_TEST_JEV_PROOF").map(|path| {
-        let mut options = std::fs::OpenOptions::new();
-        options.write(true).create_new(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600);
-        }
-        options
-            .open(path)
-            .expect("create new private metadata-only proof before calling Jev")
-    });
-    let mut mp = Mp::launch_router_fixture(CodexFixture::RealJevRouter);
-    mp.start_into_main_list();
-    mp.send(b"/");
-    mp.expect(
-        "type to filter",
-        STEP_TIMEOUT,
-        "synthetic session search opened",
-    );
-    mp.send(b"alfa\r");
-    mp.expect(PANE_READY, STARTUP_TIMEOUT, "installed router pane came up");
-    // Fail stale installations before the first paid judgment.
-    mp.embedded_router_bundle();
-    mp.assert_router_gateway_key_is_private();
-    for (text, jev, label) in [
-        ("analyze B", true, "B"),
-        ("A", true, "A"),
-        ("C", false, "C"),
-    ] {
-        mp.send(text.as_bytes());
-        mp.expect(
-            &format!("> {text}"),
-            STEP_TIMEOUT,
-            "direct installed-fixture input",
-        );
-        mp.choose_prompt(jev);
-        mp.send(b"\r");
-        let route = mp.wait_for_router_turn(label);
-        if jev {
-            mp.assert_router_jev_turn_once(label);
-        } else {
-            assert_eq!(route["model"], "gpt-6-luna");
-            assert_eq!(route["effort"], "low");
-        }
-        assert_eq!(route["routingChoicePresent"], false);
-        mp.wait_for_router_audit_event("turn-completed", &format!("fixture-turn-{label}"));
-        mp.assert_router_status(route["model"].as_str().unwrap());
-        mp.expect(
-            if jev { PROMPT_JEV } else { PROMPT_NATIVE },
-            STEP_TIMEOUT,
-            "installed fixture retains the session toggle after submission",
-        );
-    }
-    mp.assert_router_mixed_totals(&["B", "A", "C"], 2);
-    let responses: Vec<_> = mp
-        .router_rows("jev.jsonl")
-        .into_iter()
-        .filter(|row| row["event"] == "response")
-        .collect();
-    let audit = mp.router_audit_rows();
-    let proof = serde_json::json!({
-        "schemaVersion": 1, "installedBinary": binary, "version": version.trim(),
-        "provider": mp.jev_provider, "authenticatedJev": true, "syntheticTurns": 3,
-        "authenticatedJudgments": 2, "promptModes": ["jev", "jev", "native"],
-        "sessionToggleSticky": true, "nativeUiContract": "mindplayer-native-routing-v4",
-        "codexInference": false, "automaticRetries": 0,
-        "rubricVersion": "mindplayer-capacity-v2",
-        "promptFirstContract": if responses.is_empty() { "service-audit" } else { "request-metadata" },
-        "previousDecisionBound": [false, true],
-        "responses": responses,
-        "judgments": audit.iter().filter(|row| row["event"] == "jev-judged").collect::<Vec<_>>(),
-        "acceptedConfigurations": mp.router_rows("routes.jsonl"),
-        "auditRoot": mp._tmp.join("router-audits"), "markerDirectory": mp.router_marker_dir,
-        "gatewayPhysicalVersionAttested": false
-    });
-    if let Some(file) = &mut proof_file {
-        serde_json::to_writer_pretty(&mut *file, &proof).expect("write metadata-only proof");
-        writeln!(file).unwrap();
-    }
-    println!("JEV_PROOF={proof}");
-}
-
-#[test]
-fn new_resume_and_handoff_use_the_same_embedded_router_bundle() {
-    let mut bundle_name = None;
-    for entry in ["new", "resume", "handoff"] {
-        let mut mp = Mp::launch_actual_router_fixture();
-        mp.start_into_main_list();
-        match entry {
-            "new" => {
-                mp.send(b"n");
-                mp.expect("New session", STEP_TIMEOUT, "new-session picker opened");
-                mp.send(b"\x1b[B");
-                mp.expect(
-                    "▶ codex · isolated",
-                    STEP_TIMEOUT,
-                    "isolated target selected",
-                );
-                mp.send(b"\r\r\r");
-            }
-            "resume" => {
-                mp.send(b"/");
-                mp.expect("type to filter", STEP_TIMEOUT, "session search opened");
-                mp.send(b"alfa\r");
-            }
-            "handoff" => {
-                append_handoff_turn(&mp.codex_brvo_file);
-                mp.send(b"h");
-                mp.expect("Handoff", STEP_TIMEOUT, "handoff picker opened");
-                mp.send(b"\x1b[B");
-                mp.expect(
-                    "▶ isolated",
-                    STEP_TIMEOUT,
-                    "isolated handoff target selected",
-                );
-                mp.send(b"\r");
-            }
-            _ => unreachable!(),
-        }
-        if entry == "handoff" {
-            // With a key the handoff's automatic first turn is a new session turn, so Jev judges it.
-            mp.expect(
-                "submitted initial context to",
-                STEP_TIMEOUT,
-                "handoff context was pasted before the test turn",
-            );
-            mp.expect(
-                PROMPT_JEV,
-                STEP_TIMEOUT,
-                "handoff starts ON when a Jev key loaded",
-            );
-            let route = mp.wait_for_router_turn("bootstrap");
-            mp.assert_router_jev_turn_once("bootstrap");
-            let sent = mp.router_rows("ui-requests.jsonl");
-            assert_eq!(sent.len(), 1);
-            let context = sent[0]["params"]["input"][0]["text"]
-                .as_str()
-                .expect("original handoff context");
-            assert!(context.contains("handoff smoke request"));
-            assert!(context.contains("handoff smoke answer"));
-            assert_eq!(
-                sent[0]["params"]["mindplayerRoutingChoice"],
-                serde_json::json!({"mode": "jev", "includeRecent": false})
-            );
-            assert_eq!(route["requestId"], sent[0]["id"]);
-            assert_eq!(
-                route["clientUserMessageId"],
-                sent[0]["params"]["clientUserMessageId"]
-            );
-            mp.wait_for_router_audit_event("turn-completed", "fixture-turn-bootstrap");
-            let composer = mp.router_json("composer-state.json");
-            assert_eq!(composer["draft"], "");
-            assert_eq!(composer["mode"], "jev");
-        } else {
-            mp.expect(PANE_READY, STARTUP_TIMEOUT, "embedded router pane came up");
-            mp.expect(
-                PROMPT_JEV,
-                STEP_TIMEOUT,
-                "new and resumed sessions start ON when a Jev key loaded",
-            );
-        }
-        let metadata = mp.router_json("ui.json");
-        assert_eq!(
-            metadata["codexHome"],
-            isolated_codex_home(&mp).display().to_string()
-        );
-        let args = metadata["args"].as_array().unwrap();
-        assert_eq!(args.iter().any(|arg| arg == "resume"), entry == "resume");
-        assert!(!args.iter().any(|arg| arg == "--model"));
-        mp.assert_router_gateway_key_is_private();
-        mp.submit_jev(b"analyze B\r");
-        mp.wait_for_router_route("B", "gpt-6-astra");
-        mp.assert_router_jev_turn_once("B");
-        let bundle = mp.embedded_router_bundle();
-        let name = bundle.file_name().unwrap().to_owned();
-        if let Some(expected) = &bundle_name {
-            assert_eq!(
-                &name, expected,
-                "{entry} changed the embedded runtime bundle"
-            );
-        } else {
-            bundle_name = Some(name);
-        }
-    }
-}
-
 #[test]
 fn accounts_primary_switch_wins_for_later_new_session_over_ambient_isolated() {
     let mut mp = Mp::launch_with_options(ROWS, COLS, true, true, true, false);
@@ -7975,6 +5797,60 @@ fn ctrl_p_ctrl_t_and_plain_r_reach_the_native_pty_consumer() {
         STEP_TIMEOUT,
         "consumer finished the exact byte read",
     );
+}
+
+#[test]
+fn codex_f6_and_f7_reach_the_native_pty_without_routing() {
+    let mut mp = Mp::launch_with_fixture_hooks(
+        (ROWS, COLS),
+        false,
+        false,
+        false,
+        false,
+        CodexFixture::KeyCapture,
+        (
+            |tmp: &Path| {
+                let launcher = tmp.join("bin/codex");
+                let source = std::fs::read_to_string(&launcher).expect("offline byte-capture CLI");
+                assert_eq!(source.matches("-N 3").count(), 1);
+                write_script(&launcher, &source.replace("-N 3", "-N 10"));
+            },
+            |_: &Path, _: Option<u32>| {},
+        ),
+    );
+    mp.start_into_main_list();
+    mp.send(b"\r");
+    mp.expect(
+        "KEY-CAPTURE-READY",
+        STEP_TIMEOUT,
+        "native consumer is raw and ready",
+    );
+    mp.send(F6);
+    mp.send(F7);
+    let receipt = mp._tmp.join("native-key-receipt");
+    assert!(
+        mp.wait_until(STEP_TIMEOUT, |_| std::fs::read_to_string(&receipt)
+            .is_ok_and(|text| text.split_whitespace().collect::<Vec<_>>()
+                == ["1b", "5b", "31", "37", "7e", "1b", "5b", "31", "38", "7e"])),
+        "F6 and F7 must reach the native Codex PTY unchanged"
+    );
+    mp.expect(
+        "KEY-CAPTURE-RECEIVED",
+        STEP_TIMEOUT,
+        "native child consumed both keys",
+    );
+    assert!(
+        !mp.screen().contains("Jev"),
+        "removed routing has no selector or status"
+    );
+    mp.assert_native_without_router();
+    mp.send(b"\x18");
+    mp.expect(
+        "multi-select",
+        STEP_TIMEOUT,
+        "return from native input capture",
+    );
+    mp.quit_from_list();
 }
 
 #[test]

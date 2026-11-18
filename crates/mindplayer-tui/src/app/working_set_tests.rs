@@ -42,29 +42,6 @@ fn mp_review_migration_save_failure_is_visible_and_retried() {
 }
 
 #[test]
-fn mp_review_unresolved_native_switch_does_not_stamp_previous_source() {
-    let mut fixture = NativeSwitch::new();
-    fixture.app.ptys[&fixture.original.id].poll_routing_status();
-    fixture.app.note_session_use(&fixture.original.id);
-    assert!(
-        !fixture
-            .app
-            .state
-            .last_used
-            .contains_key(&fixture.original.id),
-        "input after native resume must not promote the previous thread"
-    );
-    fixture.wait_for_target();
-    fixture.app.note_session_use(&fixture.original.id);
-    assert!(fixture.app.state.last_used.contains_key(&fixture.target.id));
-    assert!(!fixture
-        .app
-        .state
-        .last_used
-        .contains_key(&fixture.original.id));
-}
-
-#[test]
 fn mp_review_source_use_survives_restart_without_promoting_collision() {
     let mut app = tests::isolated_app();
     let mut chosen = tests::session("shared-native", Agent::Codex, false);
@@ -87,28 +64,33 @@ fn mp_review_source_use_survives_restart_without_promoting_collision() {
 
 #[test]
 fn mp_review_live_typing_does_not_starve_catalog_adoption() {
-    let mut fixture = NativeSwitch::new();
-    fixture.wait_for_target();
-    let epoch = fixture.app.working_set.epoch;
+    let mut app = tests::isolated_app();
+    let source = tests::session("native-typing", Agent::Codex, false);
+    let command = mindplayer_core::Command {
+        program: "cat".into(),
+        args: Vec::new(),
+        cwd: tests::fresh_login_test_home(),
+        env: Default::default(),
+    };
+    let pty = PtySession::spawn(&command, &source.id, 6, 20).unwrap();
+    app.ptys.insert(source.id.clone(), pty);
+    app.all_sessions = vec![source.clone()];
+    let epoch = app.working_set.epoch;
     for _ in 0..20 {
-        fixture.app.note_session_use(&fixture.original.id);
+        app.note_session_use(&source.id);
     }
     assert!(
-        fixture.app.apply_catalog((
+        app.apply_catalog((
             epoch,
             Instant::now(),
-            Ok(mindplayer_core::catalog::CatalogSnapshot {
-                archive: vec![fixture.target.clone(), fixture.collision.clone()],
-                ..Default::default()
-            })
+            Ok(mindplayer_core::catalog::CatalogSnapshot::default())
         )),
         "continuous input to an already protected live source must not reject every catalog scan"
     );
-    assert!(fixture
-        .app
+    assert!(app
         .all_sessions
         .iter()
-        .any(|s| !s.archived && s.file == fixture.target.file));
+        .any(|s| !s.archived && s.file == source.file));
 }
 
 #[test]
@@ -493,59 +475,6 @@ fn archive_page_source_identity_does_not_hide_another_account() {
 }
 
 #[test]
-fn hidden_routing_status_is_polled_in_bounded_fair_batches() {
-    let mut app = tests::isolated_app();
-    let directory = tests::fresh_login_test_home();
-    for index in 0..10 {
-        let id = format!("hidden-{index:02}");
-        let channel =
-            crate::local_router::RoutingStatusChannel::create_at(&directory.join("routing"))
-                .unwrap();
-        let mut status = serde_json::to_value(channel.snapshot().unwrap()).unwrap();
-        status["revision"] = serde_json::json!(1);
-        status["threadId"] = serde_json::json!(id);
-        std::fs::write(channel.path(), serde_json::to_vec(&status).unwrap()).unwrap();
-        let command = mindplayer_core::Command {
-            program: "cat".into(),
-            args: Vec::new(),
-            cwd: directory.clone(),
-            env: Default::default(),
-        };
-        let mut pty = PtySession::spawn(&command, &id, 6, 20).unwrap();
-        pty.set_routing_status_for_test(channel);
-        app.ptys.insert(id.clone(), pty);
-        app.all_sessions
-            .push(tests::session(&id, Agent::Codex, false));
-    }
-    assert!(app.panes.is_empty(), "all fixture children are hidden");
-    app.poll_hook_status();
-    assert_eq!(
-        app.ptys
-            .values()
-            .filter(|p| p.routing_thread_id().is_some())
-            .count(),
-        4,
-        "one status tick must not read every hidden routing file"
-    );
-    for _ in 0..2 {
-        app.hook_status_due = None;
-        app.poll_hook_status();
-    }
-    assert_eq!(
-        app.ptys
-            .values()
-            .filter(|p| p.routing_thread_id().is_some())
-            .count(),
-        10,
-        "round-robin polling must not starve hidden children"
-    );
-    assert!(
-        app.ptys.values_mut().all(|p| p.is_alive()),
-        "polling must never terminate hidden work"
-    );
-}
-
-#[test]
 fn catalog_resolves_pending_labels_against_archived_metadata() {
     let mut app = tests::isolated_app();
     let now = Utc::now();
@@ -731,276 +660,4 @@ fn missing_archive_source_leaves_membership_and_launch_unchanged() {
     assert!(!app.state.last_used.contains_key("missing-source"));
     assert!(app.pending.is_none());
     assert!(app.ptys.is_empty());
-}
-
-struct NativeSwitch {
-    app: App,
-    original: Session,
-    target: Session,
-    collision: Session,
-}
-
-impl NativeSwitch {
-    fn new() -> Self {
-        use mindplayer_core::accounts::Account;
-        let directory = tests::fresh_login_test_home().join("native-switch");
-        std::fs::create_dir_all(&directory).unwrap();
-        let mut account = Account::isolated(&directory, Agent::Codex, "source").unwrap();
-        let mut other = Account::isolated(&directory, Agent::Codex, "other").unwrap();
-        // Display labels deliberately disagree with the immutable provider homes.
-        account.name = "other".into();
-        other.name = "source".into();
-        let write_session = |id: &str, account: &Account, archived, tokens| {
-            let mut session = tests::session(id, Agent::Codex, archived);
-            session.cwd = directory.join("project");
-            session.file = account.session_root(&directory).join(format!("{id}.jsonl"));
-            session.started_at = Some(Utc::now() - chrono::Duration::days(60));
-            session.last_prompt_at = Some(Utc::now() - chrono::Duration::days(30));
-            std::fs::create_dir_all(session.file.parent().unwrap()).unwrap();
-            let records = [
-                serde_json::json!({"type":"session_meta","payload":{
-                    "id":id,"cwd":session.cwd,"timestamp":session.started_at
-                }}),
-                serde_json::json!({"type":"response_item","timestamp":session.last_prompt_at,
-                "payload":{"type":"message","role":"user","content":[{
-                    "type":"input_text","text":"archived work"
-                }]}}),
-                serde_json::json!({"type":"event_msg","payload":{
-                    "type":"token_count","info":{"total_token_usage":{
-                        "input_tokens":tokens,"output_tokens":0,"total_tokens":tokens
-                    }}
-                }}),
-            ];
-            let text = records
-                .iter()
-                .map(ToString::to_string)
-                .collect::<Vec<_>>()
-                .join("\n");
-            std::fs::write(&session.file, format!("{text}\n")).unwrap();
-            session
-        };
-        let original = write_session("native-origin", &account, false, 1);
-        let target = write_session("native-target", &account, true, 42);
-        let collision = write_session("native-target", &other, true, 999);
-        let mut app = tests::isolated_app_at(directory.join("state.json"));
-        app.cfg.codex_dir = directory.join("default/sessions");
-        app.cfg.claude_dir = directory.join("claude");
-        app.cfg.kiro_dir = directory.join("kiro");
-        app.cfg.cursor_dir = directory.join("cursor");
-        app.cfg.omp_dir = directory.join("omp");
-        app.scope = Scope::Global;
-        app.accounts = vec![account.clone(), other];
-        assert!(app
-            .scan_roots()
-            .iter()
-            .all(|root| root.dir.starts_with(&directory)));
-        app.all_sessions = vec![original.clone()];
-        app.archive_catalog = Arc::new(vec![collision.clone(), target.clone()]);
-        app.panes.push(original.id.clone());
-        app.active = Some(original.id.clone());
-        app.pane_accounts
-            .insert(original.id.clone(), (Agent::Codex, account.name));
-        let channel =
-            crate::local_router::RoutingStatusChannel::create_at(&directory.join("routing"))
-                .unwrap();
-        let mut status = serde_json::to_value(channel.snapshot().unwrap()).unwrap();
-        status["revision"] = serde_json::json!(1);
-        status["threadId"] = serde_json::json!(target.id);
-        std::fs::write(channel.path(), serde_json::to_vec(&status).unwrap()).unwrap();
-        let command = mindplayer_core::Command {
-            program: "cat".into(),
-            args: Vec::new(),
-            cwd: directory,
-            env: Default::default(),
-        };
-        let mut pty = PtySession::spawn(&command, &original.id, 6, 20).unwrap();
-        pty.set_routing_status_for_test(channel);
-        app.ptys.insert(original.id.clone(), pty);
-        app.rebuild_visible();
-        Self {
-            app,
-            original,
-            target,
-            collision,
-        }
-    }
-
-    fn wait_for_target(&mut self) {
-        let until = Instant::now() + Duration::from_secs(5);
-        while !self
-            .app
-            .all_sessions
-            .iter()
-            .any(|s| !s.archived && s.file == self.target.file && s.tokens == TokenUsage::default())
-        {
-            self.app.poll_working_set();
-            self.app.hook_status_due = None;
-            self.app.poll_hook_status();
-            assert!(
-                Instant::now() < until,
-                "native target was not hydrated/promoted"
-            );
-            thread::sleep(Duration::from_millis(5));
-        }
-    }
-}
-
-#[test]
-fn native_hydration_preserves_observed_activity_by_source() {
-    let mut fixture = NativeSwitch::new();
-    let now = Utc::now() + chrono::Duration::minutes(1);
-    let mut observed = fixture.target.clone();
-    observed.last_active = Some(now);
-    observed.last_prompt_at = Some(now);
-    let mut collision = fixture.collision.clone();
-    collision.last_active = Some(now + chrono::Duration::minutes(1));
-    collision.last_prompt_at = collision.last_active;
-    fixture.app.all_sessions.extend([observed, collision]);
-    fixture.app.poll_hook_status();
-    fixture.wait_for_target();
-    let target = fixture
-        .app
-        .all_sessions
-        .iter()
-        .find(|s| working_set::source_key(s) == working_set::source_key(&fixture.target))
-        .unwrap();
-    assert!(!target.archived);
-    assert_eq!(target.last_active, Some(now));
-    assert_eq!(target.last_prompt_at, Some(now));
-    assert_eq!(fixture.app.ptys.len(), 1, "only the fixture-owned cat PTY");
-}
-
-#[test]
-fn native_switch_off_page_hydrates_without_rekeying_or_spawning() {
-    let mut fixture = NativeSwitch::new();
-    let mut catalog: Vec<_> = (0..250)
-        .map(|i| {
-            let mut row = tests::session(&format!("archive-{i:04}"), Agent::Codex, true);
-            row.last_prompt_at = Some(Utc::now());
-            row
-        })
-        .collect();
-    catalog.extend([fixture.collision.clone(), fixture.target.clone()]);
-    fixture.app.archive_catalog = Arc::new(catalog);
-    fixture.app.toggle_archived_view();
-    wait_for_archive(&mut fixture.app);
-    assert!(!fixture
-        .app
-        .all_sessions
-        .iter()
-        .any(|s| s.id == fixture.target.id));
-    let pane_account = fixture.app.pane_accounts[&fixture.original.id].clone();
-    fixture.app.poll_hook_status();
-    fixture.wait_for_target();
-    assert_eq!(fixture.app.ptys.len(), 1);
-    assert_eq!(fixture.app.panes, [fixture.original.id.clone()]);
-    assert_eq!(
-        fixture.app.active.as_deref(),
-        Some(fixture.original.id.as_str())
-    );
-    assert_eq!(
-        fixture.app.pane_accounts[&fixture.original.id],
-        pane_account
-    );
-    assert!(fixture
-        .app
-        .ptys
-        .get_mut(&fixture.original.id)
-        .unwrap()
-        .is_alive());
-    assert!(fixture.app.pending.is_none());
-    assert!(fixture.app.pending_queue.is_empty());
-    assert!(fixture.app.state.last_used.contains_key(&fixture.target.id));
-    assert_eq!(
-        fixture.app.codex_turns[&fixture.original.id].file(),
-        fixture.target.file
-    );
-}
-
-#[test]
-fn native_switch_rollout_never_uses_another_account_collision() {
-    let mut fixture = NativeSwitch::new();
-    fixture.app.all_sessions.push(fixture.collision.clone());
-    fixture.app.poll_hook_status();
-    assert!(
-        fixture
-            .app
-            .codex_turns
-            .get(&fixture.original.id)
-            .is_none_or(|reader| reader.file() != fixture.collision.file),
-        "a same-ID row on the current Archive page belongs to another provider home"
-    );
-    fixture.wait_for_target();
-    assert_eq!(
-        fixture.app.codex_turns[&fixture.original.id].file(),
-        fixture.target.file
-    );
-    assert!(!fixture
-        .app
-        .all_sessions
-        .iter()
-        .any(|s| !s.archived && s.file == fixture.collision.file));
-}
-
-#[test]
-fn native_switch_catalog_protects_the_verified_running_target() {
-    let mut fixture = NativeSwitch::new();
-    fixture.app.state.set_archived(&fixture.target.id, true);
-    fixture.app.poll_hook_status();
-    let (_, _, snapshot) = fixture
-        .app
-        .catalog_scan()
-        .recv_timeout(Duration::from_secs(5))
-        .unwrap();
-    let snapshot = snapshot.unwrap();
-    assert!(
-        snapshot
-            .active
-            .iter()
-            .any(|s| s.file == fixture.target.file),
-        "the routed thread is running even though its PTY remains keyed by the original ID"
-    );
-    assert!(!snapshot
-        .active
-        .iter()
-        .any(|s| s.file == fixture.collision.file));
-}
-
-#[test]
-fn native_metadata_hydration_preserves_last_manual_measurement() {
-    let mut fixture = NativeSwitch::new();
-    fixture.app.manual_usage.insert(
-        working_set::source_key(&fixture.target),
-        mindplayer_core::catalog::UsageSnapshot {
-            tokens: TokenUsage {
-                total: 123,
-                ..Default::default()
-            },
-            context_pct: Some(25.0),
-            partial: true,
-        },
-    );
-    let deadline = Instant::now() + Duration::from_secs(5);
-    loop {
-        fixture.app.poll_working_set();
-        fixture.app.hook_status_due = None;
-        fixture.app.poll_hook_status();
-        if let Some(row) = fixture
-            .app
-            .all_sessions
-            .iter()
-            .find(|s| !s.archived && s.file == fixture.target.file)
-        {
-            assert_eq!(
-                row.tokens.total, 123,
-                "metadata must not overwrite measured tokens"
-            );
-            assert_eq!(row.context_pct, Some(25.0));
-            break;
-        }
-        assert!(Instant::now() < deadline, "native target was not promoted");
-        thread::sleep(Duration::from_millis(5));
-    }
-    assert_eq!(fixture.app.ptys.len(), 1);
-    assert!(fixture.app.pending.is_none());
 }

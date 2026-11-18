@@ -103,10 +103,6 @@ impl App {
     /// the pane starts: discovery only looks where accounts live, and a session
     /// it cannot find is one the reconciler would lose.
     pub fn request_new_fresh_login(&mut self, agent: Agent, label: &str) {
-        let Some(routing_mode) = self.startup_routing.mode() else {
-            self.status = "시작바에서 이번 실행의 판단 방식을 먼저 선택하세요.".into();
-            return;
-        };
         #[cfg(not(test))]
         let home = super::limits_home_for_app();
         #[cfg(test)]
@@ -136,9 +132,9 @@ impl App {
             return;
         }
         // Prepare only the conversation command; the provider's login still
-        // runs directly before the bridge is started.
+        // runs directly before the native session starts.
         let start = mindplayer_core::new_session(agent, self.new_session_dir(), &account);
-        let start = match crate::local_router::prepare_for_mode(&start, routing_mode) {
+        let start = match crate::local_router::prepare(&start) {
             Ok(start) => start,
             Err(error) => {
                 self.status = error.to_string();
@@ -599,10 +595,6 @@ impl App {
     /// Consume a pending spawn now that the pane size is known. Other sessions'
     /// PTYs are left running in the background.
     pub fn spawn_pending(&mut self) {
-        let Some(routing_mode) = self.startup_routing.mode() else {
-            self.status = "시작바에서 이번 실행의 판단 방식을 먼저 선택하세요.".into();
-            return;
-        };
         let Some(mut pending) = self.pending.take() else {
             return;
         };
@@ -650,12 +642,6 @@ impl App {
             };
             pending = verified;
         }
-        crate::local_router::forward_availability(
-            &mut pending.command,
-            account.as_ref(),
-            self.limits.as_deref(),
-            self.limits_observed_at,
-        );
         // Replace only a previous (ended) PTY for this same id.
         if let Some(mut old) = self.ptys.remove(&id) {
             old.kill();
@@ -694,7 +680,7 @@ impl App {
             .get(&id)
             .copied()
             .unwrap_or((self.pty_rows, self.pty_cols));
-        match PtySession::spawn_with_routing(&pending.command, &id, rows, cols, routing_mode) {
+        match PtySession::spawn(&pending.command, &id, rows, cols) {
             Ok(pty) => {
                 if let Some(input) = pending.initial_input {
                     self.pending_initial_inputs.insert(
@@ -832,7 +818,7 @@ impl App {
             return true;
         };
         let source = sync.source.clone();
-        self.refresh_native_owners();
+
         if !self.ended.contains(id)
             && (!self.ptys.contains_key(id)
                 || self.pty_owner_for_source(&source).as_deref() == Some(id))

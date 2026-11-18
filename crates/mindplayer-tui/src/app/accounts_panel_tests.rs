@@ -935,14 +935,8 @@ mod account_lifecycle_regressions {
             };
             app.ptys.insert(
                 id.clone(),
-                PtySession::spawn_with_routing(
-                    &command,
-                    &id,
-                    6,
-                    30,
-                    crate::startup_routing::RoutingMode::Native,
-                )
-                .expect("spawn a synthetic child without authentication"),
+                PtySession::spawn(&command, &id, 6, 30)
+                    .expect("spawn a synthetic child without authentication"),
             );
             app.focus_or_add_pane(&id);
             assert_eq!(app.pane_count_on(&account), 1, "visible PTYs count once");
@@ -1054,14 +1048,8 @@ mod account_lifecycle_regressions {
             };
             app.ptys.insert(
                 id.clone(),
-                PtySession::spawn_with_routing(
-                    &command,
-                    &id,
-                    6,
-                    30,
-                    crate::startup_routing::RoutingMode::Native,
-                )
-                .expect("spawn a synthetic child without authentication"),
+                PtySession::spawn(&command, &id, 6, 30)
+                    .expect("spawn a synthetic child without authentication"),
             );
             app.focus_or_add_pane(&id);
             app.remove_pane(&id);

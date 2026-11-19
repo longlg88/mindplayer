@@ -35,6 +35,38 @@ fn app_on_main() -> App {
 }
 
 #[test]
+fn a_refused_account_name_says_why_inside_the_name_box() {
+    let mut app = app_on_main();
+    app.open_accounts();
+    let at = app
+        .account_rows()
+        .iter()
+        .position(|row| matches!(row, accounts_panel::AccountRow::Entry(_)))
+        .unwrap();
+    app.accounts_panel.as_mut().unwrap().selected = at;
+    app.accounts_start_rename();
+    app.accounts_panel.as_mut().unwrap().new_name = Some("two words".into());
+    app.accounts_confirm_add();
+
+    let screen = painted(&mut app, 100, 30);
+    assert!(
+        screen.contains("Rename account"),
+        "the name box closed:\n{screen}"
+    );
+    assert!(
+        screen.contains("cannot be an account name"),
+        "the refusal is not shown where the name is typed:\n{screen}"
+    );
+
+    app.accounts_name_backspace();
+    let screen = painted(&mut app, 100, 30);
+    assert!(
+        !screen.contains("cannot be an account name"),
+        "an edited name still shows the old refusal:\n{screen}"
+    );
+}
+
+#[test]
 fn the_screen_shows_every_provider_and_its_logins() {
     let mut app = app_on_main();
     app.open_accounts();

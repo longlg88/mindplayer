@@ -3191,21 +3191,27 @@ fn accounts_popup(f: &mut Frame, app: &App) {
             ),
             None => (" Add account ", "Name:".to_string()),
         };
-        let area = centered(f.area(), 58, 6);
+        let mut lines = vec![
+            Line::from(Span::styled(prompt, Style::default().fg(DIM))),
+            Line::from(Span::styled(
+                format!("{name}▏"),
+                Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+            )),
+            Line::from(Span::styled(
+                "letters, digits, - and _",
+                Style::default().fg(DIM).add_modifier(Modifier::ITALIC),
+            )),
+        ];
+        // The list is hidden while a name is typed, so a refusal is drawn here.
+        if let Some(error) = &panel.error {
+            for row in wrapped_text_rows(error, 54) {
+                lines.push(Line::from(Span::styled(row, Style::default().fg(ERROR))));
+            }
+        }
+        let area = centered(f.area(), 58, lines.len() as u16 + 3);
         f.render_widget(Clear, area);
         f.render_widget(
-            Paragraph::new(vec![
-                Line::from(Span::styled(prompt, Style::default().fg(DIM))),
-                Line::from(Span::styled(
-                    format!("{name}▏"),
-                    Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
-                )),
-                Line::from(Span::styled(
-                    "letters, digits, - and _",
-                    Style::default().fg(DIM).add_modifier(Modifier::ITALIC),
-                )),
-            ])
-            .block(
+            Paragraph::new(lines).block(
                 Block::default()
                     .borders(Borders::ALL)
                     .border_style(Style::default().fg(ACCENT))

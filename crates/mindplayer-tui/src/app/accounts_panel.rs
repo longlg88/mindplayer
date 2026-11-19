@@ -671,6 +671,7 @@ impl App {
         if let Some(panel) = self.accounts_panel.as_mut() {
             if let Some(name) = panel.new_name.as_mut() {
                 name.push(c);
+                panel.error = None;
             }
         }
     }
@@ -679,6 +680,7 @@ impl App {
         if let Some(panel) = self.accounts_panel.as_mut() {
             if let Some(name) = panel.new_name.as_mut() {
                 name.pop();
+                panel.error = None;
             }
         }
     }
@@ -771,12 +773,7 @@ impl App {
             self.set_error(AccountError::Duplicate(name.to_string()).to_string());
             return;
         }
-        // A label-only rename keeps the home; hidden panes need not block it.
-        if self.count_panes_on(&account, self.panes.iter()) > 0 {
-            self.set_error("a pane is running on this account — close it first");
-            return;
-        }
-
+        // A label-only rename keeps the home, so open panes follow the new name.
         self.accounts[i].name = name.to_string();
         let renamed = self.accounts[i].clone();
         self.relabel_after_rename(&[(account.clone(), renamed)]);

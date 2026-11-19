@@ -82,7 +82,15 @@ the resulting minimum version.)
 
 ### Unreleased
 
-- **2.1.1:** show each session row's own activity time. A handoff thread still
+- **2.2.0:** keep the account of each OMP session's latest observed response.
+  A row whose session is stopped or not open shows that account, also after a
+  restart. A running pane still shows only what its own responses prove, and a
+  session that has not answered in a MindPlayer pane stays `unverified`.
+- Run a provider CLI's own `update` before a Codex, Claude or OMP session
+  starts, at most once per CLI every 10 minutes. The session waits up to 90
+  seconds and starts on the installed version when the update fails or times
+  out. `MINDPLAYER_CLI_UPDATE=0` turns this off.
+- Show each session row's own activity time. A handoff thread still
   sorts by its newest lane, but the original session and its handoff no longer
   share one displayed time.
 - Explain a refused account name inside the name box, and let a label-only

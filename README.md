@@ -285,7 +285,7 @@ stopped or not open shows that stored account, also after MindPlayer restarts.
 A running pane shows only what its own responses prove, so the list says
 `unverified` and the pane says `계정 미확인` between an account, model, or
 session change and the next response. A session that has not answered in a
-MindPlayer pane since 2.2.0, or whose installed OMP lacks the required
+MindPlayer pane since 2.3.0, or whose installed OMP lacks the required
 extension APIs, has no stored account and stays `unverified`. A provider name,
 selected model, or first login in a pool is not account evidence. The observer
 is per pane, uses private temporary files, and does not copy tokens, modify

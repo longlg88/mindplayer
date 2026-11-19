@@ -82,7 +82,17 @@ the resulting minimum version.)
 
 ### Unreleased
 
-- **2.2.0:** keep the account of each OMP session's latest observed response.
+- **2.3.0:** check which organization a Claude login landed on. After a
+  sign-in, on `v`, and before a launch, MindPlayer compares the login it got
+  with the stored ones and names the plan (`team`, `max`, `pro`,
+  `enterprise`) instead of an organization UUID. A login that belongs to
+  another account is not bound, a changed login names the plan that was
+  expected, and a newly added account is registered at once when its login is
+  new and cancelled when it repeats an existing subscription.
+- Pre-select the bound organization when a Claude account signs in again.
+- Show each Claude account's plan on the Accounts screen and in the usage
+  footer, and mark accounts that share one subscription or whose login changed.
+- Keep the account of each OMP session's latest observed response.
   A row whose session is stopped or not open shows that account, also after a
   restart. A running pane still shows only what its own responses prove, and a
   session that has not answered in a MindPlayer pane stays `unverified`.

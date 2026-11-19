@@ -39,7 +39,7 @@ fn live_codex_required_identity_checks() {
 }
 
 #[test]
-#[ignore = "reads real signed-in Claude accounts; prints only labels and whether a gauge was read"]
+#[ignore = "reads real signed-in Claude accounts; prints only labels, plan words and equality booleans"]
 fn live_claude_account_rows() {
     let home = std::env::var_os("MINDPLAYER_LIVE_ACCOUNTS_HOME")
         .or_else(|| std::env::var_os("HOME"))
@@ -50,9 +50,26 @@ fn live_claude_account_rows() {
         .filter(|account| account.provider == Agent::Claude && !account.disabled)
         .collect();
     assert!(!accounts.is_empty(), "no enabled Claude accounts");
+    let mut seen: Vec<(String, String)> = Vec::new();
     for account in &accounts {
         let rows = limits::account_quota_rows(account, &home);
         assert!(!rows.is_empty(), "no reading for {}", account.name);
+        let login = rows.iter().find_map(|row| row.identity.clone());
+        let plan = rows.iter().find_map(|row| row.plan.clone());
+        println!(
+            "{}: plan={} login_read={} matches_binding={} same_login_as={:?}",
+            account.name,
+            mindplayer_core::claude_auth::plan_label(plan.as_deref().unwrap_or("unknown")),
+            login.is_some(),
+            login.is_some() && login.as_deref() == account.claude_identity.as_deref(),
+            login.as_ref().and_then(|login| seen
+                .iter()
+                .find(|(_, earlier)| earlier == login)
+                .map(|(name, _)| name.as_str()))
+        );
+        if let Some(login) = login {
+            seen.push((account.name.clone(), login));
+        }
         for row in &rows {
             println!(
                 "{} inherited={}: {} gauge={} failure={:?}",

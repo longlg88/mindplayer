@@ -3215,9 +3215,6 @@ fn fold_hints(hints: &[&str], width: usize) -> Vec<String> {
     rows
 }
 
-/// The Accounts screen (`u`): which logins exist per provider, and which one
-/// the next session takes. Management lives here rather than in the footer,
-/// which has to stay small enough to leave the panes room.
 /// The plan and identity state shown for a Claude account on the Accounts screen.
 fn claude_identity_note(
     app: &App,
@@ -3237,6 +3234,9 @@ fn claude_identity_note(
     (format!("{plan} · {state}"), color)
 }
 
+/// The Accounts screen (`u`): which logins exist per provider, and which one
+/// the next session takes. Management lives here rather than in the footer,
+/// which has to stay small enough to leave the panes room.
 fn accounts_popup(f: &mut Frame, app: &App) {
     use crate::app::accounts_panel::AccountRow;
 

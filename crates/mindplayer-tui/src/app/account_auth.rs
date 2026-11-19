@@ -617,6 +617,7 @@ macro_rules! lifecycle_tests {
                     fingerprint: fingerprint.into(),
                     email: "person@example.test".into(),
                     workspace: "workspace-test".into(),
+                    plan: "unknown".into(),
                 })
             }
 

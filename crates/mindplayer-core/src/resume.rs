@@ -237,7 +237,7 @@ pub fn new_session(agent: Agent, cwd: PathBuf, account: &Account) -> Command {
 pub fn login(agent: Agent, cwd: PathBuf, account: &Account) -> Command {
     let args = match agent {
         Agent::Codex => vec!["login".to_string()],
-        Agent::Claude => vec!["auth".to_string(), "login".to_string()],
+        Agent::Claude => claude_login_args(account),
         Agent::Kiro => vec!["user".to_string(), "login".to_string()],
         Agent::Cursor => vec!["login".to_string()],
         // OMP configures providers in its own interactive UI.
@@ -249,6 +249,41 @@ pub fn login(agent: Agent, cwd: PathBuf, account: &Account) -> Command {
         cwd,
         env: account.launch_env().without_router_service_env(),
     }
+}
+
+/// `claude auth login`, with the stored organization pre-selected; `--settings` must precede the subcommand.
+fn claude_login_args(account: &Account) -> Vec<String> {
+    let mut args = Vec::new();
+    if let Some(workspace) = account.forced_org_uuid() {
+        args.push("--settings".to_string());
+        args.push(serde_json::json!({ "forceLoginOrgUUID": workspace }).to_string());
+    }
+    args.push("auth".to_string());
+    args.push("login".to_string());
+    args
+}
+
+/// One shell word: left bare when it is plain, single-quoted otherwise.
+fn shell_word(value: &str) -> String {
+    if !value.is_empty()
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"-/_=.".contains(&b))
+    {
+        value.into()
+    } else {
+        format!("'{}'", value.replace('\'', "'\\''"))
+    }
+}
+
+/// The login arguments as one shell-safe string.
+fn login_line(agent: Agent, cwd: &Path, account: &Account) -> String {
+    login(agent, cwd.to_path_buf(), account)
+        .args
+        .iter()
+        .map(|arg| shell_word(arg))
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// The words each CLI uses to sign out, from its own `--help`: `codex logout`,
@@ -332,7 +367,7 @@ pub fn relogin(cwd: PathBuf, account: &Account) -> Result<Command, String> {
         program,
         logout_args(agent).join(" "),
         program,
-        login(agent, cwd.clone(), account).args.join(" ")
+        login_line(agent, &cwd, account)
     );
     Ok(Command {
         program: "sh".to_string(),
@@ -357,21 +392,10 @@ pub fn login_then_start(cwd: PathBuf, account: &Account) -> Command {
 /// Keep sign-in native, then hand over to the caller's prepared session command.
 /// The TUI passes the native CLI name so sign-in and launch share PATH lookup.
 pub fn login_then_start_with(account: &Account, start: Command) -> Command {
-    fn shell_word(value: &str) -> String {
-        if !value.is_empty()
-            && value
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || b"-/_=.".contains(&b))
-        {
-            value.into()
-        } else {
-            format!("'{}'", value.replace('\'', "'\\''"))
-        }
-    }
     let cwd = start.cwd;
     let agent = account.provider;
     let program = agent.program();
-    let login_args = login(agent, cwd.clone(), account).args.join(" ");
+    let login_args = login_line(agent, &cwd, account);
     // Only the native login loses service state; the following Node router
     // still inherits the shell's environment. Preserve the " && exec " marker.
     let login_unset = crate::accounts::ROUTER_SERVICE_ENV
@@ -697,6 +721,69 @@ mod tests {
             c.env,
             account.launch_env(),
             "signing in without the slot's environment would overwrite the existing login"
+        );
+    }
+
+    #[test]
+    fn a_stored_organization_is_preselected_before_the_login_subcommand() {
+        let home = PathBuf::from("/tmp/mp-login-test");
+        let uuid = "0123abcd-4567-89ef-0123-456789abcdef";
+        let mut account = Account::isolated(&home, Agent::Claude, "second").unwrap();
+        account.claude_workspace = Some(uuid.into());
+        let c = login(Agent::Claude, PathBuf::from("/here"), &account);
+        assert_eq!(c.program, "claude");
+        assert_eq!(
+            c.args,
+            vec![
+                "--settings".to_string(),
+                format!("{{\"forceLoginOrgUUID\":\"{uuid}\"}}"),
+                "auth".to_string(),
+                "login".to_string()
+            ]
+        );
+        assert_eq!(c.env, account.launch_env());
+
+        for workspace in [
+            None,
+            Some("org-fixture"),
+            Some("0123abcd-4567-89ef-0123-456789abcd\"}"),
+        ] {
+            account.claude_workspace = workspace.map(str::to_string);
+            let c = login(Agent::Claude, PathBuf::from("/here"), &account);
+            assert_eq!(c.args, vec!["auth", "login"], "{workspace:?}");
+        }
+    }
+
+    #[test]
+    fn a_stored_organization_never_changes_another_providers_login() {
+        let mut account = Account::inherited(Agent::Codex);
+        account.claude_workspace = Some("0123abcd-4567-89ef-0123-456789abcdef".into());
+        let c = login(Agent::Codex, PathBuf::from("/here"), &account);
+        assert_eq!(c.args, vec!["login"]);
+    }
+
+    #[test]
+    fn a_shell_line_quotes_the_organization_setting_as_one_word() {
+        let home = PathBuf::from("/tmp/mp-login-test");
+        let uuid = "0123abcd-4567-89ef-0123-456789abcdef";
+        let mut account = Account::isolated(&home, Agent::Claude, "second").unwrap();
+        account.claude_workspace = Some(uuid.into());
+        let relogin = relogin(PathBuf::from("/here"), &account).unwrap();
+        let line = &relogin.args[1];
+        assert!(
+            line.contains(&format!(
+                "exec claude --settings '{{\"forceLoginOrgUUID\":\"{uuid}\"}}' auth login"
+            )),
+            "{line}"
+        );
+        let start = new_session(Agent::Claude, PathBuf::from("/here"), &account);
+        let chained = login_then_start_with(&account, start);
+        assert!(
+            chained.args[1].contains(&format!(
+                "claude --settings '{{\"forceLoginOrgUUID\":\"{uuid}\"}}' auth login && exec"
+            )),
+            "{}",
+            chained.args[1]
         );
     }
 

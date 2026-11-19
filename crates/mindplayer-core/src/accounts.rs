@@ -73,6 +73,12 @@ pub struct Account {
     /// Claude's native account fingerprint explicitly bound to this account.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub claude_identity: Option<String>,
+    /// The organization UUID of the login bound as `claude_identity`, used to pre-select it on re-login.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claude_workspace: Option<String>,
+    /// The organization type of that login as the provider reports it, such as `claude_team`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claude_plan: Option<String>,
 }
 
 /// The environment change that selects an account: what to set, and what to
@@ -233,6 +239,8 @@ impl Account {
             disabled: false,
             codex_identity: None,
             claude_identity: None,
+            claude_workspace: None,
+            claude_plan: None,
         }
     }
 
@@ -255,6 +263,8 @@ impl Account {
             disabled: false,
             codex_identity: None,
             claude_identity: None,
+            claude_workspace: None,
+            claude_plan: None,
         })
     }
 
@@ -274,6 +284,21 @@ impl Account {
             Agent::Claude => self.claude_identity = fingerprint,
             _ => {}
         }
+    }
+
+    /// Record the organization and plan of the login this Claude account is bound to; other providers ignore it.
+    pub fn set_claude_login_facts(&mut self, workspace: &str, plan: &str) {
+        if self.provider == Agent::Claude {
+            self.claude_workspace = Some(workspace.to_string());
+            self.claude_plan = Some(plan.to_string());
+        }
+    }
+
+    /// The stored organization UUID when it has the shape the CLI accepts for a forced login, else none.
+    pub fn forced_org_uuid(&self) -> Option<&str> {
+        self.claude_workspace
+            .as_deref()
+            .filter(|w| w.len() == 36 && w.bytes().all(|b| b.is_ascii_hexdigit() || b == b'-'))
     }
 
     /// True for the login this machine already had before any slot existed.
@@ -527,6 +552,8 @@ pub fn merge_accounts(base: &[Account], ours: &[Account], theirs: &[Account]) ->
             disabled: _,
             codex_identity: _,
             claude_identity: _,
+            claude_workspace: _,
+            claude_plan: _,
         } = a;
         // Only the fields this side changed are laid on, so the other side's edits to the rest survive.
         if a.name != b.name {
@@ -540,6 +567,12 @@ pub fn merge_accounts(base: &[Account], ours: &[Account], theirs: &[Account]) ->
         }
         if a.claude_identity != b.claude_identity {
             t.claude_identity.clone_from(&a.claude_identity);
+        }
+        if a.claude_workspace != b.claude_workspace {
+            t.claude_workspace.clone_from(&a.claude_workspace);
+        }
+        if a.claude_plan != b.claude_plan {
+            t.claude_plan.clone_from(&a.claude_plan);
         }
         // A demotion here only ever comes with a promotion, so only the promotion is replayed.
         if a.role == Role::Primary && b.role != Role::Primary {
@@ -901,6 +934,62 @@ mod claude_account_tests {
         let stored = serde_json::to_value(restored).unwrap();
         assert_eq!(stored["claude_identity"], "claude-user-opaque");
         assert_eq!(stored["codex_identity"], "preserve-other-binding");
+    }
+
+    #[test]
+    fn claude_login_facts_round_trip_and_old_files_load_without_them() {
+        let home = tempfile::tempdir().unwrap();
+        let mut account = Account::isolated(home.path(), Agent::Claude, "second").unwrap();
+        assert_eq!(account.claude_workspace, None);
+        assert_eq!(account.claude_plan, None);
+        let stored = serde_json::to_value(&account).unwrap();
+        assert!(stored.get("claude_workspace").is_none());
+        assert!(stored.get("claude_plan").is_none());
+
+        account.set_claude_login_facts("00000000-0000-4000-8000-000000000001", "claude_team");
+        save_accounts(home.path(), &[account.clone()]).unwrap();
+        let restored = load_accounts(home.path())
+            .into_iter()
+            .find(|a| a.name == "second")
+            .unwrap();
+        assert_eq!(
+            restored.claude_workspace.as_deref(),
+            Some("00000000-0000-4000-8000-000000000001")
+        );
+        assert_eq!(restored.claude_plan.as_deref(), Some("claude_team"));
+
+        let old: Account = serde_json::from_value(serde_json::json!({
+            "provider": "claude", "name": "old", "slot": {"kind": "inherited"},
+            "claude_identity": "claude-user-opaque"
+        }))
+        .unwrap();
+        assert_eq!(old.claude_identity.as_deref(), Some("claude-user-opaque"));
+        assert_eq!((old.claude_workspace, old.claude_plan), (None, None));
+    }
+
+    #[test]
+    fn login_facts_belong_to_claude_accounts_only() {
+        let mut codex = Account::inherited(Agent::Codex);
+        codex.set_claude_login_facts("00000000-0000-4000-8000-000000000001", "claude_team");
+        assert_eq!((codex.claude_workspace, codex.claude_plan), (None, None));
+    }
+
+    #[test]
+    fn only_a_uuid_shaped_workspace_can_preselect_an_organization() {
+        let mut account = Account::inherited(Agent::Claude);
+        assert_eq!(account.forced_org_uuid(), None);
+        let good = "0123abcd-4567-89ef-0123-456789abcdef";
+        for (workspace, expected) in [
+            (good, Some(good)),
+            ("org-fixture", None),
+            ("", None),
+            ("0123abcd-4567-89ef-0123-456789abcdeg", None),
+            ("0123abcd-4567-89ef-0123-456789abcdef0", None),
+            ("0123abcd-4567-89ef-0123-456789abcde\"", None),
+        ] {
+            account.claude_workspace = Some(workspace.to_string());
+            assert_eq!(account.forced_org_uuid(), expected, "{workspace:?}");
+        }
     }
 
     #[test]
@@ -1369,6 +1458,8 @@ mod tests {
             disabled: false,
             codex_identity: None,
             claude_identity: None,
+            claude_workspace: None,
+            claude_plan: None,
         };
         let inner = Account {
             provider: Agent::Codex,
@@ -1380,6 +1471,8 @@ mod tests {
             disabled: false,
             codex_identity: None,
             claude_identity: None,
+            claude_workspace: None,
+            claude_plan: None,
         };
         let accounts = vec![outer, inner.clone()];
         let file = inner.session_root(&home).join("rollout-d.jsonl");
@@ -1683,6 +1776,8 @@ mod forget_login_tests {
             disabled: false,
             codex_identity: None,
             claude_identity: None,
+            claude_workspace: None,
+            claude_plan: None,
         };
 
         let err = forget_login(&account, &home).unwrap_err();
@@ -1754,6 +1849,46 @@ mod shared_file_tests {
         );
         assert!(merged.iter().any(|x| x.name == "b-renamed"), "{merged:?}");
         assert!(!merged.iter().any(|x| x.name == "b"), "{merged:?}");
+    }
+
+    #[test]
+    fn login_facts_changed_here_survive_a_merge_with_another_mindplayers_save() {
+        let home = tempfile::tempdir().unwrap();
+        let claude = Account::isolated(home.path(), Agent::Claude, "second").unwrap();
+        let base = accounts_from_saved(vec![claude, slot(home.path(), "a")]);
+        let mut ours = base.clone();
+        let account = ours.iter_mut().find(|x| x.name == "second").unwrap();
+        account.set_identity_fingerprint(Some("claude-user-bound".into()));
+        account.set_claude_login_facts("00000000-0000-4000-8000-000000000001", "claude_max");
+        let mut theirs = base.clone();
+        theirs.iter_mut().find(|x| x.name == "a").unwrap().disabled = true;
+
+        let merged = merge_accounts(&base, &ours, &theirs);
+        let second = merged.iter().find(|x| x.name == "second").unwrap();
+        assert_eq!(second.claude_identity.as_deref(), Some("claude-user-bound"));
+        assert_eq!(
+            second.claude_workspace.as_deref(),
+            Some("00000000-0000-4000-8000-000000000001")
+        );
+        assert_eq!(second.claude_plan.as_deref(), Some("claude_max"));
+        assert!(merged.iter().any(|x| x.name == "a" && x.disabled));
+
+        let mut refreshed = merged.clone();
+        refreshed
+            .iter_mut()
+            .find(|x| x.name == "second")
+            .unwrap()
+            .set_claude_login_facts("00000000-0000-4000-8000-000000000001", "claude_team");
+        let again = merge_accounts(&merged, &refreshed, &merged);
+        assert_eq!(
+            again
+                .iter()
+                .find(|x| x.name == "second")
+                .unwrap()
+                .claude_plan
+                .as_deref(),
+            Some("claude_team")
+        );
     }
 
     #[test]

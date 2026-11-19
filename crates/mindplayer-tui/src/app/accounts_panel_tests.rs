@@ -95,6 +95,7 @@ fn confirming_a_live_codex_identity_binds_the_selected_account() {
         fingerprint: "codex-user-test-fingerprint".into(),
         email: "person@example.test".into(),
         workspace: "workspace-test".into(),
+        plan: "unknown".into(),
     }));
 
     assert_eq!(
@@ -1559,6 +1560,7 @@ mod shared_accounts_file {
                 fingerprint: "codex-user-renamed-meanwhile".into(),
                 email: "person@example.test".into(),
                 workspace: "workspace-test".into(),
+                plan: "unknown".into(),
             })
         };
         // The first answer was read for the account as it was, so the bind is checked once more.

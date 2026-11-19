@@ -17,7 +17,7 @@ use std::time::{Duration, Instant};
 
 const TIMEOUT: Duration = Duration::from_secs(8);
 const MAX_OUTPUT: usize = 64 * 1024;
-const PROFILE_URL: &str = "https://api.anthropic.com/api/oauth/profile";
+pub(crate) const PROFILE_URL: &str = "https://api.anthropic.com/api/oauth/profile";
 
 /// Verify this config home's subscription identity in that directory.
 /// For launch checks use [`claude_account_in_at`] with the actual launch cwd.
@@ -191,6 +191,11 @@ fn profile_identity(output: &Output) -> Result<AccountIdentity, ProbeError> {
         _ => return Err(unreadable()),
     }
     let profile: Value = serde_json::from_str(body).map_err(|_| unreadable())?;
+    identity_from_profile(&profile)
+}
+
+/// The identity a live OAuth profile body names; the usage probe shares this exact formula.
+pub(crate) fn identity_from_profile(profile: &Value) -> Result<AccountIdentity, ProbeError> {
     let account = safe_text(profile.pointer("/account/uuid"))?.trim();
     let email = safe_text(profile.pointer("/account/email"))?
         .trim()
@@ -200,11 +205,46 @@ fn profile_identity(output: &Output) -> Result<AccountIdentity, ProbeError> {
         .to_string();
     let mut hasher = DefaultHasher::new();
     ("claude", account, &workspace, &email).hash(&mut hasher);
+    let plan = safe_text(profile.pointer("/organization/organization_type"))
+        .map_or("unknown", str::trim)
+        .to_string();
     Ok(AccountIdentity {
         fingerprint: format!("claude-user-{:016x}", hasher.finish()),
         email,
         workspace,
+        plan,
     })
+}
+
+/// The label for a stored plan when the provider named one, else none.
+pub fn known_plan_label(raw: Option<&str>) -> Option<String> {
+    raw.map(plan_label).filter(|label| label != "unknown plan")
+}
+
+/// The short word for an organization type: `team`, `max`, `pro`, `enterprise`, or `unknown plan`.
+pub fn plan_label(raw: &str) -> String {
+    let clean: String = raw.chars().filter(|c| !c.is_control()).collect();
+    let clean = clean.trim();
+    match clean {
+        "" | "unknown" => "unknown plan".to_string(),
+        "claude_team" => "team".to_string(),
+        "claude_max" => "max".to_string(),
+        "claude_pro" => "pro".to_string(),
+        "claude_enterprise" => "enterprise".to_string(),
+        other => {
+            let word: String = other
+                .strip_prefix("claude_")
+                .unwrap_or(other)
+                .chars()
+                .take(24)
+                .collect();
+            if word.is_empty() {
+                "unknown plan".to_string()
+            } else {
+                word
+            }
+        }
+    }
 }
 
 fn profile_request(token: &str) -> Result<String, ProbeError> {
@@ -802,6 +842,53 @@ mod tests {
                 .unwrap()
                 .fingerprint
         );
+    }
+
+    #[test]
+    fn live_identity_carries_the_organization_plan_without_changing_the_fingerprint() {
+        let base = profile_identity(&response(profile(), 200)).unwrap();
+        assert_eq!(base.fingerprint, "claude-user-a52eb8f54a6529c5");
+        assert_eq!(base.plan, "unknown");
+        for (raw, expected) in [
+            (serde_json::json!("claude_team"), "claude_team"),
+            (serde_json::json!(" claude_max "), "claude_max"),
+            (serde_json::json!("claude_pro"), "claude_pro"),
+            (serde_json::json!(""), "unknown"),
+            (serde_json::json!("bad\u{1b}plan"), "unknown"),
+            (serde_json::json!(7), "unknown"),
+            (Value::Null, "unknown"),
+        ] {
+            let mut body = profile();
+            body["organization"]["organization_type"] = raw;
+            let identity = profile_identity(&response(body, 200)).unwrap();
+            assert_eq!(identity.plan, expected);
+            assert_eq!(identity.fingerprint, base.fingerprint);
+            assert_eq!(identity.email, base.email);
+            assert_eq!(identity.workspace, base.workspace);
+        }
+    }
+
+    #[test]
+    fn plan_labels_are_short_words_and_never_carry_control_characters() {
+        for (raw, label) in [
+            ("claude_team", "team"),
+            ("claude_max", "max"),
+            ("claude_pro", "pro"),
+            ("claude_enterprise", "enterprise"),
+            ("", "unknown plan"),
+            ("unknown", "unknown plan"),
+            ("claude_", "unknown plan"),
+            ("claude_free", "free"),
+            ("education", "education"),
+            ("claude_\u{1b}[31mred", "[31mred"),
+            (
+                "claude_abcdefghijklmnopqrstuvwxyz0123",
+                "abcdefghijklmnopqrstuvwx",
+            ),
+        ] {
+            assert_eq!(plan_label(raw), label, "{raw:?}");
+        }
+        assert!(!plan_label("a\nb\tc").chars().any(char::is_control));
     }
 
     #[test]

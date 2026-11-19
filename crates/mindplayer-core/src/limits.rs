@@ -1800,6 +1800,8 @@ pub struct AccountIdentity {
     pub fingerprint: String,
     pub email: String,
     pub workspace: String,
+    /// The organization type the provider reports, or `unknown`.
+    pub plan: String,
 }
 
 /// Backward-compatible name for the Codex identity reader.
@@ -2205,6 +2207,7 @@ fn codex_account_from_exchange(
         fingerprint: codex_identity_fingerprint(workspace, &email),
         email,
         workspace: workspace.to_string(),
+        plan: "unknown".to_string(),
     })
 }
 
@@ -4893,6 +4896,7 @@ done
                 fingerprint: "codex-user-48ba19b0360d2c16".into(),
                 email: "one@example.com".into(),
                 workspace: "workspace-shared".into(),
+                plan: "unknown".into(),
             }
         );
         assert_eq!(modern.clone(), modern);

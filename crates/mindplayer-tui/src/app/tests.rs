@@ -1289,90 +1289,6 @@ fn recent_sessions_sort_above_older_regardless_of_agent() {
 }
 
 #[test]
-fn thread_root_time_reflects_freshest_lane_activity() {
-    let now = chrono::Utc::now();
-    // Orchestration parent whose own transcript is 2 weeks stale…
-    let mut parent = session("p", Agent::Claude, false);
-    parent.last_active = Some(now - chrono::Duration::weeks(2));
-    // …but a lane was active today.
-    let mut lane = session("c", Agent::Claude, false);
-    lane.last_active = Some(now);
-    let mut app = app_with(vec![parent, lane]);
-    app.state
-        .set_handoff_link("c", "p", PathBuf::from("/tmp/h.md"), now);
-    app.rebuild_visible();
-
-    let metadata = crate::ui::list_render_metadata(&app, 0..app.visible.len());
-    assert!(!metadata["p"].live_now, "no live PTY in a unit test");
-    assert_eq!(
-        metadata["p"].last_active,
-        Some(now),
-        "parent's time reflects the lane's recent activity, not its own 2w mtime"
-    );
-
-    // The child's row uses the same thread aggregate.
-    assert_eq!(metadata[app.state.thread_root("c")].last_active, Some(now));
-}
-
-#[test]
-fn thread_root_last_prompt_reflects_freshest_lane_prompt() {
-    let now = chrono::Utc::now();
-    // Root's own last prompt is old…
-    let mut parent = session("p2", Agent::Claude, false);
-    parent.last_prompt_at = Some(now - chrono::Duration::weeks(2));
-    // …but a lane was prompted today.
-    let mut lane = session("c2", Agent::Claude, false);
-    lane.last_prompt_at = Some(now);
-    let mut app = app_with(vec![parent, lane]);
-    app.state
-        .set_handoff_link("c2", "p2", PathBuf::from("/tmp/h2.md"), now);
-    app.rebuild_visible();
-
-    let metadata = crate::ui::list_render_metadata(&app, 0..app.visible.len());
-    assert_eq!(
-        metadata["p2"].last_prompt_at,
-        Some(now),
-        "root's last-prompt time reflects the lane's fresher prompt, not its own 2w-old one"
-    );
-
-    // The child resolves the same aggregate through its root.
-    assert_eq!(
-        metadata[app.state.thread_root("c2")].last_prompt_at,
-        Some(now)
-    );
-}
-
-#[test]
-fn handoff_child_leaf_reflects_parent_activity_even_though_it_has_no_children() {
-    // Regression: a handoff child (e.g. "(handoff)pulse") is a thread LEAF — it
-    // has zero children of its own. The old code
-    // used that as a shortcut to skip the whole-thread scan and show only the
-    // child's own (possibly long-stale) transcript mtime — even though the
-    // parent it was handed off from was worked on minutes ago. A session with
-    // a parent is just as much "part of a thread" as one with children.
-    let now = chrono::Utc::now();
-    let mut parent = session("parent", Agent::Claude, false);
-    parent.last_active = Some(now); // touched moments ago
-    let mut child = session("child", Agent::Codex, false);
-    child.last_active = Some(now - chrono::Duration::hours(25)); // "1d" by itself
-    let mut app = app_with(vec![parent, child]);
-    app.state
-        .set_handoff_link("child", "parent", PathBuf::from("/tmp/h.md"), now);
-    app.rebuild_visible();
-
-    let metadata = crate::ui::list_render_metadata(&app, 0..app.visible.len());
-    assert_eq!(
-        metadata["child"].child_count, 0,
-        "the child has no children of its own"
-    );
-    assert_eq!(
-        metadata[app.state.thread_root("child")].last_active,
-        Some(now),
-        "the child's row must reflect the parent's recent activity, not its own 25h-stale mtime"
-    );
-}
-
-#[test]
 fn search_filters_visible_sessions_by_label_or_title() {
     let mut labeled = session("a", Agent::Codex, false);
     labeled.title = "🏷 msk cohome".into();
@@ -1840,7 +1756,7 @@ fn kiro_handoff_to_codex_creates_child_lane() {
     assert_eq!(app.session_at(0).unwrap().id, "kiro-1");
     assert_eq!(app.session_at(1).unwrap().id, pending.session_id);
     assert_eq!(
-        crate::ui::list_render_metadata(&app, 0..app.visible.len())["kiro-1"].child_count,
+        crate::ui::list_render_metadata(&app, 0..app.visible.len())["kiro-1"].visible_child_count(),
         1
     );
 
@@ -1872,7 +1788,8 @@ fn handoff_child_is_grouped_under_parent_thread() {
     assert_eq!(app.session_at(0).unwrap().id, "claude-1");
     assert_eq!(app.session_at(1).unwrap().id, "codex-1");
     assert_eq!(
-        crate::ui::list_render_metadata(&app, 0..app.visible.len())["claude-1"].child_count,
+        crate::ui::list_render_metadata(&app, 0..app.visible.len())["claude-1"]
+            .visible_child_count(),
         1
     );
 }

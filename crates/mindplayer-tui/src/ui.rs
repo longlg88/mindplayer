@@ -1286,19 +1286,22 @@ fn label_input_popup(f: &mut Frame, agent: Option<Agent>, label: &str) {
     f.render_widget(Paragraph::new(lines).block(block), area);
 }
 
-/// Visible tree edges, direct child counts, and whole-thread activity.
+/// Visible tree edges, lane counts, and source identity counts.
 #[derive(Default)]
 pub(crate) struct ListThreadMetadata {
-    pub(crate) child_count: usize,
     visible_child_count: usize,
     child_prefix: Option<&'static str>,
     source_count: usize,
-    pub(crate) live_now: bool,
-    pub(crate) last_active: Option<DateTime<Utc>>,
-    pub(crate) last_prompt_at: Option<DateTime<Utc>>,
 }
 
-/// Keeps only requested session/root IDs; unlinked sessions use their own fields.
+#[cfg(test)]
+impl ListThreadMetadata {
+    pub(crate) fn visible_child_count(&self) -> usize {
+        self.visible_child_count
+    }
+}
+
+/// Keeps only requested session IDs; off-screen sources still detect collisions.
 pub(crate) fn list_render_metadata(
     app: &App,
     rows: impl Iterator<Item = usize> + Clone,
@@ -1307,13 +1310,9 @@ pub(crate) fn list_render_metadata(
     if app.state.handoff_links.is_empty() {
         return metadata;
     }
-    // Keep only the on-screen sessions and their roots. Off-screen lanes still
-    // contribute counts/activity, but need no strings or per-row allocations.
+    // Off-screen sources contribute identity counts without per-row allocations.
     for session in rows.clone().filter_map(|row| app.session_at(row)) {
         metadata.entry(session.id.as_str()).or_default();
-        metadata
-            .entry(app.state.thread_root(&session.id))
-            .or_default();
     }
     if metadata.is_empty() {
         return metadata;
@@ -1321,16 +1320,6 @@ pub(crate) fn list_render_metadata(
     for session in &app.all_sessions {
         if let Some(meta) = metadata.get_mut(session.id.as_str()) {
             meta.source_count += 1;
-        }
-        if let Some(parent) = app.state.handoff_parent(&session.id) {
-            if let Some(meta) = metadata.get_mut(parent) {
-                meta.child_count += 1;
-            }
-        }
-        if let Some(meta) = metadata.get_mut(app.state.thread_root(&session.id)) {
-            meta.live_now |= app.is_running(&session.id);
-            meta.last_active = meta.last_active.max(session.last_active);
-            meta.last_prompt_at = meta.last_prompt_at.max(session.last_prompt_at);
         }
     }
     // Handoff lanes are root-linked. Only draw a tree for a contiguous run
@@ -1563,12 +1552,12 @@ fn session_list(f: &mut Frame, app: &mut App, area: Rect, now: DateTime<Utc>) {
         {
             let marked = app.marked.contains(&s.id);
             let meta = metadata.get(s.id.as_str());
-            let child_count = meta.map_or(0, |meta| meta.child_count);
             let visible_child_count = meta.map_or(0, |meta| meta.visible_child_count);
             let (tag, tag_color) = agent_tag(s.agent);
             // Clear, fixed-width status badge so it's easy to scan a column of
             // running / working / done sessions.
-            let (badge, badge_color, badge_bold) = match app.session_status_for(s) {
+            let status = app.session_status_for(s);
+            let (badge, badge_color, badge_bold) = match status {
                 SessionStatus::Blocked => ("! blocked", WAITING_BORDER, true),
                 SessionStatus::Working => ("● working", WORKING_BORDER, true),
                 SessionStatus::Completed => ("✓ done   ", COMPLETED_BORDER, true),
@@ -1612,15 +1601,8 @@ fn session_list(f: &mut Frame, app: &mut App, area: Rect, now: DateTime<Utc>) {
             } else {
                 ("  ", Style::default())
             };
-            // Time column reflects live activity: a running session (or a thread
-            // root with a running/active-today lane) reads "now" / its lane's
-            // recent time rather than its own possibly-stale transcript mtime.
-            let root = app.state.thread_root(&s.id);
-            let thread = (child_count > 0 || root != s.id)
-                .then(|| metadata.get(root))
-                .flatten();
-            let live_now = app.is_running(&s.id) || thread.is_some_and(|meta| meta.live_now);
-            let eff_active = thread.map_or(s.last_active, |meta| meta.last_active);
+            // Each row shows its own source's time; the status guard keeps a colliding ID from borrowing a live prompt time.
+            let live_now = !matches!(status, SessionStatus::Inactive | SessionStatus::Ended);
             // A running session's file mtime is always "just now" (the agent
             // keeps writing), so showing that here would say nothing useful —
             // time since the last genuine prompt (how long it's been working
@@ -1630,12 +1612,12 @@ fn session_list(f: &mut Frame, app: &mut App, area: Rect, now: DateTime<Utc>) {
             // either — fall back to the old plain "now" rather than a bare "—"
             // for what's still very much a live, just-created row.
             let when = if live_now {
-                match thread.map_or(s.last_prompt_at, |meta| meta.last_prompt_at) {
+                match s.last_prompt_at {
                     Some(t) => relative_time(Some(t), now),
                     None => "now".to_string(),
                 }
             } else {
-                relative_time(eff_active, now)
+                relative_time(s.last_active, now)
             };
             // A 1-col rail, independent of recent/older and the live status
             // badge — it's the one thing that survives a session going
@@ -3470,11 +3452,15 @@ mod tests {
     }
 
     fn list_frame(app: &mut App, height: u16) -> ratatui::buffer::Buffer {
+        list_frame_at(app, height, Utc::now())
+    }
+
+    fn list_frame_at(app: &mut App, height: u16, now: DateTime<Utc>) -> ratatui::buffer::Buffer {
         use ratatui::{backend::TestBackend, Terminal};
         app.rebuild_list_items();
         let mut terminal = Terminal::new(TestBackend::new(140, height)).unwrap();
         terminal
-            .draw(|frame| session_list(frame, app, frame.area(), Utc::now()))
+            .draw(|frame| session_list(frame, app, frame.area(), now))
             .unwrap();
         terminal.backend().buffer().clone()
     }
@@ -3621,6 +3607,126 @@ mod tests {
             );
             let column = Span::raw(&row[..row.find("claude").unwrap()]).width();
             assert_eq!(Some(column), provider_column);
+        }
+    }
+
+    #[test]
+    fn list_handoff_timestamps_stay_source_local_while_groups_sort_by_descendants() {
+        let now = DateTime::from_timestamp(1_800_000_000, 0).unwrap();
+        let mut app = list_fixture(&[
+            "old-parent",
+            "recent-child",
+            "old-sibling",
+            "recent-grandchild",
+            "unknown-child",
+            "loose-session",
+        ]);
+        for (source, age) in app.all_sessions.iter_mut().zip([
+            Some(4 * 24 * 60),
+            Some(7),
+            Some(2 * 24 * 60),
+            Some(3),
+            None,
+            Some(24 * 60),
+        ]) {
+            source.last_active = age.map(|minutes| now - chrono::Duration::minutes(minutes));
+            source.last_prompt_at = Some(now - chrono::Duration::hours(1));
+        }
+        for (child, parent) in [
+            ("recent-child", "old-parent"),
+            ("old-sibling", "old-parent"),
+            ("unknown-child", "old-parent"),
+            ("recent-grandchild", "recent-child"),
+        ] {
+            app.state
+                .set_handoff_link(child, parent, PathBuf::new(), now);
+        }
+        app.rebuild_visible();
+        let buffer = list_frame_at(&mut app, 14, now);
+        let loose = app.row_of_session("loose-session").unwrap();
+        for source in &app.all_sessions {
+            let expected = relative_time(source.last_active, now);
+            let row = list_title_row(&buffer, &source.title);
+            assert!(
+                row.split_whitespace().any(|word| word == expected),
+                "{} must show its own activity {expected}: {row}",
+                source.id
+            );
+            if source.id != "loose-session" {
+                assert!(
+                    app.row_of_session(&source.id).unwrap() < loose,
+                    "the recent descendant must still lift the whole thread"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn list_handoff_live_timestamp_uses_only_the_owned_source_prompt() {
+        let now = DateTime::from_timestamp(1_800_000_000, 0).unwrap();
+        let mut fixture = QuietPtyFixture::new(8, 40);
+        let child = fixture.app.panes[0].clone();
+        let app = &mut fixture.app;
+        app.focus = Focus::List;
+        app.all_sessions = ["old-parent", child.as_str(), "old-sibling"]
+            .into_iter()
+            .enumerate()
+            .map(|(index, id)| {
+                let mut source = session(Agent::Claude, 0);
+                source.id = id.into();
+                source.title = id.into();
+                source.last_active = Some(now - chrono::Duration::days(index as i64 + 2));
+                source.last_prompt_at = Some(now - chrono::Duration::minutes(47));
+                source
+            })
+            .collect();
+        app.all_sessions[1].last_active = Some(now - chrono::Duration::minutes(1));
+        for id in [child.as_str(), "old-sibling"] {
+            app.state
+                .set_handoff_link(id, "old-parent", PathBuf::new(), now);
+        }
+        for ended in [false, true] {
+            if ended {
+                app.ended.insert(child.clone());
+            }
+            app.rebuild_visible();
+            let buffer = list_frame_at(app, 12, now);
+            for source in &app.all_sessions {
+                let timestamp = if source.id == child && !ended {
+                    source.last_prompt_at
+                } else {
+                    source.last_active
+                };
+                let expected = relative_time(timestamp, now);
+                let row = list_title_row(&buffer, &source.title);
+                assert!(
+                    row.split_whitespace().any(|word| word == expected),
+                    "ended={ended}, {} must show {expected}: {row}",
+                    source.id
+                );
+            }
+        }
+        app.ended.remove(&child);
+        app.all_sessions[1].last_prompt_at = None;
+        let buffer = list_frame_at(app, 12, now);
+        let row = list_title_row(&buffer, &child);
+        let expected = relative_time(Some(now), now);
+        assert!(row.split_whitespace().any(|word| word == expected), "{row}");
+
+        let mut collision = app.all_sessions[1].clone();
+        collision.file = PathBuf::from("/other-account/collision");
+        collision.title = "colliding-child".into();
+        collision.last_active = Some(now - chrono::Duration::days(6));
+        app.all_sessions.push(collision);
+        app.rebuild_visible();
+        let buffer = list_frame_at(app, 14, now);
+        for source in &app.all_sessions {
+            let expected = relative_time(source.last_active, now);
+            let row = list_title_row(&buffer, &source.title);
+            assert!(
+                row.split_whitespace().any(|word| word == expected),
+                "ambiguous runtime ownership must leave source activity {expected}: {row}"
+            );
         }
     }
 

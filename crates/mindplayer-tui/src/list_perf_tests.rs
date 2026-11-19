@@ -255,48 +255,35 @@ fn list_visible_count_excludes_headers_and_running_count_includes_hidden_ptys() 
 }
 
 #[test]
-fn list_thread_metadata_is_viewport_bounded_and_includes_offscreen_lanes() {
+fn list_thread_metadata_is_viewport_bounded_and_offscreen_activity_stays_local() {
     let mut fixture = ListFixture::categorized();
-    fixture.app.all_sessions[0].last_prompt_at = Some(now() - Duration::hours(1));
-    fixture.app.all_sessions[1].last_prompt_at = Some(now() - Duration::minutes(7));
     fixture.app.all_sessions[5].last_prompt_at = Some(now() - Duration::minutes(3));
     fixture.start_pty("session-00005");
     let metadata = list_render_metadata(&fixture.app, std::iter::once(2));
-    assert_eq!(
-        metadata.len(),
-        2,
-        "only the visible child and its root are materialized"
-    );
-    assert_eq!(metadata["session-00001"].child_count, 0);
-    let root = &metadata["session-00000"];
-    assert_eq!(
-        root.child_count, 2,
-        "hidden lanes still contribute direct child counts"
-    );
-    assert!(
-        root.live_now,
-        "an offscreen running lane makes the thread live"
-    );
-    assert_eq!(root.last_active, Some(now() - Duration::minutes(2)));
-    assert_eq!(root.last_prompt_at, Some(now() - Duration::minutes(3)));
+    assert_eq!(metadata.len(), 1, "only the visible source is materialized");
+    let child = &metadata["session-00001"];
+    assert_eq!(child.source_count, 1);
+    assert_eq!(child.visible_child_count, 0);
+    assert!(child.child_prefix.is_none());
+    let metadata = list_render_metadata(&fixture.app, 0..3);
+    assert_eq!(metadata.len(), 2);
+    assert_eq!(metadata["session-00000"].visible_child_count, 1);
+    assert!(metadata["session-00001"].child_prefix.is_some());
     assert!(list_render_metadata(&fixture.app, std::iter::once(0)).is_empty());
     let area = Rect::new(2, 2, 120, 16);
-    let buffer = draw_list(&mut fixture.app, area);
-    for row in [2, 3] {
-        let text = words(&row_text(&buffer, area, row));
-        assert!(
-            text.contains("3m"),
-            "a live thread displays its newest prompt: {text}"
-        );
-    }
-    fixture.app.ended.insert("session-00005".into());
-    let buffer = draw_list(&mut fixture.app, area);
-    for row in [2, 3] {
-        let text = words(&row_text(&buffer, area, row));
-        assert!(
-            text.contains("2m"),
-            "an ended thread displays its newest activity: {text}"
-        );
+    for ended in [false, true] {
+        if ended {
+            fixture.app.ended.insert("session-00005".into());
+        }
+        let buffer = draw_list(&mut fixture.app, area);
+        for (row, source) in [(2, 0), (3, 1)] {
+            let text = row_text(&buffer, area, row);
+            let expected = relative_time(fixture.app.all_sessions[source].last_active, now());
+            assert!(
+                text.split_whitespace().any(|word| word == expected),
+                "hidden lane ended={ended} must not replace source {source}'s {expected}: {text}"
+            );
+        }
     }
 }
 
@@ -513,7 +500,7 @@ fn benchmark_list_render(thread_width: usize) {
                 "metadata must be viewport bounded"
             );
             assert_eq!(
-                metadata[fixture.app.all_sessions[count - 4].id.as_str()].child_count,
+                metadata[fixture.app.all_sessions[count - 4].id.as_str()].visible_child_count,
                 3
             );
         }

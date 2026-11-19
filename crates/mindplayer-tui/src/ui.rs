@@ -922,6 +922,8 @@ fn main_view(f: &mut Frame, app: &mut App) {
     // The provider becomes its own column, so the label drops the name it
     // already starts with. Two logins of one provider still need the account
     // on the line; one login says nothing extra.
+    let all_usage = app.quota_rows_all();
+    let mut plain_labels = Vec::with_capacity(quota_rows.len());
     for row in &mut quota_rows {
         // Keep the footer compact; the Accounts screen retains the reported
         // usage/limit figures. The exhausted state must still be explicit.
@@ -949,26 +951,75 @@ fn main_view(f: &mut Frame, app: &mut App) {
             }
         }
         let mut rest = mindplayer_core::limits::label_without_provider(row).to_string();
+        let mut plain = rest.clone();
         if !row.account.is_empty() && app.provider_has_several_logins(row.agent) {
-            rest = if rest.is_empty() {
-                row.account.clone()
+            let mut name = row.account.clone();
+            let bare = row.account.clone();
+            let owner = app
+                .accounts
+                .iter()
+                .find(|a| a.provider == row.agent && a.name == row.account)
+                .filter(|a| a.provider == Agent::Claude);
+            if let Some(owner) = owner {
+                if let Some(plan) = mindplayer_core::claude_auth::known_plan_label(
+                    owner
+                        .claude_plan
+                        .as_deref()
+                        .filter(|plan| *plan != "unknown")
+                        .or(row.plan.as_deref()),
+                ) {
+                    name = format!("{name} ({plan})");
+                }
+                if let Some(first) = app.same_subscription_as(owner, &all_usage, false) {
+                    if !row.detail.is_empty() {
+                        row.detail.push_str(" · ");
+                    }
+                    row.detail.push_str(&format!("= {first}"));
+                }
+            }
+            plain = if rest.is_empty() {
+                bare
             } else {
-                format!("{} {rest}", row.account)
+                format!("{bare} {rest}")
+            };
+            rest = if rest.is_empty() {
+                name
+            } else {
+                format!("{name} {rest}")
             };
         }
         row.label = rest;
+        plain_labels.push(plain);
     }
-    let name_width = quota_rows
-        .iter()
-        .map(|r| r.label.chars().count())
-        .max()
-        .unwrap_or(0);
     let platform_width = quota_rows
         .iter()
         .map(|r| r.agent.as_str().chars().count())
         .chain(std::iter::once(VERCEL_HEAD.chars().count()))
         .max()
         .unwrap_or(0);
+    let widest_label = |rows: &[mindplayer_core::limits::QuotaRow]| {
+        rows.iter()
+            .map(|r| r.label.chars().count())
+            .max()
+            .unwrap_or(0)
+    };
+    // A row that would wrap loses the plan suffix, so the mark and the figures stay on one line.
+    let overflows = |rows: &[mindplayer_core::limits::QuotaRow]| {
+        let width = widest_label(rows);
+        rows.iter().any(|row| {
+            let cells: usize = quota_row_spans(row, width, failure_hint(app, row))
+                .iter()
+                .map(Span::width)
+                .sum();
+            platform_width + 2 + cells > usize::from(f.area().width)
+        })
+    };
+    if overflows(&quota_rows) {
+        for (row, plain) in quota_rows.iter_mut().zip(plain_labels) {
+            row.label = plain;
+        }
+    }
+    let name_width = widest_label(&quota_rows);
     let mut quota_lines: Vec<Line<'static>> = Vec::new();
     let mut previous = None;
     for row in &quota_rows {
@@ -3167,6 +3218,25 @@ fn fold_hints(hints: &[&str], width: usize) -> Vec<String> {
 /// The Accounts screen (`u`): which logins exist per provider, and which one
 /// the next session takes. Management lives here rather than in the footer,
 /// which has to stay small enough to leave the panes room.
+/// The plan and identity state shown for a Claude account on the Accounts screen.
+fn claude_identity_note(
+    app: &App,
+    account: &mindplayer_core::accounts::Account,
+    rows: &[mindplayer_core::limits::QuotaRow],
+) -> (String, Color) {
+    let plan = app.claude_plan_label(account, rows);
+    let (state, color) = if app.usage_login_changed(account, rows) {
+        ("login changed · press v".to_string(), ERROR)
+    } else if let Some(first) = app.same_subscription_as(account, rows, true) {
+        (format!("same subscription as {first}"), ZOOM)
+    } else if account.identity_fingerprint().is_some() {
+        ("identity bound".to_string(), IDLE)
+    } else {
+        ("identity unverified".to_string(), ERROR)
+    };
+    (format!("{plan} · {state}"), color)
+}
+
 fn accounts_popup(f: &mut Frame, app: &App) {
     use crate::app::accounts_panel::AccountRow;
 
@@ -3294,7 +3364,10 @@ fn accounts_popup(f: &mut Frame, app: &App) {
                         format!("   {activity}{origin}"),
                         Style::default().fg(DIM),
                     ));
-                    if matches!(account.provider, Agent::Codex | Agent::Claude) {
+                    let mut note = None;
+                    if account.provider == Agent::Claude {
+                        note = Some(claude_identity_note(app, account, &all_rows));
+                    } else if matches!(account.provider, Agent::Codex) {
                         spans.push(Span::styled(
                             format!(
                                 "   {}",
@@ -3320,7 +3393,27 @@ fn accounts_popup(f: &mut Frame, app: &App) {
                             }),
                         ));
                     }
+                    // The note sits on the row when it fits and under the name when it does not, so it is never cut off.
+                    let mut note_below = None;
+                    if let Some((text, color)) = note {
+                        let inline: usize =
+                            spans.iter().map(Span::width).sum::<usize>() + 3 + text.chars().count();
+                        if inline + 3 <= usize::from(f.area().width) {
+                            spans.push(Span::styled(
+                                format!("   {text}"),
+                                Style::default().fg(color),
+                            ));
+                        } else {
+                            note_below = Some((text, color));
+                        }
+                    }
                     lines.push(Line::from(spans));
+                    if let Some((text, color)) = note_below {
+                        lines.push(Line::from(vec![
+                            Span::raw(format!("    {:<name_width$}  {:<8}  ", "", "")),
+                            Span::styled(text, Style::default().fg(color)),
+                        ]));
+                    }
                     // A provider can meter more than one window (Claude's five
                     // hour and weekly), and hiding the second would hide the
                     // one that is actually binding.
@@ -4087,6 +4180,167 @@ mod tests {
                 assert!(work.contains("work 5h"), "{width}: {text}");
             }
         }
+    }
+
+    fn claude_row(
+        account: &str,
+        label: &str,
+        identity: Option<&str>,
+        plan: Option<&str>,
+    ) -> mindplayer_core::limits::QuotaRow {
+        mindplayer_core::limits::QuotaRow {
+            agent: Agent::Claude,
+            account: account.into(),
+            label: label.into(),
+            used_percent: Some(41.0),
+            resets: Some("14:20".into()),
+            identity: identity.map(str::to_string),
+            plan: plan.map(str::to_string),
+            ..Default::default()
+        }
+    }
+
+    fn claude_accounts() -> Vec<mindplayer_core::accounts::Account> {
+        use mindplayer_core::accounts::Account;
+        let home = PathBuf::from("/fixture/home");
+        let mut default = Account::inherited(Agent::Claude);
+        default.set_identity_fingerprint(Some("fp-a".into()));
+        default.set_claude_login_facts("org-a", "claude_team");
+        let mut second = Account::isolated(&home, Agent::Claude, "second").unwrap();
+        second.set_identity_fingerprint(Some("fp-a".into()));
+        let mut third = Account::isolated(&home, Agent::Claude, "third").unwrap();
+        third.set_identity_fingerprint(Some("fp-c".into()));
+        let fourth = Account::isolated(&home, Agent::Claude, "fourth").unwrap();
+        vec![default, second, third, fourth]
+    }
+
+    #[test]
+    fn accounts_panel_shows_plans_and_flags_a_shared_or_changed_subscription() {
+        for width in [80, 120] {
+            let mut app = startup_app();
+            app.accounts = claude_accounts();
+            app.limits = Some(vec![
+                claude_row("default", "claude 5h", Some("fp-a"), Some("claude_team")),
+                claude_row("second", "claude 5h", Some("fp-a"), Some("claude_max")),
+                claude_row("third", "claude 5h", Some("fp-live-other"), None),
+                claude_row("fourth", "claude 5h", None, Some("claude_enterprise")),
+            ]);
+            app.open_accounts();
+            let text = frame_text(&startup_frame(&mut app, width, 45));
+            for needle in [
+                "team · identity bound",
+                "max · same subscription as default",
+                "unknown plan · login changed · press v",
+                "enterprise · identity unverified",
+            ] {
+                assert!(text.contains(needle), "{width}: {needle}\n{text}");
+            }
+            assert!(!text.contains("identity shared"), "{width}: {text}");
+        }
+    }
+
+    #[test]
+    fn accounts_panel_flags_a_shared_subscription_from_stored_bindings_alone() {
+        let mut app = startup_app();
+        app.accounts = claude_accounts();
+        app.limits = Some(Vec::new());
+        app.open_accounts();
+        let text = frame_text(&startup_frame(&mut app, 120, 45));
+        assert!(text.contains("same subscription as default"), "{text}");
+        assert!(text.contains("unknown plan"), "{text}");
+    }
+
+    #[test]
+    fn footer_names_plans_and_marks_an_account_on_an_earlier_accounts_subscription() {
+        let mut app = startup_app();
+        app.accounts = claude_accounts().into_iter().take(2).collect();
+        app.limits = Some(vec![
+            claude_row("default", "claude 5h", Some("fp-a"), Some("claude_team")),
+            claude_row("default", "claude wk", Some("fp-a"), Some("claude_team")),
+            claude_row("second", "claude 5h", Some("fp-a"), Some("claude_max")),
+            claude_row("second", "claude wk", Some("fp-a"), Some("claude_max")),
+        ]);
+        for width in [80, 144] {
+            let text = frame_text(&startup_frame(&mut app, width, 40));
+            let default = text
+                .lines()
+                .find(|l| l.contains("default (team) 5h"))
+                .unwrap();
+            let second = text
+                .lines()
+                .find(|l| l.contains("second (max) 5h"))
+                .unwrap();
+            assert!(!default.contains("= "), "{width}: {text}");
+            assert!(second.contains("= default"), "{width}: {text}");
+        }
+    }
+
+    #[test]
+    fn footer_rows_with_long_names_keep_figures_and_mark_on_one_line_at_80_columns() {
+        use mindplayer_core::accounts::Account;
+        let home = PathBuf::from("/fixture/home");
+        let mut app = startup_app();
+        app.accounts = ["firstname1", "second-long1"]
+            .into_iter()
+            .map(|name| Account::isolated(&home, Agent::Claude, name).unwrap())
+            .collect();
+        app.limits = Some(vec![
+            claude_row(
+                "firstname1",
+                "claude 5h",
+                Some("fp-a"),
+                Some("claude_enterprise"),
+            ),
+            claude_row(
+                "second-long1",
+                "claude 5h",
+                Some("fp-a"),
+                Some("claude_enterprise"),
+            ),
+        ]);
+        for (width, plan_shown) in [(80, false), (144, true)] {
+            let text = frame_text(&startup_frame(&mut app, width, 40));
+            let row = text
+                .lines()
+                .find(|l| l.contains("second-long1"))
+                .unwrap_or_else(|| panic!("{width}: {text}"));
+            for needle in ["%", "resets", "= firstname1"] {
+                assert!(
+                    row.contains(needle),
+                    "{width}: {needle} not on {row:?}\n{text}"
+                );
+            }
+            assert_eq!(row.contains("(enterprise)"), plan_shown, "{width}: {text}");
+            assert_eq!(
+                text.lines().filter(|l| l.contains("second-long1")).count(),
+                1,
+                "{width}: the row wrapped\n{text}"
+            );
+        }
+    }
+
+    #[test]
+    fn footer_keeps_a_single_login_bare_and_marks_nothing_for_different_logins() {
+        let mut app = startup_app();
+        app.accounts = claude_accounts().into_iter().take(1).collect();
+        app.limits = Some(vec![claude_row(
+            "default",
+            "claude 5h",
+            Some("fp-a"),
+            Some("claude_team"),
+        )]);
+        let text = frame_text(&startup_frame(&mut app, 100, 40));
+        assert!(!text.contains("(team)"), "{text}");
+        let mut app = startup_app();
+        app.accounts = claude_accounts().into_iter().take(2).collect();
+        app.limits = Some(vec![
+            claude_row("default", "claude 5h", Some("fp-a"), Some("claude_team")),
+            claude_row("second", "claude 5h", Some("fp-b"), None),
+        ]);
+        let text = frame_text(&startup_frame(&mut app, 100, 40));
+        assert!(text.contains("default (team) 5h"), "{text}");
+        assert!(!text.contains("= default"), "{text}");
+        assert!(!text.contains("unknown plan"), "{text}");
     }
 
     #[test]
@@ -4946,6 +5200,7 @@ mod tests {
                             failure: None,
                             spend_cap: true,
                             blocked: false,
+                            plan: None,
                         },
                     ]
                 })
@@ -5030,6 +5285,7 @@ mod tests {
                 failure: None,
                 spend_cap: false,
                 blocked: false,
+                plan: None,
             };
             let weekly_line = Line::from(quota_row_spans(&weekly, 20, None));
             let monthly_spans = quota_row_spans(&monthly, 20, None);

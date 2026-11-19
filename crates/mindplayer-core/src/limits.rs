@@ -310,6 +310,9 @@ pub struct QuotaRow {
     /// The provider refused ordinary usage for this account.
     #[serde(default)]
     pub blocked: bool,
+    /// The organization type behind a Claude row, as the provider reports it.
+    #[serde(default)]
+    pub plan: Option<String>,
 }
 
 /// What a row read back from a cache written before providers were recorded
@@ -332,6 +335,7 @@ impl Default for QuotaRow {
             failure: None,
             spend_cap: false,
             blocked: false,
+            plan: None,
         }
     }
 }
@@ -578,6 +582,7 @@ impl Limits {
                             failure: None,
                             spend_cap: false,
                             blocked: false,
+                            plan: None,
                         });
                     }
                 }
@@ -616,6 +621,7 @@ impl Limits {
                             failure: None,
                             spend_cap: false,
                             blocked: c.ordinary_usage_allowed == Some(false),
+                            plan: None,
                         });
                     }
                 }
@@ -647,6 +653,7 @@ impl Limits {
                         failure: None,
                         spend_cap: any_window,
                         blocked: c.ordinary_usage_allowed == Some(false),
+                        plan: None,
                     });
                     any_window = true;
                 }
@@ -675,6 +682,7 @@ impl Limits {
                         failure: None,
                         spend_cap: false,
                         blocked: c.ordinary_usage_allowed == Some(false),
+                        plan: None,
                     });
                 }
                 if c.ordinary_usage_allowed == Some(false) {
@@ -712,6 +720,7 @@ impl Limits {
                 failure: None,
                 spend_cap: false,
                 blocked: false,
+                plan: None,
             }),
             Ok(_) => out.push(QuotaRow::note("kiro", "no usage reported")),
             Err(e) => out.push(QuotaRow::reason("kiro", e)),
@@ -1089,6 +1098,14 @@ pub fn account_quota_rows(
     account: &crate::accounts::Account,
     fallback_home: &Path,
 ) -> Vec<QuotaRow> {
+    account_quota_rows_with(account, fallback_home, claude_reading_in)
+}
+
+fn account_quota_rows_with(
+    account: &crate::accounts::Account,
+    fallback_home: &Path,
+    claude_reading: impl FnOnce(&Path, KeychainFallback) -> ClaudeReading,
+) -> Vec<QuotaRow> {
     use crate::accounts::Slot;
     // Only this account's provider is probed; the rest carry a reason no one
     // sees, because the rows for them are dropped below.
@@ -1099,16 +1116,23 @@ pub fn account_quota_rows(
         kiro: Err(SKIPPED.into()),
         cursor: Err(SKIPPED.into()),
     };
+    let mut profile = None;
     match (&account.slot, account.provider) {
         // The login this machine came with: exactly what was probed before.
-        (Slot::Inherited, Agent::Claude) => limits.claude = claude_limits(fallback_home),
+        (Slot::Inherited, Agent::Claude) => {
+            let reading = claude_reading(&fallback_home.join(".claude"), KeychainFallback::Allow);
+            limits.claude = reading.limits;
+            profile = reading.profile;
+        }
         (Slot::Inherited, Agent::Codex) => limits.codex = codex_limits(fallback_home),
         (Slot::Inherited, Agent::Kiro) => limits.kiro = kiro_limits(fallback_home),
         (Slot::Inherited, Agent::Cursor) => limits.cursor = cursor_limits(fallback_home),
         // `CLAUDE_CONFIG_DIR` replaces `~/.claude`, so the slot is that
         // directory rather than a home containing one.
         (Slot::Isolated { path }, Agent::Claude) => {
-            limits.claude = claude_limits_in(path, KeychainFallback::Refuse)
+            let reading = claude_reading(path, KeychainFallback::Refuse);
+            limits.claude = reading.limits;
+            profile = reading.profile;
         }
         // `CODEX_HOME` replaces `~/.codex` the same way.
         (Slot::Isolated { path }, Agent::Codex) => limits.codex = codex_limits_in(path),
@@ -1126,12 +1150,19 @@ pub fn account_quota_rows(
         }
         (_, Agent::Omp) => return Vec::new(),
     }
-    let identity = limits.codex.as_ref().ok().and_then(|c| c.user.clone());
+    let identity = limits
+        .codex
+        .as_ref()
+        .ok()
+        .and_then(|c| c.user.clone())
+        .or_else(|| profile.as_ref().map(|p| p.fingerprint.clone()));
+    let plan = profile.map(|p| p.plan);
     let mut rows = limits.quota_rows();
     rows.retain(|row| row.agent == account.provider);
     for row in &mut rows {
         row.account.clone_from(&account.name);
         row.identity.clone_from(&identity);
+        row.plan.clone_from(&plan);
     }
     rows
 }
@@ -1149,7 +1180,8 @@ pub fn account_quota_rows(
 /// gauge makes an authentication problem look like a missing usage reading.
 pub fn mark_shared_logins(rows: &mut [QuotaRow]) {
     let mut owner: Vec<(Agent, String, String)> = Vec::new();
-    for row in rows.iter_mut() {
+    // Claude rows are compared where they are drawn, by subscription rather than by login.
+    for row in rows.iter_mut().filter(|row| row.agent != Agent::Claude) {
         let Some(identity) = row.identity.clone() else {
             continue;
         };
@@ -2546,7 +2578,74 @@ pub fn claude_limits_in(
     fallback: KeychainFallback,
 ) -> Result<ClaudeLimits, ProbeError> {
     let token = claude_token_in(config_dir, fallback)?;
-    let body = curl_json(CLAUDE_USAGE_URL, &token)?;
+    claude_usage_with(&token, &curl_json)
+}
+
+/// Who a Claude login is, from the OAuth profile read with the usage token.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClaudeProfile {
+    /// The same fingerprint `claude_auth` binds an account to.
+    pub fingerprint: String,
+    /// The organization type, or `unknown`.
+    pub plan: String,
+}
+
+/// One usage reading together with the login behind it, when the profile could be read.
+#[derive(Debug, Clone)]
+pub struct ClaudeReading {
+    pub limits: Result<ClaudeLimits, ProbeError>,
+    pub profile: Option<ClaudeProfile>,
+}
+
+/// The usage reading plus a best-effort profile request, both with this slot's own token.
+pub fn claude_reading_in(config_dir: &Path, fallback: KeychainFallback) -> ClaudeReading {
+    claude_reading_with(config_dir, fallback, slot_vault_token, curl_json)
+}
+
+fn claude_reading_with(
+    config_dir: &Path,
+    fallback: KeychainFallback,
+    slot_vault: impl FnOnce(&Path) -> Option<Result<String, ProbeError>>,
+    fetch: impl Fn(&str, &str) -> Result<String, ProbeError> + Sync,
+) -> ClaudeReading {
+    let token = match claude_token_with(config_dir, fallback, slot_vault) {
+        Ok(token) => token,
+        Err(e) => {
+            return ClaudeReading {
+                limits: Err(e),
+                profile: None,
+            }
+        }
+    };
+    // Side by side, so a slow profile costs its own bounded timeout and not the usage reading's.
+    std::thread::scope(|scope| {
+        let profile = scope.spawn(|| claude_profile_with(&token, &fetch));
+        let limits = claude_usage_with(&token, &fetch);
+        ClaudeReading {
+            limits,
+            profile: profile.join().unwrap_or(None),
+        }
+    })
+}
+
+fn claude_profile_with(
+    token: &str,
+    fetch: &impl Fn(&str, &str) -> Result<String, ProbeError>,
+) -> Option<ClaudeProfile> {
+    let body = fetch(crate::claude_auth::PROFILE_URL, token).ok()?;
+    let profile: Value = serde_json::from_str(&body).ok()?;
+    let identity = crate::claude_auth::identity_from_profile(&profile).ok()?;
+    Some(ClaudeProfile {
+        fingerprint: identity.fingerprint,
+        plan: identity.plan,
+    })
+}
+
+fn claude_usage_with(
+    token: &str,
+    fetch: &impl Fn(&str, &str) -> Result<String, ProbeError>,
+) -> Result<ClaudeLimits, ProbeError> {
+    let body = fetch(CLAUDE_USAGE_URL, token)?;
     let unreadable = |detail: String| ProbeError::new(FailureKind::Unreadable, detail);
     let v: Value = serde_json::from_str(&body)
         .map_err(|e| unreadable(format!("unparsable response from /api/oauth/usage: {e}")))?;
@@ -2717,10 +2816,12 @@ fn curl_args() -> Vec<String> {
 /// cannot be read out of `ps` by any other process on the machine. The file is
 /// removed as soon as curl returns.
 fn curl_json(url: &str, token: &str) -> Result<String, ProbeError> {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let path = std::env::temp_dir().join(format!(
-        "mindplayer-usage-{}-{}.curlrc",
+        "mindplayer-usage-{}-{}-{}.curlrc",
         std::process::id(),
-        chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
+        chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0),
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     ));
     write_private(&path, &curl_config(url, token))
         .map_err(|e| format!("cannot stage curl config: {e}"))?;
@@ -4152,6 +4253,7 @@ sleep 10
                 failure: None,
                 spend_cap: false,
                 blocked: false,
+                plan: None,
             },
             QuotaRow::note("codex", "no window reported"),
         ];
@@ -4228,6 +4330,7 @@ sleep 10
             failure: None,
             spend_cap: false,
             blocked: false,
+            plan: None,
         }];
         save_quota_cache(home, &theirs, "0.33.0");
 
@@ -4253,6 +4356,7 @@ sleep 10
             failure: None,
             spend_cap: false,
             blocked: false,
+            plan: None,
         }];
         save_quota_cache(home, &mine, "0.34.0");
         assert_eq!(
@@ -5156,6 +5260,7 @@ mod shared_login_tests {
             failure: None,
             spend_cap: false,
             blocked: false,
+            plan: None,
         }
     }
 
@@ -5445,5 +5550,185 @@ mod failure_kind_tests {
             "no windows is an answer, not a failure"
         );
         assert_eq!(kind_of(Agent::Cursor), None);
+    }
+}
+
+/// The usage probe also names the login behind each Claude row, best effort.
+#[cfg(test)]
+mod claude_profile_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn slot_with_token() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join(".credentials.json"),
+            r#"{"claudeAiOauth":{"accessToken":"synthetic-token"}}"#,
+        )
+        .unwrap();
+        dir
+    }
+
+    fn usage_body() -> String {
+        json!({"five_hour": {"utilization": 12.0}, "seven_day": {"utilization": 30.0}}).to_string()
+    }
+
+    fn profile_body(plan: Option<&str>) -> String {
+        let mut organization = json!({"uuid": "org-fixture"});
+        if let Some(plan) = plan {
+            organization["organization_type"] = plan.into();
+        }
+        json!({"account": {"uuid": "account-fixture", "email": "person@example.test"},
+            "organization": organization})
+        .to_string()
+    }
+
+    fn reading(
+        dir: &Path,
+        fetch: impl Fn(&str, &str) -> Result<String, ProbeError> + Sync,
+    ) -> ClaudeReading {
+        claude_reading_with(dir, KeychainFallback::Refuse, |_| None, fetch)
+    }
+
+    #[test]
+    fn a_reading_carries_the_login_fingerprint_and_plan_with_the_same_token() {
+        let slot = slot_with_token();
+        let asked = std::sync::Mutex::new(Vec::new());
+        let got = reading(slot.path(), |url, token| {
+            asked
+                .lock()
+                .unwrap()
+                .push((url.to_string(), token.to_string()));
+            if url == CLAUDE_USAGE_URL {
+                Ok(usage_body())
+            } else {
+                Ok(profile_body(Some("claude_team")))
+            }
+        });
+        assert_eq!(got.limits.unwrap().five_hour, Some(12.0));
+        let profile = got.profile.expect("profile read");
+        assert_eq!(profile.plan, "claude_team");
+        assert_eq!(profile.fingerprint, "claude-user-a52eb8f54a6529c5");
+        let mut asked = asked.into_inner().unwrap();
+        asked.sort();
+        assert_eq!(
+            asked,
+            vec![
+                (
+                    crate::claude_auth::PROFILE_URL.to_string(),
+                    "synthetic-token".to_string()
+                ),
+                (CLAUDE_USAGE_URL.to_string(), "synthetic-token".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_failing_or_unreadable_profile_never_fails_the_usage_reading() {
+        let slot = slot_with_token();
+        for profile in [
+            Err(ProbeError::new(FailureKind::Temporary, "offline")),
+            Err(ProbeError::new(FailureKind::SignIn, "rejected")),
+            Ok("not json".to_string()),
+            Ok(json!({"account": {}}).to_string()),
+        ] {
+            let got = reading(slot.path(), |url, _| {
+                if url == CLAUDE_USAGE_URL {
+                    Ok(usage_body())
+                } else {
+                    profile.clone()
+                }
+            });
+            assert_eq!(got.limits.unwrap().seven_day, Some(30.0));
+            assert_eq!(got.profile, None);
+        }
+    }
+
+    #[test]
+    fn a_failing_usage_request_still_reports_who_is_signed_in() {
+        let slot = slot_with_token();
+        let got = reading(slot.path(), |url, _| {
+            if url == CLAUDE_USAGE_URL {
+                Err(ProbeError::new(FailureKind::RateLimited, "slow down"))
+            } else {
+                Ok(profile_body(None))
+            }
+        });
+        assert_eq!(got.limits.unwrap_err().kind, FailureKind::RateLimited);
+        assert_eq!(got.profile.unwrap().plan, "unknown");
+    }
+
+    #[test]
+    fn without_a_token_nothing_is_requested() {
+        let empty = tempfile::tempdir().unwrap();
+        let got = reading(empty.path(), |_, _| panic!("no token, no request"));
+        assert_eq!(got.limits.unwrap_err().kind, FailureKind::SignIn);
+        assert_eq!(got.profile, None);
+    }
+
+    #[test]
+    fn rows_name_their_login_and_plan_and_survive_a_missing_profile() {
+        let home = tempfile::tempdir().unwrap();
+        let account =
+            crate::accounts::Account::isolated(home.path(), Agent::Claude, "second").unwrap();
+        let limits = ClaudeLimits {
+            five_hour: Some(12.0),
+            seven_day: Some(30.0),
+            ..Default::default()
+        };
+        let profile = ClaudeProfile {
+            fingerprint: "claude-user-fixture".into(),
+            plan: "claude_max".into(),
+        };
+        let rows = account_quota_rows_with(&account, home.path(), |_, _| ClaudeReading {
+            limits: Ok(limits),
+            profile: Some(profile),
+        });
+        assert_eq!(rows.len(), 2, "{rows:?}");
+        for row in &rows {
+            assert_eq!(row.account, "second");
+            assert_eq!(row.identity.as_deref(), Some("claude-user-fixture"));
+            assert_eq!(row.plan.as_deref(), Some("claude_max"));
+        }
+        let rows = account_quota_rows_with(&account, home.path(), |_, _| ClaudeReading {
+            limits: Ok(limits),
+            profile: None,
+        });
+        assert_eq!(rows.len(), 2, "{rows:?}");
+        assert!(rows
+            .iter()
+            .all(|r| r.identity.is_none() && r.plan.is_none()));
+        assert_eq!(rows[0].used_percent, Some(12.0));
+    }
+
+    #[test]
+    fn a_cache_written_before_plans_still_loads() {
+        let row: QuotaRow = serde_json::from_str(
+            r#"{"label":"claude 5h","agent":"claude","account":"a","used_percent":5.0,
+                "detail":"","resets":null}"#,
+        )
+        .unwrap();
+        assert_eq!(row.plan, None);
+        let with: QuotaRow = serde_json::from_value(json!({
+            "label": "claude 5h", "used_percent": 5.0, "detail": "", "resets": null,
+            "plan": "claude_pro"
+        }))
+        .unwrap();
+        assert_eq!(with.plan.as_deref(), Some("claude_pro"));
+    }
+
+    #[test]
+    fn a_shared_claude_subscription_is_not_reported_as_a_shared_codex_login() {
+        let claude = |account: &str| QuotaRow {
+            label: "claude 5h".into(),
+            agent: Agent::Claude,
+            account: account.into(),
+            used_percent: Some(5.0),
+            identity: Some("claude-user-fixture".into()),
+            ..Default::default()
+        };
+        let mut rows = vec![claude("first"), claude("second")];
+        mark_shared_logins(&mut rows);
+        assert!(rows.iter().all(|row| row.detail.is_empty()), "{rows:?}");
     }
 }

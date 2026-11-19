@@ -9,7 +9,8 @@ use mindplayer_core::accounts::{
     accounts_from_saved, merge_accounts, read_saved_accounts, save_accounts, Account, AccountError,
     Role, Slot, MULTI_ACCOUNT_AGENTS,
 };
-use mindplayer_core::claude_auth::known_plan_label;
+use mindplayer_core::claude_auth::{known_plan_label, plan_label};
+use mindplayer_core::limits::QuotaRow;
 
 /// Marks a pane that is signing an account in rather than running a session.
 pub(crate) const LOGIN_PREFIX: &str = "login:";
@@ -140,6 +141,64 @@ impl App {
     /// has to say which one it is about.
     pub(crate) fn provider_has_several_logins(&self, agent: Agent) -> bool {
         self.accounts.iter().filter(|a| a.provider == agent).count() > 1
+    }
+
+    /// The plan label for a Claude account: its stored plan, else the usage reading's, else `unknown plan`.
+    pub(crate) fn claude_plan_label(&self, account: &Account, rows: &[QuotaRow]) -> String {
+        let read = rows
+            .iter()
+            .filter(|row| row.agent == account.provider && row.account == account.name)
+            .find_map(|row| row.plan.as_deref());
+        known_plan_label(account.claude_plan.as_deref())
+            .or_else(|| known_plan_label(read))
+            .unwrap_or_else(|| plan_label("unknown"))
+    }
+
+    /// The login a Claude account's usage was read with, when the profile could be read.
+    pub(crate) fn live_usage_identity<'a>(
+        &self,
+        account: &Account,
+        rows: &'a [QuotaRow],
+    ) -> Option<&'a str> {
+        rows.iter()
+            .filter(|row| row.agent == account.provider && row.account == account.name)
+            .find_map(|row| row.identity.as_deref())
+    }
+
+    /// The first earlier Claude account on this account's subscription, by usage login or, when asked, by stored binding.
+    pub(crate) fn same_subscription_as(
+        &self,
+        account: &Account,
+        rows: &[QuotaRow],
+        include_stored: bool,
+    ) -> Option<String> {
+        if account.provider != Agent::Claude {
+            return None;
+        }
+        let live = self.live_usage_identity(account, rows);
+        let stored = account.identity_fingerprint();
+        self.accounts
+            .iter()
+            .take_while(|other| !(other.provider == account.provider && other.slot == account.slot))
+            .filter(|other| other.provider == Agent::Claude)
+            .find(|other| {
+                let same_live = live.is_some() && self.live_usage_identity(other, rows) == live;
+                let same_stored =
+                    include_stored && stored.is_some() && other.identity_fingerprint() == stored;
+                same_live || same_stored
+            })
+            .map(|other| other.name.clone())
+    }
+
+    /// True when the bound login differs from the one this account's usage was read with.
+    pub(crate) fn usage_login_changed(&self, account: &Account, rows: &[QuotaRow]) -> bool {
+        match (
+            account.identity_fingerprint(),
+            self.live_usage_identity(account, rows),
+        ) {
+            (Some(stored), Some(live)) => stored != live,
+            _ => false,
+        }
     }
 
     /// The logins a usage refresh should read, which is every one that could

@@ -467,6 +467,13 @@ organization UUID.
   was expected and the one that was reached; <kbd>v</kbd> binds the new login,
   <kbd>l</kbd> signs in again.
 - A newly added account whose login is new is registered at once, with no <kbd>v</kbd>.
+- The usage probe also asks Claude's profile endpoint, with the same token and on a
+  best-effort basis, who the usage belongs to. If that request fails, the usage
+  reading is unaffected and the rows simply carry no login. An account whose usage
+  login equals an earlier account's reads `same subscription as <name>` here and
+  `= <name>` in the footer, where the plan also sits next to the account name once
+  a provider has two or more accounts. An account whose usage login is no longer
+  the bound one reads `login changed · press v`.
 
 For MindPlayer-managed accounts, exactly one account per provider is *in use*,
 so the launch choice never depends on list order. Usage for different accounts

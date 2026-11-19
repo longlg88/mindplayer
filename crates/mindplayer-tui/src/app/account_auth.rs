@@ -104,7 +104,9 @@ fn command_matches_account(command: &mindplayer_core::Command, account: &Account
 
 impl App {
     pub fn account_auth_message(&self, id: &str) -> Option<&'static str> {
-        if self.account_auth.blocked.contains_key(id) {
+        if let Some(message) = self.cli_freshness.message(id) {
+            Some(message)
+        } else if self.account_auth.blocked.contains_key(id) {
             Some("로그인/계정 확인 필요 — Accounts(u)에서 이 계정의 v 또는 l")
         } else if self.account_auth.owns_launch(id) {
             Some("로그인 확인 중… 선택한 계정 홈의 사용자와 조직을 확인합니다.")

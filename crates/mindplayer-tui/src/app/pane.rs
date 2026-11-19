@@ -213,6 +213,7 @@ impl App {
         {
             self.pending = self.pending_queue.pop_front();
         }
+        self.cli_freshness.cancel_launch(sid);
         if self.is_running(sid) {
             // Ctrl-Q only hides a live PTY. Its login still owns this home
             // until reap_pty observes exit and resumes any held launch.

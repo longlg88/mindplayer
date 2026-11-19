@@ -169,15 +169,26 @@ the sessions you already have.
 | MindPlayer itself | nothing — the installer downloads a prebuilt binary (`curl`/`wget`). Only `--build` needs **Rust**. |
 | Driving sessions | the agent CLIs you use, on `PATH`: [`codex`](https://github.com/openai/codex), [`claude`](https://docs.anthropic.com/claude-code), [`kiro-cli`](https://kiro.dev/docs/cli/), and Cursor `agent` — browsing works without them; a CLI is only needed to *resume/start* that agent |
 
+**Keeping the CLIs current.** Before a Codex, Claude or OMP session starts
+(new, resumed or handed off), MindPlayer runs that CLI's own `update` command,
+unless it already ran within the last 10 minutes. The session waits, showing
+`updating <cli>…`, for at most 90 seconds. The 10 minutes are shared by every
+MindPlayer instance on the machine. The check is fail-open: if the update fails
+or times out, the session starts on the installed version and the status line
+says so. Sign-in panes and other programs are never held. Set
+`MINDPLAYER_CLI_UPDATE=0` (or `off`, `false`) to turn this off.
+
 **2.0.0부터 설치된 CLI를 직접 실행합니다.** Codex·Claude의 새 세션, 재개,
 handoff와 로그인은 MindPlayer 프로세스가 받은 `PATH`의 `codex`·`claude`를
-각 실행 시점에 찾습니다. 별도 버전으로 고정하지 않습니다.
+각 실행 시점에 찾습니다. 별도 버전으로 고정하지 않습니다. 세션을 시작하기 전에
+MindPlayer가 해당 CLI 자신의 `update` 명령을 실행합니다.
 
 - 평소 사용하던 설치 방법으로 CLI를 업데이트하면 다음 실행부터 반영됩니다.
   같은 PATH 항목의 실행 파일 교체나 심볼릭 링크 변경에는 MindPlayer 재시작이
   필요 없습니다. PATH 환경변수 자체를 바꿨다면 MindPlayer를 다시 실행해야 합니다.
-- MindPlayer가 CLI를 자동 다운로드하거나 업데이트하지는 않습니다. 기준은
-  **현재 설치된 CLI**이며, upstream의 최신 버전 설치 여부까지 보장하지 않습니다.
+- MindPlayer가 CLI를 직접 다운로드하지는 않습니다. 업데이트는 CLI 자신의 `update`
+  명령이 하며, 실패하면 **현재 설치된 CLI**로 세션을 시작합니다. 최신 버전 설치까지는
+  보장하지 않습니다.
 - 실행 중인 pane의 프로세스는 교체하거나 종료하지 않습니다. 새 CLI를 사용하려면
   해당 세션을 새로 실행하거나 재개하세요.
 - Codex 전용 고정 빌드, 내장 Node 중계, F6 Jev 토글·라우팅 상태 표시는 제거했습니다.

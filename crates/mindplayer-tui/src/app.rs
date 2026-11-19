@@ -498,6 +498,7 @@ pub struct App {
     /// Additional PTY spawns queued behind `pending`, e.g. multi-select launch.
     pending_queue: VecDeque<PendingSpawn>,
     account_auth: account_auth::AccountAuth,
+    cli_freshness: cli_freshness::CliFreshness,
     /// Agent and account picker for a new session; None when hidden.
     pub new_picker: Option<usize>,
     /// Target-agent picker for a cross-agent handoff.
@@ -763,6 +764,7 @@ impl App {
             pending: None,
             pending_queue: VecDeque::new(),
             account_auth: Default::default(),
+            cli_freshness: cli_freshness::CliFreshness::from_env(),
             new_picker: None,
             handoff_picker: None,
             new_label: None,
@@ -1392,6 +1394,9 @@ mod accounts_panel_tests;
 mod accounts_quota_tests;
 #[cfg(test)]
 mod accounts_render_tests;
+mod cli_freshness;
+#[cfg(test)]
+mod cli_freshness_tests;
 mod convo_ingest;
 mod handoff_sync;
 mod link_copy;

@@ -59,6 +59,8 @@ const COLS: u16 = 140;
 /// Printed by the fake `codex` when a pane comes up, so a resume can be waited
 /// on by content rather than a fixed sleep.
 const PANE_READY: &str = "PANE-READY";
+/// A marker file the fixture hook writes to leave the pre-launch CLI update on.
+const CLI_UPDATE_ENABLED: &str = "cli-update-enabled";
 
 /// Distinctive session titles — unlikely to collide with any static UI text, so
 /// finding them on screen unambiguously means a session (list row or pane
@@ -934,6 +936,99 @@ fn contains_observer_native_usage(screen: &str) -> bool {
         && panel.contains("3210")
 }
 
+/// A fake `codex` that records `update` and pane starts, and bumps its version on update.
+#[cfg(unix)]
+fn install_updating_codex(tmp: &Path) {
+    let bin = tmp.join("bin");
+    std::fs::rename(bin.join("codex"), bin.join("codex-fixture"))
+        .expect("retain the offline Codex fixture");
+    std::fs::write(tmp.join("codex-version"), "0.1.0").expect("seed fake version");
+    std::fs::write(tmp.join(CLI_UPDATE_ENABLED), "").expect("enable the CLI update gate");
+    write_script(
+        &bin.join("codex"),
+        &format!(
+            r#"#!/bin/sh
+log='{log}'
+case "$1" in
+update)
+  printf 'update\n' >> "$log"
+  sleep 2
+  printf '0.2.0' > '{version}'
+  echo updated
+  exit 0 ;;
+--version)
+  printf 'codex-cli %s\n' "$(cat '{version}')"
+  exit 0 ;;
+esac
+if [ -n "$MINDPLAYER_PANE_ID" ]; then
+  printf 'start %s\n' "$1" >> "$log"
+fi
+exec '{fixture}' "$@"
+"#,
+            log = tmp.join("cli-update.log").display(),
+            version = tmp.join("codex-version").display(),
+            fixture = bin.join("codex-fixture").display(),
+        ),
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_provider_update_runs_once_before_the_session_command_starts() {
+    let mut mp = Mp::launch_with_fixture_hooks(
+        (ROWS, COLS),
+        false,
+        false,
+        false,
+        false,
+        CodexFixture::Echo,
+        (install_updating_codex, |_: &Path, _: Option<u32>| {}),
+    );
+    let log = mp._tmp.join("cli-update.log");
+    let lines = |log: &Path| -> Vec<String> {
+        std::fs::read_to_string(log)
+            .unwrap_or_default()
+            .lines()
+            .map(str::to_string)
+            .collect()
+    };
+    mp.start_into_main_list();
+    mp.send(b"/alfa\r");
+    mp.expect("updating codex", STEP_TIMEOUT, "held pane names the update");
+    assert!(
+        mp.wait_until(STEP_TIMEOUT, |_| lines(&log) == ["update"]),
+        "the update runs while the session waits: {:?}",
+        lines(&log)
+    );
+    assert!(!mp.screen().contains(PANE_READY));
+    mp.expect(PANE_READY, STEP_TIMEOUT, "released session starts");
+    let first = lines(&log);
+    assert_eq!(first.len(), 2, "{first:?}");
+    assert_eq!(first[0], "update");
+    assert_eq!(first[1], "start resume");
+    mp.expect(
+        "codex updated 0.1.0 → 0.2.0",
+        STEP_TIMEOUT,
+        "status names the version change",
+    );
+    let stamp = mp._tmp.join("home/.mindplayer/cli-update/codex.stamp");
+    assert!(stamp.is_file(), "the finished attempt leaves its stamp");
+    mp.send(b"\x18");
+    mp.expect("multi-select", STEP_TIMEOUT, "back on the list");
+    mp.send(b"\x1b");
+    mp.send(b"/brvo\r");
+    assert!(
+        mp.wait_until(STEP_TIMEOUT, |_| lines(&log).len() == 3),
+        "second launch must start: {:?}",
+        lines(&log)
+    );
+    let all = lines(&log);
+    assert_eq!(all.iter().filter(|l| *l == "update").count(), 1, "{all:?}");
+    mp.send(b"\x18");
+    mp.expect("multi-select", STEP_TIMEOUT, "back on the list");
+    mp.quit_from_list();
+}
+
 /// A live mindplayer process running in a PTY, with a background reader feeding
 /// a shared vt100 parser we can snapshot at any time.
 struct Mp {
@@ -1466,6 +1561,7 @@ exit 0"#
         cmd.env("MINDPLAYER_CURSOR_DIR", &cursor_dir);
         cmd.env("MINDPLAYER_OMP_DIR", &omp_dir);
         cmd.env("MINDPLAYER_STATE", &state_dir);
+        cmd.env("MINDPLAYER_CLI_UPDATE", "0");
         cmd.env("MINDPLAYER_AUDIT", &audit_dir);
         cmd.env("MINDPLAYER_PROMPTS_DIR", &prompts_dir);
         cmd.env("MINDPLAYER_HANDOFF_DIR", tmp.join("handoffs"));
@@ -1487,6 +1583,9 @@ exit 0"#
         cmd.env("PATH", format!("{}:{}", bindir.display(), path));
 
         prepare(&tmp);
+        if tmp.join(CLI_UPDATE_ENABLED).exists() {
+            cmd.env_remove("MINDPLAYER_CLI_UPDATE");
+        }
         let child = FixtureChild(
             pair.slave
                 .spawn_command(cmd.clone())

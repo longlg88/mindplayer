@@ -1394,6 +1394,8 @@ mod accounts_panel_tests;
 mod accounts_quota_tests;
 #[cfg(test)]
 mod accounts_render_tests;
+#[cfg(test)]
+mod claude_login_tests;
 mod cli_freshness;
 #[cfg(test)]
 mod cli_freshness_tests;

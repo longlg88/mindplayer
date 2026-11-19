@@ -4544,11 +4544,16 @@ fn claude_auth_mismatch_requires_confirmation_of_the_profile_identity() {
         "show the actual profile email",
     );
     mp.expect(
+        "이어야 하는데",
+        STEP_TIMEOUT,
+        "say the login differs from the bound one",
+    );
+    mp.expect("맞으면", STEP_TIMEOUT, "require explicit confirmation");
+    mp.expect_absent(
         "actual-organization",
         STEP_TIMEOUT,
-        "show required profile's actual organization",
+        "an organization UUID is not shown to the user",
     );
-    mp.expect("v로 연결", STEP_TIMEOUT, "require explicit confirmation");
     mp.assert_no_session_child();
     assert_eq!(saved_claude_identity(&mp, true), Some(binding.clone()));
     mp.send(b"v");
@@ -4595,14 +4600,19 @@ fn claude_auth_confirmation_rechecks_a_profile_changed_since_inspection() {
         "confirmation reads the profile again",
     );
     mp.expect(
-        "latest-organization",
+        "이어야 하는데",
         STEP_TIMEOUT,
-        "latest organization is readable",
+        "changed profile is judged again",
     );
     mp.expect(
-        "v로 연결",
+        "맞으면",
         STEP_TIMEOUT,
         "changed profile requires renewed confirmation",
+    );
+    mp.expect_absent(
+        "latest-organization",
+        STEP_TIMEOUT,
+        "an organization UUID is not shown to the user",
     );
     mp.assert_no_session_child();
     assert_eq!(saved_claude_identity(&mp, true), Some(binding.clone()));
@@ -4653,10 +4663,11 @@ fn claude_auth_fresh_login_preserves_the_label_and_reserves_a_new_home() {
         STEP_TIMEOUT,
         "show the new login's actual email",
     );
-    mp.expect(
+    mp.expect("unknown plan", STEP_TIMEOUT, "show the new login's plan");
+    mp.expect_absent(
         "fixture-org-fresh",
         STEP_TIMEOUT,
-        "show the new login's organization",
+        "an organization UUID is not shown to the user",
     );
     mp.expect(
         "v로 연결",
@@ -4717,6 +4728,230 @@ fn claude_auth_fresh_login_preserves_the_label_and_reserves_a_new_home() {
         STEP_TIMEOUT,
         "preserve the requested label through recovery",
     );
+}
+
+const ORG_TEAM: &str = "0123abcd-4567-89ef-0123-456789abcdef";
+const ORG_MAX: &str = "fedcba98-7654-4321-8fed-cba987654321";
+
+/// Give the isolated Claude account a UUID-shaped organization and a team plan, in its binding, status and profile alike.
+fn seed_claude_team_binding(tmp: &Path) {
+    let home = tmp.join("home");
+    let slot = home.join(".mindplayer/accounts/claude/slot-seven");
+    seed_claude_status(&slot, "two@example.test", ORG_TEAM);
+    std::fs::write(
+        slot.join("fixture-profile.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "account": { "uuid": "fixture-user-two@example.test", "email": "two@example.test" },
+            "organization": { "uuid": ORG_TEAM, "organization_type": "claude_team" }
+        }))
+        .unwrap(),
+    )
+    .expect("write the team profile fixture");
+    let path = home.join(".mindplayer/accounts.json");
+    let mut accounts: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    let account = accounts
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|a| a["name"] == "spruce7")
+        .expect("isolated Claude account");
+    account["claude_identity"] =
+        serde_json::json!(fixture_claude_identity(ORG_TEAM, "two@example.test"));
+    account["claude_workspace"] = serde_json::json!(ORG_TEAM);
+    account["claude_plan"] = serde_json::json!("claude_team");
+    std::fs::write(path, serde_json::to_vec_pretty(&accounts).unwrap()).unwrap();
+}
+
+fn launch_claude_team_fixture() -> Mp {
+    Mp::launch_with_fixture_hooks(
+        (ROWS, COLS),
+        false,
+        false,
+        true,
+        false,
+        CodexFixture::ClaudeAuthRecovery,
+        (seed_claude_team_binding, |_, _| {}),
+    )
+}
+
+/// Open the Accounts screen with the cursor on the named account.
+fn select_account_row(mp: &mut Mp, name: &str) {
+    mp.send(b"u");
+    mp.expect("Accounts", STEP_TIMEOUT, "open the Accounts screen");
+    for _ in 0..12 {
+        if mp.screen().contains(&format!("▶ {name}")) {
+            return;
+        }
+        mp.send(b"\x1b[B");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    panic!("no cursor on {name}:\n{}", mp.screen());
+}
+
+#[test]
+fn claude_auth_relogin_preselects_the_stored_organization_before_the_subcommand() {
+    let mut mp = launch_claude_team_fixture();
+    mp.start_into_main_list();
+    let binding = saved_claude_identity(&mp, true).unwrap();
+    let home = claude_fixture_home(&mp, true);
+    std::fs::write(home.join("hold-login"), "keep the sign-in pane open\n").unwrap();
+    select_account_row(&mut mp, "spruce7");
+    mp.send(b"l");
+    mp.wait_for_claude_auth_events(&home, "login", 1);
+    mp.expect(
+        "team 로 로그인하세요",
+        STEP_TIMEOUT,
+        "the status names the plan to sign in with",
+    );
+    let logins = mp.claude_auth_events(Some(&home), "login");
+    assert_eq!(
+        logins[0]["args"],
+        serde_json::json!([
+            "--settings",
+            format!("{{\"forceLoginOrgUUID\":\"{ORG_TEAM}\"}}"),
+            "auth",
+            "login"
+        ])
+    );
+    std::fs::remove_file(home.join("hold-login")).unwrap();
+    mp.wait_for_claude_auth_events(&home, "login-exit", 1);
+    mp.expect(
+        "(two@example.test · team)",
+        STEP_TIMEOUT,
+        "the same organization is confirmed with its email and plan",
+    );
+    assert_eq!(saved_claude_identity(&mp, true), Some(binding));
+    assert!(mp.claude_auth_events(None, "logout").is_empty());
+}
+
+#[test]
+fn claude_auth_login_on_another_organization_is_reported_and_not_bound() {
+    let mut mp = launch_claude_team_fixture();
+    mp.start_into_main_list();
+    let binding = saved_claude_identity(&mp, true).unwrap();
+    let home = claude_fixture_home(&mp, true);
+    std::fs::write(
+        home.join("login-lands.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "email": "two@example.test", "org": ORG_MAX, "plan": "claude_max"
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    select_account_row(&mut mp, "spruce7");
+    mp.send(b"l");
+    mp.wait_for_claude_auth_events(&home, "login-exit", 1);
+    mp.expect(
+        "team 이어야 하는데",
+        STEP_TIMEOUT,
+        "the expected plan is named",
+    );
+    mp.expect(
+        "max 로 로그인했습니다",
+        STEP_TIMEOUT,
+        "the plan that was reached",
+    );
+    mp.expect(
+        "맞으면",
+        STEP_TIMEOUT,
+        "the choice to keep or redo is offered",
+    );
+    mp.expect_absent(ORG_MAX, STEP_TIMEOUT, "no organization UUID on screen");
+    mp.expect_absent(ORG_TEAM, STEP_TIMEOUT, "no organization UUID on screen");
+    assert_eq!(saved_claude_identity(&mp, true), Some(binding));
+    assert!(mp.claude_auth_events(None, "logout").is_empty());
+}
+
+#[test]
+fn claude_auth_added_account_on_an_existing_subscription_is_cancelled() {
+    let mut mp = Mp::launch_claude_auth_fixture();
+    mp.start_into_main_list();
+    let home = mp._tmp.join("home");
+    let slot = home.join(".mindplayer/accounts/claude/dupe");
+    std::fs::write(
+        mp._tmp.join("login-lands.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "email": "two@example.test", "org": "fixture-org-two", "plan": "claude_max"
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    select_account_row(&mut mp, "spruce7");
+    mp.send(b"a");
+    mp.expect("Add account", STEP_TIMEOUT, "name the new account");
+    mp.send(b"dupe\r");
+    mp.wait_for_claude_auth_events(&slot, "login-exit", 1);
+    mp.expect(
+        "등록을 취소했습니다",
+        STEP_TIMEOUT,
+        "the registration is cancelled",
+    );
+    mp.expect(
+        "spruce7 과 같은 구독(max)",
+        STEP_TIMEOUT,
+        "the account it duplicates and the plan are named",
+    );
+    mp.expect_absent(
+        "fixture-org-two",
+        STEP_TIMEOUT,
+        "no organization id on screen",
+    );
+    let logins = mp.claude_auth_events(Some(&slot), "login");
+    assert_eq!(logins[0]["args"], serde_json::json!(["auth", "login"]));
+    let accounts = mindplayer_core::accounts::load_accounts(&home);
+    assert!(
+        !accounts.iter().any(|account| account.name == "dupe"),
+        "the cancelled account is still registered"
+    );
+    assert!(accounts.iter().any(|account| account.name == "spruce7"));
+    assert!(
+        !slot.exists(),
+        "the cancelled account's home was not erased"
+    );
+    assert!(mp.claude_auth_events(None, "logout").is_empty());
+}
+
+#[test]
+fn claude_auth_added_account_with_a_new_login_is_registered_at_once() {
+    let mut mp = Mp::launch_claude_auth_fixture();
+    mp.start_into_main_list();
+    let home = mp._tmp.join("home");
+    let slot = home.join(".mindplayer/accounts/claude/newone");
+    std::fs::write(
+        mp._tmp.join("login-lands.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "email": "third@example.test", "org": "fixture-org-third", "plan": "claude_pro"
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    select_account_row(&mut mp, "spruce7");
+    mp.send(b"a");
+    mp.expect("Add account", STEP_TIMEOUT, "name the new account");
+    mp.send(b"newone\r");
+    mp.wait_for_claude_auth_events(&slot, "login-exit", 1);
+    mp.expect(
+        "(third@example.test · pro)",
+        STEP_TIMEOUT,
+        "the new login is registered with its email and plan",
+    );
+    let account = mindplayer_core::accounts::load_accounts(&home)
+        .into_iter()
+        .find(|account| account.name == "newone")
+        .expect("the new account stays registered");
+    assert_eq!(
+        account.claude_identity,
+        Some(fixture_claude_identity(
+            "fixture-org-third",
+            "third@example.test"
+        ))
+    );
+    assert_eq!(
+        account.claude_workspace.as_deref(),
+        Some("fixture-org-third")
+    );
+    assert_eq!(account.claude_plan.as_deref(), Some("claude_pro"));
 }
 
 fn append_claude_turn(file: &Path, role: &str, text: &str) {

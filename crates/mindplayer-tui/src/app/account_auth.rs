@@ -1,7 +1,8 @@
 //! Provider-neutral account verification, kept off the input/render thread. A blocked
 //! launch remains owned here until explicitly recovered or its pane is closed.
 use super::*;
-use mindplayer_core::accounts::Account;
+use mindplayer_core::accounts::{Account, Slot};
+use mindplayer_core::claude_auth::{known_plan_label, plan_label};
 use mindplayer_core::limits::{AccountIdentity, FailureKind, ProbeError};
 
 type Reading = Result<AccountIdentity, ProbeError>;
@@ -12,6 +13,19 @@ pub(super) struct AccountAuth {
     blocked: HashMap<String, (Account, PendingSpawn)>,
     approved: HashMap<String, Account>,
     logins: HashMap<String, Account>,
+    fresh: Vec<(Agent, Slot)>,
+}
+
+/// Where a Claude login that was just read stands against the stored bindings.
+enum Landing {
+    /// It is the login this account is bound to.
+    Same,
+    /// It is the login another account, by this name, is bound to.
+    Shared(String),
+    /// This account was bound to another login.
+    Changed,
+    /// This account was never bound and no other account has this login.
+    New,
 }
 
 struct Check {
@@ -33,6 +47,21 @@ impl AccountAuth {
         self.blocked.contains_key(id) || self.approved.contains_key(id) || self.checks.iter().any(|check|
             matches!(&check.purpose, Purpose::Launch(pending) if pending.session_id == id)
         )
+    }
+    /// Remember an account added during this run, until its first login is bound.
+    pub(super) fn mark_fresh(&mut self, account: &Account) {
+        self.fresh.push((account.provider, account.slot.clone()));
+    }
+    fn is_fresh(&self, account: &Account) -> bool {
+        account.identity_fingerprint().is_none()
+            && self
+                .fresh
+                .iter()
+                .any(|(provider, slot)| *provider == account.provider && *slot == account.slot)
+    }
+    fn forget_fresh(&mut self, account: &Account) {
+        self.fresh
+            .retain(|(provider, slot)| !(*provider == account.provider && *slot == account.slot));
     }
     pub(super) fn cancel_inspection(&mut self) {
         self.checks
@@ -128,14 +157,14 @@ impl App {
         if let Some((_, pending)) = self
             .focused_pane()
             .and_then(|id| self.account_auth.blocked.get(id))
-            .filter(|(owner, _)| owner == account)
+            .filter(|(owner, _)| owner.eq_ignoring_login_facts(account))
         {
             return pending.command.cwd.clone();
         }
         self.account_auth
             .blocked
             .iter()
-            .filter(|(_, (owner, _))| owner == account)
+            .filter(|(_, (owner, _))| owner.eq_ignoring_login_facts(account))
             .min_by_key(|(id, _)| *id)
             .map(|(_, (_, pending))| pending.command.cwd.clone())
             .unwrap_or_else(|| match &self.scope {
@@ -204,7 +233,7 @@ impl App {
         bind: Option<(String, PathBuf)>,
     ) {
         if self.account_auth.checks.iter().any(|check| {
-            check.account == *account
+            check.account.eq_ignoring_login_facts(account)
                 && matches!(check.purpose, Purpose::Inspect | Purpose::Bind(_, _))
         }) {
             return;
@@ -251,8 +280,7 @@ impl App {
             .account_auth
             .approved
             .remove(&pending.session_id)
-            .as_ref()
-            == Some(account)
+            .is_some_and(|approved| approved.eq_ignoring_login_facts(account))
         {
             return Some(pending);
         }
@@ -316,7 +344,7 @@ impl App {
             .account_auth
             .blocked
             .values()
-            .any(|(owner, _)| owner == &account)
+            .any(|(owner, _)| owner.eq_ignoring_login_facts(&account))
         {
             self.retry_account_launches(&account);
         } else {
@@ -358,11 +386,11 @@ impl App {
                 continue;
             };
             // An account changed during the check is checked again as it is now, whatever the check was for.
-            if current != check.account {
+            if !current.eq_ignoring_login_facts(&check.account) {
                 self.start_account_check(current, check.purpose);
                 continue;
             }
-            self.finish_account_check(check.account, check.purpose, reading, check.cwd);
+            self.finish_account_check(current, check.purpose, reading, check.cwd);
         }
         changed
     }
@@ -380,7 +408,9 @@ impl App {
             let selected = self
                 .selected_account()
                 .and_then(|index| self.accounts.get(index));
-            if selected != Some(account) || panel.naming.is_some() {
+            if !selected.is_some_and(|selected| selected.eq_ignoring_login_facts(account))
+                || panel.naming.is_some()
+            {
                 self.status = format!("{} — u에서 {} 선택 후 v/l", message, account.name);
                 return;
             }
@@ -402,7 +432,11 @@ impl App {
             }
             self.open_accounts();
         }
-        let Some(index) = self.accounts.iter().position(|a| a == account) else {
+        let Some(index) = self
+            .accounts
+            .iter()
+            .position(|a| a.eq_ignoring_login_facts(account))
+        else {
             return;
         };
         let row = self
@@ -450,7 +484,7 @@ impl App {
             && self
                 .selected_account()
                 .and_then(|index| self.accounts.get(index))
-                == Some(account)
+                .is_some_and(|selected| selected.eq_ignoring_login_facts(account))
     }
 
     fn account_continuation_may_focus(&self, account: &Account, id: &str) -> bool {
@@ -469,6 +503,131 @@ impl App {
             })
     }
 
+    fn claude_landing(&self, account: &Account, identity: &AccountIdentity) -> Landing {
+        if account.identity_fingerprint() == Some(identity.fingerprint.as_str()) {
+            Landing::Same
+        } else if let Some(other) = self.accounts.iter().find(|other| {
+            other.provider == Agent::Claude
+                && other.slot != account.slot
+                && other.identity_fingerprint() == Some(identity.fingerprint.as_str())
+        }) {
+            Landing::Shared(other.name.clone())
+        } else if account.identity_fingerprint().is_some() {
+            Landing::Changed
+        } else {
+            Landing::New
+        }
+    }
+
+    /// Store the organization and plan a check proved for an account whose binding it matched.
+    fn refresh_claude_facts(&mut self, account: &Account, identity: &AccountIdentity) -> Account {
+        let find = |app: &Self| {
+            app.accounts
+                .iter()
+                .position(|a| a.provider == account.provider && a.slot == account.slot)
+        };
+        let Some(index) = find(self) else {
+            return account.clone();
+        };
+        let current = &self.accounts[index];
+        let plan = if identity.plan == "unknown" {
+            current
+                .claude_plan
+                .clone()
+                .unwrap_or_else(|| identity.plan.clone())
+        } else {
+            identity.plan.clone()
+        };
+        if current.claude_workspace.as_deref() == Some(identity.workspace.as_str())
+            && current.claude_plan.as_deref() == Some(plan.as_str())
+        {
+            return current.clone();
+        }
+        self.accounts[index].set_claude_login_facts(&identity.workspace, &plan);
+        self.persist_accounts();
+        find(self).map_or_else(|| account.clone(), |index| self.accounts[index].clone())
+    }
+
+    /// Bind the live login to `account` and save it; the account as saved, or none when it could not be.
+    fn bind_live_identity(
+        &mut self,
+        account: &Account,
+        identity: &AccountIdentity,
+        cwd: PathBuf,
+    ) -> Option<Account> {
+        let index = self
+            .accounts
+            .iter()
+            .position(|a| a.eq_ignoring_login_facts(account))?;
+        let before = self.accounts[index].clone();
+        self.accounts[index].set_identity_fingerprint(Some(identity.fingerprint.clone()));
+        self.accounts[index].set_claude_login_facts(&identity.workspace, &identity.plan);
+        // The save can take in another MindPlayer's list, so the account is found again by its slot.
+        let saved = self.save_accounts_merged();
+        let Some(index) = self
+            .accounts
+            .iter()
+            .position(|a| a.provider == account.provider && a.slot == account.slot)
+        else {
+            self.status = format!("{} was removed during the check", account.name);
+            return None;
+        };
+        if let Err(error) = saved {
+            self.accounts[index]
+                .set_identity_fingerprint(before.identity_fingerprint().map(str::to_string));
+            self.accounts[index].claude_workspace = before.claude_workspace;
+            self.accounts[index].claude_plan = before.claude_plan;
+            self.show_account_identity(account, format!("계정 저장 실패: {error}"), None, cwd);
+            return None;
+        }
+        self.account_auth.forget_fresh(account);
+        Some(self.accounts[index].clone())
+    }
+
+    /// Undo a fresh add whose login turned out to be another account's: the account and its home are removed.
+    fn cancel_fresh_add(&mut self, account: &Account, first: &str, plan: &str) -> bool {
+        let id = format!(
+            "{}{}:{}",
+            accounts_panel::LOGIN_PREFIX,
+            account.provider.as_str(),
+            account.name
+        );
+        if self
+            .account_auth
+            .blocked
+            .values()
+            .any(|(owner, _)| owner.provider == account.provider && owner.slot == account.slot)
+            || self.pane_count_on(account) > usize::from(self.panes.contains(&id))
+        {
+            return false;
+        }
+        let Some(index) = self
+            .accounts
+            .iter()
+            .position(|a| a.provider == account.provider && a.slot == account.slot)
+        else {
+            return false;
+        };
+        self.remove_pane(&id);
+        self.pane_accounts.remove(&id);
+        self.extra_sessions.retain(|s| s.id != id);
+        self.all_sessions.retain(|s| s.id != id);
+        self.rebuild_visible();
+        let erased = self.forget_account_at(index);
+        self.after_account_removed();
+        self.account_auth.forget_fresh(account);
+        self.status = format!(
+            "{}: 이 로그인은 {first} 과 같은 구독({plan})입니다 — 등록을 취소했습니다. 다른 조직으로 추가하려면 브라우저에서 조직을 바꾼 뒤 a 를 누르세요",
+            account.name
+        );
+        if let Err(error) = erased {
+            if let Some(panel) = self.accounts_panel.as_mut() {
+                panel.error = Some(error);
+            }
+        }
+        true
+    }
+
     fn finish_account_check(
         &mut self,
         account: Account,
@@ -476,16 +635,45 @@ impl App {
         reading: Reading,
         cwd: PathBuf,
     ) {
+        let claude = account.provider == Agent::Claude;
         match purpose {
             Purpose::Launch(mut pending) => {
                 if let Ok(identity) = &reading {
-                    if account.identity_fingerprint() == Some(&identity.fingerprint) {
-                        if !self.account_continuation_may_focus(&account, &pending.session_id) {
+                    let mut approved = None;
+                    if !claude {
+                        if account.identity_fingerprint() == Some(&identity.fingerprint) {
+                            approved = Some(account.clone());
+                        }
+                    } else {
+                        match self.claude_landing(&account, identity) {
+                            Landing::Same => {
+                                approved = Some(self.refresh_claude_facts(&account, identity));
+                            }
+                            Landing::New if self.account_auth.is_fresh(&account) => {
+                                let Some(bound) =
+                                    self.bind_live_identity(&account, identity, cwd.clone())
+                                else {
+                                    self.hold_account_launch(&account, pending);
+                                    return;
+                                };
+                                self.status = format!(
+                                    "{} 등록 완료 ({} · {})",
+                                    account.name,
+                                    identity.email,
+                                    plan_label(&identity.plan)
+                                );
+                                approved = Some(bound);
+                            }
+                            _ => {}
+                        }
+                    }
+                    if let Some(approved) = approved {
+                        if !self.account_continuation_may_focus(&approved, &pending.session_id) {
                             pending.focus_after_spawn = false;
                         }
                         self.account_auth
                             .approved
-                            .insert(pending.session_id.clone(), account);
+                            .insert(pending.session_id.clone(), approved);
                         self.enqueue_spawn(pending);
                         return;
                     }
@@ -495,16 +683,62 @@ impl App {
             }
             Purpose::Inspect | Purpose::AfterLogin => {
                 if let Ok(identity) = &reading {
-                    if account.identity_fingerprint() == Some(&identity.fingerprint) {
-                        self.status =
-                            format!("{} 로그인 확인 완료 ({})", account.name, identity.email);
-                        if self.owns_account_panel(&account) {
-                            if let Some(panel) = self.accounts_panel.as_mut() {
-                                panel.error = None;
+                    if !claude {
+                        if account.identity_fingerprint() == Some(&identity.fingerprint) {
+                            self.status =
+                                format!("{} 로그인 확인 완료 ({})", account.name, identity.email);
+                            if self.owns_account_panel(&account) {
+                                if let Some(panel) = self.accounts_panel.as_mut() {
+                                    panel.error = None;
+                                }
                             }
+                            self.retry_account_launches(&account);
+                            return;
                         }
-                        self.retry_account_launches(&account);
-                        return;
+                    } else {
+                        let plan = plan_label(&identity.plan);
+                        match self.claude_landing(&account, identity) {
+                            Landing::Same => {
+                                let account = self.refresh_claude_facts(&account, identity);
+                                self.status = format!(
+                                    "{} 로그인 확인 완료 ({} · {plan})",
+                                    account.name, identity.email
+                                );
+                                if self.owns_account_panel(&account) {
+                                    if let Some(panel) = self.accounts_panel.as_mut() {
+                                        panel.error = None;
+                                    }
+                                }
+                                self.retry_account_launches(&account);
+                                return;
+                            }
+                            Landing::New if self.account_auth.is_fresh(&account) => {
+                                if let Some(bound) =
+                                    self.bind_live_identity(&account, identity, cwd.clone())
+                                {
+                                    self.status = format!(
+                                        "{} 등록 완료 ({} · {plan})",
+                                        account.name, identity.email
+                                    );
+                                    if self.owns_account_panel(&bound) {
+                                        if let Some(panel) = self.accounts_panel.as_mut() {
+                                            panel.error = None;
+                                            panel.confirm_identity = None;
+                                        }
+                                    }
+                                    self.retry_account_launches(&bound);
+                                    return;
+                                }
+                                return;
+                            }
+                            Landing::Shared(first)
+                                if self.account_auth.is_fresh(&account)
+                                    && self.cancel_fresh_add(&account, &first, &plan) =>
+                            {
+                                return;
+                            }
+                            _ => {}
+                        }
                     }
                 }
                 self.present_account_reading(&account, reading, cwd);
@@ -512,33 +746,10 @@ impl App {
             Purpose::Bind(expected, _) => {
                 if let Ok(identity) = &reading {
                     if identity.fingerprint == expected {
-                        let Some(index) = self.accounts.iter().position(|a| a == &account) else {
-                            return;
-                        };
-                        self.accounts[index].set_identity_fingerprint(Some(expected));
-                        // The save can take in another MindPlayer's list, so the account is found again by its slot.
-                        let saved = self.save_accounts_merged();
-                        let Some(index) = self
-                            .accounts
-                            .iter()
-                            .position(|a| a.provider == account.provider && a.slot == account.slot)
+                        let Some(bound) = self.bind_live_identity(&account, identity, cwd.clone())
                         else {
-                            self.status = format!("{} was removed during the check", account.name);
                             return;
                         };
-                        if let Err(error) = saved {
-                            self.accounts[index].set_identity_fingerprint(
-                                account.identity_fingerprint().map(str::to_string),
-                            );
-                            self.show_account_identity(
-                                &account,
-                                format!("계정 저장 실패: {error}"),
-                                None,
-                                cwd,
-                            );
-                            return;
-                        }
-                        let bound = self.accounts[index].clone();
                         self.status =
                             format!("{} identity bound ({})", account.name, identity.email);
                         if self.owns_account_panel(&bound) {
@@ -558,6 +769,34 @@ impl App {
 
     fn present_account_reading(&mut self, account: &Account, reading: Reading, cwd: PathBuf) {
         match reading {
+            Ok(identity) if account.provider == Agent::Claude => {
+                let plan = plan_label(&identity.plan);
+                let message = match self.claude_landing(account, &identity) {
+                    Landing::Shared(first) => format!(
+                        "{}: 이 로그인은 {first} 과 같은 구독({} · {plan})입니다 — 다른 조직이어야 하면 l 로 다시 로그인, 그대로 쓰려면 v",
+                        account.name, identity.email
+                    ),
+                    Landing::Changed => {
+                        let expected = known_plan_label(account.claude_plan.as_deref())
+                            .unwrap_or_else(|| "저장된 로그인".to_string());
+                        format!(
+                            "{}: {expected} 이어야 하는데 {} · {plan} 로 로그인했습니다 — 맞으면 v, 아니면 l",
+                            account.name, identity.email
+                        )
+                    }
+                    Landing::Same => {
+                        let message =
+                            format!("{} 로그인 확인 완료 ({} · {plan})", account.name, identity.email);
+                        self.show_account_identity(account, message, None, cwd);
+                        return;
+                    }
+                    Landing::New => format!(
+                        "{}: 미등록 로그인 · {} · {plan} — 이 계정이 맞으면 v로 연결, 아니면 l로 로그인",
+                        account.name, identity.email
+                    ),
+                };
+                self.show_account_identity(account, message, Some(&identity), cwd);
+            }
             Ok(identity) => {
                 let warning = if account.identity_fingerprint().is_some() {
                     "저장된 로그인과 다름"
@@ -1135,7 +1374,9 @@ macro_rules! lifecycle_tests {
                         app.pane_account_label(&session.id),
                         Some(account.name.as_str())
                     );
-                    assert_eq!(app.account_of_session(&session), account);
+                    assert!(app
+                        .account_of_session(&session)
+                        .eq_ignoring_login_facts(&account));
 
                     // An ID shared with another provider cannot inherit this
                     // launch's account.
@@ -1214,4 +1455,17 @@ fn claude_native_and_explicit_default_path_are_different_vaults() {
     let command = mindplayer_core::new_session(Agent::Claude, std::env::temp_dir(), &explicit);
     assert!(!command_matches_account(&command, &inherited));
     assert!(command_matches_account(&command, &explicit));
+}
+
+#[test]
+fn the_login_command_with_a_preselected_organization_still_matches_its_account() {
+    let home = std::env::temp_dir();
+    let mut account = Account::isolated(&home, Agent::Claude, "second").unwrap();
+    account.claude_workspace = Some("0123abcd-4567-89ef-0123-456789abcdef".into());
+    let command = mindplayer_core::login(Agent::Claude, std::env::temp_dir(), &account);
+    assert_eq!(command.args[0], "--settings");
+    assert!(command_matches_account(&command, &account));
+    let mut refreshed = account.clone();
+    refreshed.set_claude_login_facts("0123abcd-4567-89ef-0123-456789abcdef", "claude_max");
+    assert!(command_matches_account(&command, &refreshed));
 }

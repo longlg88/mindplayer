@@ -336,8 +336,8 @@ provider-reported user and workspace/organization before execution, using one
 shared recovery lifecycle. This is separate from quota
 availability. A matching saved binding continues without another browser login;
 missing or changed identity opens Accounts for inspection. The account name is
-only a label, not proof of identity: check the displayed email and workspace/organization
-before pressing `v` to bind. Confirmation performs another fresh read.
+only a label, not proof of identity: check the displayed email and, for Claude, the
+plan before pressing `v` to bind. Confirmation performs another fresh read.
 
 Use `l` to sign in to that exact provider home, including the shared default home.
 MindPlayer does not run logout first or copy another home's credentials. After
@@ -445,6 +445,28 @@ session run on*:
 | <kbd>a</kbd> | add an account — name it, then its provider's own sign‑in runs in a pane, inside the new account's home |
 | <kbd>v</kbd> | inspect / explicitly bind Codex or Claude identity; confirmation rechecks the selected home |
 | <kbd>r</kbd> | rename the display label (the login home stays put) · <kbd>l</kbd> sign in again · <kbd>d</kbd> off · <kbd>x</kbd> erase login (twice) |
+
+**Which organization a Claude login lands on.** One Claude login belongs to one
+organization, for example a Team organization or a personal Max plan. The browser
+signs in to whichever organization it currently shows, so a login can silently
+land on the wrong one. Each Claude row therefore shows its plan — `team`, `max`,
+`pro`, `enterprise` or `unknown plan` — and no MindPlayer message shows an
+organization UUID.
+
+- A bound account remembers its organization and plan. <kbd>l</kbd> then runs
+  `claude --settings '{"forceLoginOrgUUID":"…"}' auth login`, so the sign-in page
+  opens on that organization, and the status line names the plan to sign in with.
+  An account with no stored organization signs in as before.
+- When a login ends, and on <kbd>v</kbd> and on a launch check, MindPlayer compares
+  the login it got with the stored ones. **Same login:** it is confirmed with its
+  email and plan, and a changed plan is refreshed silently. **Same subscription as
+  another account:** nothing is bound. An account added with <kbd>a</kbd> in this run is cancelled
+  — it is removed from the list and its home directory is erased, exactly as <kbd>x</kbd>
+  does, with no `claude auth logout` — and any other account keeps its binding;
+  <kbd>v</kbd> still binds it if you want it. **Changed:** the message names the plan that
+  was expected and the one that was reached; <kbd>v</kbd> binds the new login,
+  <kbd>l</kbd> signs in again.
+- A newly added account whose login is new is registered at once, with no <kbd>v</kbd>.
 
 For MindPlayer-managed accounts, exactly one account per provider is *in use*,
 so the launch choice never depends on list order. Usage for different accounts

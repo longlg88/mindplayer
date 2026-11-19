@@ -294,6 +294,28 @@ impl Account {
         }
     }
 
+    /// Equality that ignores the stored Claude login facts, which a check may refresh without changing which login this is.
+    pub fn eq_ignoring_login_facts(&self, other: &Account) -> bool {
+        let Account {
+            provider,
+            name,
+            slot,
+            role,
+            disabled,
+            codex_identity,
+            claude_identity,
+            claude_workspace: _,
+            claude_plan: _,
+        } = self;
+        *provider == other.provider
+            && *name == other.name
+            && *slot == other.slot
+            && *role == other.role
+            && *disabled == other.disabled
+            && *codex_identity == other.codex_identity
+            && *claude_identity == other.claude_identity
+    }
+
     /// The stored organization UUID when it has the shape the CLI accepts for a forced login, else none.
     pub fn forced_org_uuid(&self) -> Option<&str> {
         self.claude_workspace
@@ -965,6 +987,22 @@ mod claude_account_tests {
         .unwrap();
         assert_eq!(old.claude_identity.as_deref(), Some("claude-user-opaque"));
         assert_eq!((old.claude_workspace, old.claude_plan), (None, None));
+    }
+
+    #[test]
+    fn refreshing_login_facts_keeps_an_account_equal_for_lookups() {
+        let mut account = Account::inherited(Agent::Claude);
+        account.set_identity_fingerprint(Some("claude-user-bound".into()));
+        let mut refreshed = account.clone();
+        refreshed.set_claude_login_facts("00000000-0000-4000-8000-000000000001", "claude_max");
+        assert_ne!(account, refreshed);
+        assert!(account.eq_ignoring_login_facts(&refreshed));
+        let mut rebound = refreshed.clone();
+        rebound.set_identity_fingerprint(Some("claude-user-other".into()));
+        assert!(!account.eq_ignoring_login_facts(&rebound));
+        let mut renamed = refreshed.clone();
+        renamed.name = "renamed".into();
+        assert!(!account.eq_ignoring_login_facts(&renamed));
     }
 
     #[test]

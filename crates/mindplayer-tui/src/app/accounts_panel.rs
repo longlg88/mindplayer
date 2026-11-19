@@ -9,6 +9,7 @@ use mindplayer_core::accounts::{
     accounts_from_saved, merge_accounts, read_saved_accounts, save_accounts, Account, AccountError,
     Role, Slot, MULTI_ACCOUNT_AGENTS,
 };
+use mindplayer_core::claude_auth::known_plan_label;
 
 /// Marks a pane that is signing an account in rather than running a session.
 pub(crate) const LOGIN_PREFIX: &str = "login:";
@@ -385,7 +386,7 @@ impl App {
             .as_ref()
             .and_then(|p| p.confirm_identity.clone());
         if let Some((pending_account, fingerprint, cwd)) = pending {
-            if pending_account == account {
+            if pending_account.eq_ignoring_login_facts(&account) {
                 self.inspect_account_identity(&account, Some((fingerprint, cwd)));
                 return;
             }
@@ -472,15 +473,22 @@ impl App {
             return;
         }
 
-        // Erasing the slot is the point: leaving it behind is what made
-        // removing an account look like it had not worked.
-        let account = self.accounts.remove(i);
-        match mindplayer_core::accounts::forget_login(&account, &limits_home_for_app()) {
-            // Already out of the list; say what was left rather than put it
-            // back and lose the removal too.
+        match self.forget_account_at(i) {
+            // Already out of the list, so say what was left rather than put it back.
             Err(e) => self.set_error(e),
             Ok(()) => self.status = format!("removed {name} and erased its login"),
         }
+        self.after_account_removed();
+    }
+
+    /// Take the account at `i` out of the list and erase its login home, since a home left behind made removal look undone.
+    pub(super) fn forget_account_at(&mut self, i: usize) -> Result<(), String> {
+        let account = self.accounts.remove(i);
+        mindplayer_core::accounts::forget_login(&account, &limits_home_for_app())
+    }
+
+    /// Save the shorter list and put the cursor back on a row that exists.
+    pub(super) fn after_account_removed(&mut self) {
         self.persist_accounts();
         self.accounts_cancel_remove();
         self.accounts_move(0);
@@ -743,6 +751,14 @@ impl App {
         self.accounts_cancel_add();
         self.clear_error();
         self.request_login(&account);
+        if account.provider == Agent::Claude {
+            self.account_auth.mark_fresh(&account);
+            self.status = format!(
+                "{}: 로그인 중 — 끝나면 로그인한 계정을 확인하고 바로 등록합니다",
+                account.name
+            );
+            return;
+        }
         // Signing in does not decide anything by itself, and a pane that just
         // says "logged in" leaves the next step to be guessed. Say it.
         self.status = format!(
@@ -869,6 +885,14 @@ impl App {
             // Native login can replace credentials; never precede it with
             // logout, especially for the shared default home.
             self.request_login(&account);
+            if let Some(plan) = known_plan_label(account.claude_plan.as_deref())
+                .filter(|_| account.provider == Agent::Claude)
+            {
+                self.status = format!(
+                    "{}: {plan} 로 로그인하세요 — 브라우저가 다른 조직을 보이면 조직을 바꾼 뒤 승인하세요",
+                    account.name
+                );
+            }
             return;
         }
         if account.is_inherited() {

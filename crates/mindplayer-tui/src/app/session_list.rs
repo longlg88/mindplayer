@@ -1613,6 +1613,7 @@ impl App {
             }
             self.status = "closed new session".to_string();
         } else {
+            self.pane_accounts.remove(&owner);
             self.state.set_session_archived(&session, true);
             let _ = self.save_state();
             self.remember_archived(session.clone());

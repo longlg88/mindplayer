@@ -63,14 +63,14 @@ the sessions you already have.
   together as live panes with one <kbd>Enter</kbd>.
 - 🚦 **Live status** — opened sessions show `! blocked` (approval needed),
   `● working`, `○ idle` (waiting), `✓ done` (turn completed), or `○ ended`
-  (process exited). `saved` means the source is listed but has no unambiguous
+  (process exited). `not open` means the source is listed but has no unambiguous
   live pane owned by this MindPlayer instance; it does not claim the session
   is idle or stopped in other terminals. For Codex and Claude Code, lifecycle
   events/hooks drive status when available (see `--install-agent-hooks`
   below); otherwise the pane's own text is used. Kiro's patterns are editable
   in `~/.mindplayer/kiro-patterns.json` (see **How it works**).
-  When this instance has no retained PTYs, one `all saved in this instance`
-  footer replaces repeated saved badges; mixed lists retain per-row status.
+  When this instance has no retained PTYs, one `no sessions open here`
+  footer replaces repeated `not open` badges; mixed lists retain per-row status.
 - ⏱️ **Time since last prompt** — a live session's time column shows how
   long it's been since *you* last typed something, not just "now" (which a
   running agent's own file mtime would otherwise always show) — so you can
@@ -184,7 +184,8 @@ handoff와 로그인은 MindPlayer 프로세스가 받은 `PATH`의 `codex`·`cl
   Codex 모델·effort는 원래 CLI에서 설정합니다. 기존 전용 설치 파일이나 자격 증명은
   삭제하지 않습니다.
 - 계정별 실행 환경, 작업 폴더, 재개 인수, handoff 입력, Claude fullscreen 설정과
-  OMP 실행 경로는 유지합니다. Codex pane 아래쪽의 연결 계정 레이블도 유지합니다.
+  OMP 실행 경로는 유지합니다. Codex·Claude pane 아래쪽에는 검증된 실행 계정
+  레이블을 표시하며, OMP는 아래의 실제 응답 계정 관찰을 사용합니다.
 - Codex 안에서 `/clear`, `/resume`, `/fork`로 전환한 세션을 MindPlayer 목록의
   ID·레이블에 자동 반영하던 전용 연동도 제거했습니다. CLI 내부 명령은 사용할 수
   있지만 목록은 실행 당시 연결을 유지하므로, 전환한 세션을 목록에서 조작하려면
@@ -259,6 +260,19 @@ OMP sessions are discovered from the active OMP session store and resumed by
 their session file without the new-session picker. Install OMP and make `omp`
 available on `PATH` before choosing it. `mindplayer --help` lists the remaining
 controls.
+
+OMP account labels use the credential ID stamped by the installed OMP on its
+live main-agent response, matched to OMP's token-free OAuth account metadata.
+The list and pane show the observed email/account and workspace when available;
+API keys show a credential ID, not an inferred person. Account/model/session
+changes revoke the old label until another response proves the identity.
+Before the first response, for unopened history, or when the installed OMP lacks
+the required extension APIs, the list says `unverified` and the pane says
+`계정 미확인`. A provider name, selected model, or first login in a pool is not
+account evidence. The observer is per pane, uses private temporary files, and
+does not copy tokens, modify login state, or pin the OMP executable. Native
+integration is verified with OMP 18.22.1; installing a different version still
+uses that installed executable.
 
 In an OMP pane, MindPlayer reserves `Ctrl-X` (list), `Ctrl-Z` (zoom),
 `Tab` or `Alt-W` (next pane), `Shift-Tab` (previous pane), and `Ctrl-Q` or
@@ -413,15 +427,17 @@ session run on*:
 | <kbd>v</kbd> | inspect / explicitly bind Codex or Claude identity; confirmation rechecks the selected home |
 | <kbd>r</kbd> | rename the display label (the login home stays put) · <kbd>l</kbd> sign in again · <kbd>d</kbd> off · <kbd>x</kbd> erase login (twice) |
 
-Exactly one account per provider is *in use*, so the choice never depends on
-list order. The footer keeps one line per provider — the account a new session
-would take — and the rest live here.
+For MindPlayer-managed accounts, exactly one account per provider is *in use*,
+so the launch choice never depends on list order. Usage for different accounts
+occupies separate footer rows. OMP manages its own native credential pool instead
+of using these account slots.
 
-**Sessions stay with the login that made them.** A transcript only exists in
-that account's home, so resuming always goes back to it, and the list marks a
-session with its account name only when that is *not* the one in use. To carry
-a conversation to another login, hand it over with <kbd>h</kbd> — that starts a
-new session there with the previous context.
+**Sessions stay with the login that made them.** Codex and Claude resumes use
+the source account's home; a successful verified launch binds the pane to that
+account label. The list shows the account even when the provider has only one
+login. OMP instead displays its observed native response account as described
+above. To carry a conversation to another login, hand it over with <kbd>h</kbd>
+— that starts a new session there with the previous context.
 
 **Two caveats.** Claude and Cursor keep their usage credential in the macOS
 Keychain, one per machine, and that one belongs to the login this machine came
@@ -650,6 +666,7 @@ mindplayer/
 
 ```bash
 cargo test --all
+node --test crates/mindplayer-tui/tests/omp_account.test.mjs
 cargo clippy --all-targets -- -D warnings
 cargo fmt --all --check
 ```

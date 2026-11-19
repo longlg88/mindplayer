@@ -22,6 +22,8 @@ jobs:
           node-version: 22
       - name: router regressions (no provider credentials or inference)
         run: node --test --test-concurrency=1 tools/local-model-router/*.test.mjs
+      - name: native OMP account regressions
+        run: node --test crates/mindplayer-tui/tests/omp_account.test.mjs
 
   commit-lint:
     name: commit messages (Conventional Commits)

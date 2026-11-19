@@ -222,6 +222,8 @@ fn cursor_report_tail(bytes: &[u8]) -> TerminalReplyPrefix {
 pub struct PtySession {
     /// Keeps the embedded OMP extension available for the pane's lifetime.
     _omp_picker: Option<mindplayer_core::resume::OmpPickerFile>,
+    /// Native credential observations and their private per-launch files.
+    omp_account: Option<crate::omp_account::OmpAccount>,
     /// vt100 screen state, updated by the reader thread.
     parser: Arc<Mutex<vt100::Parser>>,
     /// Set by the reader thread when new output arrives, so the UI only redraws
@@ -329,6 +331,8 @@ impl PtySession {
         let mut cmd = crate::local_router::prepare(cmd)?;
         let omp_picker = mindplayer_core::resume::OmpPickerFile::prepare(&mut cmd)
             .map_err(|error| anyhow::anyhow!("could not prepare OMP model picker: {error}"))?;
+        let omp_account = crate::omp_account::OmpAccount::prepare(&mut cmd)
+            .map_err(|error| anyhow::anyhow!("could not prepare OMP account observer: {error}"))?;
         let rows = rows.max(1);
         let cols = cols.max(1);
         let pty_system = native_pty_system();
@@ -478,6 +482,7 @@ impl PtySession {
 
         Ok(Self {
             _omp_picker: omp_picker,
+            omp_account,
             parser,
             dirty,
             seq,
@@ -496,6 +501,20 @@ impl PtySession {
             rows,
             cols,
         })
+    }
+
+    /// Cached native OMP identity; rendering never reads sideband files.
+    pub fn omp_account_label(&self) -> Option<&str> {
+        self.omp_account
+            .as_ref()
+            .and_then(|account| account.label())
+    }
+
+    /// Refresh the account observer through the application's existing poll gate.
+    pub fn poll_omp_account(&mut self) -> bool {
+        self.omp_account
+            .as_mut()
+            .is_some_and(|account| account.poll())
     }
 
     /// Returns true (and resets) if the screen changed since the last check.

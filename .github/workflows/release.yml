@@ -32,6 +32,8 @@ jobs:
           node-version: 22
       - name: offline router regressions
         run: node --test --test-concurrency=1 tools/local-model-router/*.test.mjs
+      - name: native OMP account regressions
+        run: node --test crates/mindplayer-tui/tests/omp_account.test.mjs
       - run: cargo fmt --all --check
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test --manifest-path crates/vt100-mp/Cargo.toml

@@ -697,6 +697,7 @@ impl App {
         let account = session
             .as_ref()
             .map(|session| self.account_of_session(session));
+        let mut verified_account = None;
         // All new/resume/handoff paths share a required asynchronous live
         // account check. Login itself is exempt, never conversation execution.
         if !id.starts_with(super::accounts_panel::LOGIN_PREFIX)
@@ -730,6 +731,7 @@ impl App {
                 return;
             };
             pending = verified;
+            verified_account = Some(account);
         }
         // Replace only a previous (ended) PTY for this same id.
         if let Some(mut old) = self.ptys.remove(&id) {
@@ -771,6 +773,10 @@ impl App {
             .unwrap_or((self.pty_rows, self.pty_cols));
         match PtySession::spawn(&pending.command, &id, rows, cols) {
             Ok(pty) => {
+                if let Some(account) = verified_account {
+                    self.pane_accounts
+                        .insert(id.clone(), (account.provider, account.name));
+                }
                 if let Some(input) = pending.initial_input {
                     self.pending_initial_inputs.insert(
                         id.clone(),

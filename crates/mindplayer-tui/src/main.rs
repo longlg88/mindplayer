@@ -9,6 +9,7 @@ mod links;
 mod local_router;
 mod mascot;
 mod observe;
+mod omp_account;
 mod pty;
 mod render_writer;
 mod terminal_view;

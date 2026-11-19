@@ -344,7 +344,7 @@ impl App {
             .then(|| source.id.clone())
     }
 
-    fn is_unique_runtime_source(&self, source: &Session) -> bool {
+    pub(super) fn is_unique_runtime_source(&self, source: &Session) -> bool {
         let mut candidates = self
             .all_sessions
             .iter()
@@ -519,6 +519,9 @@ impl App {
         for id in &live_ids {
             if self.ended.contains(id) {
                 continue;
+            }
+            if let Some(pty) = self.ptys.get_mut(id) {
+                changed |= pty.poll_omp_account();
             }
             if let Some(file) = self.codex_rollout_file(id).map(Path::to_path_buf) {
                 if self.codex_turns.get(id).is_none_or(|r| r.file() != file) {

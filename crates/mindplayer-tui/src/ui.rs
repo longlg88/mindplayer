@@ -1425,7 +1425,7 @@ fn session_list(f: &mut Frame, app: &mut App, area: Rect, now: DateTime<Utc>) {
                 app.visible_aggregate.session_count(),
                 app.live_pty_count(),
                 if all_saved {
-                    " · all saved in this instance"
+                    " · no sessions open here"
                 } else {
                     ""
                 },
@@ -1438,10 +1438,14 @@ fn session_list(f: &mut Frame, app: &mut App, area: Rect, now: DateTime<Utc>) {
     let show_provider = area.width >= 40;
     let mut show_id = area.width >= 58;
     let mut show_age = show_provider;
-    let mut account_width = account_marks
-        .as_ref()
-        .filter(|_| show_provider)
-        .map_or(0, |m| m.width() + 1);
+    let mut account_width = if show_provider {
+        account_marks
+            .as_ref()
+            .map_or("unverified".len(), |m| m.width())
+            + 1
+    } else {
+        0
+    };
     let mut status_width = if all_saved || !show_provider { 0 } else { 10 };
     let mut metadata_width = 2
         + usize::from(show_provider) * 7
@@ -1570,7 +1574,7 @@ fn session_list(f: &mut Frame, app: &mut App, area: Rect, now: DateTime<Utc>) {
                 SessionStatus::Completed => ("✓ done   ", COMPLETED_BORDER, true),
                 SessionStatus::Idle => ("○ idle   ", UNCATEGORIZED_BORDER, false),
                 SessionStatus::Ended => ("○ ended  ", ENDED_BORDER, false),
-                SessionStatus::Inactive => ("  saved  ", DIM, false),
+                SessionStatus::Inactive => (" not open", DIM, false),
             };
             let mut badge_style = Style::default().fg(badge_color);
             if badge_bold {
@@ -1698,7 +1702,12 @@ fn session_list(f: &mut Frame, app: &mut App, area: Rect, now: DateTime<Utc>) {
                 spans.push(Span::styled(cwd, Style::default().fg(DIM)));
             }
             spans.push(Span::raw("  "));
-            spans.push(account_cell(account_marks.as_ref(), s, account_width));
+            spans.push(account_cell(
+                account_marks.as_ref(),
+                s,
+                account_width,
+                app.omp_account_label_for_source(s),
+            ));
             if status_width > 0 {
                 let label = if status_width == 2 {
                     format!("{} ", badge.chars().next().unwrap_or(' '))
@@ -2489,16 +2498,26 @@ fn render_pane(
                 .fg(pane_border_color(app, sid, ended))
                 .add_modifier(weight),
         );
-    let codex_pane = pane_provider(app, sid) == Some(Agent::Codex);
-    if codex_pane {
+    if let Some(provider) = pane_provider(app, sid) {
         // Use the existing bottom border: the account stays visible without taking
         // native terminal rows or competing with status/counts in the top title.
         let label = truncate_pane_account_label(
-            app.pane_account_label(sid).unwrap_or("계정 미확인"),
-            usize::from(pane_area.width.saturating_sub(12)),
+            if provider == Agent::Omp {
+                app.ptys
+                    .get(sid)
+                    .and_then(|pty| pty.omp_account_label())
+                    .unwrap_or("계정 미확인")
+            } else {
+                app.pane_account_label(sid).unwrap_or("계정 미확인")
+            },
+            usize::from(
+                pane_area
+                    .width
+                    .saturating_sub(7 + provider.as_str().len() as u16),
+            ),
         );
         block = block.title_bottom(Line::styled(
-            format!(" codex · {label} "),
+            format!(" {} · {label} ", provider.as_str()),
             Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
         ));
     }
@@ -3063,26 +3082,33 @@ fn truncate_cells(text: &str, max: usize) -> String {
     out
 }
 
-/// The account column: the login's name on rows of a provider with several, blank padding on the rest, nothing when no provider has a second login.
+/// Managed source labels and observed native OMP identities share one column.
 fn account_cell(
     marks: Option<&crate::app::accounts_panel::AccountMarks>,
     s: &Session,
     allocated_width: usize,
+    omp_label: Option<&str>,
 ) -> Span<'static> {
-    let Some(marks) = marks else {
-        return Span::raw("");
-    };
     if allocated_width == 0 {
         return Span::raw("");
     }
     let width = allocated_width - 1;
-    match marks.label_for(s) {
+    let account = if s.agent == Agent::Omp {
+        Some((omp_label.unwrap_or("unverified"), 0))
+    } else {
+        marks.and_then(|marks| marks.label_for(s))
+    };
+    match account {
         Some((name, tone)) => {
             let label = truncate_cells(name, width);
             let padding = width.saturating_sub(Span::raw(&label).width()) + 1;
             Span::styled(
                 format!("{label}{}", " ".repeat(padding)),
-                Style::default().fg(ACCOUNT_TONES[tone % ACCOUNT_TONES.len()]),
+                Style::default().fg(if s.agent == Agent::Omp && omp_label.is_none() {
+                    DIM
+                } else {
+                    ACCOUNT_TONES[tone % ACCOUNT_TONES.len()]
+                }),
             )
         }
         None => Span::raw(" ".repeat(width + 1)),
@@ -3521,11 +3547,6 @@ mod tests {
             app.rebuild_visible();
             let buffer = list_frame(&mut app, 8);
             let row = list_title_row(&buffer, "saved-source");
-            assert!(frame_text(&buffer).contains("all saved in this instance"));
-            assert!(
-                !row.split_whitespace().any(|word| word == "saved"),
-                "saved is contextual, not repeated: {row}"
-            );
             for live in ["working", "idle", "blocked", "done", "ended"] {
                 assert!(!row.contains(live), "unowned source claims {live}: {row}");
             }
@@ -3594,10 +3615,6 @@ mod tests {
         let buffer = list_frame(&mut fixture.app, 8);
         for title in ["owned-source", "collision-source"] {
             let row = list_title_row(&buffer, title);
-            assert!(
-                row.contains("saved"),
-                "ambiguous ownership must remain saved: {row}"
-            );
             assert!(
                 !row.contains("ended"),
                 "collision borrowed live status: {row}"
@@ -3706,8 +3723,8 @@ mod tests {
             marks.label_for(&app.all_sessions[1]).unwrap().0,
             "personal-account-full"
         );
-        let first = account_cell(Some(&marks), &app.all_sessions[0], marks.width() + 1);
-        let second = account_cell(Some(&marks), &app.all_sessions[1], marks.width() + 1);
+        let first = account_cell(Some(&marks), &app.all_sessions[0], marks.width() + 1, None);
+        let second = account_cell(Some(&marks), &app.all_sessions[1], marks.width() + 1, None);
         assert_eq!(first.width(), second.width());
         assert_eq!(first.width(), marks.width() + 1);
         assert!(first.content.contains("업무-계정"));
@@ -4128,6 +4145,28 @@ mod tests {
             rendered_row(terminal.backend().buffer(), 0),
             rendered_row(terminal.backend().buffer(), 7),
         )
+    }
+
+    #[test]
+    fn a_single_claude_account_is_visible_in_list_and_owned_panes() {
+        use mindplayer_core::accounts::Account;
+        let mut app = pane_account_app();
+        let mut account = Account::inherited(Agent::Claude);
+        account.name = "claude-work".into();
+        app.accounts = vec![account.clone()];
+        for session in &mut app.all_sessions {
+            session.agent = Agent::Claude;
+            app.pane_accounts
+                .insert(session.id.clone(), (Agent::Claude, account.name.clone()));
+        }
+        app.rebuild_visible();
+        let text = frame_text(&list_frame(&mut app, 12));
+        assert_eq!(text.matches(&account.name).count(), 2, "{text}");
+        for zoomed in [false, true] {
+            let (_, border) = pane_account_borders(&mut app, 80, zoomed);
+            assert!(border.contains(&account.name), "{border}");
+            assert!(!border.contains("codex"), "{border}");
+        }
     }
 
     #[test]

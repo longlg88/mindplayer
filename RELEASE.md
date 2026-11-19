@@ -82,6 +82,16 @@ the resulting minimum version.)
 
 ### Unreleased
 
+- **2.1.0:** show Claude account labels even with one configured account and
+  bind verified launch identities to their panes. Observe native OMP response
+  credentials for OAuth account/workspace or API-key ID display; revoke stale
+  attribution on account, model, or session changes without copying tokens or
+  pinning the installed OMP executable. Unobserved identities remain unverified.
+- Replace ambiguous `saved` status with `not open`, and use
+  `no sessions open here` when no sessions are open in this instance.
+- Add native OMP identity-transition coverage and offline observer regressions
+  to CI and release checks.
+
 - **2.0.1:** keep one temporary session row across catalog refreshes and replace
   it when the native transcript is discovered. Preserve selection through adoption
   so an immediate close targets the intended session rather than its neighbor.

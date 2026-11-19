@@ -485,7 +485,7 @@ fn the_footer_groups_each_platform() {
     );
 }
 
-/// The session list's account column, as drawn: every row of a provider with two logins names its own, a lone provider leaves the cell blank.
+/// Each session row keeps its own account; differing working directories remain visible.
 #[test]
 fn the_session_list_names_each_rows_account() {
     let mut app = app_on_main();
@@ -526,7 +526,6 @@ fn the_session_list_names_each_rows_account() {
             && !second_line.split_whitespace().any(|cell| cell == kept.name),
         "{screen}"
     );
-    assert!(!line("lone-row").contains(&kept.name) && !line("lone-row").contains("other"));
     assert!(
         !screen.contains("projdir"),
         "one directory on every row was drawn anyway:\n{screen}"

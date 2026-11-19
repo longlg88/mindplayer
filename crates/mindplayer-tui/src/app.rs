@@ -543,7 +543,7 @@ pub struct App {
     /// asked this run so the question is put once rather than every refresh.
     pub(crate) unusable_prompt: Option<mindplayer_core::accounts::Account>,
     pub(crate) unusable_asked: HashSet<String>,
-    /// Which account each pane was started on, for the panes that have no transcript to say so yet.
+    /// Selected launch ownership, pinned for verified panes independently of transcript discovery.
     pub(crate) pane_accounts: HashMap<String, (Agent, String)>,
     /// Reported unavailable, and waiting for a moment when asking cannot take a key meant for something else.
     pub(crate) unusable_waiting: Vec<mindplayer_core::accounts::Account>,
@@ -983,9 +983,13 @@ impl App {
         // A stopped pane's native ID may also occur in another account's
         // archive. Only a live owner or a not-yet-persisted placeholder can
         // override the selected transcript's source-account provenance.
-        if let Some((provider, name)) = self.pane_accounts.get(&session.id).filter(|_| {
-            mindplayer_core::session::is_synthetic_id(&session.id) || self.is_running(&session.id)
-        }) {
+        if let Some((provider, name)) =
+            self.pane_accounts.get(&session.id).filter(|(provider, _)| {
+                *provider == session.agent
+                    && (mindplayer_core::session::is_synthetic_id(&session.id)
+                        || self.is_running(&session.id))
+            })
+        {
             if let Some(account) = self
                 .accounts
                 .iter()
@@ -1005,10 +1009,13 @@ impl App {
     /// Display ownership proven by a launch binding or a matching transcript root.
     /// An unmatched session must not borrow the provider's default account label.
     pub(crate) fn pane_account_label(&self, sid: &str) -> Option<&str> {
-        if let Some((_, name)) = self.pane_accounts.get(sid) {
-            return Some(name);
+        let session = self.all_sessions.iter().find(|session| session.id == sid);
+        if let Some((provider, name)) = self.pane_accounts.get(sid) {
+            if session.is_none_or(|session| session.agent == *provider) {
+                return Some(name);
+            }
         }
-        let session = self.all_sessions.iter().find(|session| session.id == sid)?;
+        let session = session?;
         if !session.file.is_absolute()
             || session
                 .file
@@ -1039,6 +1046,14 @@ impl App {
             }
         }
         label
+    }
+
+    /// Only the uniquely owned source may display its live OMP credential.
+    pub(crate) fn omp_account_label_for_source(&self, session: &Session) -> Option<&str> {
+        if session.agent != Agent::Omp || !self.is_unique_runtime_source(session) {
+            return None;
+        }
+        self.ptys.get(&session.id)?.omp_account_label()
     }
 
     /// Every usable login of each provider, the one a new pane would start on leading.

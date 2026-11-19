@@ -2562,6 +2562,27 @@ pub fn claude_limits_in(
 /// Keychain item also holds unrelated `mcpOAuth` entries for MCP servers; those
 /// are not subscription tokens and must not be sent to `/api/oauth/usage`.
 fn claude_token_in(config_dir: &Path, fallback: KeychainFallback) -> Result<String, ProbeError> {
+    claude_token_with(config_dir, fallback, slot_vault_token)
+}
+
+/// The login a slot keeps in its own path-keyed Keychain service, for a slot under the real home.
+fn slot_vault_token(config_dir: &Path) -> Option<Result<String, ProbeError>> {
+    #[cfg(target_os = "macos")]
+    if std::env::var_os("HOME").is_some_and(|home| config_dir.starts_with(Path::new(&home))) {
+        let deadline = std::time::Instant::now() + Duration::from_secs(4);
+        return Some(crate::claude_auth::subscription_token(
+            config_dir, false, deadline,
+        ));
+    }
+    let _ = config_dir;
+    None
+}
+
+fn claude_token_with(
+    config_dir: &Path,
+    fallback: KeychainFallback,
+    slot_vault: impl FnOnce(&Path) -> Option<Result<String, ProbeError>>,
+) -> Result<String, ProbeError> {
     let signed_out = |detail: &str| ProbeError::new(FailureKind::SignIn, detail);
     let file = config_dir.join(".credentials.json");
     if let Ok(raw) = std::fs::read_to_string(&file) {
@@ -2570,9 +2591,11 @@ fn claude_token_in(config_dir: &Path, fallback: KeychainFallback) -> Result<Stri
         }
     }
     if fallback == KeychainFallback::Refuse {
-        return Err(signed_out(
-            "this account keeps no credentials of its own yet",
-        ));
+        return slot_vault(config_dir).unwrap_or_else(|| {
+            Err(signed_out(
+                "this account keeps no credentials of its own yet",
+            ))
+        });
     }
     // The login Keychain is machine-global, so it is the right fallback only
     // when this really is the user's own config directory. A caller pointing at
@@ -3986,6 +4009,32 @@ sleep 10
             err.detail, "this account keeps no credentials of its own yet",
             "{err}"
         );
+    }
+
+    #[test]
+    fn an_account_of_its_own_reads_only_its_own_vault() {
+        let slot = std::env::temp_dir().join(format!("mp-slot-vault-{}", std::process::id()));
+        std::fs::create_dir_all(&slot).unwrap();
+        let asked = std::cell::RefCell::new(Vec::new());
+        let token = claude_token_with(&slot, KeychainFallback::Refuse, |dir| {
+            asked.borrow_mut().push(dir.to_path_buf());
+            Some(Ok("slot-token".into()))
+        });
+        assert_eq!(token.ok().as_deref(), Some("slot-token"));
+        assert_eq!(asked.into_inner(), vec![slot.clone()]);
+
+        let refused = claude_token_with(&slot, KeychainFallback::Refuse, |_| {
+            Some(Err(ProbeError::new(FailureKind::SignIn, "slot signed out")))
+        })
+        .unwrap_err();
+        assert_eq!(refused.kind, FailureKind::SignIn);
+        assert_eq!(refused.detail, "slot signed out");
+
+        let machine = claude_token_with(&slot.join(".claude"), KeychainFallback::Allow, |_| {
+            panic!("the machine login has no slot vault")
+        })
+        .unwrap_err();
+        assert_eq!(machine.detail, "no subscription OAuth token found");
     }
 
     #[test]

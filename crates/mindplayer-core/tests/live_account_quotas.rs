@@ -39,6 +39,39 @@ fn live_codex_required_identity_checks() {
 }
 
 #[test]
+#[ignore = "reads real signed-in Claude accounts; prints only labels and whether a gauge was read"]
+fn live_claude_account_rows() {
+    let home = std::env::var_os("MINDPLAYER_LIVE_ACCOUNTS_HOME")
+        .or_else(|| std::env::var_os("HOME"))
+        .map(PathBuf::from)
+        .expect("HOME or MINDPLAYER_LIVE_ACCOUNTS_HOME");
+    let accounts: Vec<_> = load_accounts(&home)
+        .into_iter()
+        .filter(|account| account.provider == Agent::Claude && !account.disabled)
+        .collect();
+    assert!(!accounts.is_empty(), "no enabled Claude accounts");
+    for account in &accounts {
+        let rows = limits::account_quota_rows(account, &home);
+        assert!(!rows.is_empty(), "no reading for {}", account.name);
+        for row in &rows {
+            println!(
+                "{} inherited={}: {} gauge={} failure={:?}",
+                account.name,
+                account.is_inherited(),
+                row.label,
+                row.used_percent.is_some(),
+                row.failure
+            );
+        }
+        assert!(
+            rows.iter().all(|row| row.failure.is_none()),
+            "probe failed for {}",
+            account.name
+        );
+    }
+}
+
+#[test]
 #[ignore = "reads real signed-in Codex accounts; no raw email, token, or workspace ID is printed"]
 fn live_codex_account_rows() {
     let home = std::env::var_os("MINDPLAYER_LIVE_ACCOUNTS_HOME")

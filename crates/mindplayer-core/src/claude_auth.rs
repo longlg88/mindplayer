@@ -288,7 +288,7 @@ fn read_small(path: &Path) -> Result<Option<Vec<u8>>, ProbeError> {
     Ok(Some(bytes))
 }
 
-fn subscription_token(
+pub(crate) fn subscription_token(
     config_dir: &Path,
     inherited: bool,
     deadline: Instant,

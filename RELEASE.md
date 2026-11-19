@@ -82,6 +82,14 @@ the resulting minimum version.)
 
 ### Unreleased
 
+- **2.1.1:** show each session row's own activity time. A handoff thread still
+  sorts by its newest lane, but the original session and its handoff no longer
+  share one displayed time.
+- Explain a refused account name inside the name box, and let a label-only
+  rename proceed while panes are open on that account.
+- Read a second Claude account's usage from that account's own Keychain entry,
+  so a signed-in account no longer shows `sign-in needed`.
+
 - **2.1.0:** show Claude account labels even with one configured account and
   bind verified launch identities to their panes. Observe native OMP response
   credentials for OAuth account/workspace or API-key ID display; revoke stale

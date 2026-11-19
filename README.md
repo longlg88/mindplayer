@@ -439,12 +439,14 @@ login. OMP instead displays its observed native response account as described
 above. To carry a conversation to another login, hand it over with <kbd>h</kbd>
 — that starts a new session there with the previous context.
 
-**Two caveats.** Claude and Cursor keep their usage credential in the macOS
-Keychain, one per machine, and that one belongs to the login this machine came
-with — so a second account of either runs its sessions normally but shows no
-usage figure rather than borrowing the first one's. And nothing is ever copied
-between accounts: a duplicated login refreshes its token and locks the original
-holder out, which is a failure neither side can explain.
+**Two caveats.** Cursor keeps its usage credential in the macOS Keychain, one
+per machine, and that one belongs to the login this machine came with — so a
+second Cursor account runs its sessions normally but shows no usage figure
+rather than borrowing the first one's. A second Claude account keeps its login
+in a Keychain entry of its own, keyed to that account's home, and its usage is
+read from there. And nothing is ever copied between accounts: a duplicated
+login refreshes its token and locks the original holder out, which is a failure
+neither side can explain.
 
 ## 🧠 How it works
 

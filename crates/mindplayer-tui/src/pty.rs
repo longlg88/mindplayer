@@ -510,6 +510,11 @@ impl PtySession {
             .and_then(|account| account.label())
     }
 
+    /// The response account and transcript the observer last reported.
+    pub(crate) fn omp_account_observation(&self) -> Option<&crate::omp_account::Observation> {
+        self.omp_account.as_ref()?.observation()
+    }
+
     /// Refresh the account observer through the application's existing poll gate.
     pub fn poll_omp_account(&mut self) -> bool {
         self.omp_account

@@ -1,4 +1,4 @@
-//! Per-launch, token-free observations from the native OMP credential attempt.
+//! Per-launch, token-free observations of the account and transcript a native OMP response used.
 
 use mindplayer_core::resume::Command;
 use serde::Deserialize;
@@ -15,9 +15,27 @@ const SCHEMA: &str = "mindplayer.omp-account.v1";
 const MAX_BYTES: usize = 8192;
 const MAX_IDENTIFIER_BYTES: usize = 256;
 const MAX_METADATA_BYTES: usize = 512;
+const MAX_SOURCE_BYTES: usize = 2048;
 const MAX_CREDENTIAL_ID: u64 = 9_007_199_254_740_991;
 const FILE_ENV: &str = "MINDPLAYER_OMP_ACCOUNT_FILE";
 const LAUNCH_ENV: &str = "MINDPLAYER_OMP_ACCOUNT_LAUNCH_ID";
+
+/// The account the launch's own OMP main session last answered with.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct Observation {
+    pub(crate) session_id: String,
+    pub(crate) source_file: Option<PathBuf>,
+    pub(crate) label: String,
+}
+
+impl Observation {
+    /// Stores this response account under its transcript; true when the state changed.
+    pub(crate) fn store(&self, state: &mut mindplayer_core::State) -> bool {
+        self.source_file
+            .as_deref()
+            .is_some_and(|file| state.record_omp_account(&self.session_id, file, &self.label))
+    }
+}
 
 #[derive(Debug)]
 pub(crate) struct OmpAccount {
@@ -25,7 +43,8 @@ pub(crate) struct OmpAccount {
     file: PathBuf,
     launch_id: String,
     previous: Vec<u8>,
-    label: Option<String>,
+    observation: Option<Observation>,
+    unresolved_source: Option<PathBuf>,
 }
 
 impl OmpAccount {
@@ -59,7 +78,8 @@ impl OmpAccount {
             directory,
             launch_id,
             previous: Vec::new(),
-            label: None,
+            observation: None,
+            unresolved_source: None,
         };
         let extension = tracker.directory.join("omp_account.js");
         let extension_arg = utf8_path(&extension)?.to_owned();
@@ -84,7 +104,13 @@ impl OmpAccount {
     }
 
     pub(crate) fn label(&self) -> Option<&str> {
-        self.label.as_deref()
+        self.observation
+            .as_ref()
+            .map(|observation| observation.label.as_str())
+    }
+
+    pub(crate) fn observation(&self) -> Option<&Observation> {
+        self.observation.as_ref()
     }
 
     /// Called only by the application's bounded, interval-gated pane poll.
@@ -95,21 +121,38 @@ impl OmpAccount {
             Ok(len) => {
                 let bytes = &bytes[..len];
                 if bytes == self.previous {
-                    return false;
+                    return self.resolve_source();
                 }
                 self.previous.clear();
                 self.previous.extend_from_slice(bytes);
-                observed_label(bytes, &self.launch_id)
+                observed(bytes, &self.launch_id)
             }
             Err(_) => {
                 self.previous.clear();
                 None
             }
         };
-        if next == self.label {
+        let previous = self.observation.take();
+        (self.observation, self.unresolved_source) = match next {
+            Some((observation, source)) => (Some(observation), source),
+            None => (None, None),
+        };
+        self.resolve_source();
+        self.observation != previous
+    }
+
+    /// Binds the reported transcript once it exists, in the spelling discovery uses.
+    fn resolve_source(&mut self) -> bool {
+        let (Some(observation), Some(reported)) =
+            (self.observation.as_mut(), self.unresolved_source.as_ref())
+        else {
             return false;
-        }
-        self.label = next;
+        };
+        let Ok(file) = fs::canonicalize(reported) else {
+            return false;
+        };
+        observation.source_file = Some(file);
+        self.unresolved_source = None;
         true
     }
 
@@ -148,6 +191,7 @@ struct Report {
     schema: String,
     launch_id: String,
     session_id: String,
+    source_file: Option<PathBuf>,
     state: State,
     provider: Option<String>,
     model: Option<String>,
@@ -176,12 +220,14 @@ enum Kind {
     Credential,
 }
 
-fn observed_label(bytes: &[u8], launch_id: &str) -> Option<String> {
+/// The response account, and the transcript path as OMP spelled it.
+fn observed(bytes: &[u8], launch_id: &str) -> Option<(Observation, Option<PathBuf>)> {
     let report: Report = serde_json::from_slice(bytes).ok()?;
     if report.schema != SCHEMA
         || report.launch_id != launch_id
         || !identifier(&report.session_id)
         || !matches!(report.state, State::Observed)
+        || report.source_file.as_deref().is_some_and(unusable_source)
         || [
             &report.email,
             &report.account_id,
@@ -222,7 +268,24 @@ fn observed_label(bytes: &[u8], launch_id: &str) -> Option<String> {
             }
         }
     };
-    Some(format!("{identity} · {provider}"))
+    Some((
+        Observation {
+            session_id: report.session_id,
+            source_file: None,
+            label: format!("{identity} · {provider}"),
+        },
+        report.source_file,
+    ))
+}
+
+fn unusable_source(file: &Path) -> bool {
+    !file.is_absolute()
+        || file
+            .components()
+            .any(|part| part == std::path::Component::ParentDir)
+        || file.to_str().is_none_or(|value| {
+            value.len() > MAX_SOURCE_BYTES || value.chars().any(unsafe_character)
+        })
 }
 
 fn identifier(value: &str) -> bool {
@@ -397,9 +460,136 @@ mod tests {
         value["email"] = json!("person\u{202e}@example.test\n\u{001b}");
         value["orgName"] = json!("Work\u{2066}space\r");
         assert_eq!(
-            observed_label(&serde_json::to_vec(&value).unwrap(), &tracker.launch_id),
+            observed(&serde_json::to_vec(&value).unwrap(), &tracker.launch_id)
+                .map(|(observation, _)| observation.label),
             Some("person@example.test · Workspace · anthropic".into())
         );
+    }
+
+    #[test]
+    fn an_observed_report_binds_the_account_to_the_resolved_transcript() {
+        let mut tracker = tracker();
+        let real = tracker.directory.join("real");
+        fs::create_dir(&real).unwrap();
+        std::os::unix::fs::symlink(&real, tracker.directory.join("link")).unwrap();
+        fs::write(real.join("native.jsonl"), b"").unwrap();
+        let mut value = report(&tracker);
+        value["sourceFile"] = json!(tracker.directory.join("link/native.jsonl"));
+        publish(&tracker, &value);
+        assert!(tracker.poll());
+        let observation = tracker.observation().unwrap();
+        assert_eq!(observation.session_id, "native-session-id");
+        assert_eq!(
+            observation.label,
+            "person@example.test · Workspace · anthropic"
+        );
+        assert_eq!(
+            observation.source_file,
+            Some(fs::canonicalize(real.join("native.jsonl")).unwrap())
+        );
+        assert!(!tracker.poll());
+    }
+
+    #[test]
+    fn a_transcript_written_after_the_report_is_bound_without_a_new_report() {
+        let mut tracker = tracker();
+        let file = tracker.directory.join("late.jsonl");
+        let mut value = report(&tracker);
+        value["sourceFile"] = json!(file);
+        publish(&tracker, &value);
+        assert!(tracker.poll());
+        assert_eq!(
+            tracker.label(),
+            Some("person@example.test · Workspace · anthropic")
+        );
+        assert_eq!(tracker.observation().unwrap().source_file, None);
+        assert!(!tracker.poll());
+        fs::write(&file, b"").unwrap();
+        assert!(tracker.poll());
+        assert_eq!(
+            tracker.observation().unwrap().source_file,
+            Some(fs::canonicalize(&file).unwrap())
+        );
+        assert!(!tracker.poll());
+    }
+
+    #[test]
+    fn a_moved_transcript_is_a_change_even_when_the_account_is_the_same() {
+        let mut tracker = tracker();
+        let first = tracker.directory.join("first.jsonl");
+        let second = tracker.directory.join("second.jsonl");
+        fs::write(&first, b"").unwrap();
+        fs::write(&second, b"").unwrap();
+        let mut value = report(&tracker);
+        value["sourceFile"] = json!(first);
+        publish(&tracker, &value);
+        assert!(tracker.poll());
+        value["sourceFile"] = json!(second);
+        publish(&tracker, &value);
+        assert!(tracker.poll());
+        assert_eq!(
+            tracker.observation().unwrap().source_file,
+            Some(fs::canonicalize(&second).unwrap())
+        );
+        value.as_object_mut().unwrap().remove("sourceFile");
+        publish(&tracker, &value);
+        assert!(tracker.poll());
+        assert_eq!(tracker.observation().unwrap().source_file, None);
+        assert_eq!(
+            tracker.label(),
+            Some("person@example.test · Workspace · anthropic")
+        );
+    }
+
+    #[test]
+    fn a_report_without_a_response_or_with_an_unusable_transcript_binds_nothing() {
+        let mut tracker = tracker();
+        let file = tracker.directory.join("native.jsonl");
+        fs::write(&file, b"").unwrap();
+        let mut valid = report(&tracker);
+        valid["sourceFile"] = json!(file);
+        for state in ["unresolved", "unsupported"] {
+            publish(&tracker, &valid);
+            assert!(tracker.poll(), "restore before {state}");
+            assert!(tracker.observation().is_some());
+            let mut waiting = valid.clone();
+            waiting["state"] = json!(state);
+            publish(&tracker, &waiting);
+            assert!(tracker.poll(), "clear after {state}");
+            assert!(tracker.observation().is_none(), "{state}");
+        }
+        for unusable in [
+            json!("relative.jsonl"),
+            json!("/fixture/../other.jsonl"),
+            json!("/fixture/\nspoof.jsonl"),
+            json!(format!("/{}", "x".repeat(MAX_SOURCE_BYTES))),
+            json!(7),
+        ] {
+            publish(&tracker, &valid);
+            assert!(tracker.poll(), "restore before {unusable}");
+            let mut invalid = valid.clone();
+            invalid["sourceFile"] = unusable.clone();
+            publish(&tracker, &invalid);
+            assert!(tracker.poll(), "clear after {unusable}");
+            assert!(tracker.observation().is_none(), "{unusable}");
+            assert_eq!(tracker.label(), None, "{unusable}");
+        }
+    }
+
+    #[test]
+    fn a_response_account_is_stored_only_once_its_transcript_is_bound() {
+        let mut state = mindplayer_core::State::default();
+        let mut observation = Observation {
+            session_id: "native-session-id".into(),
+            source_file: None,
+            label: "person@example.test · Workspace · anthropic".into(),
+        };
+        assert!(!observation.store(&mut state));
+        assert!(state.omp_account_sources.is_empty());
+        observation.source_file = Some(PathBuf::from("/fixture/omp/native.jsonl"));
+        assert!(observation.store(&mut state));
+        assert!(!observation.store(&mut state));
+        assert_eq!(state.omp_account_sources["native-session-id"].len(), 1);
     }
 
     #[test]

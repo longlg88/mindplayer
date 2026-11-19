@@ -31,12 +31,13 @@ export default function mindplayerAccount(pi) {
     lastPayload = undefined;
   }
 
-  function publish(sessionId, state, fields = {}) {
-    if (!sessionId) {
+  function publish(target, state, fields = {}) {
+    if (!target?.sessionId) {
       remove();
       return;
     }
-    const payload = JSON.stringify({ schema: SCHEMA, launchId, sessionId, state, ...fields });
+    const { sessionId, sourceFile } = target;
+    const payload = JSON.stringify({ schema: SCHEMA, launchId, sessionId, sourceFile, state, ...fields });
     if (payload === lastPayload) return;
     if (Buffer.byteLength(payload, "utf8") > MAX_BYTES) {
       remove();
@@ -57,8 +58,10 @@ export default function mindplayerAccount(pi) {
   }
 
   function current(ctx) {
+    const sourceFile = text(ctx.sessionManager?.getSessionFile?.(), 2048);
     return {
       sessionId: text(ctx.sessionManager?.getSessionId?.(), 256),
+      sourceFile: sourceFile?.startsWith("/") ? sourceFile : undefined,
       provider: text(ctx.model?.provider, 256),
       model: text(ctx.model?.id, 256),
     };
@@ -67,15 +70,15 @@ export default function mindplayerAccount(pi) {
   function invalidate(ctx, reason) {
     evidence = undefined;
     scope = current(ctx);
-    publish(scope.sessionId, "unresolved", { reason });
+    publish(scope, "unresolved", { reason });
   }
 
   function checkScope(ctx) {
     const next = current(ctx);
-    if (!scope || next.sessionId !== scope.sessionId || next.provider !== scope.provider || next.model !== scope.model) {
+    if (!scope || ["sessionId", "sourceFile", "provider", "model"].some((key) => next[key] !== scope[key])) {
       evidence = undefined;
       scope = next;
-      publish(scope.sessionId, "unresolved", { reason: "selection_changed" });
+      publish(scope, "unresolved", { reason: "selection_changed" });
     }
     return scope;
   }
@@ -106,14 +109,14 @@ export default function mindplayerAccount(pi) {
       mainContext = ctx;
       try {
         if (!supportedEvents) {
-          publish(current(ctx).sessionId, "unsupported", { reason: "event_api_unavailable" });
+          publish(current(ctx), "unsupported", { reason: "event_api_unavailable" });
           return;
         }
         handler(event, ctx);
       } catch {
-        let sessionId;
-        try { sessionId = current(ctx).sessionId; } catch {}
-        publish(sessionId, "unsupported", { reason: "account_api_unavailable" });
+        let failed;
+        try { failed = current(ctx); } catch {}
+        publish(failed, "unsupported", { reason: "account_api_unavailable" });
       }
     };
   }
@@ -133,14 +136,14 @@ export default function mindplayerAccount(pi) {
 
   function reset(_event, ctx) {
     invalidate(ctx, "awaiting_response");
-    if (!startTimer(ctx)) publish(scope.sessionId, "unsupported", { reason: "model_observer_unavailable" });
+    if (!startTimer(ctx)) publish(scope, "unsupported", { reason: "model_observer_unavailable" });
   }
 
   function observe(event, ctx) {
     if (event?.message?.role !== "assistant") return;
     const selected = checkScope(ctx);
     if (!startTimer(ctx)) {
-      publish(selected.sessionId, "unsupported", { reason: "model_observer_unavailable" });
+      publish(selected, "unsupported", { reason: "model_observer_unavailable" });
       return;
     }
     const message = event.message;
@@ -149,12 +152,12 @@ export default function mindplayerAccount(pi) {
     const credentialId = message.credentialId;
     if (!selected.sessionId || !provider || !model || provider !== selected.provider || model !== selected.model) {
       evidence = undefined;
-      publish(selected.sessionId, "unresolved", { reason: "message_selection_mismatch" });
+      publish(selected, "unresolved", { reason: "message_selection_mismatch" });
       return;
     }
     if (!Number.isSafeInteger(credentialId) || credentialId <= 0) {
       evidence = undefined;
-      publish(selected.sessionId, "unresolved", { reason: "credential_not_observed" });
+      publish(selected, "unresolved", { reason: "credential_not_observed" });
       return;
     }
     const pin = sticky(ctx, provider, selected.sessionId);
@@ -167,12 +170,12 @@ export default function mindplayerAccount(pi) {
 
     const auth = ctx.modelRegistry?.authStorage;
     if (typeof auth?.oauth?.accounts !== "function") {
-      publish(selected.sessionId, "unsupported", { reason: "account_api_unavailable" });
+      publish(selected, "unsupported", { reason: "account_api_unavailable" });
       return;
     }
     const accounts = auth.oauth.accounts(provider, selected.sessionId);
     if (!Array.isArray(accounts)) {
-      publish(selected.sessionId, "unsupported", { reason: "account_list_unavailable" });
+      publish(selected, "unsupported", { reason: "account_list_unavailable" });
       return;
     }
     const account = accounts.find((row) => row?.credentialId === credentialId);
@@ -187,7 +190,7 @@ export default function mindplayerAccount(pi) {
     } else if (pin?.credentialId === credentialId && pin.type === "api_key") {
       fields.kind = "api_key";
     }
-    publish(selected.sessionId, "observed", fields);
+    publish(selected, "observed", fields);
   }
 
   function on(name, handler) {

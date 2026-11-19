@@ -169,15 +169,26 @@ the sessions you already have.
 | MindPlayer itself | nothing — the installer downloads a prebuilt binary (`curl`/`wget`). Only `--build` needs **Rust**. |
 | Driving sessions | the agent CLIs you use, on `PATH`: [`codex`](https://github.com/openai/codex), [`claude`](https://docs.anthropic.com/claude-code), [`kiro-cli`](https://kiro.dev/docs/cli/), and Cursor `agent` — browsing works without them; a CLI is only needed to *resume/start* that agent |
 
+**Keeping the CLIs current.** Before a Codex, Claude or OMP session starts
+(new, resumed or handed off), MindPlayer runs that CLI's own `update` command,
+unless it already ran within the last 10 minutes. The session waits, showing
+`updating <cli>…`, for at most 90 seconds. The 10 minutes are shared by every
+MindPlayer instance on the machine. The check is fail-open: if the update fails
+or times out, the session starts on the installed version and the status line
+says so. Sign-in panes and other programs are never held. Set
+`MINDPLAYER_CLI_UPDATE=0` (or `off`, `false`) to turn this off.
+
 **2.0.0부터 설치된 CLI를 직접 실행합니다.** Codex·Claude의 새 세션, 재개,
 handoff와 로그인은 MindPlayer 프로세스가 받은 `PATH`의 `codex`·`claude`를
-각 실행 시점에 찾습니다. 별도 버전으로 고정하지 않습니다.
+각 실행 시점에 찾습니다. 별도 버전으로 고정하지 않습니다. 세션을 시작하기 전에
+MindPlayer가 해당 CLI 자신의 `update` 명령을 실행합니다.
 
 - 평소 사용하던 설치 방법으로 CLI를 업데이트하면 다음 실행부터 반영됩니다.
   같은 PATH 항목의 실행 파일 교체나 심볼릭 링크 변경에는 MindPlayer 재시작이
   필요 없습니다. PATH 환경변수 자체를 바꿨다면 MindPlayer를 다시 실행해야 합니다.
-- MindPlayer가 CLI를 자동 다운로드하거나 업데이트하지는 않습니다. 기준은
-  **현재 설치된 CLI**이며, upstream의 최신 버전 설치 여부까지 보장하지 않습니다.
+- MindPlayer가 CLI를 직접 다운로드하지는 않습니다. 업데이트는 CLI 자신의 `update`
+  명령이 하며, 실패하면 **현재 설치된 CLI**로 세션을 시작합니다. 최신 버전 설치까지는
+  보장하지 않습니다.
 - 실행 중인 pane의 프로세스는 교체하거나 종료하지 않습니다. 새 CLI를 사용하려면
   해당 세션을 새로 실행하거나 재개하세요.
 - Codex 전용 고정 빌드, 내장 Node 중계, F6 Jev 토글·라우팅 상태 표시는 제거했습니다.
@@ -266,13 +277,21 @@ live main-agent response, matched to OMP's token-free OAuth account metadata.
 The list and pane show the observed email/account and workspace when available;
 API keys show a credential ID, not an inferred person. Account/model/session
 changes revoke the old label until another response proves the identity.
-Before the first response, for unopened history, or when the installed OMP lacks
-the required extension APIs, the list says `unverified` and the pane says
-`계정 미확인`. A provider name, selected model, or first login in a pool is not
-account evidence. The observer is per pane, uses private temporary files, and
-does not copy tokens, modify login state, or pin the OMP executable. Native
-integration is verified with OMP 18.22.1; installing a different version still
-uses that installed executable.
+
+MindPlayer keeps the account of each OMP session's latest observed response in
+`~/.mindplayer/state.json`, as the same token-free label, under the native
+session ID and transcript file that OMP reported. A row whose session is
+stopped or not open shows that stored account, also after MindPlayer restarts.
+A running pane shows only what its own responses prove, so the list says
+`unverified` and the pane says `계정 미확인` between an account, model, or
+session change and the next response. A session that has not answered in a
+MindPlayer pane since 2.3.0, or whose installed OMP lacks the required
+extension APIs, has no stored account and stays `unverified`. A provider name,
+selected model, or first login in a pool is not account evidence. The observer
+is per pane, uses private temporary files, and does not copy tokens, modify
+login state, or pin the OMP executable. Native integration is verified with
+OMP 18.22.2; installing a different version still uses that installed
+executable.
 
 In an OMP pane, MindPlayer reserves `Ctrl-X` (list), `Ctrl-Z` (zoom),
 `Tab` or `Alt-W` (next pane), `Shift-Tab` (previous pane), and `Ctrl-Q` or
@@ -317,8 +336,8 @@ provider-reported user and workspace/organization before execution, using one
 shared recovery lifecycle. This is separate from quota
 availability. A matching saved binding continues without another browser login;
 missing or changed identity opens Accounts for inspection. The account name is
-only a label, not proof of identity: check the displayed email and workspace/organization
-before pressing `v` to bind. Confirmation performs another fresh read.
+only a label, not proof of identity: check the displayed email and, for Claude, the
+plan before pressing `v` to bind. Confirmation performs another fresh read.
 
 Use `l` to sign in to that exact provider home, including the shared default home.
 MindPlayer does not run logout first or copy another home's credentials. After
@@ -427,6 +446,35 @@ session run on*:
 | <kbd>v</kbd> | inspect / explicitly bind Codex or Claude identity; confirmation rechecks the selected home |
 | <kbd>r</kbd> | rename the display label (the login home stays put) · <kbd>l</kbd> sign in again · <kbd>d</kbd> off · <kbd>x</kbd> erase login (twice) |
 
+**Which organization a Claude login lands on.** One Claude login belongs to one
+organization, for example a Team organization or a personal Max plan. The browser
+signs in to whichever organization it currently shows, so a login can silently
+land on the wrong one. Each Claude row therefore shows its plan — `team`, `max`,
+`pro`, `enterprise` or `unknown plan` — and no MindPlayer message shows an
+organization UUID.
+
+- A bound account remembers its organization and plan. <kbd>l</kbd> then runs
+  `claude --settings '{"forceLoginOrgUUID":"…"}' auth login`, so the sign-in page
+  opens on that organization, and the status line names the plan to sign in with.
+  An account with no stored organization signs in as before.
+- When a login ends, and on <kbd>v</kbd> and on a launch check, MindPlayer compares
+  the login it got with the stored ones. **Same login:** it is confirmed with its
+  email and plan, and a changed plan is refreshed silently. **Same subscription as
+  another account:** nothing is bound. An account added with <kbd>a</kbd> in this run is cancelled
+  — it is removed from the list and its home directory is erased, exactly as <kbd>x</kbd>
+  does, with no `claude auth logout` — and any other account keeps its binding;
+  <kbd>v</kbd> still binds it if you want it. **Changed:** the message names the plan that
+  was expected and the one that was reached; <kbd>v</kbd> binds the new login,
+  <kbd>l</kbd> signs in again.
+- A newly added account whose login is new is registered at once, with no <kbd>v</kbd>.
+- The usage probe also asks Claude's profile endpoint, with the same token and on a
+  best-effort basis, who the usage belongs to. If that request fails, the usage
+  reading is unaffected and the rows simply carry no login. An account whose usage
+  login equals an earlier account's reads `same subscription as <name>` here and
+  `= <name>` in the footer, where the plan also sits next to the account name once
+  a provider has two or more accounts. An account whose usage login is no longer
+  the bound one reads `login changed · press v`.
+
 For MindPlayer-managed accounts, exactly one account per provider is *in use*,
 so the launch choice never depends on list order. Usage for different accounts
 occupies separate footer rows. OMP manages its own native credential pool instead
@@ -439,12 +487,14 @@ login. OMP instead displays its observed native response account as described
 above. To carry a conversation to another login, hand it over with <kbd>h</kbd>
 — that starts a new session there with the previous context.
 
-**Two caveats.** Claude and Cursor keep their usage credential in the macOS
-Keychain, one per machine, and that one belongs to the login this machine came
-with — so a second account of either runs its sessions normally but shows no
-usage figure rather than borrowing the first one's. And nothing is ever copied
-between accounts: a duplicated login refreshes its token and locks the original
-holder out, which is a failure neither side can explain.
+**Two caveats.** Cursor keeps its usage credential in the macOS Keychain, one
+per machine, and that one belongs to the login this machine came with — so a
+second Cursor account runs its sessions normally but shows no usage figure
+rather than borrowing the first one's. A second Claude account keeps its login
+in a Keychain entry of its own, keyed to that account's home, and its usage is
+read from there. And nothing is ever copied between accounts: a duplicated
+login refreshes its token and locks the original holder out, which is a failure
+neither side can explain.
 
 ## 🧠 How it works
 

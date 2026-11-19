@@ -262,6 +262,7 @@ fn mp04_close_auth_delayed_launch_does_not_archive_another_accounts_file() {
             fingerprint: "fixture-owner".into(),
             email: "fixture@example.test".into(),
             workspace: "fixture".into(),
+            plan: "unknown".into(),
         }));
     assert!(fixture.app.pending.is_none());
     fixture.target.started_at = Some(Utc::now());

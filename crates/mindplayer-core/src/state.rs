@@ -59,6 +59,18 @@ pub struct SourceArchive {
     archived: bool,
 }
 
+/// Longest OMP account label kept or shown from the state file.
+const MAX_OMP_ACCOUNT_LABEL_BYTES: usize = 2048;
+/// Longest native OMP session ID an account label is kept under.
+const MAX_OMP_SESSION_ID_BYTES: usize = 256;
+
+/// The account one exact OMP transcript last answered with.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OmpAccountUse {
+    file: PathBuf,
+    label: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct State {
     #[serde(default = "default_version")]
@@ -74,6 +86,9 @@ pub struct State {
     /// Source-qualified use. An empty entry prevents ambiguous legacy ID reuse.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub last_used_sources: BTreeMap<String, Vec<SourceUse>>,
+    /// Token-free account labels from OMP responses, by session ID and transcript.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub omp_account_sources: BTreeMap<String, Vec<OmpAccountUse>>,
     /// Days without human activity before automatic archiving; zero disables expiry.
     #[serde(default = "default_active_retention_days")]
     pub active_retention_days: u32,
@@ -179,6 +194,7 @@ impl Default for State {
             archived_sources: BTreeMap::new(),
             last_used: BTreeMap::new(),
             last_used_sources: BTreeMap::new(),
+            omp_account_sources: BTreeMap::new(),
             active_retention_days: default_active_retention_days(),
             in_progress: BTreeSet::new(),
             labels: BTreeMap::new(),
@@ -207,7 +223,56 @@ pub fn default_state_path() -> PathBuf {
         .join("state.json")
 }
 
+/// Text that is safe to keep and to draw in a terminal cell.
+fn displayable(text: &str, max_bytes: usize) -> bool {
+    !text.trim().is_empty()
+        && text.len() <= max_bytes
+        && !text.chars().any(|c| {
+            c.is_control()
+                || matches!(c, '\u{061c}' | '\u{200b}'..='\u{200f}' | '\u{2028}'..='\u{202e}' | '\u{2060}'..='\u{206f}' | '\u{feff}')
+        })
+}
+
 impl State {
+    /// The account this exact OMP transcript last answered with.
+    pub fn omp_account_for_session(&self, session: &Session) -> Option<&str> {
+        if session.agent != Agent::Omp {
+            return None;
+        }
+        self.omp_account_sources
+            .get(&session.id)?
+            .iter()
+            .find(|record| record.file == session.file)
+            .map(|record| record.label.as_str())
+            .filter(|label| displayable(label, MAX_OMP_ACCOUNT_LABEL_BYTES))
+    }
+
+    /// Stores the account an OMP response used, by native session ID and transcript; true when it changed.
+    pub fn record_omp_account(&mut self, session_id: &str, transcript: &Path, label: &str) -> bool {
+        if !displayable(session_id, MAX_OMP_SESSION_ID_BYTES)
+            || !transcript.is_absolute()
+            || transcript
+                .components()
+                .any(|part| part == std::path::Component::ParentDir)
+            || !displayable(label, MAX_OMP_ACCOUNT_LABEL_BYTES)
+        {
+            return false;
+        }
+        let records = self
+            .omp_account_sources
+            .entry(session_id.to_owned())
+            .or_default();
+        match records.iter_mut().find(|record| record.file == transcript) {
+            Some(record) if record.label == label => return false,
+            Some(record) => label.clone_into(&mut record.label),
+            None => records.push(OmpAccountUse {
+                file: transcript.to_owned(),
+                label: label.to_owned(),
+            }),
+        }
+        true
+    }
+
     /// Load from the default path, falling back to empty state on miss/corrupt.
     pub fn load() -> Self {
         Self::load_from(&default_state_path())
@@ -866,6 +931,115 @@ mod tests {
             is_subagent: false,
             context_pct: None,
         }
+    }
+
+    fn omp_source(file: &str) -> Session {
+        Session {
+            agent: Agent::Omp,
+            ..old_source(file)
+        }
+    }
+
+    #[test]
+    fn an_omp_account_survives_a_restart_only_for_its_exact_transcript() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("state.json");
+        let source = omp_source("/fixture/omp/one.jsonl");
+        let label = "person@example.test · Workspace · provider";
+        let mut state = State::default();
+        assert!(state.record_omp_account(&source.id, &source.file, label));
+        assert!(
+            !state.record_omp_account(&source.id, &source.file, label),
+            "an unchanged account is not a change"
+        );
+        state.save_to(&path).unwrap();
+        let loaded = State::load_from(&path);
+        let archived = Session {
+            archived: true,
+            ..source.clone()
+        };
+        assert_eq!(loaded.omp_account_for_session(&archived), Some(label));
+        let other = omp_source("/fixture/omp/other.jsonl");
+        assert_eq!(loaded.omp_account_for_session(&other), None);
+        let same_id_other_provider = old_source("/fixture/omp/one.jsonl");
+        assert_eq!(
+            loaded.omp_account_for_session(&same_id_other_provider),
+            None
+        );
+        let legacy: State = serde_json::from_str("{}").unwrap();
+        assert!(legacy.omp_account_sources.is_empty());
+        assert!(!serde_json::to_string(&legacy)
+            .unwrap()
+            .contains("omp_account_sources"));
+    }
+
+    #[test]
+    fn a_later_response_replaces_the_stored_omp_account_of_that_transcript_only() {
+        let first = omp_source("/fixture/omp/one.jsonl");
+        let second = omp_source("/fixture/omp/two.jsonl");
+        let mut state = State::default();
+        for (source, label) in [
+            (&first, "first@example.test · provider"),
+            (&second, "second@example.test · provider"),
+            (&first, "API key #4 · provider"),
+        ] {
+            assert!(state.record_omp_account(&source.id, &source.file, label));
+        }
+        assert_eq!(
+            state.omp_account_for_session(&first),
+            Some("API key #4 · provider")
+        );
+        assert_eq!(
+            state.omp_account_for_session(&second),
+            Some("second@example.test · provider")
+        );
+        assert_eq!(state.omp_account_sources[&first.id].len(), 2);
+    }
+
+    #[test]
+    fn an_omp_account_is_not_stored_or_returned_when_the_source_or_label_is_unsafe() {
+        let source = omp_source("/fixture/omp/one.jsonl");
+        let label = "person@example.test · provider";
+        let mut state = State::default();
+        let long_id = "i".repeat(MAX_OMP_SESSION_ID_BYTES + 1);
+        for (id, file) in [
+            ("shared-native", "relative/one.jsonl"),
+            ("shared-native", "/fixture/omp/../one.jsonl"),
+            ("shared-native", ""),
+            ("", "/fixture/omp/one.jsonl"),
+            ("  ", "/fixture/omp/one.jsonl"),
+            ("spoof\u{1b}[31m", "/fixture/omp/one.jsonl"),
+            (long_id.as_str(), "/fixture/omp/one.jsonl"),
+        ] {
+            assert!(
+                !state.record_omp_account(id, Path::new(file), label),
+                "{id:?} {file:?}"
+            );
+        }
+        let oversized = "x".repeat(MAX_OMP_ACCOUNT_LABEL_BYTES + 1);
+        for unsafe_label in [
+            "",
+            "   ",
+            "spoof\u{1b}[31m",
+            "line\nbreak",
+            "bidi\u{202e}override",
+            "isolate\u{2066}",
+            oversized.as_str(),
+        ] {
+            assert!(
+                !state.record_omp_account(&source.id, &source.file, unsafe_label),
+                "{unsafe_label:?}"
+            );
+        }
+        assert!(state.omp_account_sources.is_empty());
+
+        let tampered: State = serde_json::from_value(serde_json::json!({
+            "omp_account_sources": { "shared-native": [
+                { "file": "/fixture/omp/one.jsonl", "label": "spoof\u{1b}[31m" }
+            ] }
+        }))
+        .unwrap();
+        assert_eq!(tampered.omp_account_for_session(&source), None);
     }
 
     #[test]

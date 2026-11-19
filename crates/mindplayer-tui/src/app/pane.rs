@@ -213,6 +213,7 @@ impl App {
         {
             self.pending = self.pending_queue.pop_front();
         }
+        self.cli_freshness.cancel_launch(sid);
         if self.is_running(sid) {
             // Ctrl-Q only hides a live PTY. Its login still owns this home
             // until reap_pty observes exit and resumes any held launch.
@@ -516,12 +517,16 @@ impl App {
 
         let live_ids = self.hook_poll_batch();
         let mut changed = false;
+        let mut omp_account_stored = false;
         for id in &live_ids {
             if self.ended.contains(id) {
                 continue;
             }
             if let Some(pty) = self.ptys.get_mut(id) {
                 changed |= pty.poll_omp_account();
+                if let Some(observation) = pty.omp_account_observation() {
+                    omp_account_stored |= observation.store(&mut self.state);
+                }
             }
             if let Some(file) = self.codex_rollout_file(id).map(Path::to_path_buf) {
                 if self.codex_turns.get(id).is_none_or(|r| r.file() != file) {
@@ -560,6 +565,10 @@ impl App {
                     self.hook_status.remove(id);
                 }
             }
+        }
+        if omp_account_stored {
+            let _ = self.save_state();
+            changed = true;
         }
         // Drop cached readings for panes that no longer exist (closed/ended).
         self.hook_status.retain(|id, _| self.ptys.contains_key(id));

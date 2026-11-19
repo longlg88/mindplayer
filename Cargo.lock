@@ -472,7 +472,7 @@ dependencies = [
 
 [[package]]
 name = "mindplayer-core"
-version = "2.1.0"
+version = "2.3.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -485,7 +485,7 @@ dependencies = [
 
 [[package]]
 name = "mindplayer-tui"
-version = "2.1.0"
+version = "2.3.0"
 dependencies = [
  "anyhow",
  "chrono",

@@ -59,6 +59,8 @@ const COLS: u16 = 140;
 /// Printed by the fake `codex` when a pane comes up, so a resume can be waited
 /// on by content rather than a fixed sleep.
 const PANE_READY: &str = "PANE-READY";
+/// A marker file the fixture hook writes to leave the pre-launch CLI update on.
+const CLI_UPDATE_ENABLED: &str = "cli-update-enabled";
 
 /// Distinctive session titles — unlikely to collide with any static UI text, so
 /// finding them on screen unambiguously means a session (list row or pane
@@ -934,6 +936,99 @@ fn contains_observer_native_usage(screen: &str) -> bool {
         && panel.contains("3210")
 }
 
+/// A fake `codex` that records `update` and pane starts, and bumps its version on update.
+#[cfg(unix)]
+fn install_updating_codex(tmp: &Path) {
+    let bin = tmp.join("bin");
+    std::fs::rename(bin.join("codex"), bin.join("codex-fixture"))
+        .expect("retain the offline Codex fixture");
+    std::fs::write(tmp.join("codex-version"), "0.1.0").expect("seed fake version");
+    std::fs::write(tmp.join(CLI_UPDATE_ENABLED), "").expect("enable the CLI update gate");
+    write_script(
+        &bin.join("codex"),
+        &format!(
+            r#"#!/bin/sh
+log='{log}'
+case "$1" in
+update)
+  printf 'update\n' >> "$log"
+  sleep 2
+  printf '0.2.0' > '{version}'
+  echo updated
+  exit 0 ;;
+--version)
+  printf 'codex-cli %s\n' "$(cat '{version}')"
+  exit 0 ;;
+esac
+if [ -n "$MINDPLAYER_PANE_ID" ]; then
+  printf 'start %s\n' "$1" >> "$log"
+fi
+exec '{fixture}' "$@"
+"#,
+            log = tmp.join("cli-update.log").display(),
+            version = tmp.join("codex-version").display(),
+            fixture = bin.join("codex-fixture").display(),
+        ),
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_provider_update_runs_once_before_the_session_command_starts() {
+    let mut mp = Mp::launch_with_fixture_hooks(
+        (ROWS, COLS),
+        false,
+        false,
+        false,
+        false,
+        CodexFixture::Echo,
+        (install_updating_codex, |_: &Path, _: Option<u32>| {}),
+    );
+    let log = mp._tmp.join("cli-update.log");
+    let lines = |log: &Path| -> Vec<String> {
+        std::fs::read_to_string(log)
+            .unwrap_or_default()
+            .lines()
+            .map(str::to_string)
+            .collect()
+    };
+    mp.start_into_main_list();
+    mp.send(b"/alfa\r");
+    mp.expect("updating codex", STEP_TIMEOUT, "held pane names the update");
+    assert!(
+        mp.wait_until(STEP_TIMEOUT, |_| lines(&log) == ["update"]),
+        "the update runs while the session waits: {:?}",
+        lines(&log)
+    );
+    assert!(!mp.screen().contains(PANE_READY));
+    mp.expect(PANE_READY, STEP_TIMEOUT, "released session starts");
+    let first = lines(&log);
+    assert_eq!(first.len(), 2, "{first:?}");
+    assert_eq!(first[0], "update");
+    assert_eq!(first[1], "start resume");
+    mp.expect(
+        "codex updated 0.1.0 → 0.2.0",
+        STEP_TIMEOUT,
+        "status names the version change",
+    );
+    let stamp = mp._tmp.join("home/.mindplayer/cli-update/codex.stamp");
+    assert!(stamp.is_file(), "the finished attempt leaves its stamp");
+    mp.send(b"\x18");
+    mp.expect("multi-select", STEP_TIMEOUT, "back on the list");
+    mp.send(b"\x1b");
+    mp.send(b"/brvo\r");
+    assert!(
+        mp.wait_until(STEP_TIMEOUT, |_| lines(&log).len() == 3),
+        "second launch must start: {:?}",
+        lines(&log)
+    );
+    let all = lines(&log);
+    assert_eq!(all.iter().filter(|l| *l == "update").count(), 1, "{all:?}");
+    mp.send(b"\x18");
+    mp.expect("multi-select", STEP_TIMEOUT, "back on the list");
+    mp.quit_from_list();
+}
+
 /// A live mindplayer process running in a PTY, with a background reader feeding
 /// a shared vt100 parser we can snapshot at any time.
 struct Mp {
@@ -1466,6 +1561,7 @@ exit 0"#
         cmd.env("MINDPLAYER_CURSOR_DIR", &cursor_dir);
         cmd.env("MINDPLAYER_OMP_DIR", &omp_dir);
         cmd.env("MINDPLAYER_STATE", &state_dir);
+        cmd.env("MINDPLAYER_CLI_UPDATE", "0");
         cmd.env("MINDPLAYER_AUDIT", &audit_dir);
         cmd.env("MINDPLAYER_PROMPTS_DIR", &prompts_dir);
         cmd.env("MINDPLAYER_HANDOFF_DIR", tmp.join("handoffs"));
@@ -1487,6 +1583,9 @@ exit 0"#
         cmd.env("PATH", format!("{}:{}", bindir.display(), path));
 
         prepare(&tmp);
+        if tmp.join(CLI_UPDATE_ENABLED).exists() {
+            cmd.env_remove("MINDPLAYER_CLI_UPDATE");
+        }
         let child = FixtureChild(
             pair.slave
                 .spawn_command(cmd.clone())
@@ -4445,11 +4544,16 @@ fn claude_auth_mismatch_requires_confirmation_of_the_profile_identity() {
         "show the actual profile email",
     );
     mp.expect(
+        "이어야 하는데",
+        STEP_TIMEOUT,
+        "say the login differs from the bound one",
+    );
+    mp.expect("맞으면", STEP_TIMEOUT, "require explicit confirmation");
+    mp.expect_absent(
         "actual-organization",
         STEP_TIMEOUT,
-        "show required profile's actual organization",
+        "an organization UUID is not shown to the user",
     );
-    mp.expect("v로 연결", STEP_TIMEOUT, "require explicit confirmation");
     mp.assert_no_session_child();
     assert_eq!(saved_claude_identity(&mp, true), Some(binding.clone()));
     mp.send(b"v");
@@ -4496,14 +4600,19 @@ fn claude_auth_confirmation_rechecks_a_profile_changed_since_inspection() {
         "confirmation reads the profile again",
     );
     mp.expect(
-        "latest-organization",
+        "이어야 하는데",
         STEP_TIMEOUT,
-        "latest organization is readable",
+        "changed profile is judged again",
     );
     mp.expect(
-        "v로 연결",
+        "맞으면",
         STEP_TIMEOUT,
         "changed profile requires renewed confirmation",
+    );
+    mp.expect_absent(
+        "latest-organization",
+        STEP_TIMEOUT,
+        "an organization UUID is not shown to the user",
     );
     mp.assert_no_session_child();
     assert_eq!(saved_claude_identity(&mp, true), Some(binding.clone()));
@@ -4554,10 +4663,11 @@ fn claude_auth_fresh_login_preserves_the_label_and_reserves_a_new_home() {
         STEP_TIMEOUT,
         "show the new login's actual email",
     );
-    mp.expect(
+    mp.expect("unknown plan", STEP_TIMEOUT, "show the new login's plan");
+    mp.expect_absent(
         "fixture-org-fresh",
         STEP_TIMEOUT,
-        "show the new login's organization",
+        "an organization UUID is not shown to the user",
     );
     mp.expect(
         "v로 연결",
@@ -4618,6 +4728,230 @@ fn claude_auth_fresh_login_preserves_the_label_and_reserves_a_new_home() {
         STEP_TIMEOUT,
         "preserve the requested label through recovery",
     );
+}
+
+const ORG_TEAM: &str = "0123abcd-4567-89ef-0123-456789abcdef";
+const ORG_MAX: &str = "fedcba98-7654-4321-8fed-cba987654321";
+
+/// Give the isolated Claude account a UUID-shaped organization and a team plan, in its binding, status and profile alike.
+fn seed_claude_team_binding(tmp: &Path) {
+    let home = tmp.join("home");
+    let slot = home.join(".mindplayer/accounts/claude/slot-seven");
+    seed_claude_status(&slot, "two@example.test", ORG_TEAM);
+    std::fs::write(
+        slot.join("fixture-profile.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "account": { "uuid": "fixture-user-two@example.test", "email": "two@example.test" },
+            "organization": { "uuid": ORG_TEAM, "organization_type": "claude_team" }
+        }))
+        .unwrap(),
+    )
+    .expect("write the team profile fixture");
+    let path = home.join(".mindplayer/accounts.json");
+    let mut accounts: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    let account = accounts
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|a| a["name"] == "spruce7")
+        .expect("isolated Claude account");
+    account["claude_identity"] =
+        serde_json::json!(fixture_claude_identity(ORG_TEAM, "two@example.test"));
+    account["claude_workspace"] = serde_json::json!(ORG_TEAM);
+    account["claude_plan"] = serde_json::json!("claude_team");
+    std::fs::write(path, serde_json::to_vec_pretty(&accounts).unwrap()).unwrap();
+}
+
+fn launch_claude_team_fixture() -> Mp {
+    Mp::launch_with_fixture_hooks(
+        (ROWS, COLS),
+        false,
+        false,
+        true,
+        false,
+        CodexFixture::ClaudeAuthRecovery,
+        (seed_claude_team_binding, |_, _| {}),
+    )
+}
+
+/// Open the Accounts screen with the cursor on the named account.
+fn select_account_row(mp: &mut Mp, name: &str) {
+    mp.send(b"u");
+    mp.expect("Accounts", STEP_TIMEOUT, "open the Accounts screen");
+    for _ in 0..12 {
+        if mp.screen().contains(&format!("▶ {name}")) {
+            return;
+        }
+        mp.send(b"\x1b[B");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    panic!("no cursor on {name}:\n{}", mp.screen());
+}
+
+#[test]
+fn claude_auth_relogin_preselects_the_stored_organization_before_the_subcommand() {
+    let mut mp = launch_claude_team_fixture();
+    mp.start_into_main_list();
+    let binding = saved_claude_identity(&mp, true).unwrap();
+    let home = claude_fixture_home(&mp, true);
+    std::fs::write(home.join("hold-login"), "keep the sign-in pane open\n").unwrap();
+    select_account_row(&mut mp, "spruce7");
+    mp.send(b"l");
+    mp.wait_for_claude_auth_events(&home, "login", 1);
+    mp.expect(
+        "team 로 로그인하세요",
+        STEP_TIMEOUT,
+        "the status names the plan to sign in with",
+    );
+    let logins = mp.claude_auth_events(Some(&home), "login");
+    assert_eq!(
+        logins[0]["args"],
+        serde_json::json!([
+            "--settings",
+            format!("{{\"forceLoginOrgUUID\":\"{ORG_TEAM}\"}}"),
+            "auth",
+            "login"
+        ])
+    );
+    std::fs::remove_file(home.join("hold-login")).unwrap();
+    mp.wait_for_claude_auth_events(&home, "login-exit", 1);
+    mp.expect(
+        "(two@example.test · team)",
+        STEP_TIMEOUT,
+        "the same organization is confirmed with its email and plan",
+    );
+    assert_eq!(saved_claude_identity(&mp, true), Some(binding));
+    assert!(mp.claude_auth_events(None, "logout").is_empty());
+}
+
+#[test]
+fn claude_auth_login_on_another_organization_is_reported_and_not_bound() {
+    let mut mp = launch_claude_team_fixture();
+    mp.start_into_main_list();
+    let binding = saved_claude_identity(&mp, true).unwrap();
+    let home = claude_fixture_home(&mp, true);
+    std::fs::write(
+        home.join("login-lands.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "email": "two@example.test", "org": ORG_MAX, "plan": "claude_max"
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    select_account_row(&mut mp, "spruce7");
+    mp.send(b"l");
+    mp.wait_for_claude_auth_events(&home, "login-exit", 1);
+    mp.expect(
+        "team 이어야 하는데",
+        STEP_TIMEOUT,
+        "the expected plan is named",
+    );
+    mp.expect(
+        "max 로 로그인했습니다",
+        STEP_TIMEOUT,
+        "the plan that was reached",
+    );
+    mp.expect(
+        "맞으면",
+        STEP_TIMEOUT,
+        "the choice to keep or redo is offered",
+    );
+    mp.expect_absent(ORG_MAX, STEP_TIMEOUT, "no organization UUID on screen");
+    mp.expect_absent(ORG_TEAM, STEP_TIMEOUT, "no organization UUID on screen");
+    assert_eq!(saved_claude_identity(&mp, true), Some(binding));
+    assert!(mp.claude_auth_events(None, "logout").is_empty());
+}
+
+#[test]
+fn claude_auth_added_account_on_an_existing_subscription_is_cancelled() {
+    let mut mp = Mp::launch_claude_auth_fixture();
+    mp.start_into_main_list();
+    let home = mp._tmp.join("home");
+    let slot = home.join(".mindplayer/accounts/claude/dupe");
+    std::fs::write(
+        mp._tmp.join("login-lands.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "email": "two@example.test", "org": "fixture-org-two", "plan": "claude_max"
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    select_account_row(&mut mp, "spruce7");
+    mp.send(b"a");
+    mp.expect("Add account", STEP_TIMEOUT, "name the new account");
+    mp.send(b"dupe\r");
+    mp.wait_for_claude_auth_events(&slot, "login-exit", 1);
+    mp.expect(
+        "등록을 취소했습니다",
+        STEP_TIMEOUT,
+        "the registration is cancelled",
+    );
+    mp.expect(
+        "spruce7 과 같은 구독(max)",
+        STEP_TIMEOUT,
+        "the account it duplicates and the plan are named",
+    );
+    mp.expect_absent(
+        "fixture-org-two",
+        STEP_TIMEOUT,
+        "no organization id on screen",
+    );
+    let logins = mp.claude_auth_events(Some(&slot), "login");
+    assert_eq!(logins[0]["args"], serde_json::json!(["auth", "login"]));
+    let accounts = mindplayer_core::accounts::load_accounts(&home);
+    assert!(
+        !accounts.iter().any(|account| account.name == "dupe"),
+        "the cancelled account is still registered"
+    );
+    assert!(accounts.iter().any(|account| account.name == "spruce7"));
+    assert!(
+        !slot.exists(),
+        "the cancelled account's home was not erased"
+    );
+    assert!(mp.claude_auth_events(None, "logout").is_empty());
+}
+
+#[test]
+fn claude_auth_added_account_with_a_new_login_is_registered_at_once() {
+    let mut mp = Mp::launch_claude_auth_fixture();
+    mp.start_into_main_list();
+    let home = mp._tmp.join("home");
+    let slot = home.join(".mindplayer/accounts/claude/newone");
+    std::fs::write(
+        mp._tmp.join("login-lands.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "email": "third@example.test", "org": "fixture-org-third", "plan": "claude_pro"
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    select_account_row(&mut mp, "spruce7");
+    mp.send(b"a");
+    mp.expect("Add account", STEP_TIMEOUT, "name the new account");
+    mp.send(b"newone\r");
+    mp.wait_for_claude_auth_events(&slot, "login-exit", 1);
+    mp.expect(
+        "(third@example.test · pro)",
+        STEP_TIMEOUT,
+        "the new login is registered with its email and plan",
+    );
+    let account = mindplayer_core::accounts::load_accounts(&home)
+        .into_iter()
+        .find(|account| account.name == "newone")
+        .expect("the new account stays registered");
+    assert_eq!(
+        account.claude_identity,
+        Some(fixture_claude_identity(
+            "fixture-org-third",
+            "third@example.test"
+        ))
+    );
+    assert_eq!(
+        account.claude_workspace.as_deref(),
+        Some("fixture-org-third")
+    );
+    assert_eq!(account.claude_plan.as_deref(), Some("claude_pro"));
 }
 
 fn append_claude_turn(file: &Path, role: &str, text: &str) {

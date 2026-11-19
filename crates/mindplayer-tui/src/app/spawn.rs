@@ -589,6 +589,7 @@ impl App {
         // Unlaunched conversations have produced no transcript and must not
         // adopt another process's same-directory work.
         if self.account_auth.owns_launch(&extra.id)
+            || self.cli_freshness.owns_launch(&extra.id)
             || self
                 .pending
                 .as_ref()
@@ -684,7 +685,11 @@ impl App {
     /// Consume a pending spawn now that the pane size is known. Other sessions'
     /// PTYs are left running in the background.
     pub fn spawn_pending(&mut self) {
-        let Some(mut pending) = self.pending.take() else {
+        let Some(pending) = self.pending.take() else {
+            return;
+        };
+        let Some(mut pending) = self.gate_cli_update(pending) else {
+            self.pending = self.pending_queue.pop_front();
             return;
         };
         let id = pending.session_id.clone();
@@ -727,12 +732,16 @@ impl App {
                     )
                 });
             let Some(verified) = self.verify_account_launch(&account, pending) else {
+                if self.account_auth.owns_launch(&id) {
+                    self.show_release_notice(&id);
+                }
                 self.pending = self.pending_queue.pop_front();
                 return;
             };
             pending = verified;
             verified_account = Some(account);
         }
+        self.show_release_notice(&id);
         // Replace only a previous (ended) PTY for this same id.
         if let Some(mut old) = self.ptys.remove(&id) {
             old.kill();

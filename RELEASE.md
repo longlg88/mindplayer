@@ -82,6 +82,32 @@ the resulting minimum version.)
 
 ### Unreleased
 
+- **2.3.0:** check which organization a Claude login landed on. After a
+  sign-in, on `v`, and before a launch, MindPlayer compares the login it got
+  with the stored ones and names the plan (`team`, `max`, `pro`,
+  `enterprise`) instead of an organization UUID. A login that belongs to
+  another account is not bound, a changed login names the plan that was
+  expected, and a newly added account is registered at once when its login is
+  new and cancelled when it repeats an existing subscription.
+- Pre-select the bound organization when a Claude account signs in again.
+- Show each Claude account's plan on the Accounts screen and in the usage
+  footer, and mark accounts that share one subscription or whose login changed.
+- Keep the account of each OMP session's latest observed response.
+  A row whose session is stopped or not open shows that account, also after a
+  restart. A running pane still shows only what its own responses prove, and a
+  session that has not answered in a MindPlayer pane stays `unverified`.
+- Run a provider CLI's own `update` before a Codex, Claude or OMP session
+  starts, at most once per CLI every 10 minutes. The session waits up to 90
+  seconds and starts on the installed version when the update fails or times
+  out. `MINDPLAYER_CLI_UPDATE=0` turns this off.
+- Show each session row's own activity time. A handoff thread still
+  sorts by its newest lane, but the original session and its handoff no longer
+  share one displayed time.
+- Explain a refused account name inside the name box, and let a label-only
+  rename proceed while panes are open on that account.
+- Read a second Claude account's usage from that account's own Keychain entry,
+  so a signed-in account no longer shows `sign-in needed`.
+
 - **2.1.0:** show Claude account labels even with one configured account and
   bind verified launch identities to their panes. Observe native OMP response
   credentials for OAuth account/workspace or API-key ID display; revoke stale

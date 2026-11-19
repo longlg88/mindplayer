@@ -922,6 +922,8 @@ fn main_view(f: &mut Frame, app: &mut App) {
     // The provider becomes its own column, so the label drops the name it
     // already starts with. Two logins of one provider still need the account
     // on the line; one login says nothing extra.
+    let all_usage = app.quota_rows_all();
+    let mut plain_labels = Vec::with_capacity(quota_rows.len());
     for row in &mut quota_rows {
         // Keep the footer compact; the Accounts screen retains the reported
         // usage/limit figures. The exhausted state must still be explicit.
@@ -949,26 +951,75 @@ fn main_view(f: &mut Frame, app: &mut App) {
             }
         }
         let mut rest = mindplayer_core::limits::label_without_provider(row).to_string();
+        let mut plain = rest.clone();
         if !row.account.is_empty() && app.provider_has_several_logins(row.agent) {
-            rest = if rest.is_empty() {
-                row.account.clone()
+            let mut name = row.account.clone();
+            let bare = row.account.clone();
+            let owner = app
+                .accounts
+                .iter()
+                .find(|a| a.provider == row.agent && a.name == row.account)
+                .filter(|a| a.provider == Agent::Claude);
+            if let Some(owner) = owner {
+                if let Some(plan) = mindplayer_core::claude_auth::known_plan_label(
+                    owner
+                        .claude_plan
+                        .as_deref()
+                        .filter(|plan| *plan != "unknown")
+                        .or(row.plan.as_deref()),
+                ) {
+                    name = format!("{name} ({plan})");
+                }
+                if let Some(first) = app.same_subscription_as(owner, &all_usage, false) {
+                    if !row.detail.is_empty() {
+                        row.detail.push_str(" · ");
+                    }
+                    row.detail.push_str(&format!("= {first}"));
+                }
+            }
+            plain = if rest.is_empty() {
+                bare
             } else {
-                format!("{} {rest}", row.account)
+                format!("{bare} {rest}")
+            };
+            rest = if rest.is_empty() {
+                name
+            } else {
+                format!("{name} {rest}")
             };
         }
         row.label = rest;
+        plain_labels.push(plain);
     }
-    let name_width = quota_rows
-        .iter()
-        .map(|r| r.label.chars().count())
-        .max()
-        .unwrap_or(0);
     let platform_width = quota_rows
         .iter()
         .map(|r| r.agent.as_str().chars().count())
         .chain(std::iter::once(VERCEL_HEAD.chars().count()))
         .max()
         .unwrap_or(0);
+    let widest_label = |rows: &[mindplayer_core::limits::QuotaRow]| {
+        rows.iter()
+            .map(|r| r.label.chars().count())
+            .max()
+            .unwrap_or(0)
+    };
+    // A row that would wrap loses the plan suffix, so the mark and the figures stay on one line.
+    let overflows = |rows: &[mindplayer_core::limits::QuotaRow]| {
+        let width = widest_label(rows);
+        rows.iter().any(|row| {
+            let cells: usize = quota_row_spans(row, width, failure_hint(app, row))
+                .iter()
+                .map(Span::width)
+                .sum();
+            platform_width + 2 + cells > usize::from(f.area().width)
+        })
+    };
+    if overflows(&quota_rows) {
+        for (row, plain) in quota_rows.iter_mut().zip(plain_labels) {
+            row.label = plain;
+        }
+    }
+    let name_width = widest_label(&quota_rows);
     let mut quota_lines: Vec<Line<'static>> = Vec::new();
     let mut previous = None;
     for row in &quota_rows {
@@ -1286,19 +1337,22 @@ fn label_input_popup(f: &mut Frame, agent: Option<Agent>, label: &str) {
     f.render_widget(Paragraph::new(lines).block(block), area);
 }
 
-/// Visible tree edges, direct child counts, and whole-thread activity.
+/// Visible tree edges, lane counts, and source identity counts.
 #[derive(Default)]
 pub(crate) struct ListThreadMetadata {
-    pub(crate) child_count: usize,
     visible_child_count: usize,
     child_prefix: Option<&'static str>,
     source_count: usize,
-    pub(crate) live_now: bool,
-    pub(crate) last_active: Option<DateTime<Utc>>,
-    pub(crate) last_prompt_at: Option<DateTime<Utc>>,
 }
 
-/// Keeps only requested session/root IDs; unlinked sessions use their own fields.
+#[cfg(test)]
+impl ListThreadMetadata {
+    pub(crate) fn visible_child_count(&self) -> usize {
+        self.visible_child_count
+    }
+}
+
+/// Keeps only requested session IDs; off-screen sources still detect collisions.
 pub(crate) fn list_render_metadata(
     app: &App,
     rows: impl Iterator<Item = usize> + Clone,
@@ -1307,13 +1361,9 @@ pub(crate) fn list_render_metadata(
     if app.state.handoff_links.is_empty() {
         return metadata;
     }
-    // Keep only the on-screen sessions and their roots. Off-screen lanes still
-    // contribute counts/activity, but need no strings or per-row allocations.
+    // Off-screen sources contribute identity counts without per-row allocations.
     for session in rows.clone().filter_map(|row| app.session_at(row)) {
         metadata.entry(session.id.as_str()).or_default();
-        metadata
-            .entry(app.state.thread_root(&session.id))
-            .or_default();
     }
     if metadata.is_empty() {
         return metadata;
@@ -1321,16 +1371,6 @@ pub(crate) fn list_render_metadata(
     for session in &app.all_sessions {
         if let Some(meta) = metadata.get_mut(session.id.as_str()) {
             meta.source_count += 1;
-        }
-        if let Some(parent) = app.state.handoff_parent(&session.id) {
-            if let Some(meta) = metadata.get_mut(parent) {
-                meta.child_count += 1;
-            }
-        }
-        if let Some(meta) = metadata.get_mut(app.state.thread_root(&session.id)) {
-            meta.live_now |= app.is_running(&session.id);
-            meta.last_active = meta.last_active.max(session.last_active);
-            meta.last_prompt_at = meta.last_prompt_at.max(session.last_prompt_at);
         }
     }
     // Handoff lanes are root-linked. Only draw a tree for a contiguous run
@@ -1563,12 +1603,12 @@ fn session_list(f: &mut Frame, app: &mut App, area: Rect, now: DateTime<Utc>) {
         {
             let marked = app.marked.contains(&s.id);
             let meta = metadata.get(s.id.as_str());
-            let child_count = meta.map_or(0, |meta| meta.child_count);
             let visible_child_count = meta.map_or(0, |meta| meta.visible_child_count);
             let (tag, tag_color) = agent_tag(s.agent);
             // Clear, fixed-width status badge so it's easy to scan a column of
             // running / working / done sessions.
-            let (badge, badge_color, badge_bold) = match app.session_status_for(s) {
+            let status = app.session_status_for(s);
+            let (badge, badge_color, badge_bold) = match status {
                 SessionStatus::Blocked => ("! blocked", WAITING_BORDER, true),
                 SessionStatus::Working => ("● working", WORKING_BORDER, true),
                 SessionStatus::Completed => ("✓ done   ", COMPLETED_BORDER, true),
@@ -1612,15 +1652,8 @@ fn session_list(f: &mut Frame, app: &mut App, area: Rect, now: DateTime<Utc>) {
             } else {
                 ("  ", Style::default())
             };
-            // Time column reflects live activity: a running session (or a thread
-            // root with a running/active-today lane) reads "now" / its lane's
-            // recent time rather than its own possibly-stale transcript mtime.
-            let root = app.state.thread_root(&s.id);
-            let thread = (child_count > 0 || root != s.id)
-                .then(|| metadata.get(root))
-                .flatten();
-            let live_now = app.is_running(&s.id) || thread.is_some_and(|meta| meta.live_now);
-            let eff_active = thread.map_or(s.last_active, |meta| meta.last_active);
+            // Each row shows its own source's time; the status guard keeps a colliding ID from borrowing a live prompt time.
+            let live_now = !matches!(status, SessionStatus::Inactive | SessionStatus::Ended);
             // A running session's file mtime is always "just now" (the agent
             // keeps writing), so showing that here would say nothing useful —
             // time since the last genuine prompt (how long it's been working
@@ -1630,12 +1663,12 @@ fn session_list(f: &mut Frame, app: &mut App, area: Rect, now: DateTime<Utc>) {
             // either — fall back to the old plain "now" rather than a bare "—"
             // for what's still very much a live, just-created row.
             let when = if live_now {
-                match thread.map_or(s.last_prompt_at, |meta| meta.last_prompt_at) {
+                match s.last_prompt_at {
                     Some(t) => relative_time(Some(t), now),
                     None => "now".to_string(),
                 }
             } else {
-                relative_time(eff_active, now)
+                relative_time(s.last_active, now)
             };
             // A 1-col rail, independent of recent/older and the live status
             // badge — it's the one thing that survives a session going
@@ -3182,6 +3215,25 @@ fn fold_hints(hints: &[&str], width: usize) -> Vec<String> {
     rows
 }
 
+/// The plan and identity state shown for a Claude account on the Accounts screen.
+fn claude_identity_note(
+    app: &App,
+    account: &mindplayer_core::accounts::Account,
+    rows: &[mindplayer_core::limits::QuotaRow],
+) -> (String, Color) {
+    let plan = app.claude_plan_label(account, rows);
+    let (state, color) = if app.usage_login_changed(account, rows) {
+        ("login changed · press v".to_string(), ERROR)
+    } else if let Some(first) = app.same_subscription_as(account, rows, true) {
+        (format!("same subscription as {first}"), ZOOM)
+    } else if account.identity_fingerprint().is_some() {
+        ("identity bound".to_string(), IDLE)
+    } else {
+        ("identity unverified".to_string(), ERROR)
+    };
+    (format!("{plan} · {state}"), color)
+}
+
 /// The Accounts screen (`u`): which logins exist per provider, and which one
 /// the next session takes. Management lives here rather than in the footer,
 /// which has to stay small enough to leave the panes room.
@@ -3209,21 +3261,27 @@ fn accounts_popup(f: &mut Frame, app: &App) {
             ),
             None => (" Add account ", "Name:".to_string()),
         };
-        let area = centered(f.area(), 58, 6);
+        let mut lines = vec![
+            Line::from(Span::styled(prompt, Style::default().fg(DIM))),
+            Line::from(Span::styled(
+                format!("{name}▏"),
+                Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+            )),
+            Line::from(Span::styled(
+                "letters, digits, - and _",
+                Style::default().fg(DIM).add_modifier(Modifier::ITALIC),
+            )),
+        ];
+        // The list is hidden while a name is typed, so a refusal is drawn here.
+        if let Some(error) = &panel.error {
+            for row in wrapped_text_rows(error, 54) {
+                lines.push(Line::from(Span::styled(row, Style::default().fg(ERROR))));
+            }
+        }
+        let area = centered(f.area(), 58, lines.len() as u16 + 3);
         f.render_widget(Clear, area);
         f.render_widget(
-            Paragraph::new(vec![
-                Line::from(Span::styled(prompt, Style::default().fg(DIM))),
-                Line::from(Span::styled(
-                    format!("{name}▏"),
-                    Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
-                )),
-                Line::from(Span::styled(
-                    "letters, digits, - and _",
-                    Style::default().fg(DIM).add_modifier(Modifier::ITALIC),
-                )),
-            ])
-            .block(
+            Paragraph::new(lines).block(
                 Block::default()
                     .borders(Borders::ALL)
                     .border_style(Style::default().fg(ACCENT))
@@ -3306,7 +3364,10 @@ fn accounts_popup(f: &mut Frame, app: &App) {
                         format!("   {activity}{origin}"),
                         Style::default().fg(DIM),
                     ));
-                    if matches!(account.provider, Agent::Codex | Agent::Claude) {
+                    let mut note = None;
+                    if account.provider == Agent::Claude {
+                        note = Some(claude_identity_note(app, account, &all_rows));
+                    } else if matches!(account.provider, Agent::Codex) {
                         spans.push(Span::styled(
                             format!(
                                 "   {}",
@@ -3332,7 +3393,27 @@ fn accounts_popup(f: &mut Frame, app: &App) {
                             }),
                         ));
                     }
+                    // The note sits on the row when it fits and under the name when it does not, so it is never cut off.
+                    let mut note_below = None;
+                    if let Some((text, color)) = note {
+                        let inline: usize =
+                            spans.iter().map(Span::width).sum::<usize>() + 3 + text.chars().count();
+                        if inline + 3 <= usize::from(f.area().width) {
+                            spans.push(Span::styled(
+                                format!("   {text}"),
+                                Style::default().fg(color),
+                            ));
+                        } else {
+                            note_below = Some((text, color));
+                        }
+                    }
                     lines.push(Line::from(spans));
+                    if let Some((text, color)) = note_below {
+                        lines.push(Line::from(vec![
+                            Span::raw(format!("    {:<name_width$}  {:<8}  ", "", "")),
+                            Span::styled(text, Style::default().fg(color)),
+                        ]));
+                    }
                     // A provider can meter more than one window (Claude's five
                     // hour and weekly), and hiding the second would hide the
                     // one that is actually binding.
@@ -3470,11 +3551,15 @@ mod tests {
     }
 
     fn list_frame(app: &mut App, height: u16) -> ratatui::buffer::Buffer {
+        list_frame_at(app, height, Utc::now())
+    }
+
+    fn list_frame_at(app: &mut App, height: u16, now: DateTime<Utc>) -> ratatui::buffer::Buffer {
         use ratatui::{backend::TestBackend, Terminal};
         app.rebuild_list_items();
         let mut terminal = Terminal::new(TestBackend::new(140, height)).unwrap();
         terminal
-            .draw(|frame| session_list(frame, app, frame.area(), Utc::now()))
+            .draw(|frame| session_list(frame, app, frame.area(), now))
             .unwrap();
         terminal.backend().buffer().clone()
     }
@@ -3625,6 +3710,126 @@ mod tests {
     }
 
     #[test]
+    fn list_handoff_timestamps_stay_source_local_while_groups_sort_by_descendants() {
+        let now = DateTime::from_timestamp(1_800_000_000, 0).unwrap();
+        let mut app = list_fixture(&[
+            "old-parent",
+            "recent-child",
+            "old-sibling",
+            "recent-grandchild",
+            "unknown-child",
+            "loose-session",
+        ]);
+        for (source, age) in app.all_sessions.iter_mut().zip([
+            Some(4 * 24 * 60),
+            Some(7),
+            Some(2 * 24 * 60),
+            Some(3),
+            None,
+            Some(24 * 60),
+        ]) {
+            source.last_active = age.map(|minutes| now - chrono::Duration::minutes(minutes));
+            source.last_prompt_at = Some(now - chrono::Duration::hours(1));
+        }
+        for (child, parent) in [
+            ("recent-child", "old-parent"),
+            ("old-sibling", "old-parent"),
+            ("unknown-child", "old-parent"),
+            ("recent-grandchild", "recent-child"),
+        ] {
+            app.state
+                .set_handoff_link(child, parent, PathBuf::new(), now);
+        }
+        app.rebuild_visible();
+        let buffer = list_frame_at(&mut app, 14, now);
+        let loose = app.row_of_session("loose-session").unwrap();
+        for source in &app.all_sessions {
+            let expected = relative_time(source.last_active, now);
+            let row = list_title_row(&buffer, &source.title);
+            assert!(
+                row.split_whitespace().any(|word| word == expected),
+                "{} must show its own activity {expected}: {row}",
+                source.id
+            );
+            if source.id != "loose-session" {
+                assert!(
+                    app.row_of_session(&source.id).unwrap() < loose,
+                    "the recent descendant must still lift the whole thread"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn list_handoff_live_timestamp_uses_only_the_owned_source_prompt() {
+        let now = DateTime::from_timestamp(1_800_000_000, 0).unwrap();
+        let mut fixture = QuietPtyFixture::new(8, 40);
+        let child = fixture.app.panes[0].clone();
+        let app = &mut fixture.app;
+        app.focus = Focus::List;
+        app.all_sessions = ["old-parent", child.as_str(), "old-sibling"]
+            .into_iter()
+            .enumerate()
+            .map(|(index, id)| {
+                let mut source = session(Agent::Claude, 0);
+                source.id = id.into();
+                source.title = id.into();
+                source.last_active = Some(now - chrono::Duration::days(index as i64 + 2));
+                source.last_prompt_at = Some(now - chrono::Duration::minutes(47));
+                source
+            })
+            .collect();
+        app.all_sessions[1].last_active = Some(now - chrono::Duration::minutes(1));
+        for id in [child.as_str(), "old-sibling"] {
+            app.state
+                .set_handoff_link(id, "old-parent", PathBuf::new(), now);
+        }
+        for ended in [false, true] {
+            if ended {
+                app.ended.insert(child.clone());
+            }
+            app.rebuild_visible();
+            let buffer = list_frame_at(app, 12, now);
+            for source in &app.all_sessions {
+                let timestamp = if source.id == child && !ended {
+                    source.last_prompt_at
+                } else {
+                    source.last_active
+                };
+                let expected = relative_time(timestamp, now);
+                let row = list_title_row(&buffer, &source.title);
+                assert!(
+                    row.split_whitespace().any(|word| word == expected),
+                    "ended={ended}, {} must show {expected}: {row}",
+                    source.id
+                );
+            }
+        }
+        app.ended.remove(&child);
+        app.all_sessions[1].last_prompt_at = None;
+        let buffer = list_frame_at(app, 12, now);
+        let row = list_title_row(&buffer, &child);
+        let expected = relative_time(Some(now), now);
+        assert!(row.split_whitespace().any(|word| word == expected), "{row}");
+
+        let mut collision = app.all_sessions[1].clone();
+        collision.file = PathBuf::from("/other-account/collision");
+        collision.title = "colliding-child".into();
+        collision.last_active = Some(now - chrono::Duration::days(6));
+        app.all_sessions.push(collision);
+        app.rebuild_visible();
+        let buffer = list_frame_at(app, 14, now);
+        for source in &app.all_sessions {
+            let expected = relative_time(source.last_active, now);
+            let row = list_title_row(&buffer, &source.title);
+            assert!(
+                row.split_whitespace().any(|word| word == expected),
+                "ambiguous runtime ownership must leave source activity {expected}: {row}"
+            );
+        }
+    }
+
+    #[test]
     fn list_handoff_siblings_use_branch_then_final_connectors() {
         let mut app = list_fixture(&["tree-parent", "lane-first", "lane-last"]);
         link_list_child(&mut app, "lane-first", "tree-parent");
@@ -3742,6 +3947,67 @@ mod tests {
                 "{text}"
             );
         }
+    }
+
+    #[test]
+    fn a_closed_omp_row_shows_the_account_its_transcript_last_answered_with() {
+        let mut app = list_fixture(&["omp-answered", "omp-never-observed"]);
+        for source in &mut app.all_sessions {
+            source.agent = Agent::Omp;
+        }
+        let answered = app.all_sessions[0].clone();
+        assert!(app.state.record_omp_account(
+            &answered.id,
+            &answered.file,
+            "person@example.test · Workspace · provider"
+        ));
+        app.rebuild_visible();
+        let buffer = list_frame(&mut app, 12);
+        let row = list_title_row(&buffer, "omp-answered");
+        assert!(row.contains("person@"), "{row}");
+        assert!(!row.contains("unverified"), "{row}");
+        let never = list_title_row(&buffer, "omp-never-observed");
+        assert!(never.contains("unverified"), "{never}");
+
+        let same_id_other_provider = Session {
+            agent: Agent::Claude,
+            ..answered
+        };
+        assert_eq!(
+            app.omp_account_label_for_source(&same_id_other_provider),
+            None
+        );
+    }
+
+    #[test]
+    fn a_running_omp_pane_answers_for_itself_and_a_stopped_one_falls_back_to_its_transcript() {
+        let mut fixture = QuietPtyFixture::new(8, 40);
+        let id = fixture.app.panes[0].clone();
+        let app = &mut fixture.app;
+        app.focus = Focus::List;
+        let mut source = session(Agent::Omp, 0);
+        source.id = id.clone();
+        source.title = "omp-running".into();
+        source.file = PathBuf::from("/work/omp-running.jsonl");
+        source.last_active = Some(Utc::now());
+        app.all_sessions = vec![source.clone()];
+        let stored = "previous@example.test · provider";
+        assert!(app
+            .state
+            .record_omp_account(&source.id, &source.file, stored));
+        app.rebuild_visible();
+
+        assert_eq!(app.omp_account_label_for_source(&source), None);
+        let row = list_title_row(&list_frame(app, 10), "omp-running");
+        assert!(row.contains("unverified"), "{row}");
+
+        app.ended.insert(id.clone());
+        assert_eq!(app.omp_account_label_for_source(&source), Some(stored));
+        app.ended.remove(&id);
+        app.ptys.remove(&id);
+        assert_eq!(app.omp_account_label_for_source(&source), Some(stored));
+        let row = list_title_row(&list_frame(app, 10), "omp-running");
+        assert!(row.contains("previous@"), "{row}");
     }
 
     #[test]
@@ -3914,6 +4180,167 @@ mod tests {
                 assert!(work.contains("work 5h"), "{width}: {text}");
             }
         }
+    }
+
+    fn claude_row(
+        account: &str,
+        label: &str,
+        identity: Option<&str>,
+        plan: Option<&str>,
+    ) -> mindplayer_core::limits::QuotaRow {
+        mindplayer_core::limits::QuotaRow {
+            agent: Agent::Claude,
+            account: account.into(),
+            label: label.into(),
+            used_percent: Some(41.0),
+            resets: Some("14:20".into()),
+            identity: identity.map(str::to_string),
+            plan: plan.map(str::to_string),
+            ..Default::default()
+        }
+    }
+
+    fn claude_accounts() -> Vec<mindplayer_core::accounts::Account> {
+        use mindplayer_core::accounts::Account;
+        let home = PathBuf::from("/fixture/home");
+        let mut default = Account::inherited(Agent::Claude);
+        default.set_identity_fingerprint(Some("fp-a".into()));
+        default.set_claude_login_facts("org-a", "claude_team");
+        let mut second = Account::isolated(&home, Agent::Claude, "second").unwrap();
+        second.set_identity_fingerprint(Some("fp-a".into()));
+        let mut third = Account::isolated(&home, Agent::Claude, "third").unwrap();
+        third.set_identity_fingerprint(Some("fp-c".into()));
+        let fourth = Account::isolated(&home, Agent::Claude, "fourth").unwrap();
+        vec![default, second, third, fourth]
+    }
+
+    #[test]
+    fn accounts_panel_shows_plans_and_flags_a_shared_or_changed_subscription() {
+        for width in [80, 120] {
+            let mut app = startup_app();
+            app.accounts = claude_accounts();
+            app.limits = Some(vec![
+                claude_row("default", "claude 5h", Some("fp-a"), Some("claude_team")),
+                claude_row("second", "claude 5h", Some("fp-a"), Some("claude_max")),
+                claude_row("third", "claude 5h", Some("fp-live-other"), None),
+                claude_row("fourth", "claude 5h", None, Some("claude_enterprise")),
+            ]);
+            app.open_accounts();
+            let text = frame_text(&startup_frame(&mut app, width, 45));
+            for needle in [
+                "team · identity bound",
+                "max · same subscription as default",
+                "unknown plan · login changed · press v",
+                "enterprise · identity unverified",
+            ] {
+                assert!(text.contains(needle), "{width}: {needle}\n{text}");
+            }
+            assert!(!text.contains("identity shared"), "{width}: {text}");
+        }
+    }
+
+    #[test]
+    fn accounts_panel_flags_a_shared_subscription_from_stored_bindings_alone() {
+        let mut app = startup_app();
+        app.accounts = claude_accounts();
+        app.limits = Some(Vec::new());
+        app.open_accounts();
+        let text = frame_text(&startup_frame(&mut app, 120, 45));
+        assert!(text.contains("same subscription as default"), "{text}");
+        assert!(text.contains("unknown plan"), "{text}");
+    }
+
+    #[test]
+    fn footer_names_plans_and_marks_an_account_on_an_earlier_accounts_subscription() {
+        let mut app = startup_app();
+        app.accounts = claude_accounts().into_iter().take(2).collect();
+        app.limits = Some(vec![
+            claude_row("default", "claude 5h", Some("fp-a"), Some("claude_team")),
+            claude_row("default", "claude wk", Some("fp-a"), Some("claude_team")),
+            claude_row("second", "claude 5h", Some("fp-a"), Some("claude_max")),
+            claude_row("second", "claude wk", Some("fp-a"), Some("claude_max")),
+        ]);
+        for width in [80, 144] {
+            let text = frame_text(&startup_frame(&mut app, width, 40));
+            let default = text
+                .lines()
+                .find(|l| l.contains("default (team) 5h"))
+                .unwrap();
+            let second = text
+                .lines()
+                .find(|l| l.contains("second (max) 5h"))
+                .unwrap();
+            assert!(!default.contains("= "), "{width}: {text}");
+            assert!(second.contains("= default"), "{width}: {text}");
+        }
+    }
+
+    #[test]
+    fn footer_rows_with_long_names_keep_figures_and_mark_on_one_line_at_80_columns() {
+        use mindplayer_core::accounts::Account;
+        let home = PathBuf::from("/fixture/home");
+        let mut app = startup_app();
+        app.accounts = ["firstname1", "second-long1"]
+            .into_iter()
+            .map(|name| Account::isolated(&home, Agent::Claude, name).unwrap())
+            .collect();
+        app.limits = Some(vec![
+            claude_row(
+                "firstname1",
+                "claude 5h",
+                Some("fp-a"),
+                Some("claude_enterprise"),
+            ),
+            claude_row(
+                "second-long1",
+                "claude 5h",
+                Some("fp-a"),
+                Some("claude_enterprise"),
+            ),
+        ]);
+        for (width, plan_shown) in [(80, false), (144, true)] {
+            let text = frame_text(&startup_frame(&mut app, width, 40));
+            let row = text
+                .lines()
+                .find(|l| l.contains("second-long1"))
+                .unwrap_or_else(|| panic!("{width}: {text}"));
+            for needle in ["%", "resets", "= firstname1"] {
+                assert!(
+                    row.contains(needle),
+                    "{width}: {needle} not on {row:?}\n{text}"
+                );
+            }
+            assert_eq!(row.contains("(enterprise)"), plan_shown, "{width}: {text}");
+            assert_eq!(
+                text.lines().filter(|l| l.contains("second-long1")).count(),
+                1,
+                "{width}: the row wrapped\n{text}"
+            );
+        }
+    }
+
+    #[test]
+    fn footer_keeps_a_single_login_bare_and_marks_nothing_for_different_logins() {
+        let mut app = startup_app();
+        app.accounts = claude_accounts().into_iter().take(1).collect();
+        app.limits = Some(vec![claude_row(
+            "default",
+            "claude 5h",
+            Some("fp-a"),
+            Some("claude_team"),
+        )]);
+        let text = frame_text(&startup_frame(&mut app, 100, 40));
+        assert!(!text.contains("(team)"), "{text}");
+        let mut app = startup_app();
+        app.accounts = claude_accounts().into_iter().take(2).collect();
+        app.limits = Some(vec![
+            claude_row("default", "claude 5h", Some("fp-a"), Some("claude_team")),
+            claude_row("second", "claude 5h", Some("fp-b"), None),
+        ]);
+        let text = frame_text(&startup_frame(&mut app, 100, 40));
+        assert!(text.contains("default (team) 5h"), "{text}");
+        assert!(!text.contains("= default"), "{text}");
+        assert!(!text.contains("unknown plan"), "{text}");
     }
 
     #[test]
@@ -4773,6 +5200,7 @@ mod tests {
                             failure: None,
                             spend_cap: true,
                             blocked: false,
+                            plan: None,
                         },
                     ]
                 })
@@ -4857,6 +5285,7 @@ mod tests {
                 failure: None,
                 spend_cap: false,
                 blocked: false,
+                plan: None,
             };
             let weekly_line = Line::from(quota_row_spans(&weekly, 20, None));
             let monthly_spans = quota_row_spans(&monthly, 20, None);

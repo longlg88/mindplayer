@@ -51,17 +51,26 @@ if (mode === 'curl') {
   process.stdout.write(`${body}\n${code}`);
   process.exit(0);
 }
-if (args[0] === 'auth' && args[1] === 'status') {
+// A leading `--settings <json>` pair is recorded in the event args and skipped here, like the real CLI does.
+const cli = args[0] === '--settings' ? args.slice(2) : args;
+// The identity a fresh login lands on: this home's own file first, then the one shared by every home.
+function landing() {
+  for (const file of [`${home}/login-lands.json`, `${root}/login-lands.json`]) {
+    if (existsSync(file)) return JSON.parse(readFileSync(file, 'utf8'));
+  }
+  return null;
+}
+if (cli[0] === 'auth' && cli[1] === 'status') {
   const status = savedStatus();
   record(args.includes('--json') ? 'status' : 'whoami', { status });
   process.stdout.write(`${JSON.stringify(status)}\n`);
   process.exit(status.loggedIn ? 0 : 1);
 }
-if (args[0] === 'auth' && args[1] === 'logout') {
+if (cli[0] === 'auth' && cli[1] === 'logout') {
   record('logout');
   process.exit(91);
 }
-if (args[0] === 'auth' && args[1] === 'login') {
+if (cli[0] === 'auth' && cli[1] === 'login') {
   record('login');
   process.on('SIGINT', () => {
     record('login-exit', { code: 130 });
@@ -73,7 +82,11 @@ if (args[0] === 'auth' && args[1] === 'login') {
   if (code === 0) {
     writeFileSync(`${home}/fixture-signed-in`, 'synthetic native login completed\n');
     writeFileSync(`${home}/.credentials.json`, JSON.stringify({ claudeAiOauth: { accessToken: `synthetic-offline-token:${home}`, expiresAt: 4102444800000 } }));
-    if (!existsSync(`${home}/fixture-auth-status.json`)) {
+    const lands = landing();
+    if (lands) {
+      writeFileSync(`${home}/fixture-auth-status.json`, JSON.stringify({ ...savedStatus(), loggedIn: true, authMethod: 'claude.ai', email: lands.email, orgId: lands.org, orgName: 'Fixture organization', subscriptionType: null }));
+      writeFileSync(`${home}/fixture-profile.json`, JSON.stringify({ account: { uuid: `fixture-user-${lands.email}`, email: lands.email }, organization: { uuid: lands.org, ...(lands.plan ? { organization_type: lands.plan } : {}) } }));
+    } else if (!existsSync(`${home}/fixture-auth-status.json`)) {
       writeFileSync(`${home}/fixture-auth-status.json`, JSON.stringify({ ...savedStatus(), loggedIn: true, authMethod: 'claude.ai', email: 'fresh@example.test', orgId: 'fixture-org-fresh', orgName: 'Fixture organization', subscriptionType: null }));
       writeFileSync(`${home}/fixture-profile.json`, JSON.stringify({ account: { uuid: 'fixture-user-fresh', email: 'fresh@example.test' }, organization: { uuid: 'fixture-org-fresh' } }));
     }

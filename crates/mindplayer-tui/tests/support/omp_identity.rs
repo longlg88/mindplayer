@@ -15,6 +15,7 @@ fn actual_omp_accounts_follow_native_selection_and_switches() {
     );
     let mp = &mut fixture.0;
     let root = mp._tmp.clone();
+    durable_state(&root);
     let auth = root.join("synthetic-auth.json");
     let credentials = serde_json::json!({"version":1,"credentials":[
         {"provider":"mindplayer-oauth-fixture","credential":{
@@ -183,8 +184,111 @@ fn actual_omp_accounts_follow_native_selection_and_switches() {
         );
     }
     println!("NATIVE OMP API KEY:\n{}", mp.screen());
+    let last_account = format!(
+        "{} · mindplayer-key-fixture",
+        label.trim_start_matches("omp · ")
+    );
+    assert!(
+        mp.wait_until(STEP_TIMEOUT, |_| stored_accounts(&root)
+            == [last_account.as_str()]),
+        "the transcript keeps only its last response account: {:?}",
+        stored_accounts(&root)
+    );
+    let in_list = if report["kind"] == "api_key" {
+        "API key #"
+    } else {
+        "credentia"
+    };
+    assert_account_survives_a_restart(mp, in_list);
+}
+
+/// Replaces the harness's empty state directory so the app can save a state file.
+fn durable_state(root: &Path) {
+    std::fs::remove_dir(root.join("state")).expect("replace the empty state fixture");
+}
+
+/// Every OMP account label the saved state holds.
+fn stored_accounts(root: &Path) -> Vec<String> {
+    std::fs::read(root.join("state"))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+        .and_then(|state| state["omp_account_sources"].as_object().cloned())
+        .into_iter()
+        .flat_map(|sources| sources.into_iter().map(|(_, records)| records))
+        .flat_map(|records| records.as_array().cloned().unwrap_or_default())
+        .filter_map(|record| record["label"].as_str().map(str::to_owned))
+        .collect()
+}
+
+/// Quits from the focused OMP pane, restarts, and expects the unopened OMP row to show its account.
+fn assert_account_survives_a_restart(mp: &mut Mp, account: &str) {
     mp.send(b"\x18");
     mp.quit_from_list();
+    mp.restart_offline_fixture();
+    mp.start_into_main_list_with_count(3, STARTUP_TIMEOUT);
+    assert!(
+        mp.wait_until(STEP_TIMEOUT, |screen| screen
+            .lines()
+            .any(|row| row.contains(" omp ") && row.contains(account))),
+        "a restart keeps the account of a row that was never reopened: {}",
+        mp.screen()
+    );
+    assert!(
+        mp.screen().contains("0 running"),
+        "no session is open after the restart: {}",
+        mp.screen()
+    );
+    println!("OMP ROW AFTER A RESTART:\n{}", mp.screen());
+    mp.quit_from_list();
+}
+
+/// A scripted OMP stands in for the native observer: it writes one transcript and one response report.
+#[test]
+fn an_omp_row_keeps_its_last_response_account_after_a_restart() {
+    let mut fixture = active_archive::OfflineApp(
+        Mp::launch_with_options(40, 140, false, false, false, false),
+        Vec::new(),
+    );
+    let mp = &mut fixture.0;
+    let root = mp._tmp.clone();
+    durable_state(&root);
+    write_omp_script(
+        &root.join("bin/omp"),
+        concat!(
+            "dir=\"$PI_CODING_AGENT_DIR/sessions/account-history\"\n",
+            "mkdir -p \"$dir\"\n",
+            "file=\"$dir/native-account.jsonl\"\n",
+            "now=$(date -u +%Y-%m-%dT%H:%M:%SZ)\n",
+            "printf '{\"type\":\"session\",\"id\":\"omp-account-history\",\"cwd\":\"%s\",\"timestamp\":\"%s\"}\\n' \"$PWD\" \"$now\" > \"$file\"\n",
+            "printf '{\"type\":\"message\",\"timestamp\":\"%s\",\"message\":{\"role\":\"user\",\"content\":\"ACCOUNT_HISTORY_PROBE\"}}\\n' \"$now\" >> \"$file\"\n",
+            "printf '{\"schema\":\"mindplayer.omp-account.v1\",\"launchId\":\"%s\",\"sessionId\":\"omp-account-history\",\"sourceFile\":\"%s\",\"state\":\"observed\",\"provider\":\"fixture-provider\",\"model\":\"fixture-model\",\"credentialId\":4,\"kind\":\"oauth\",\"email\":\"kept@example.test\"}' \"$MINDPLAYER_OMP_ACCOUNT_LAUNCH_ID\" \"$file\" > \"$MINDPLAYER_OMP_ACCOUNT_FILE.staged\"\n",
+            "mv \"$MINDPLAYER_OMP_ACCOUNT_FILE.staged\" \"$MINDPLAYER_OMP_ACCOUNT_FILE\"\n",
+            "printf 'ready\\n' > \"$MINDPLAYER_OMP_PICKER_READY\"\n",
+            "printf 'OMP-ACCOUNT-FIXTURE-READY\\n'\n",
+            "exec cat\n",
+        ),
+    );
+    choose_omp(mp);
+    mp.send(b"\r");
+    mp.expect("Label / subject", STEP_TIMEOUT, "OMP label");
+    mp.send(b"ACCOUNT_HISTORY_PROBE\r");
+    mp.expect(
+        "OMP-ACCOUNT-FIXTURE-READY",
+        STARTUP_TIMEOUT,
+        "scripted OMP launched",
+    );
+    mp.expect(
+        "omp · kept@example.test",
+        STEP_TIMEOUT,
+        "the running pane shows its response account",
+    );
+    assert!(
+        mp.wait_until(STEP_TIMEOUT, |_| stored_accounts(&root)
+            == ["kept@example.test · fixture-provider"]),
+        "the response account is saved while the pane runs: {:?}",
+        stored_accounts(&root)
+    );
+    assert_account_survives_a_restart(mp, "kept@");
 }
 
 fn send_line(mp: &mut Mp, line: &str) {

@@ -9,6 +9,8 @@ use mindplayer_core::accounts::{
     accounts_from_saved, merge_accounts, read_saved_accounts, save_accounts, Account, AccountError,
     Role, Slot, MULTI_ACCOUNT_AGENTS,
 };
+use mindplayer_core::claude_auth::{known_plan_label, plan_label};
+use mindplayer_core::limits::QuotaRow;
 
 /// Marks a pane that is signing an account in rather than running a session.
 pub(crate) const LOGIN_PREFIX: &str = "login:";
@@ -139,6 +141,64 @@ impl App {
     /// has to say which one it is about.
     pub(crate) fn provider_has_several_logins(&self, agent: Agent) -> bool {
         self.accounts.iter().filter(|a| a.provider == agent).count() > 1
+    }
+
+    /// The plan label for a Claude account: its stored plan, else the usage reading's, else `unknown plan`.
+    pub(crate) fn claude_plan_label(&self, account: &Account, rows: &[QuotaRow]) -> String {
+        let read = rows
+            .iter()
+            .filter(|row| row.agent == account.provider && row.account == account.name)
+            .find_map(|row| row.plan.as_deref());
+        known_plan_label(account.claude_plan.as_deref())
+            .or_else(|| known_plan_label(read))
+            .unwrap_or_else(|| plan_label("unknown"))
+    }
+
+    /// The login a Claude account's usage was read with, when the profile could be read.
+    pub(crate) fn live_usage_identity<'a>(
+        &self,
+        account: &Account,
+        rows: &'a [QuotaRow],
+    ) -> Option<&'a str> {
+        rows.iter()
+            .filter(|row| row.agent == account.provider && row.account == account.name)
+            .find_map(|row| row.identity.as_deref())
+    }
+
+    /// The first earlier Claude account on this account's subscription, by usage login or, when asked, by stored binding.
+    pub(crate) fn same_subscription_as(
+        &self,
+        account: &Account,
+        rows: &[QuotaRow],
+        include_stored: bool,
+    ) -> Option<String> {
+        if account.provider != Agent::Claude {
+            return None;
+        }
+        let live = self.live_usage_identity(account, rows);
+        let stored = account.identity_fingerprint();
+        self.accounts
+            .iter()
+            .take_while(|other| !(other.provider == account.provider && other.slot == account.slot))
+            .filter(|other| other.provider == Agent::Claude)
+            .find(|other| {
+                let same_live = live.is_some() && self.live_usage_identity(other, rows) == live;
+                let same_stored =
+                    include_stored && stored.is_some() && other.identity_fingerprint() == stored;
+                same_live || same_stored
+            })
+            .map(|other| other.name.clone())
+    }
+
+    /// True when the bound login differs from the one this account's usage was read with.
+    pub(crate) fn usage_login_changed(&self, account: &Account, rows: &[QuotaRow]) -> bool {
+        match (
+            account.identity_fingerprint(),
+            self.live_usage_identity(account, rows),
+        ) {
+            (Some(stored), Some(live)) => stored != live,
+            _ => false,
+        }
     }
 
     /// The logins a usage refresh should read, which is every one that could
@@ -385,7 +445,7 @@ impl App {
             .as_ref()
             .and_then(|p| p.confirm_identity.clone());
         if let Some((pending_account, fingerprint, cwd)) = pending {
-            if pending_account == account {
+            if pending_account.eq_ignoring_login_facts(&account) {
                 self.inspect_account_identity(&account, Some((fingerprint, cwd)));
                 return;
             }
@@ -472,15 +532,22 @@ impl App {
             return;
         }
 
-        // Erasing the slot is the point: leaving it behind is what made
-        // removing an account look like it had not worked.
-        let account = self.accounts.remove(i);
-        match mindplayer_core::accounts::forget_login(&account, &limits_home_for_app()) {
-            // Already out of the list; say what was left rather than put it
-            // back and lose the removal too.
+        match self.forget_account_at(i) {
+            // Already out of the list, so say what was left rather than put it back.
             Err(e) => self.set_error(e),
             Ok(()) => self.status = format!("removed {name} and erased its login"),
         }
+        self.after_account_removed();
+    }
+
+    /// Take the account at `i` out of the list and erase its login home, since a home left behind made removal look undone.
+    pub(super) fn forget_account_at(&mut self, i: usize) -> Result<(), String> {
+        let account = self.accounts.remove(i);
+        mindplayer_core::accounts::forget_login(&account, &limits_home_for_app())
+    }
+
+    /// Save the shorter list and put the cursor back on a row that exists.
+    pub(super) fn after_account_removed(&mut self) {
         self.persist_accounts();
         self.accounts_cancel_remove();
         self.accounts_move(0);
@@ -671,6 +738,7 @@ impl App {
         if let Some(panel) = self.accounts_panel.as_mut() {
             if let Some(name) = panel.new_name.as_mut() {
                 name.push(c);
+                panel.error = None;
             }
         }
     }
@@ -679,6 +747,7 @@ impl App {
         if let Some(panel) = self.accounts_panel.as_mut() {
             if let Some(name) = panel.new_name.as_mut() {
                 name.pop();
+                panel.error = None;
             }
         }
     }
@@ -741,6 +810,14 @@ impl App {
         self.accounts_cancel_add();
         self.clear_error();
         self.request_login(&account);
+        if account.provider == Agent::Claude {
+            self.account_auth.mark_fresh(&account);
+            self.status = format!(
+                "{}: 로그인 중 — 끝나면 로그인한 계정을 확인하고 바로 등록합니다",
+                account.name
+            );
+            return;
+        }
         // Signing in does not decide anything by itself, and a pane that just
         // says "logged in" leaves the next step to be guessed. Say it.
         self.status = format!(
@@ -771,12 +848,7 @@ impl App {
             self.set_error(AccountError::Duplicate(name.to_string()).to_string());
             return;
         }
-        // A label-only rename keeps the home; hidden panes need not block it.
-        if self.count_panes_on(&account, self.panes.iter()) > 0 {
-            self.set_error("a pane is running on this account — close it first");
-            return;
-        }
-
+        // A label-only rename keeps the home, so open panes follow the new name.
         self.accounts[i].name = name.to_string();
         let renamed = self.accounts[i].clone();
         self.relabel_after_rename(&[(account.clone(), renamed)]);
@@ -872,6 +944,14 @@ impl App {
             // Native login can replace credentials; never precede it with
             // logout, especially for the shared default home.
             self.request_login(&account);
+            if let Some(plan) = known_plan_label(account.claude_plan.as_deref())
+                .filter(|_| account.provider == Agent::Claude)
+            {
+                self.status = format!(
+                    "{}: {plan} 로 로그인하세요 — 브라우저가 다른 조직을 보이면 조직을 바꾼 뒤 승인하세요",
+                    account.name
+                );
+            }
             return;
         }
         if account.is_inherited() {

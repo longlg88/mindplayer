@@ -61,7 +61,10 @@ OPTIONS:
 
 On the first screen choose 'working dir' (this DIR) or 'global' (all sessions).
 After scanning, open a session directly. Codex and Claude use the CLI currently
-installed on PATH, with their native input and controls. Kiro / Cursor sessions
+installed on PATH, with their native input and controls. Before a Codex, Claude or
+OMP session starts, MindPlayer runs that CLI's own `update` unless it ran within
+the last 10 minutes; a failed update never blocks the session, and
+MINDPLAYER_CLI_UPDATE=0 turns this off. Kiro / Cursor sessions
 also keep their native controls. OMP runs independently; Ctrl-X returns to the list,
 Ctrl-Z zooms, Tab or Alt-W switches panes, and Ctrl-Q or Alt-Q closes its pane.";
 
@@ -367,6 +370,9 @@ fn run(terminal: &mut Terminal<CrosstermBackend<FrameSink>>, app: &mut App) -> R
         // the normal event-loop clock even when no further key arrives.
         app.flush_terminal_reply_guards();
         if app.poll_account_auth() {
+            needs_draw = true;
+        }
+        if app.poll_cli_freshness() {
             needs_draw = true;
         }
         if app.raise_unusable_prompt() {

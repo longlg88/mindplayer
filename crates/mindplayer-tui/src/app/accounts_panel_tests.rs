@@ -95,6 +95,7 @@ fn confirming_a_live_codex_identity_binds_the_selected_account() {
         fingerprint: "codex-user-test-fingerprint".into(),
         email: "person@example.test".into(),
         workspace: "workspace-test".into(),
+        plan: "unknown".into(),
     }));
 
     assert_eq!(
@@ -504,7 +505,7 @@ mod renaming {
     }
 
     #[test]
-    fn an_account_a_pane_is_running_on_is_not_renamed_underneath_it() {
+    fn an_account_with_an_open_pane_is_renamed_and_keeps_the_pane() {
         let (mut app, dir) = with_slot("rn-busy");
         let account = app.accounts.last().unwrap().clone();
         let mut live = super::super::tests::session("live-1", Agent::Codex, false);
@@ -513,8 +514,20 @@ mod renaming {
         app.focus_or_add_pane("live-1");
 
         type_name(&mut app, "renamed");
-        assert!(app.accounts.iter().any(|a| a.name == "rn-busy"));
-        assert!(app.accounts_panel.as_ref().unwrap().error.is_some());
+        let panel = app.accounts_panel.as_ref().unwrap();
+        assert_eq!(panel.error, None);
+        assert!(
+            panel.new_name.is_none(),
+            "the name box must close after a rename"
+        );
+        let renamed = app
+            .accounts
+            .iter()
+            .find(|a| a.name == "renamed")
+            .expect("a label-only rename must not wait for the pane to close")
+            .clone();
+        assert_eq!(renamed.slot, account.slot);
+        assert_eq!(app.pane_count_on(&renamed), 1);
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -1547,6 +1560,7 @@ mod shared_accounts_file {
                 fingerprint: "codex-user-renamed-meanwhile".into(),
                 email: "person@example.test".into(),
                 workspace: "workspace-test".into(),
+                plan: "unknown".into(),
             })
         };
         // The first answer was read for the account as it was, so the bind is checked once more.

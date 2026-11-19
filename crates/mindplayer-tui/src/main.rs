@@ -9,9 +9,9 @@ mod links;
 mod local_router;
 mod mascot;
 mod observe;
+mod omp_account;
 mod pty;
 mod render_writer;
-mod startup_routing;
 mod terminal_view;
 mod turn_status;
 mod ui;
@@ -60,13 +60,9 @@ OPTIONS:
                               never removes or reorders your existing hooks)
 
 On the first screen choose 'working dir' (this DIR) or 'global' (all sessions).
-After scanning, open a session directly. Codex starts with Jev ON when a Jev key is
-configured, and OFF without one: F6 toggles Jev ON/OFF in the native input row for the
-same session. The mode remains for subsequent prompts;
-selection alone never submits. Enter submits using the current mode. Jev ON sends
-the bounded judgment context externally. OFF keeps the current native model and
-effort and makes no Jev call. Claude / Kiro / Cursor sessions keep their native
-input and controls. OMP runs independently; Ctrl-X returns to the list,
+After scanning, open a session directly. Codex and Claude use the CLI currently
+installed on PATH, with their native input and controls. Kiro / Cursor sessions
+also keep their native controls. OMP runs independently; Ctrl-X returns to the list,
 Ctrl-Z zooms, Tab or Alt-W switches panes, and Ctrl-Q or Alt-Q closes its pane.";
 
 const IDENTITY_HELPER_FLAG: &str = "--mindplayer-verify-codex-identity";
@@ -373,13 +369,10 @@ fn run(terminal: &mut Terminal<CrosstermBackend<FrameSink>>, app: &mut App) -> R
         if app.poll_account_auth() {
             needs_draw = true;
         }
-        if app.startup_routing.poll() {
+        if app.raise_unusable_prompt() {
             needs_draw = true;
         }
-        if !app.startup_routing.active() && app.raise_unusable_prompt() {
-            needs_draw = true;
-        }
-        if app.screen == Screen::Main && !app.startup_routing.active() && app.pending.is_some() {
+        if app.screen == Screen::Main && app.pending.is_some() {
             // Pane sizes are normally recorded by `ui::render`, but publishing
             // that first layout used to expose a transient `starting...` frame
             // before the PTY existed. Measure the exact same layout against an
@@ -495,7 +488,6 @@ fn run(terminal: &mut Terminal<CrosstermBackend<FrameSink>>, app: &mut App) -> R
             // Drain everything queued this frame so pastes / fast typing aren't
             // throttled to one event per frame.
             loop {
-                let startup_input = app.screen == Screen::Main && app.startup_routing.active();
                 match event::read()? {
                     Event::Key(key) if key.kind != KeyEventKind::Release => {
                         handle_key(app, key);
@@ -507,16 +499,13 @@ fn run(terminal: &mut Terminal<CrosstermBackend<FrameSink>>, app: &mut App) -> R
                         }
                     }
                     Event::Paste(text) => {
-                        if !app.startup_routing.active() && app.paste_to_pty(&text) {
+                        if app.paste_to_pty(&text) {
                             needs_draw = true;
                         }
                     }
                     Event::Resize(_, _) => needs_draw = true,
                     _ => {}
                 }
-                // Publish the Jev disclosure after a choice change before
-                // accepting a queued Enter as consent. Normal native typing
-                // continues to drain the whole event batch below.
                 // The Unix TTY backend checks its deadline before buffered
                 // events. A zero timeout would leave those keys for later frames.
                 let drain_poll = if cfg!(unix) {
@@ -524,7 +513,7 @@ fn run(terminal: &mut Terminal<CrosstermBackend<FrameSink>>, app: &mut App) -> R
                 } else {
                     Duration::ZERO
                 };
-                if startup_input || !event::poll(drain_poll)? {
+                if !event::poll(drain_poll)? {
                     break;
                 }
             }
@@ -562,7 +551,7 @@ fn run(terminal: &mut Terminal<CrosstermBackend<FrameSink>>, app: &mut App) -> R
 /// Mouse wheel: scroll the live session's scrollback (so history that ran off
 /// the top is readable) or move the list selection. Returns true to redraw.
 fn handle_mouse(app: &mut App, me: MouseEvent) -> bool {
-    if app.screen != Screen::Main || app.startup_routing.active() {
+    if app.screen != Screen::Main {
         return false;
     }
     const STEP: isize = 3;
@@ -790,26 +779,6 @@ fn handle_key(app: &mut App, key: KeyEvent) {
 }
 
 fn handle_main_key(app: &mut App, key: KeyEvent) {
-    if app.startup_routing.active() {
-        use startup_routing::StartupStage;
-        let stage = app.startup_routing.stage;
-        if key.modifiers.contains(KeyModifiers::CONTROL)
-            && normalize_shortcut(key.code) == KeyCode::Char('c')
-        {
-            app.quit();
-        } else if (key.modifiers & !KeyModifiers::SHIFT).is_empty() {
-            match normalize_shortcut(key.code) {
-                KeyCode::Esc | KeyCode::Char('q') if stage == StartupStage::Choice => app.quit(),
-                KeyCode::Esc => app.startup_routing.back(),
-                KeyCode::Left | KeyCode::Right | KeyCode::Up | KeyCode::Down => {
-                    app.startup_routing.toggle();
-                }
-                KeyCode::Enter => app.startup_routing.confirm(),
-                _ => {}
-            }
-        }
-        return;
-    }
     // Checked first because it is drawn over every other popup, so the key goes where the eye is.
     if app.unusable_prompt.is_some() {
         match key.code {
@@ -1430,8 +1399,7 @@ mod tests {
         let mut app = App::new_in(std::env::temp_dir());
         app.screen = Screen::Main;
         app.focus = Focus::List;
-        app.startup_routing =
-            startup_routing::StartupRouting::confirmed(startup_routing::RoutingMode::Native);
+
         app
     }
 
@@ -1555,11 +1523,6 @@ mod tests {
             KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE),
         );
         assert_eq!(app.new_picker, Some(0));
-        assert_eq!(
-            app.startup_routing.mode(),
-            Some(startup_routing::RoutingMode::PerPrompt)
-        );
-        assert!(!app.startup_routing.active());
         assert!(app.pending.is_none());
         assert!(app.ptys.is_empty());
     }
@@ -1638,7 +1601,7 @@ mod tests {
     }
 
     #[test]
-    fn codex_choice_keys_keep_the_native_child_encoding() {
+    fn native_function_keys_keep_the_child_encoding() {
         for (code, expected) in [
             (KeyCode::F(6), b"\x1b[17~".as_slice()),
             (KeyCode::F(7), b"\x1b[18~".as_slice()),
@@ -1667,7 +1630,7 @@ mod tests {
         }
 
         let mut app = main_app();
-        app.startup_routing = startup_routing::StartupRouting::per_prompt();
+
         app.focus = Focus::Terminal;
         for agent in [Agent::Codex, Agent::Claude] {
             let id = format!("choice-keys-{}-{}", agent.as_str(), std::process::id());
@@ -1680,14 +1643,7 @@ mod tests {
                 cwd: std::env::temp_dir(),
                 env: Default::default(),
             };
-            let child = pty::PtySession::spawn_with_routing(
-                &command,
-                &id,
-                10,
-                100,
-                startup_routing::RoutingMode::Native,
-            )
-            .unwrap();
+            let child = pty::PtySession::spawn(&command, &id, 10, 100).unwrap();
             app.ptys.insert(id.clone(), child);
             app.pane_accounts
                 .insert(id.clone(), (agent, "native-key-test".into()));
@@ -1853,107 +1809,6 @@ mod tests {
                 assert_eq!(app.focused, focused, "Tab must return to the original pane");
             }
         }
-    }
-
-    #[test]
-    fn session_jev_help_describes_the_key_gated_default_without_f7() {
-        assert!(HELP.contains("Codex"));
-        assert!(HELP.contains("F6"));
-        assert!(HELP.contains("starts with Jev ON when a Jev key is"));
-        assert!(HELP.contains("OFF without one"));
-        assert!(HELP.contains("same session"));
-        assert!(HELP.contains("subsequent prompts"));
-        assert!(!HELP.contains("F7"));
-        assert!(!HELP.contains("fresh input-row choice"));
-        assert!(!HELP.contains("sessions inherit the choice"));
-        assert!(!HELP.contains("startup configuration sheet"));
-    }
-
-    #[test]
-    fn startup_sheet_owns_list_keys_until_one_run_local_choice() {
-        let mut app = main_app_with_session("startup-readonly");
-        app.startup_routing = startup_routing::StartupRouting::default();
-        for code in [
-            KeyCode::Char('n'),
-            KeyCode::Char('u'),
-            KeyCode::Char('h'),
-            KeyCode::Char(' '),
-            KeyCode::Char('/'),
-            KeyCode::Char('v'),
-        ] {
-            handle_main_key(&mut app, KeyEvent::new(code, KeyModifiers::NONE));
-        }
-        assert!(app.startup_routing.active());
-        assert!(app.pending.is_none());
-        assert!(app.accounts_panel.is_none());
-        assert!(app.ptys.is_empty());
-        assert!(app.search_query.is_none());
-        handle_main_key(&mut app, KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
-        assert_eq!(
-            app.startup_routing.selection,
-            startup_routing::RoutingMode::Jev
-        );
-        handle_main_key(&mut app, KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
-        handle_main_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-        assert_eq!(
-            app.startup_routing.mode(),
-            Some(startup_routing::RoutingMode::Native)
-        );
-        assert!(
-            app.pending.is_none(),
-            "choice must not also open selected session"
-        );
-        assert!(app.ptys.is_empty());
-    }
-
-    #[test]
-    fn startup_mouse_cannot_open_or_focus_a_session() {
-        let mut app = main_app_with_session("startup-mouse");
-        app.startup_routing = startup_routing::StartupRouting::default();
-        assert!(!handle_mouse(
-            &mut app,
-            MouseEvent {
-                kind: MouseEventKind::Down(MouseButton::Left),
-                column: 4,
-                row: 4,
-                modifiers: KeyModifiers::NONE,
-            },
-        ));
-        assert!(app.pending.is_none());
-        assert_eq!(app.focus, Focus::List);
-    }
-
-    #[test]
-    fn startup_confirmation_requires_unmodified_enter_and_c_has_no_consent_action() {
-        let mut app = main_app();
-        app.startup_routing = startup_routing::StartupRouting::default();
-        app.startup_routing.selection = startup_routing::RoutingMode::Jev;
-        handle_main_key(
-            &mut app,
-            KeyEvent::new(KeyCode::Char('c'), KeyModifiers::ALT),
-        );
-        handle_main_key(
-            &mut app,
-            KeyEvent::new(KeyCode::Char('C'), KeyModifiers::SHIFT),
-        );
-        handle_main_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::ALT));
-        assert!(app.startup_routing.active());
-        assert_eq!(
-            app.startup_routing.stage,
-            startup_routing::StartupStage::Choice
-        );
-        assert_eq!(app.startup_routing.mode(), None);
-        assert!(app.pending.is_none());
-        handle_main_key(
-            &mut app,
-            KeyEvent::new(
-                KeyCode::Char('C'),
-                KeyModifiers::CONTROL | KeyModifiers::SHIFT,
-            ),
-        );
-        assert!(app.should_quit);
-        assert!(app.startup_routing.active());
-        assert!(app.pending.is_none());
     }
 
     #[test]

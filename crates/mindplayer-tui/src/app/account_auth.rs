@@ -1062,7 +1062,7 @@ macro_rules! lifecycle_tests {
                 other.cwd = pending.command.cwd.clone();
                 app.verify_account_launch(&account, pending);
                 app.all_sessions.push(other);
-                app.merge_extras();
+                app.merge_extras(&mut None);
                 assert!(app.extra_sessions.iter().any(|s| s.id == synthetic_id));
                 assert_eq!(app.active.as_deref(), Some(synthetic_id.as_str()));
             }
@@ -1085,6 +1085,72 @@ macro_rules! lifecycle_tests {
                     app.pending_initial_inputs["resume"].bytes,
                     b"handoff context\n\n---\n\npeer sync\r"
                 );
+            }
+
+            #[test]
+            fn verified_resume_records_the_renamed_launch_account() {
+                let home = super::super::tests::fresh_login_test_home();
+                for isolated in [false, true] {
+                    let mut account = if isolated {
+                        Account::isolated(&home, provider(), "isolated-original").unwrap()
+                    } else {
+                        account()
+                    };
+                    account.name = if isolated { "isolated-renamed" } else { "cobalt" }.into();
+                    account.set_identity_fingerprint(Some("expected".into()));
+                    let mut app = app(&account);
+                    let mut session =
+                        super::super::tests::session("resume-provenance", provider(), false);
+                    session.file = if isolated {
+                        account.session_root(&home).join("record.jsonl")
+                    } else {
+                        // Discovery overrides can put the inherited transcript
+                        // outside the ordinary provider root.
+                        home.join("overridden-discovery").join("record.jsonl")
+                    };
+                    app.all_sessions.push(session.clone());
+                    let mut launch = pending(&account, &session.id);
+                    launch.command.program = "/bin/sh".into();
+                    launch.command.args = vec!["-c".into(), "cat".into()];
+                    app.pending = Some(launch);
+
+                    app.spawn_pending();
+                    assert!(!app.ptys.contains_key(&session.id));
+                    assert!(!app.pane_accounts.contains_key(&session.id));
+                    if !isolated {
+                        assert_eq!(app.pane_account_label(&session.id), None);
+                    }
+                    app.complete_account_checks_for_test(identity("expected"));
+                    app.spawn_pending();
+
+                    assert!(app.ptys.contains_key(&session.id), "{}", app.status);
+                    assert_eq!(
+                        app.pane_accounts.get(&session.id),
+                        Some(&(provider(), account.name.clone()))
+                    );
+                    assert_eq!(
+                        app.pane_account_label(&session.id),
+                        Some(account.name.as_str())
+                    );
+                    assert_eq!(app.account_of_session(&session), account);
+
+                    // An ID shared with another provider cannot inherit this
+                    // launch's account.
+                    app.all_sessions[0].agent = Agent::Omp;
+                    assert_eq!(app.pane_account_label(&session.id), None);
+                    assert_eq!(
+                        app.account_of_session(&app.all_sessions[0]).provider,
+                        Agent::Omp
+                    );
+                    app.all_sessions[0].agent = provider();
+                    app.accounts.clear();
+                    assert_eq!(
+                        app.pane_account_label(&session.id),
+                        Some(account.name.as_str()),
+                        "a registry refresh cannot erase a running pane's launch provenance"
+                    );
+                    app.ptys.remove(&session.id).unwrap().kill();
+                }
             }
 
             #[test]

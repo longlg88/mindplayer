@@ -202,6 +202,17 @@ impl App {
     }
 
     pub(crate) fn remove_pane(&mut self, sid: &str) {
+        // A removed prelaunch pane must never appear again when its queued
+        // command reaches the front. Keep every other launch in order.
+        self.pending_queue
+            .retain(|pending| pending.session_id != sid);
+        if self
+            .pending
+            .as_ref()
+            .is_some_and(|pending| pending.session_id == sid)
+        {
+            self.pending = self.pending_queue.pop_front();
+        }
         if self.is_running(sid) {
             // Ctrl-Q only hides a live PTY. Its login still owns this home
             // until reap_pty observes exit and resumes any held launch.
@@ -327,37 +338,13 @@ impl App {
         self.ptys.contains_key(id) && !self.ended.contains(id)
     }
 
-    pub(super) fn refresh_native_owners(&self) {
-        // List actions may arrive between interval-gated hook polls. Refresh
-        // only the private ownership channels before choosing a child to act on.
-        for pty in self.ptys.values() {
-            pty.poll_routing_status();
-        }
-    }
-
     /// Resolve a source row to its PTY without moving the child's stable pane key.
     pub(super) fn pty_owner_for_source(&self, source: &Session) -> Option<String> {
-        let mut owners = self.ptys.iter().filter_map(|(id, pty)| {
-            if pty
-                .routing_thread_id()
-                .is_some_and(|thread| thread != source.id)
-            {
-                return None;
-            }
-            let matches = if id == &source.id {
-                self.is_unique_runtime_source(source)
-            } else {
-                source.agent == Agent::Codex
-                    && pty.routing_thread_id().as_deref() == Some(source.id.as_str())
-                    && self.native_rollout_file(id, &source.id) == Some(source.file.as_path())
-            };
-            matches.then_some(id)
-        });
-        let owner = owners.next()?;
-        owners.next().is_none().then(|| owner.clone())
+        (self.ptys.contains_key(&source.id) && self.is_unique_runtime_source(source))
+            .then(|| source.id.clone())
     }
 
-    fn is_unique_runtime_source(&self, source: &Session) -> bool {
+    pub(super) fn is_unique_runtime_source(&self, source: &Session) -> bool {
         let mut candidates = self
             .all_sessions
             .iter()
@@ -370,14 +357,9 @@ impl App {
         })
     }
 
-    /// An unresolved or moved native thread must not be overwritten or closed
-    /// through an old ID while its source lookup is still pending.
+    /// Ambiguous source rows cannot overwrite or close a live pane.
     pub(super) fn source_runtime_conflicts(&self, source: &Session) -> bool {
-        self.ptys.iter().any(|(id, pty)| {
-            !self.ended.contains(id)
-                && (id == &source.id
-                    || pty.routing_thread_id().as_deref() == Some(source.id.as_str()))
-        }) && self.pty_owner_for_source(source).is_none()
+        self.is_running(&source.id) && self.pty_owner_for_source(source).is_none()
     }
 
     /// Refresh per-session output-activity tracking from each PTY's read
@@ -473,21 +455,7 @@ impl App {
         let Some(pty) = self.ptys.get(id) else {
             return SessionStatus::Inactive;
         };
-        let native = self
-            .codex_turns
-            .get(id)
-            .filter(|reader| {
-                let owned = pty.routing_thread_id();
-                owned.is_none()
-                    || source
-                        .filter(|s| {
-                            Some(s.id.as_str()) == owned.as_deref() && s.agent == Agent::Codex
-                        })
-                        .map(|s| s.file.as_path())
-                        .or_else(|| self.codex_rollout_file(id))
-                        == Some(reader.file())
-            })
-            .and_then(|r| r.status());
+        let native = self.codex_turns.get(id).and_then(|reader| reader.status());
         if pty.looks_blocked()
             || self
                 .hook_status
@@ -498,24 +466,6 @@ impl App {
         }
         if let Some(status) = native {
             return status;
-        }
-        // The pane-owned router already correlates actual turn events, even
-        // when rollout discovery/tailing has not caught up. Pending/ACK stages
-        // stay idle until actual start; only a terminal turn event earns green.
-        if let Some(status) = pty.routing_status() {
-            use crate::local_router::RoutingStage;
-            match status.stage {
-                RoutingStage::Completed if status.turn_id.is_some() => {
-                    return SessionStatus::Completed
-                }
-                RoutingStage::Running => return SessionStatus::Working,
-                RoutingStage::Judging
-                | RoutingStage::Requested
-                | RoutingStage::Accepted
-                | RoutingStage::Failed
-                | RoutingStage::Interrupted => return SessionStatus::Idle,
-                _ => {}
-            }
         }
         if let Some(reading) = self.hook_status.get(id) {
             let codex = source.map(|s| s.agent == Agent::Codex).unwrap_or_else(|| {
@@ -540,22 +490,15 @@ impl App {
         )
     }
 
-    /// Native /resume and /fork can change the thread without replacing its
-    /// PTY/pane ID. Only the pane-owned protocol can select its current source.
+    /// Follow the rollout belonging to the pane's recorded native session.
     fn codex_rollout_file(&self, id: &str) -> Option<&Path> {
-        let owned = self.ptys.get(id).and_then(|pty| pty.routing_thread_id());
-        let thread = owned.as_deref().unwrap_or(id);
-        if let Some(file) = self.native_rollout_file(id, thread) {
-            return Some(file);
-        }
         self.all_sessions
             .iter()
             .find(|session| {
-                session.id == thread
+                session.id == id
                     && session.agent == Agent::Codex
                     && !session.archived
                     && !session.file.as_os_str().is_empty()
-                    && (thread == id || self.same_codex_source_account(id, session))
             })
             .map(|session| session.file.as_path())
     }
@@ -574,28 +517,17 @@ impl App {
         let live_ids = self.hook_poll_batch();
         let mut changed = false;
         for id in &live_ids {
-            if let Some(pty) = self.ptys.get(id) {
-                changed |= pty.poll_routing_status();
-            }
-        }
-        changed |= self.reconcile_codex_clears();
-        for id in &live_ids {
-            changed |= self.poll_native_switch(id);
             if self.ended.contains(id) {
                 continue;
+            }
+            if let Some(pty) = self.ptys.get_mut(id) {
+                changed |= pty.poll_omp_account();
             }
             if let Some(file) = self.codex_rollout_file(id).map(Path::to_path_buf) {
                 if self.codex_turns.get(id).is_none_or(|r| r.file() != file) {
                     self.codex_turns
                         .insert(id.clone(), crate::turn_status::TurnStatusReader::new(file));
                 }
-            } else if self
-                .ptys
-                .get(id)
-                .and_then(|pty| pty.routing_thread_id())
-                .is_some()
-            {
-                self.codex_turns.remove(id);
             }
             if let Some(reader) = self.codex_turns.get_mut(id) {
                 changed |= reader.poll();
@@ -636,11 +568,7 @@ impl App {
 
     /// Capture provenance before dispatch, so a fast agent cannot write a new
     /// completion before the old event has been invalidated. No file is deleted.
-    fn reset_turn_status(
-        &mut self,
-        id: &str,
-        force_reset: bool,
-    ) -> Option<crate::local_router::RoutingStatus> {
+    fn reset_turn_status(&mut self, id: &str, force_reset: bool) {
         // Enter can approve a tool in the current turn, not start a new turn.
         // Keep its correlation ID until a native start event supersedes it.
         let preserve_active = !force_reset
@@ -669,9 +597,6 @@ impl App {
         }
         self.submitted_at.remove(id);
         self.hook_status_due = None;
-        (!preserve_active)
-            .then(|| self.ptys.get(id).and_then(|pty| pty.routing_status()))
-            .flatten()
     }
 
     /// Reset against the pre-delivery file boundary, but roll back if the
@@ -695,11 +620,8 @@ impl App {
             self.hook_status_due,
             self.out_at.get(id).copied(),
         );
-        let routing_to_retire = self.reset_turn_status(id, force_reset);
+        self.reset_turn_status(id, force_reset);
         if self.ptys.get_mut(id).is_some_and(send) {
-            if let Some(status) = routing_to_retire {
-                self.ptys.get_mut(id).unwrap().retire_routing_status(status);
-            }
             return true;
         }
         restore_tracking(&mut self.hook_status, id, previous.0);
@@ -796,7 +718,7 @@ impl App {
         let Some(session) = self.selected_session().cloned() else {
             return;
         };
-        self.refresh_native_owners();
+
         if !self.can_resume_source(&session) {
             return;
         }
@@ -930,7 +852,6 @@ impl App {
     /// visible order (capped at MAX_PANES) so the pane order is predictable.
     /// Clears the marks and leaves multi-select mode afterward.
     pub fn launch_marked(&mut self) {
-        self.refresh_native_owners();
         self.multi_select = false;
         if self.marked.is_empty() {
             self.request_resume();

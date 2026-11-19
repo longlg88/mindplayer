@@ -82,6 +82,44 @@ the resulting minimum version.)
 
 ### Unreleased
 
+- **2.1.0:** show Claude account labels even with one configured account and
+  bind verified launch identities to their panes. Observe native OMP response
+  credentials for OAuth account/workspace or API-key ID display; revoke stale
+  attribution on account, model, or session changes without copying tokens or
+  pinning the installed OMP executable. Unobserved identities remain unverified.
+- Replace ambiguous `saved` status with `not open`, and use
+  `no sessions open here` when no sessions are open in this instance.
+- Add native OMP identity-transition coverage and offline observer regressions
+  to CI and release checks.
+
+- **2.0.1:** keep one temporary session row across catalog refreshes and replace
+  it when the native transcript is discovered. Preserve selection through adoption
+  so an immediate close targets the intended session rather than its neighbor.
+- Cancel only the selected session's pending/queued launch and authentication
+  when closing it. Remove new/handoff placeholders consistently, including ended
+  sessions without transcripts. Never claim a late file for a child that did not run.
+- Correlate pending labels and handoff metadata with their in-process owner.
+  Adoption consumes and persists only that owner's records; recent neighboring
+  sessions and same-parent handoff siblings retain their metadata.
+- Add isolated real-TUI coverage for refresh before transcript creation,
+  delayed transcript adoption, close during held authentication, and persistence
+  across restart. Preserve native transcript files and Ctrl-Q's hide-live behavior.
+
+- **2.0.0 — breaking:** use the installed PATH CLI for Codex and Claude
+  new/resume/handoff/login launches instead of the private frozen Codex build.
+  Remove integrated F6 Jev routing, embedded Node launcher assets and router UI.
+  CLI replacement or symlink retargeting affects subsequent launches without
+  replacing existing panes; changing PATH itself requires restarting MindPlayer.
+  MindPlayer does not download or update provider CLIs.
+- Preserve account environments, cwd, resume arguments, handoff context, Claude
+  fullscreen settings and OMP launch behavior. Leave existing credentials and
+  private Codex installations untouched.
+- Add native PTY regressions for executable replacement and symlink retargeting
+  across resume, new session and handoff, plus an opt-in installed-CLI version smoke.
+- Remove private-router-only list identity migration after in-CLI `/clear`,
+  `/resume` and `/fork`. The native commands remain available, but the list keeps
+  the launch-time session binding; rediscover/select the new session for list actions.
+
 - In 1.0.9, move provider identity to a fixed left column beside the handoff tree
   and task title, retaining the title's cell budget and right-side account/status
   metadata. Start each account's quota on its own row; only that account's windows

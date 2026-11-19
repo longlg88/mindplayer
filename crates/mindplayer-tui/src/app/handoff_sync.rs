@@ -319,7 +319,7 @@ impl App {
         }
         let target = session.clone();
         let id = session.id.clone();
-        self.refresh_native_owners();
+
         let owner = self.pty_owner_for_source(session);
         let (tx, rx) = mpsc::channel();
         thread::spawn(move || {
@@ -407,7 +407,7 @@ impl App {
             })
             .collect();
         let target = session.clone();
-        self.refresh_native_owners();
+
         let owner = self.pty_owner_for_source(session);
         let cat_name = self.category_label(&cat);
         let (tx, rx) = mpsc::channel();
@@ -468,10 +468,9 @@ impl App {
         sync: DeferredSync,
     ) -> bool {
         let previous_status = self.status.clone();
-        self.refresh_native_owners();
+
         let owner = self.pty_owner_for_source(&sync.source);
-        if self.sync_target_was_cleared(&sync.source.id)
-            || !self.can_resume_source(&sync.source)
+        if !self.can_resume_source(&sync.source)
             || self.source_runtime_conflicts(&sync.source)
             || expected_owner
                 .as_ref()

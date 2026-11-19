@@ -220,14 +220,10 @@ fn cursor_report_tail(bytes: &[u8]) -> TerminalReplyPrefix {
 
 /// A live child process attached to a PTY, rendered in the right pane.
 pub struct PtySession {
-    /// Pane-owned metadata channel; it moves with this PTY when a provisional
-    /// session is adopted, independently of application session identifiers.
-    routing_status: Option<crate::local_router::RoutingStatusChannel>,
     /// Keeps the embedded OMP extension available for the pane's lifetime.
     _omp_picker: Option<mindplayer_core::resume::OmpPickerFile>,
-    /// A successfully delivered submission/interrupt retires the prior request,
-    /// including late ACK/model-report revisions, until a new request owns it.
-    routing_status_floor: Option<crate::local_router::RoutingStatus>,
+    /// Native credential observations and their private per-launch files.
+    omp_account: Option<crate::omp_account::OmpAccount>,
     /// vt100 screen state, updated by the reader thread.
     parser: Arc<Mutex<vt100::Parser>>,
     /// Set by the reader thread when new output arrives, so the UI only redraws
@@ -317,24 +313,7 @@ impl PtyWriter {
 }
 
 impl PtySession {
-    #[cfg(test)]
     pub fn spawn(cmd: &MpCommand, session_id: &str, rows: u16, cols: u16) -> Result<Self> {
-        Self::spawn_with_routing(
-            cmd,
-            session_id,
-            rows,
-            cols,
-            crate::startup_routing::RoutingMode::Jev,
-        )
-    }
-
-    pub(crate) fn spawn_with_routing(
-        cmd: &MpCommand,
-        session_id: &str,
-        rows: u16,
-        cols: u16,
-        routing_mode: crate::startup_routing::RoutingMode,
-    ) -> Result<Self> {
         // All Codex entry points (new, resume, handoff, login) select their
         // credentials through CODEX_HOME. Share only preferences, and stop
         // visibly on a preparation error instead of silently using stale ones.
@@ -347,12 +326,13 @@ impl PtySession {
             )
             .map_err(|e| anyhow::anyhow!("could not share Codex config: {e}"))?;
         }
-        // Use the same PTY/input surface, but put the local per-turn router
-        // between Codex's native UI and its app-server. Login is not routed.
-        let (mut cmd, routing_status) =
-            crate::local_router::prepare_spawn_for_mode(cmd, routing_mode)?;
+        // Keep the program name unresolved until the shell executes it, so
+        // every pane uses the CLI currently installed on PATH.
+        let mut cmd = crate::local_router::prepare(cmd)?;
         let omp_picker = mindplayer_core::resume::OmpPickerFile::prepare(&mut cmd)
             .map_err(|error| anyhow::anyhow!("could not prepare OMP model picker: {error}"))?;
+        let omp_account = crate::omp_account::OmpAccount::prepare(&mut cmd)
+            .map_err(|error| anyhow::anyhow!("could not prepare OMP account observer: {error}"))?;
         let rows = rows.max(1);
         let cols = cols.max(1);
         let pty_system = native_pty_system();
@@ -502,8 +482,7 @@ impl PtySession {
 
         Ok(Self {
             _omp_picker: omp_picker,
-            routing_status,
-            routing_status_floor: None,
+            omp_account,
             parser,
             dirty,
             seq,
@@ -524,9 +503,22 @@ impl PtySession {
         })
     }
 
+    /// Cached native OMP identity; rendering never reads sideband files.
+    pub fn omp_account_label(&self) -> Option<&str> {
+        self.omp_account
+            .as_ref()
+            .and_then(|account| account.label())
+    }
+
+    /// Refresh the account observer through the application's existing poll gate.
+    pub fn poll_omp_account(&mut self) -> bool {
+        self.omp_account
+            .as_mut()
+            .is_some_and(|account| account.poll())
+    }
+
     /// Returns true (and resets) if the screen changed since the last check.
     pub fn take_dirty(&self) -> bool {
-        let routing_changed = self.poll_routing_status();
         let mut expired = false;
         // Startup and idle repaint output intentionally do not stamp working
         // activity. Schedule timeout recovery independently of that badge so
@@ -538,63 +530,7 @@ impl PtySession {
                     .store(parser.synchronized_update_pending(), Ordering::Relaxed);
             }
         }
-        self.dirty.swap(false, Ordering::Relaxed) || expired || routing_changed
-    }
-
-    pub(crate) fn poll_routing_status(&self) -> bool {
-        self.routing_status
-            .as_ref()
-            .is_some_and(|channel| channel.poll())
-    }
-
-    pub(crate) fn routing_status(&self) -> Option<crate::local_router::RoutingStatus> {
-        self.routing_status
-            .as_ref()
-            .and_then(|channel| channel.snapshot())
-            .filter(|status| {
-                self.routing_status_floor.as_ref().is_none_or(|floor| {
-                    status.generation != floor.generation
-                        || status.thread_id != floor.thread_id
-                        || status.request_id != floor.request_id
-                })
-            })
-    }
-
-    /// Thread ownership outlives the displayed request. Retiring an old
-    /// completion must not rebind the rollout reader to the launch-time ID.
-    pub(crate) fn routing_thread_id(&self) -> Option<String> {
-        self.routing_status
-            .as_ref()
-            .and_then(|channel| channel.snapshot())
-            .and_then(|status| status.thread_id)
-    }
-
-    /// Continuity is owned lifecycle metadata, independent of whether the
-    /// current turn's display status has already been retired by local input.
-    pub(crate) fn routing_clear_target(&self, previous: &str) -> Option<String> {
-        let status = self.routing_status.as_ref()?.snapshot()?;
-        status
-            .clear_ancestors
-            .iter()
-            .any(|id| id == previous)
-            .then_some(status.thread_id)
-            .flatten()
-            .filter(|id| id != previous)
-    }
-
-    pub(crate) fn retire_routing_status(&mut self, status: crate::local_router::RoutingStatus) {
-        if !status.request_id.is_null() {
-            self.routing_status_floor = Some(status);
-        }
-    }
-
-    #[cfg(test)]
-    pub(crate) fn set_routing_status_for_test(
-        &mut self,
-        channel: crate::local_router::RoutingStatusChannel,
-    ) {
-        self.routing_status = Some(channel);
-        self.routing_status_floor = None;
+        self.dirty.swap(false, Ordering::Relaxed) || expired
     }
 
     #[cfg(test)]
@@ -862,20 +798,7 @@ impl Drop for PtySession {
     fn drop(&mut self) {
         // Never leave orphaned children or zombies behind.
         self.terminate();
-        // Termination/reaping precedes unlinking the channel Node may write.
-        self.routing_status.take();
     }
-}
-
-/// Use the same published frame that will be painted, not heuristics cached
-/// from a partially received synchronized repaint. Slash menus deliberately
-/// do not count as lifecycle Blocked, but still own their terminal rows.
-pub(crate) fn routing_overlay_blocked(screen: &vt100::Screen) -> bool {
-    let contents = screen.contents();
-    let tail = bottom_lines(&contents, 8);
-    text_looks_blocked(&contents)
-        || tail_looks_like_slash_command_menu(&tail)
-        || tail_looks_like_interactive_prompt(&tail)
 }
 
 fn scrollback_lines_from_env() -> usize {
@@ -2313,7 +2236,7 @@ mod account_env {
     }
 
     #[test]
-    fn routing_status_environment_never_reaches_an_unrouted_child() {
+    fn legacy_router_environment_never_reaches_a_native_child() {
         let cmd = MpCommand {
             program: "sh".into(),
             args: vec![
@@ -2332,7 +2255,6 @@ mod account_env {
         let session = PtySession::spawn(&cmd, "mp-unrouted-status-env-test", 4, 80).unwrap();
         let text = read_pane(&session, Duration::from_secs(10));
         assert!(text.contains("status=[unset]"), "{text}");
-        assert!(session.routing_status().is_none());
     }
 }
 

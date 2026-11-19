@@ -78,17 +78,16 @@ pub(crate) struct AccountMarks {
     home: PathBuf,
     accounts: Vec<Account>,
     pane_accounts: HashMap<String, (Agent, String)>,
-    /// Providers with more than one login, the only ones whose rows carry a name.
-    several: Vec<Agent>,
 }
 
 /// The longest account name the session list gives room to before cutting it.
 pub(crate) const ACCOUNT_COLUMN_MAX: usize = 12;
 
 impl AccountMarks {
-    /// The account this session belongs to and its position among its provider's logins, for every row of a provider with more than one login.
+    /// The source account label and its position among the provider's logins.
+    /// OMP owns its account pool; a MindPlayer slot is not its selected identity.
     pub(crate) fn label_for(&self, session: &Session) -> Option<(&str, usize)> {
-        if !self.several.contains(&session.agent) {
+        if session.agent == Agent::Omp {
             return None;
         }
         let owner = mindplayer_core::accounts::owner_of(
@@ -115,29 +114,24 @@ impl AccountMarks {
     pub(crate) fn width(&self) -> usize {
         self.accounts
             .iter()
-            .filter(|a| self.several.contains(&a.provider))
             .map(|a| a.name.chars().count())
             .max()
             .unwrap_or(0)
+            .max("unverified".len())
             .min(ACCOUNT_COLUMN_MAX)
     }
 }
 
 impl App {
-    /// Account labels for the session list, or `None` when no provider has a second account and the column would be empty.
+    /// Account labels remain visible even when a provider has only one login.
     pub(crate) fn account_marks(&self) -> Option<AccountMarks> {
-        let several: Vec<Agent> = MULTI_ACCOUNT_AGENTS
-            .into_iter()
-            .filter(|agent| self.provider_has_several_logins(*agent))
-            .collect();
-        if several.is_empty() {
+        if self.accounts.is_empty() {
             return None;
         }
         Some(AccountMarks {
             home: limits_home_for_app(),
             accounts: self.accounts.clone(),
             pane_accounts: self.pane_accounts.clone(),
-            several,
         })
     }
 

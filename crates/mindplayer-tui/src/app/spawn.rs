@@ -4,7 +4,57 @@ use super::*;
 /// for that file. See `reap_closed_extras`.
 const CLOSED_EXTRA_GRACE: chrono::Duration = chrono::Duration::minutes(5);
 
+pub(super) fn owns_pending_label(
+    session: &Session,
+    pending: &mindplayer_core::state::PendingLabel,
+) -> bool {
+    session.title.strip_prefix("🏷 ") == Some(pending.label.as_str())
+        && pending.agent == session.agent.as_str()
+        && pending.cwd == session.cwd
+        && session
+            .started_at
+            .is_some_and(|at| pending.after == at - chrono::Duration::seconds(5))
+}
+
+pub(super) fn owns_pending_handoff(
+    session: &Session,
+    link: &mindplayer_core::state::HandoffLink,
+    pending: &mindplayer_core::state::PendingHandoff,
+) -> bool {
+    pending.parent_id == link.parent_id
+        && pending.agent == session.agent.as_str()
+        && pending.cwd == session.cwd
+        && pending.artifact == link.artifact
+        && pending.after == link.created_at - chrono::Duration::seconds(5)
+}
+
 impl App {
+    /// Consume only metadata correlated with this in-process placeholder.
+    pub(super) fn clear_transient_pending(&mut self, session: &Session) -> bool {
+        let mut changed = false;
+        if let Some(index) = self
+            .state
+            .pending_labels
+            .iter()
+            .position(|pending| owns_pending_label(session, pending))
+        {
+            self.state.pending_labels.remove(index);
+            changed = true;
+        }
+        if let Some(link) = self.state.handoff_links.get(&session.id) {
+            if let Some(index) = self
+                .state
+                .pending_handoffs
+                .iter()
+                .position(|pending| owns_pending_handoff(session, link, pending))
+            {
+                self.state.pending_handoffs.remove(index);
+                changed = true;
+            }
+        }
+        changed
+    }
+
     /// Open a pane that signs `account` in.
     ///
     /// It gets a row like any other pane so it is visible and closable, but it
@@ -103,10 +153,6 @@ impl App {
     /// the pane starts: discovery only looks where accounts live, and a session
     /// it cannot find is one the reconciler would lose.
     pub fn request_new_fresh_login(&mut self, agent: Agent, label: &str) {
-        let Some(routing_mode) = self.startup_routing.mode() else {
-            self.status = "시작바에서 이번 실행의 판단 방식을 먼저 선택하세요.".into();
-            return;
-        };
         #[cfg(not(test))]
         let home = super::limits_home_for_app();
         #[cfg(test)]
@@ -136,9 +182,9 @@ impl App {
             return;
         }
         // Prepare only the conversation command; the provider's login still
-        // runs directly before the bridge is started.
+        // runs directly before the native session starts.
         let start = mindplayer_core::new_session(agent, self.new_session_dir(), &account);
-        let start = match crate::local_router::prepare_for_mode(&start, routing_mode) {
+        let start = match crate::local_router::prepare(&start) {
             Ok(start) => start,
             Err(error) => {
                 self.status = error.to_string();
@@ -357,7 +403,7 @@ impl App {
     /// synthetic placeholder once its real disk session appears (re-keying the
     /// live PTY to the real id), and re-append the ones still unmatched so they
     /// stay visible.
-    pub(crate) fn merge_extras(&mut self) {
+    pub(crate) fn merge_extras(&mut self, selected: &mut Option<working_set::SourceKey>) {
         // A live placeholder claims first. Both kinds match on agent, cwd and
         // "newer than me", so a closed one going first takes the session the
         // open pane just wrote and archives it — close a new session, start
@@ -365,28 +411,55 @@ impl App {
         // one lands already archived. Claiming here re-keys the PTY onto the
         // real id, which is what then makes the reaper's live-PTY guard refuse
         // it.
-        let taken = self.claim_live_extras();
+        let taken = self.claim_live_extras(selected);
         self.reap_closed_extras(&taken);
     }
 
     /// Let the open panes claim their own sessions, and report which ones they
     /// took so nothing else can.
-    fn claim_live_extras(&mut self) -> HashSet<String> {
+    fn claim_live_extras(
+        &mut self,
+        selected: &mut Option<working_set::SourceKey>,
+    ) -> HashSet<String> {
         if self.extra_sessions.is_empty() {
             return HashSet::new();
         }
         let mut claimed: HashSet<String> = HashSet::new();
         let mut remaining = Vec::new();
         for extra in std::mem::take(&mut self.extra_sessions) {
-            let matched = self.adopt_match(&extra, &claimed);
+            let matched = self.adopt_match(&extra, &claimed).filter(|real| {
+                // Runtime maps use native IDs, so a different active source
+                // with that ID cannot safely share this placeholder's owner.
+                !self.all_sessions.iter().any(|s| {
+                    !s.archived
+                        && s.id == real.id
+                        && (s.agent != real.agent || s.file != real.file || s.cwd != real.cwd)
+                })
+            });
             match matched {
                 Some(mut real) => {
+                    let mut state_changed = self.clear_transient_pending(&extra);
+                    if selected.as_ref().is_some_and(|(agent, file, id, cwd)| {
+                        *agent == extra.agent
+                            && *file == extra.file
+                            && *id == extra.id
+                            && *cwd == extra.cwd
+                    }) {
+                        *selected = Some(working_set::source_key(&real));
+                    }
+                    // Catalog refresh preserves a live owner before merging
+                    // extras. Adoption replaces that exact temporary source.
+                    self.all_sessions.retain(|s| {
+                        s.id != extra.id
+                            || s.agent != extra.agent
+                            || s.file != extra.file
+                            || s.cwd != extra.cwd
+                    });
                     let real_id = real.id.clone();
                     real.archived = false;
                     if !self.all_sessions.iter().any(|s| s.id == real_id) {
                         self.all_sessions.push(real);
                     }
-                    self.note_session_use(&real_id);
                     // Move the live PTY / state from the synthetic id to the real
                     // one. The filter guarantees `real_id` is not already a live
                     // PTY, so this insert never clobbers a running session.
@@ -396,6 +469,7 @@ impl App {
                     }
                     if let Some(label) = extra.title.strip_prefix("🏷 ") {
                         self.state.set_label(&real_id, label);
+                        state_changed = true;
                     }
                     if let Some(pty) = self.ptys.remove(&extra.id) {
                         self.ptys.insert(real_id.clone(), pty);
@@ -471,13 +545,11 @@ impl App {
                         }
                     }
                     if let Some(link) = self.state.handoff_links.remove(&extra.id) {
-                        let parent_id = link.parent_id.clone();
                         self.state.handoff_links.insert(real_id.clone(), link);
-                        self.state.pending_handoffs.retain(|p| {
-                            !(p.agent == extra.agent.as_str()
-                                && p.cwd == extra.cwd
-                                && p.parent_id == parent_id)
-                        });
+                        state_changed = true;
+                    }
+                    self.note_session_use(&real_id);
+                    if state_changed {
                         let _ = self.save_state();
                     }
                     self.new_baselines.remove(&extra.id);
@@ -488,7 +560,14 @@ impl App {
                     // The real session is already in `all_sessions`; drop the extra.
                 }
                 None => {
-                    self.all_sessions.push(extra.clone());
+                    if !self.all_sessions.iter().any(|s| {
+                        s.id == extra.id
+                            && s.agent == extra.agent
+                            && s.file == extra.file
+                            && s.cwd == extra.cwd
+                    }) {
+                        self.all_sessions.push(extra.clone());
+                    }
                     remaining.push(extra);
                 }
             }
@@ -507,9 +586,15 @@ impl App {
         if extra.id.starts_with(super::accounts_panel::LOGIN_PREFIX) {
             return None;
         }
-        // A conversation waiting for authentication has not produced any
-        // rollout yet. It must not adopt another process's same-directory work.
-        if self.account_auth.owns_launch(&extra.id) {
+        // Unlaunched conversations have produced no transcript and must not
+        // adopt another process's same-directory work.
+        if self.account_auth.owns_launch(&extra.id)
+            || self
+                .pending
+                .as_ref()
+                .is_some_and(|p| p.session_id == extra.id)
+            || self.pending_queue.iter().any(|p| p.session_id == extra.id)
+        {
             return None;
         }
         let after = extra
@@ -599,10 +684,6 @@ impl App {
     /// Consume a pending spawn now that the pane size is known. Other sessions'
     /// PTYs are left running in the background.
     pub fn spawn_pending(&mut self) {
-        let Some(routing_mode) = self.startup_routing.mode() else {
-            self.status = "시작바에서 이번 실행의 판단 방식을 먼저 선택하세요.".into();
-            return;
-        };
         let Some(mut pending) = self.pending.take() else {
             return;
         };
@@ -616,6 +697,7 @@ impl App {
         let account = session
             .as_ref()
             .map(|session| self.account_of_session(session));
+        let mut verified_account = None;
         // All new/resume/handoff paths share a required asynchronous live
         // account check. Login itself is exempt, never conversation execution.
         if !id.starts_with(super::accounts_panel::LOGIN_PREFIX)
@@ -649,13 +731,8 @@ impl App {
                 return;
             };
             pending = verified;
+            verified_account = Some(account);
         }
-        crate::local_router::forward_availability(
-            &mut pending.command,
-            account.as_ref(),
-            self.limits.as_deref(),
-            self.limits_observed_at,
-        );
         // Replace only a previous (ended) PTY for this same id.
         if let Some(mut old) = self.ptys.remove(&id) {
             old.kill();
@@ -694,8 +771,12 @@ impl App {
             .get(&id)
             .copied()
             .unwrap_or((self.pty_rows, self.pty_cols));
-        match PtySession::spawn_with_routing(&pending.command, &id, rows, cols, routing_mode) {
+        match PtySession::spawn(&pending.command, &id, rows, cols) {
             Ok(pty) => {
+                if let Some(account) = verified_account {
+                    self.pane_accounts
+                        .insert(id.clone(), (account.provider, account.name));
+                }
                 if let Some(input) = pending.initial_input {
                     self.pending_initial_inputs.insert(
                         id.clone(),
@@ -832,7 +913,7 @@ impl App {
             return true;
         };
         let source = sync.source.clone();
-        self.refresh_native_owners();
+
         if !self.ended.contains(id)
             && (!self.ptys.contains_key(id)
                 || self.pty_owner_for_source(&source).as_deref() == Some(id))

@@ -1,5 +1,4 @@
 use super::*;
-use crate::startup_routing::StartupRouting;
 use chrono::Duration;
 use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use mindplayer_core::{Aggregate, State, TokenUsage};
@@ -32,7 +31,7 @@ impl ListFixture {
         app.state_path = dir.join("state.json");
         app.audit_path = dir.join("audit.jsonl");
         app.convo_dir = dir.join("convo");
-        app.startup_routing = StartupRouting::confirmed(RoutingMode::Native);
+
         app.screen = Screen::Main;
         app.focus = Focus::List;
         app.accounts.clear();
@@ -130,8 +129,7 @@ impl ListFixture {
             env: Default::default(),
         };
         let pty =
-            crate::pty::PtySession::spawn_with_routing(&command, id, 8, 80, RoutingMode::Native)
-                .expect("start isolated fixture PTY");
+            crate::pty::PtySession::spawn(&command, id, 8, 80).expect("start isolated fixture PTY");
         self.app.ptys.insert(id.into(), pty);
     }
 }
@@ -465,18 +463,8 @@ fn list_single_band_keeps_its_label_and_selection_without_a_second_divider() {
 }
 
 #[test]
-fn list_startup_and_empty_view_keep_their_selection_and_hero_rules() {
+fn empty_list_shows_its_hero_without_a_selection() {
     let mut fixture = ListFixture::new(4);
-    fixture.app.startup_routing = StartupRouting::default();
-    fixture.app.selected = 3;
-    let area = Rect::new(2, 2, 100, 5);
-    let buffer = draw_list(&mut fixture.app, area);
-    assert_eq!(words(&row_text(&buffer, area, 0)), "── recent 2 sessions");
-    assert!(!row_text(&buffer, area, 1).contains('▶'));
-    assert!(row_text(&buffer, area, 1).contains("row-00000"));
-    assert!(!fixture.app.hero_visible);
-
-    fixture.app.startup_routing = StartupRouting::confirmed(RoutingMode::Native);
     fixture.app.all_sessions.clear();
     fixture.app.visible.clear();
     let area = Rect::new(2, 2, 100, 30);

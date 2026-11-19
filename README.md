@@ -63,14 +63,14 @@ the sessions you already have.
   together as live panes with one <kbd>Enter</kbd>.
 - 🚦 **Live status** — opened sessions show `! blocked` (approval needed),
   `● working`, `○ idle` (waiting), `✓ done` (turn completed), or `○ ended`
-  (process exited). `saved` means the source is listed but has no unambiguous
+  (process exited). `not open` means the source is listed but has no unambiguous
   live pane owned by this MindPlayer instance; it does not claim the session
   is idle or stopped in other terminals. For Codex and Claude Code, lifecycle
   events/hooks drive status when available (see `--install-agent-hooks`
   below); otherwise the pane's own text is used. Kiro's patterns are editable
   in `~/.mindplayer/kiro-patterns.json` (see **How it works**).
-  When this instance has no retained PTYs, one `all saved in this instance`
-  footer replaces repeated saved badges; mixed lists retain per-row status.
+  When this instance has no retained PTYs, one `no sessions open here`
+  footer replaces repeated `not open` badges; mixed lists retain per-row status.
 - ⏱️ **Time since last prompt** — a live session's time column shows how
   long it's been since *you* last typed something, not just "now" (which a
   running agent's own file mtime would otherwise always show) — so you can
@@ -169,58 +169,31 @@ the sessions you already have.
 | MindPlayer itself | nothing — the installer downloads a prebuilt binary (`curl`/`wget`). Only `--build` needs **Rust**. |
 | Driving sessions | the agent CLIs you use, on `PATH`: [`codex`](https://github.com/openai/codex), [`claude`](https://docs.anthropic.com/claude-code), [`kiro-cli`](https://kiro.dev/docs/cli/), and Cursor `agent` — browsing works without them; a CLI is only needed to *resume/start* that agent |
 
-로컬 수정본의 Jev는 **Codex 전용**입니다. 시작 화면에서 공통 모드를 고르지 않고,
-Codex 입력줄의 `F6`는 **현재 실행 세션의 Jev ON/OFF 토글**입니다. 처음에는 OFF이고,
-한 번 켜면 수정·붙여넣기·전송 뒤에도 ON을 유지하며 다시 누르면 OFF가 됩니다.
-`Enter`만 입력을 전송합니다. OFF는 Jev 호출 없이 네이티브 model/effort를 유지합니다.
-전송/큐 수락 시점의 선택을 각 입력에 보관하므로 이후 토글은 기존 대기 입력을 바꾸지
-않습니다. 선택은 다른 세션이나 앱 재시작에 상속하지 않습니다. F7 맥락 미리보기는
-제거했습니다. Jev ON에서 전송하는 것은 전체 대화가 아니라 실제 제한된 판단 입력입니다.
-세션 pane의 아래쪽 테두리에 해당 pane에 연결된 Codex 계정 레이블을 표시합니다.
+**2.0.0부터 설치된 CLI를 직접 실행합니다.** Codex·Claude의 새 세션, 재개,
+handoff와 로그인은 MindPlayer 프로세스가 받은 `PATH`의 `codex`·`claude`를
+각 실행 시점에 찾습니다. 별도 버전으로 고정하지 않습니다.
 
-**Claude 세션에는 Jev 선택이나 호출이 없습니다.** Claude Jev 확장·중계는 제거했고
-Claude/Kiro/Cursor와 로그인·관리 명령은 원래 CLI로 실행합니다. 계정·인증·전역
-플러그인·설정은 변경하지 않습니다. 이미 실행 중인 pane에는 소급 적용되지 않습니다.
-구현·검증 상태는 [변경 기록](docs/plans/2026-10-19-session-jev-toggle.md)에 둡니다.
+- 평소 사용하던 설치 방법으로 CLI를 업데이트하면 다음 실행부터 반영됩니다.
+  같은 PATH 항목의 실행 파일 교체나 심볼릭 링크 변경에는 MindPlayer 재시작이
+  필요 없습니다. PATH 환경변수 자체를 바꿨다면 MindPlayer를 다시 실행해야 합니다.
+- MindPlayer가 CLI를 자동 다운로드하거나 업데이트하지는 않습니다. 기준은
+  **현재 설치된 CLI**이며, upstream의 최신 버전 설치 여부까지 보장하지 않습니다.
+- 실행 중인 pane의 프로세스는 교체하거나 종료하지 않습니다. 새 CLI를 사용하려면
+  해당 세션을 새로 실행하거나 재개하세요.
+- Codex 전용 고정 빌드, 내장 Node 중계, F6 Jev 토글·라우팅 상태 표시는 제거했습니다.
+  Codex 모델·effort는 원래 CLI에서 설정합니다. 기존 전용 설치 파일이나 자격 증명은
+  삭제하지 않습니다.
+- 계정별 실행 환경, 작업 폴더, 재개 인수, handoff 입력, Claude fullscreen 설정과
+  OMP 실행 경로는 유지합니다. Codex·Claude pane 아래쪽에는 검증된 실행 계정
+  레이블을 표시하며, OMP는 아래의 실제 응답 계정 관찰을 사용합니다.
+- Codex 안에서 `/clear`, `/resume`, `/fork`로 전환한 세션을 MindPlayer 목록의
+  ID·레이블에 자동 반영하던 전용 연동도 제거했습니다. CLI 내부 명령은 사용할 수
+  있지만 목록은 실행 당시 연결을 유지하므로, 전환한 세션을 목록에서 조작하려면
+  다시 탐색한 해당 세션을 선택하세요.
 
-Codex의 후보 선택 질문에는 공식 **API 참고 토큰 단가**도 제공합니다.
-입력·출력·캐시와 긴 입력 할증 조건을 구분하고, 충분한 역량을 먼저 판단한 뒤 보조적으로
-비교합니다. 가격 확인일은 2026-10-18이고 2026-11-18부터 미상으로 처리합니다.
-전체 네이티브 토큰 수·캐시 사용·과금 방식은 알 수 없으므로 예상 실행 비용이나 구독
-쿼터 절감량을 만들지 않습니다. 일반 Jev 오류는 원문 대신 허용된 사유 코드와 한국어
-설명을 표시하며, 모델 요청을 보내거나 자동 재시도하지 않습니다.
-
-Jev를 사용하는 경로는 Codex의 매 새 사용자 턴에서 버전이 고정된 기준과 현재 프롬프트,
-직전 수락된 같은 세션의 작은 판단 상태로 Jev가 모델·추론 강도를 선택하게 합니다.
-기본 경로에서 전체 대화를 보내거나 paging하지 않습니다. compact 뒤에도 판단 상태는
-유지하지만 이를 작업 완료 사실로 취급하지 않습니다. 설치본의 실제 Jev 연속 3회와
-한·영 예시 12건 확인은 [0.55.8 검증 기록](docs/jev-decision-boundary-0.55.8.validation.json)에 있습니다.
-Codex 실행은 합성 backend이며 실제 실행 모델/effort나 품질·비용 절감의 증명은 아닙니다.
-새로 여는 모든 Codex pane은 Jev ON/OFF와 관계없이 Node.js 22 이상과 아래의
-검증된 전용 Codex UI가 필요합니다. OFF에서는 Jev 키·정책 조회와 판단 호출을 건너뜁니다.
-일반 PATH의 Codex로 조용히 대체하지 않습니다.
-기존 pane은 그대로 두며, 새로 여는 Codex pane에 적용합니다.
-정책 파일이 없으면 현재 모델 목록 설명 기반의 선택을 사용하며, 측정된 비용 절감은
-보장하지 않습니다. 로컬 0.55.9는 기존 모델줄에서 판단·요청 수락·실행 중·턴 완료를
-구분합니다. 실행 중은 `turn/started`로 확인하며, 별도 서버 모델 변경 보고가 없어도
-정상 표시합니다. 요청 모델·effort를 실제 서빙 영수증이라고 주장하지 않습니다.
-[0.55.9 실행 상태 검증](docs/jev-routing-lifecycle-0.55.9.validation.json).
-로컬 0.55.10은 MindPlayer 전용 네이티브 UI로 실행 중 Enter도 개별 새 턴으로
-큐에 보관합니다. 정상 완료 후 각 입력이 Jev를 거쳐 모델과 effort를 함께 적용하며,
-실패·중단 뒤에는 큐를 자동 실행하지 않습니다. 일반 Codex 설치와 기존 pane은
-변경하지 않습니다. 이 경로에는 검증된 별도 UI 설치가 필요하며, 누락·변조 때
-일반 Codex로 조용히 우회하지 않습니다. [전용 UI 빌드·설치 경계](tools/native-codex/README.ko.md).
-설치본의 실제 Jev 두 번·네이티브 두 턴에서 요청과 세션 기록의 모델·effort 일치를
-확인했습니다. [0.55.10 설치·검증 기록](docs/jev-native-queue-0.55.10.validation.json).
-기존 실행 pane은 그대로 유지되므로 새 실행 파일로 MindPlayer와 세션을 다시 열어야
-이 경로가 적용됩니다. 서버 내부 서빙 모델이나 비용 절감을 보장하는 검증은 아닙니다.
-[시험 방법·규칙·남은 한계](tools/local-model-router/README.ko.md)를 참고하세요.
-
-로컬 0.55.11은 판단 중 Esc를 입력 시도별로 처리하고, 동일 문장 재입력도 새롭게
-판단합니다. 실제 턴이 이미 제출됐다면 실제 턴 ID를 받아 중단합니다. 모델과 effort
-변경 안내는 Core 적용 설정과 시작된 턴이 일치할 때만 표시합니다. 자동 goal 계속
-실행은 새 사용자 입력과 구분합니다. 계정 사용량은 같은 로그인으로 확인돼도 각
-슬롯의 측정값을 모두 표시하고 경고를 유지합니다. 이는 인증 분리 복구가 아닙니다.
+`tools/local-model-router`와 `tools/native-codex`는 별도 실험 도구이며 현재 앱에
+포함되거나 세션 실행에 호출되지 않습니다. 과거 Jev 검증 문서는 이전 통합 버전의
+기록이며 2.0.0의 동작을 설명하지 않습니다.
 
 The installer downloads the latest **release binary** (no build).
 Download the script, inspect it, then run it:
@@ -287,6 +260,19 @@ OMP sessions are discovered from the active OMP session store and resumed by
 their session file without the new-session picker. Install OMP and make `omp`
 available on `PATH` before choosing it. `mindplayer --help` lists the remaining
 controls.
+
+OMP account labels use the credential ID stamped by the installed OMP on its
+live main-agent response, matched to OMP's token-free OAuth account metadata.
+The list and pane show the observed email/account and workspace when available;
+API keys show a credential ID, not an inferred person. Account/model/session
+changes revoke the old label until another response proves the identity.
+Before the first response, for unopened history, or when the installed OMP lacks
+the required extension APIs, the list says `unverified` and the pane says
+`계정 미확인`. A provider name, selected model, or first login in a pool is not
+account evidence. The observer is per pane, uses private temporary files, and
+does not copy tokens, modify login state, or pin the OMP executable. Native
+integration is verified with OMP 18.22.1; installing a different version still
+uses that installed executable.
 
 In an OMP pane, MindPlayer reserves `Ctrl-X` (list), `Ctrl-Z` (zoom),
 `Tab` or `Alt-W` (next pane), `Shift-Tab` (previous pane), and `Ctrl-Q` or
@@ -441,15 +427,17 @@ session run on*:
 | <kbd>v</kbd> | inspect / explicitly bind Codex or Claude identity; confirmation rechecks the selected home |
 | <kbd>r</kbd> | rename the display label (the login home stays put) · <kbd>l</kbd> sign in again · <kbd>d</kbd> off · <kbd>x</kbd> erase login (twice) |
 
-Exactly one account per provider is *in use*, so the choice never depends on
-list order. The footer keeps one line per provider — the account a new session
-would take — and the rest live here.
+For MindPlayer-managed accounts, exactly one account per provider is *in use*,
+so the launch choice never depends on list order. Usage for different accounts
+occupies separate footer rows. OMP manages its own native credential pool instead
+of using these account slots.
 
-**Sessions stay with the login that made them.** A transcript only exists in
-that account's home, so resuming always goes back to it, and the list marks a
-session with its account name only when that is *not* the one in use. To carry
-a conversation to another login, hand it over with <kbd>h</kbd> — that starts a
-new session there with the previous context.
+**Sessions stay with the login that made them.** Codex and Claude resumes use
+the source account's home; a successful verified launch binds the pane to that
+account label. The list shows the account even when the provider has only one
+login. OMP instead displays its observed native response account as described
+above. To carry a conversation to another login, hand it over with <kbd>h</kbd>
+— that starts a new session there with the previous context.
 
 **Two caveats.** Claude and Cursor keep their usage credential in the macOS
 Keychain, one per machine, and that one belongs to the login this machine came
@@ -479,6 +467,19 @@ an error without creating a replacement session or discarding the search query.
 Archive token usage is shown
 as unknown until loaded, not measured zero. `Ctrl-q` only hides a live pane; the
 running count includes it, and it can be reopened from Active.
+
+New and handoff sessions have one temporary row until their native transcript
+appears. Refresh preserves that owner; discovery replaces the temporary row and
+its selection together. Closing with `x` before startup cancels that session's
+queued launch and pending authentication, without canceling neighboring sessions.
+Pending labels and handoff links stay with their in-process owner rather than
+being assigned to another recently created session in the same directory.
+Closing an ended, unwritten session removes its temporary row; native transcript
+files are never deleted by this action.
+
+Late files from children that actually ran still use the existing bounded
+account/directory/start-time matching. This does not establish exact ownership
+between simultaneous external sessions in the same account and directory.
 
 The rebuildable `session-catalog.json` cache lives beside `state.json`. Catalog
 indexing, Archive search, and restoration run on workers. Unchanged archived
@@ -592,13 +593,6 @@ Budget fields and inheritance follow Vercel's
 [budget-list API](https://vercel.com/docs/rest-api/ai-gateway/list-ai-gateway-budgets)
 and [default-budget rules](https://vercel.com/docs/ai-gateway/observability-and-spend/budgets).
 
-Jev distinguishes recognized Gateway budget rejections from generic billing
-failures. A validated `quota_for_entity_exceeded` response shows its scope,
-reported spend, and limit before any native turn is dispatched. Only validated
-scope and numeric amounts are retained; upstream text, links, and credentials are
-not forwarded. Unknown or malformed HTTP 402 responses remain generic billing
-errors. No failure automatically retries or bypasses the budget.
-
 The footer uses server-side caps only. Local display-target overrides are no
 longer read; existing `~/.mindplayer/vercel-key-target.json` files are left
 untouched and cannot make the server-budget lookup fail.
@@ -672,6 +666,7 @@ mindplayer/
 
 ```bash
 cargo test --all
+node --test crates/mindplayer-tui/tests/omp_account.test.mjs
 cargo clippy --all-targets -- -D warnings
 cargo fmt --all --check
 ```

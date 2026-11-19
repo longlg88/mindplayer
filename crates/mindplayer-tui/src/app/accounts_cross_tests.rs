@@ -32,17 +32,7 @@ mod which_account {
         assert_eq!(marks.label_for(pending), Some((second.name.as_str(), 1)));
     }
 
-    #[test]
-    fn nothing_is_marked_while_every_provider_has_one_login() {
-        let mut app = App::new();
-        app.accounts = MULTI_ACCOUNT_AGENTS.map(Account::inherited).to_vec();
-        assert!(
-            app.account_marks().is_none(),
-            "a column that says the same thing on every row is noise"
-        );
-    }
-
-    /// A blank meant "the account in use", which nothing on screen said, so every row of a provider with two logins names its own.
+    /// Every managed source names its account, including providers with one login.
     #[test]
     fn every_row_of_a_provider_with_two_logins_names_its_account() {
         let (mut app, kept, second) = app_with_two_codex();
@@ -61,10 +51,9 @@ mod which_account {
         let lone = session("c", Agent::Claude, false);
         assert_eq!(
             marks.label_for(&lone),
-            None,
-            "a provider with one login has nothing to tell apart"
+            Some(("default", 0)),
+            "a single Claude login must remain identifiable"
         );
-        assert_eq!(marks.width(), kept.name.len().max("other".len()));
     }
 
     #[test]

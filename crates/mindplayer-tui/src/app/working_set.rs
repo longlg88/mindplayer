@@ -2,8 +2,6 @@
 
 use super::*;
 use mindplayer_core::catalog::{self, CatalogSnapshot};
-use mindplayer_core::discovery::SessionRoot;
-use std::path::Path;
 use std::sync::Weak;
 
 pub(crate) const ARCHIVE_PAGE_SIZE: usize = 200;
@@ -47,29 +45,6 @@ fn preserve_activity(session: &mut Session, previous: &Session) {
     session.last_prompt_at = session.last_prompt_at.max(previous.last_prompt_at);
 }
 
-fn codex_source_root<'a>(roots: &'a [SessionRoot], file: &Path) -> Option<&'a PathBuf> {
-    if !file.is_absolute()
-        || file
-            .components()
-            .any(|p| p == std::path::Component::ParentDir)
-    {
-        return None;
-    }
-    roots
-        .iter()
-        .filter(|root| root.agent == Agent::Codex && file.starts_with(&root.dir))
-        .max_by_key(|root| root.dir.components().count())
-        .map(|root| &root.dir)
-}
-
-struct NativeRoute {
-    thread: String,
-    root: PathBuf,
-    source: Option<Session>,
-    result: Option<Receiver<Result<Session, String>>>,
-    retry_at: Instant,
-}
-
 struct Hydration {
     source: Session,
     epoch: u64,
@@ -100,7 +75,6 @@ pub(super) struct WorkingSet {
     saved_use_at: HashMap<SourceKey, Instant>,
     use_migration_pending: bool,
     hook_cursor: usize,
-    native_routes: HashMap<String, NativeRoute>,
 }
 
 impl App {
@@ -111,7 +85,6 @@ impl App {
         self.working_set.archive_rx = None;
         self.working_set.archive_due = None;
         self.working_set.archive_selection = None;
-        self.working_set.native_routes.clear();
         self.show_archived = false;
         self.archive_page = 0;
     }
@@ -181,19 +154,15 @@ impl App {
             .filter(move |s| seen.insert((s.agent, &s.file, &s.id, &s.cwd)))
     }
 
-    pub(super) fn apply_row_state(&mut self) {
-        for session in &mut self.all_sessions {
-            let archived = session.archived;
-            self.state.apply(std::slice::from_mut(session));
-            session.archived |= archived;
-        }
-    }
-
     pub(super) fn hook_poll_batch(&mut self) -> Vec<String> {
         const BATCH: usize = 4;
-        // A child's final protocol event may arrive after exit. Include ended
-        // owners until their pane is removed, still under the same I/O budget.
-        let mut ids: Vec<_> = self.ptys.keys().cloned().collect();
+        // Bound native hook and rollout reads while cycling hidden live panes.
+        let mut ids: Vec<_> = self
+            .ptys
+            .keys()
+            .filter(|id| !self.ended.contains(*id))
+            .cloned()
+            .collect();
         ids.sort();
         if ids.is_empty() {
             return ids;
@@ -209,242 +178,22 @@ impl App {
             .collect()
     }
 
-    fn codex_pane_source(&self, id: &str) -> Option<&Session> {
-        self.all_sessions
-            .iter()
-            .chain(&self.extra_sessions)
-            .find(|s| s.id == id && s.agent == Agent::Codex && !s.archived)
-    }
-
-    /// Compare transcript ownership, never labels or the candidate's ID-based pane binding.
-    pub(super) fn same_codex_source_account(&self, pane: &str, source: &Session) -> bool {
-        let Some(owner) = self.codex_pane_source(pane) else {
-            return false;
-        };
-        let home = limits_home_for_app();
-        let account = |s: &Session| {
-            mindplayer_core::accounts::owner_of(&self.accounts, s.agent, &s.file, &home)
-        };
-        source.agent == Agent::Codex && account(owner).slot == account(source).slot
-    }
-
-    pub(super) fn native_rollout_file(&self, pane: &str, thread: &str) -> Option<&Path> {
-        self.working_set
-            .native_routes
-            .get(pane)
-            .filter(|route| route.thread == thread)
-            .and_then(|route| route.source.as_ref())
-            .map(|source| source.file.as_path())
-    }
-
-    fn native_source_is_running(&self, source: &Session) -> bool {
-        self.working_set.native_routes.iter().any(|(pane, route)| {
-            self.is_running(pane)
-                && self.ptys[pane].routing_thread_id().as_deref() == Some(&route.thread)
-                && route.source.as_ref().is_some_and(|s| {
-                    s.agent == source.agent && s.id == source.id && s.file == source.file
-                })
-        })
-    }
-
-    /// Called only for the bounded hook batch. Catalog lookup and detail I/O
-    /// run once per changed native target, away from input and status rendering.
-    pub(super) fn poll_native_switch(&mut self, pane: &str) -> bool {
-        let Some(pty) = self.ptys.get(pane).filter(|_| self.is_running(pane)) else {
-            self.working_set.native_routes.remove(pane);
-            return false;
-        };
-        let Some(thread) = pty.routing_thread_id().filter(|thread| thread != pane) else {
-            self.working_set.native_routes.remove(pane);
-            return false;
-        };
-        if pty.routing_clear_target(pane).is_some() {
-            self.working_set.native_routes.remove(pane);
-            return false;
-        }
-        let roots = self.scan_roots();
-        let Some(root) = self
-            .codex_pane_source(pane)
-            .and_then(|s| codex_source_root(&roots, &s.file))
-            .cloned()
-        else {
-            return false;
-        };
-        let now = Instant::now();
-        let current = self
-            .working_set
-            .native_routes
-            .get(pane)
-            .is_some_and(|route| route.thread == thread && route.root == root);
-        if !current {
-            self.working_set.epoch = self.working_set.epoch.wrapping_add(1);
-            self.working_set.native_routes.insert(
-                pane.into(),
-                NativeRoute {
-                    thread: thread.clone(),
-                    root: root.clone(),
-                    source: None,
-                    result: None,
-                    retry_at: now,
-                },
-            );
-        }
-        let route = &self.working_set.native_routes[pane];
-        if route.source.is_some() {
-            return false;
-        }
-        if route.result.is_none() && now >= route.retry_at {
-            // Copy only matching detail/page rows; the large catalog stays shared.
-            let candidates: Vec<_> = self
-                .all_sessions
-                .iter()
-                .chain(self.working_set.archive_overrides.values())
-                .filter(|s| s.id == thread && s.agent == Agent::Codex)
-                .cloned()
-                .collect();
-            let catalog = Arc::clone(&self.archive_catalog);
-            let (tx, rx) = mpsc::channel();
-            thread::spawn(move || {
-                let mut matches = candidates.iter().chain(catalog.iter()).filter(|s| {
-                    s.id == thread
-                        && s.agent == Agent::Codex
-                        && !s.is_subagent
-                        && codex_source_root(&roots, &s.file) == Some(&root)
-                });
-                let result = match matches.next() {
-                    Some(source) if !matches.any(|s| s.file != source.file) => {
-                        catalog::hydrate(source)
-                            .map_err(|_| "native session source could not be hydrated".into())
-                    }
-                    _ => {
-                        Err("native session source is missing or ambiguous in this account".into())
-                    }
-                };
-                let _ = tx.send(result);
-            });
-            self.working_set
-                .native_routes
-                .get_mut(pane)
-                .expect("native route was inserted")
-                .result = Some(rx);
-        }
-        let route = self
-            .working_set
-            .native_routes
-            .get_mut(pane)
-            .expect("native route was inserted");
-        let Some(result) = route.result.as_ref().and_then(|rx| match rx.try_recv() {
-            Ok(result) => Some(result),
-            Err(mpsc::TryRecvError::Disconnected) => {
-                Some(Err("native session worker stopped".into()))
-            }
-            Err(mpsc::TryRecvError::Empty) => None,
-        }) else {
-            return false;
-        };
-        route.result = None;
-        route.retry_at = now + Duration::from_secs(3);
-        let mut session = match result {
-            Ok(session) => session,
-            Err(message) => {
-                self.status = message;
-                self.rescan_due.get_or_insert(now + Duration::from_secs(3));
-                return true;
-            }
-        };
-        if !self.can_resume_source(&session) {
-            return true;
-        }
-        let previous = self.state.clone();
-        self.state.record_session_use(&session, Utc::now());
-        if self.save_state().is_err() {
-            self.state = previous;
-            self.status = "could not save native session Active membership; retrying".into();
-            return true;
-        }
-        self.working_set.epoch = self.working_set.epoch.wrapping_add(1);
-        self.state.apply(std::slice::from_mut(&mut session));
-        if let Some(previous) = self.known_metadata().find(|s| {
-            s.agent == session.agent
-                && s.file == session.file
-                && s.id == session.id
-                && s.cwd == session.cwd
-        }) {
-            preserve_activity(&mut session, previous);
-        }
-        self.restore_manual_usage(&mut session);
-        session.archived = false;
-        self.working_set
-            .native_routes
-            .get_mut(pane)
-            .expect("native route was inserted")
-            .source = Some(session.clone());
-        if let Some(row) = self.all_sessions.iter_mut().find(|s| {
-            s.agent == session.agent
-                && s.file == session.file
-                && s.id == session.id
-                && s.cwd == session.cwd
-        }) {
-            *row = session;
-        } else {
-            self.all_sessions.push(session);
-        }
-        if self.show_archived {
-            self.request_archive_page();
-        } else {
-            self.rebuild_visible();
-        }
-        true
-    }
-
     pub(super) fn catalog_scan(&self) -> Receiver<CatalogMessage> {
         let started_at = Instant::now();
         let scope = self.scope.clone();
         let roots = self.scan_roots();
         let state = self.state.clone();
-        let mut protected: HashSet<_> = self
+        let protected: HashSet<_> = self
             .ptys
             .keys()
             .filter(|id| self.is_running(id))
             .cloned()
             .collect();
-        let mut routed: HashMap<String, Vec<PathBuf>> = HashMap::new();
-        for pane in &protected {
-            let Some(root) = self
-                .codex_pane_source(pane)
-                .and_then(|s| codex_source_root(&roots, &s.file))
-            else {
-                continue;
-            };
-            if let Some(thread) = self.ptys[pane].routing_thread_id() {
-                routed.entry(thread).or_default().push(root.clone());
-            }
-        }
-        protected.extend(routed.keys().cloned());
         let cache = self.state_path.with_file_name("session-catalog.json");
         let epoch = self.working_set.epoch;
         let (tx, rx) = mpsc::channel();
         thread::spawn(move || {
             let result = catalog::scan(&scope, &roots, &state, &protected, &cache, Utc::now())
-                .map(|mut snapshot| {
-                    // Core protection is ID-based. Do not let it activate a
-                    // duplicate transcript from a different provider home.
-                    let mut active = Vec::with_capacity(snapshot.active.len());
-                    for mut session in snapshot.active {
-                        if routed.get(&session.id).is_some_and(|owners| {
-                            !owners
-                                .iter()
-                                .any(|root| codex_source_root(&roots, &session.file) == Some(root))
-                        }) {
-                            session.archived = true;
-                            snapshot.archive.push(session);
-                        } else {
-                            active.push(session);
-                        }
-                    }
-                    snapshot.active = active;
-                    snapshot
-                })
                 .map_err(|_| "session catalog could not be read or saved".to_string());
             let _ = tx.send((epoch, started_at, result));
         });
@@ -481,7 +230,7 @@ impl App {
         for session in snapshot.active.iter_mut().chain(&mut snapshot.archive) {
             merge_kiro_context(&mut self.context_observations, session, started_at);
         }
-        let selected = self.selected_session().map(source_key);
+        let mut selected = self.selected_session().map(source_key);
         let mut migrated_use = false;
         for (id, sources) in std::mem::take(&mut snapshot.use_sources) {
             if let std::collections::btree_map::Entry::Vacant(entry) =
@@ -520,7 +269,35 @@ impl App {
                 .filter(|s| s.started_at.is_some_and(|at| at >= after))
                 .cloned()
                 .collect();
-            if self.state.resolve_pending(&candidates) {
+            // In-process placeholders already own these records. Generic
+            // timestamp matching cannot distinguish their baseline neighbors.
+            // Leave records from earlier runs eligible for normal recovery.
+            let extras = &self.extra_sessions;
+            let held_labels: Vec<_> = self
+                .state
+                .pending_labels
+                .extract_if(.., |pending| {
+                    extras
+                        .iter()
+                        .any(|extra| spawn::owns_pending_label(extra, pending))
+                })
+                .collect();
+            let links = &self.state.handoff_links;
+            let held_handoffs: Vec<_> = self
+                .state
+                .pending_handoffs
+                .extract_if(.., |pending| {
+                    extras.iter().any(|extra| {
+                        links
+                            .get(&extra.id)
+                            .is_some_and(|link| spawn::owns_pending_handoff(extra, link, pending))
+                    })
+                })
+                .collect();
+            let resolved = self.state.resolve_pending(&candidates);
+            self.state.pending_labels.extend(held_labels);
+            self.state.pending_handoffs.extend(held_handoffs);
+            if resolved {
                 let _ = self.save_state();
             }
         }
@@ -529,7 +306,7 @@ impl App {
         let owners: HashMap<_, _> = self
             .all_sessions
             .iter()
-            .filter(|s| !s.archived && (self.is_running(&s.id) || self.native_source_is_running(s)))
+            .filter(|s| !s.archived && self.is_running(&s.id))
             .map(|s| (s.id.as_str(), s))
             .collect();
         let mut active = Vec::with_capacity(snapshot.active.len());
@@ -569,7 +346,7 @@ impl App {
         self.archive_catalog = Arc::new(snapshot.archive);
         self.working_set.archive_overrides.clear();
         self.working_set.next_scan = Some(Instant::now() + CATALOG_INTERVAL);
-        self.merge_extras();
+        self.merge_extras(&mut selected);
         self.rebuild_visible();
         if self.show_archived {
             self.request_archive_page();
@@ -579,7 +356,6 @@ impl App {
                 self.selected = row;
             }
         }
-        self.reconcile_codex_clears();
         true
     }
 
@@ -771,24 +547,11 @@ impl App {
         if mindplayer_core::session::is_synthetic_id(id) {
             return;
         }
-        let thread = self.ptys.get(id).and_then(|pty| {
-            pty.poll_routing_status();
-            pty.routing_thread_id()
-        });
-        let source = if let Some(thread) = thread.as_deref().filter(|thread| *thread != id) {
-            // A changed native target may not have been hydrated yet. Never
-            // attribute its input to the previous route or launch-time source.
-            self.working_set
-                .native_routes
-                .get(id)
-                .filter(|route| route.thread == thread)
-                .and_then(|route| route.source.as_ref())
-        } else {
-            self.all_sessions
-                .iter()
-                .chain(&self.extra_sessions)
-                .find(|session| session.id == id && !session.archived)
-        };
+        let source = self
+            .all_sessions
+            .iter()
+            .chain(&self.extra_sessions)
+            .find(|session| session.id == id && !session.archived);
         let Some(source) = source else {
             return;
         };

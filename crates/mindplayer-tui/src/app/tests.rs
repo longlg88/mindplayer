@@ -90,9 +90,7 @@ pub(super) fn fresh_login_test_home() -> PathBuf {
 
 pub(crate) fn isolated_app() -> App {
     let mut app = App::new();
-    app.startup_routing = crate::startup_routing::StartupRouting::confirmed(
-        crate::startup_routing::RoutingMode::Native,
-    );
+
     match TEST_STATE_PATH.with(|c| c.borrow().clone()) {
         // The test named a path: load whatever is there, so it can assert that a
         // fresh `App` reads back what an earlier one persisted.
@@ -118,9 +116,7 @@ pub(crate) fn isolated_app() -> App {
 /// reads better at the call site.
 pub(crate) fn isolated_app_at(state_path: PathBuf) -> App {
     let mut app = App::new();
-    app.startup_routing = crate::startup_routing::StartupRouting::confirmed(
-        crate::startup_routing::RoutingMode::Native,
-    );
+
     app.state_path = state_path;
     app.state = mindplayer_core::State::default();
     app.walker_choice = crate::walker::index_of(crate::walker::DEFAULT_ID);
@@ -337,29 +333,7 @@ fn list_item_mapping_handles_folded_single_band_and_empty_lists() {
 }
 
 #[test]
-fn unconfirmed_startup_keeps_pending_work_without_creating_a_pty() {
-    let mut app = isolated_app();
-    app.startup_routing = crate::startup_routing::StartupRouting::default();
-    app.pending = Some(PendingSpawn {
-        command: mindplayer_core::Command {
-            program: "sh".into(),
-            args: vec!["-c".into(), "exit 99".into()],
-            cwd: std::env::temp_dir(),
-            env: Default::default(),
-        },
-        session_id: "not-before-choice".into(),
-        initial_input: None,
-        focus_after_spawn: true,
-    });
-    app.spawn_pending();
-    assert!(app.pending.is_some());
-    assert!(app.ptys.is_empty());
-    assert!(app.status.contains("시작바"));
-    assert_eq!(app.startup_routing.mode(), None);
-}
-
-#[test]
-fn unverified_provider_accounts_are_blocked_before_native_or_wrapped_process_starts() {
+fn unverified_provider_accounts_are_blocked_before_native_process_starts() {
     for (provider, program) in [
         (Agent::Codex, "codex"),
         (Agent::Codex, "node"),
@@ -474,6 +448,17 @@ fn write_large_codex_fixture(
     (dir, transcript)
 }
 
+/// Launch only a local echo child for tests that need a real pre-rollout owner.
+fn launch_test_placeholder(app: &mut App) {
+    let mut pending = app.pending.take().expect("test requested a new session");
+    pending.command.program = "/bin/cat".into();
+    pending.command.args.clear();
+    pending.command.cwd = fresh_login_test_home();
+    let pty = PtySession::spawn(&pending.command, &pending.session_id, 6, 40)
+        .expect("spawn isolated placeholder child");
+    app.ptys.insert(pending.session_id, pty);
+}
+
 #[test]
 fn new_session_persists_then_reconciles() {
     let tmp = std::env::temp_dir().join(format!("mp-newstate-{}.json", std::process::id()));
@@ -484,6 +469,7 @@ fn new_session_persists_then_reconciles() {
 
     // New labeled session shows up immediately (no disk file yet).
     app.request_new(Agent::Codex, "deploy check");
+    launch_test_placeholder(&mut app);
     assert_eq!(app.visible.len(), 1);
     let syn = app.session_at(0).unwrap();
     assert!(syn.id.starts_with("new:"));
@@ -508,7 +494,7 @@ fn new_session_persists_then_reconciles() {
         context_pct: None,
     };
     app.all_sessions = vec![real];
-    app.merge_extras();
+    app.merge_extras(&mut None);
     app.rebuild_visible();
 
     // Placeholder reconciled away; the real session remains.
@@ -577,13 +563,14 @@ fn a_closed_new_sessions_late_file_is_archived_not_shown() {
     let mut app = isolated_app_at(tmp.clone());
     app.scope = Scope::WorkingDir(PathBuf::from("/work"));
     app.request_new(Agent::Codex, "bar");
+    launch_test_placeholder(&mut app);
     app.selected = 0;
     app.close_selected();
 
     // The agent writes the file after the close; the scan picks it up.
     let late = late_disk_session(&app, "real-late", Agent::Codex, "/work");
     app.all_sessions = vec![late.clone()];
-    app.merge_extras();
+    app.merge_extras(&mut None);
     app.rebuild_visible();
 
     assert!(
@@ -610,6 +597,7 @@ fn a_closed_placeholder_does_not_take_the_session_an_open_pane_just_wrote() {
 
     // Closed a few seconds ago, still inside the grace window.
     app.request_new(Agent::Codex, "first try");
+    launch_test_placeholder(&mut app);
     app.selected = 0;
     app.close_selected();
     assert_eq!(
@@ -620,6 +608,7 @@ fn a_closed_placeholder_does_not_take_the_session_an_open_pane_just_wrote() {
 
     // Started straight after, still open, and this is the one that writes.
     app.request_new(Agent::Codex, "test codex");
+    launch_test_placeholder(&mut app);
     let live = app
         .extra_sessions
         .last()
@@ -632,7 +621,7 @@ fn a_closed_placeholder_does_not_take_the_session_an_open_pane_just_wrote() {
         Agent::Codex,
         "/work",
     )];
-    app.merge_extras();
+    app.merge_extras(&mut None);
     app.rebuild_visible();
 
     assert!(
@@ -659,6 +648,7 @@ fn a_closed_new_session_stops_claiming_files_after_the_grace_window() {
     let mut app = isolated_app_at(tmp.clone());
     app.scope = Scope::WorkingDir(PathBuf::from("/work"));
     app.request_new(Agent::Codex, "bar");
+    launch_test_placeholder(&mut app);
     app.selected = 0;
     app.close_selected();
 
@@ -672,7 +662,7 @@ fn a_closed_new_session_stops_claiming_files_after_the_grace_window() {
         Agent::Codex,
         "/work",
     )];
-    app.merge_extras();
+    app.merge_extras(&mut None);
     app.rebuild_visible();
 
     assert!(
@@ -698,7 +688,7 @@ fn reaping_never_archives_a_pre_existing_session() {
     app.close_selected();
 
     app.all_sessions = vec![late_disk_session(&app, "older", Agent::Codex, "/work")];
-    app.merge_extras();
+    app.merge_extras(&mut None);
     app.rebuild_visible();
 
     assert!(
@@ -869,7 +859,7 @@ fn new_session_stays_until_reconciled() {
 
     // A scan that finds nothing matching must NOT drop the new session.
     app.all_sessions = vec![session("unrelated", Agent::Codex, false)];
-    app.merge_extras();
+    app.merge_extras(&mut None);
     app.rebuild_visible();
     assert_eq!(app.extra_sessions.len(), 1);
     assert!(app
@@ -1618,7 +1608,7 @@ fn merge_extras_ignores_preexisting_session() {
     // A rescan: the new session's rollout file isn't on disk yet, so the
     // scan still only sees the pre-existing session.
     app.all_sessions = vec![pre];
-    app.merge_extras();
+    app.merge_extras(&mut None);
 
     // The synthetic survives (not adopted onto the pre-existing session).
     assert_eq!(
@@ -2550,18 +2540,7 @@ fn buffered_escape_and_consumed_cpr_preserve_completion_tracking() {
         cwd: PathBuf::new(),
         env: Default::default(),
     };
-    let mut pty = PtySession::spawn(&command, id, 6, 20).unwrap();
-    let channel =
-        crate::local_router::RoutingStatusChannel::create_at(&tmp.0.join("private")).unwrap();
-    let status_path = channel.path().to_path_buf();
-    let mut status = channel.snapshot().unwrap();
-    status.revision = 1;
-    status.stage = crate::local_router::RoutingStage::Completed;
-    status.thread_id = Some(id.into());
-    status.turn_id = Some("active".into());
-    status.request_id = serde_json::json!(1);
-    std::fs::write(&status_path, serde_json::to_vec(&status).unwrap()).unwrap();
-    pty.set_routing_status_for_test(channel);
+    let pty = PtySession::spawn(&command, id, 6, 20).unwrap();
     pty.take_dirty();
     app.ptys.insert(id.into(), pty);
     app.focus_or_add_pane(id);
@@ -2582,7 +2561,6 @@ fn buffered_escape_and_consumed_cpr_preserve_completion_tracking() {
         assert_eq!(app.codex_turns[id].status(), Some(SessionStatus::Completed));
         assert_eq!(app.hook_status.get(id), Some(&reading));
         assert_eq!(app.submitted_at.get(id), Some(&at));
-        assert!(app.ptys[id].routing_status().is_some());
     }
     app.send_to_pty(b"\x1b");
     app.ptys
@@ -2594,110 +2572,6 @@ fn buffered_escape_and_consumed_cpr_preserve_completion_tracking() {
     assert_eq!(app.codex_turns[id].status(), Some(SessionStatus::Completed));
     assert_eq!(app.hook_status.get(id), Some(&reading));
     assert_eq!(app.submitted_at.get(id), Some(&at));
-    assert!(app.ptys[id].routing_status().is_some());
-    app.ptys.clear();
-}
-
-#[test]
-fn codex_status_follows_the_verified_pty_thread_not_its_original_pane_id() {
-    use std::io::Write;
-    let tmp = FreshLoginTestHome::new();
-    let old_file = tmp.0.join("old.jsonl");
-    let current_file = tmp.0.join("current.jsonl");
-    let event = |kind: &str, turn: &str| {
-        format!("{{\"type\":\"event_msg\",\"payload\":{{\"type\":\"{kind}\",\"turn_id\":\"{turn}\"}}}}\n")
-    };
-    std::fs::write(&old_file, event("task_started", "old-turn")).unwrap();
-    std::fs::write(
-        &current_file,
-        event("task_started", "historical") + &event("task_complete", "historical"),
-    )
-    .unwrap();
-    let mut old = session("original-pane", Agent::Codex, false);
-    old.file = old_file.clone();
-    let mut current = session("current-thread", Agent::Codex, false);
-    current.file = current_file.clone();
-    let mut app = app_with(vec![old, current]);
-    let command = mindplayer_core::Command {
-        program: "cat".into(),
-        args: Vec::new(),
-        cwd: PathBuf::new(),
-        env: Default::default(),
-    };
-    let mut pty = PtySession::spawn(&command, "original-pane", 6, 20).unwrap();
-    let channel =
-        crate::local_router::RoutingStatusChannel::create_at(&tmp.0.join("private")).unwrap();
-    let status_path = channel.path().to_path_buf();
-    let mut status = channel.snapshot().unwrap();
-    status.revision = 1;
-    status.stage = crate::local_router::RoutingStage::Completed;
-    status.thread_id = Some("current-thread".into());
-    status.turn_id = Some("current-turn".into());
-    status.request_id = serde_json::json!(1);
-    std::fs::write(&status_path, serde_json::to_vec(&status).unwrap()).unwrap();
-    pty.set_routing_status_for_test(channel);
-    pty.take_dirty();
-    app.ptys.insert("original-pane".into(), pty);
-    let mut reader = crate::turn_status::TurnStatusReader::new_from_start(old_file);
-    assert!(reader.poll());
-    app.codex_turns.insert("original-pane".into(), reader);
-
-    assert_eq!(
-        app.session_status("original-pane"),
-        SessionStatus::Completed,
-        "an old thread's working state cannot override the verified current thread"
-    );
-    app.poll_hook_status();
-    assert_eq!(app.codex_turns["original-pane"].file(), current_file);
-    assert_eq!(
-        app.codex_turns["original-pane"].status(),
-        None,
-        "do not replay historical completion when binding a different thread"
-    );
-    assert_eq!(
-        app.session_status("original-pane"),
-        SessionStatus::Completed
-    );
-
-    for (kind, expected) in [
-        ("task_started", SessionStatus::Working),
-        ("task_complete", SessionStatus::Completed),
-    ] {
-        writeln!(
-            std::fs::OpenOptions::new()
-                .append(true)
-                .open(&current_file)
-                .unwrap(),
-            "{}",
-            event(kind, "automatic-continuation").trim_end()
-        )
-        .unwrap();
-        app.hook_status_due = None;
-        app.poll_hook_status();
-        assert_eq!(
-            app.session_status("original-pane"),
-            expected,
-            "native automatic continuation must supersede the previous routed completion"
-        );
-    }
-
-    status.revision += 1;
-    status.thread_id = Some("undiscovered-thread".into());
-    status.turn_id = None;
-    status.request_id = serde_json::Value::Null;
-    status.stage = crate::local_router::RoutingStage::Ready;
-    std::fs::write(&status_path, serde_json::to_vec(&status).unwrap()).unwrap();
-    app.ptys["original-pane"].take_dirty();
-    assert_ne!(
-        app.session_status("original-pane"),
-        SessionStatus::Completed
-    );
-    app.hook_status_due = None;
-    app.poll_hook_status();
-    assert!(
-        !app.codex_turns.contains_key("original-pane"),
-        "do not keep a stale source while discovery catches up"
-    );
     app.ptys.clear();
 }
 
@@ -4814,13 +4688,14 @@ mod account_selection {
         app.request_new_on(&second, "");
         let pending_id = app.pending.as_ref().unwrap().session_id.clone();
         let cwd = app.pending.as_ref().unwrap().command.cwd.clone();
+        launch_test_placeholder(&mut app);
 
         let mut other = session("other-account-session", Agent::Codex, false);
         other.cwd = cwd.clone();
         other.started_at = Some(Utc::now());
         other.file = app.accounts[0].session_root(&home).join("other.jsonl");
         app.all_sessions = vec![other];
-        app.merge_extras();
+        app.merge_extras(&mut None);
         assert_eq!(app.active.as_deref(), Some(pending_id.as_str()));
 
         let mut owned = session("selected-account-session", Agent::Codex, false);
@@ -4829,7 +4704,7 @@ mod account_selection {
         owned.file = second.session_root(&home).join("owned.jsonl");
         app.all_sessions.retain(|s| s.id != pending_id);
         app.all_sessions.push(owned);
-        app.merge_extras();
+        app.merge_extras(&mut None);
         assert_eq!(app.active.as_deref(), Some("selected-account-session"));
     }
 }
@@ -5158,9 +5033,7 @@ mod new_session_account_picker {
     #[test]
     fn another_codex_account_signs_in_before_it_can_be_used() {
         let mut app = app_with(base());
-        app.startup_routing = crate::startup_routing::StartupRouting::confirmed(
-            crate::startup_routing::RoutingMode::Jev,
-        );
+
         app.choose_new_fresh_login(Agent::Codex);
         app.confirm_new_session();
 

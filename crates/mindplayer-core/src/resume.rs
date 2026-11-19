@@ -354,9 +354,8 @@ pub fn login_then_start(cwd: PathBuf, account: &Account) -> Command {
     login_then_start_with(account, start)
 }
 
-/// Keep sign-in native, then hand over to the caller's prepared session
-/// command. The TUI uses this to route a fresh account's first conversation
-/// through the same local bridge as every other Codex session.
+/// Keep sign-in native, then hand over to the caller's prepared session command.
+/// The TUI passes the native CLI name so sign-in and launch share PATH lookup.
 pub fn login_then_start_with(account: &Account, start: Command) -> Command {
     fn shell_word(value: &str) -> String {
         if !value.is_empty()

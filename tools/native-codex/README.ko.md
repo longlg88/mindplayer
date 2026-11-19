@@ -1,9 +1,12 @@
-# MindPlayer 전용 Codex UI
+# 독립 라우터 실험용 Codex UI
+
+MindPlayer 2.0.0부터는 이 전용 빌드를 사용하지 않고 PATH의 Codex를 실행한다.
+아래는 별도 라우터 실험과 이전 통합의 재현 지침이며 현재 앱 설치의 필수 조건이 아니다.
 
 일반 Codex 설치는 변경하지 않는다. upstream `rust-v0.162.1`의 정확한 revision
 `092d3acd6bec3e3a14bdc7e7a2810ab628ab759d`에 `queue.patch`만 적용한다.
-MindPlayer가 여는 UI·probe·app-server에 같은 전용 바이너리를 사용한다. 일반 PATH
-Codex는 교체하지 않으며 로그인·권한·Jev 판단 기준은 유지한다.
+독립 라우터 실행기가 여는 UI·probe·app-server에 같은 전용 바이너리를 사용한다.
+일반 PATH Codex는 교체하지 않으며 로그인·권한·Jev 판단 기준은 유지한다.
 이 CLI에는 같은 디렉터리의 `codex-code-mode-host`도 반드시 필요하다. 모델의
 `tool_mode=code_mode_only`에서는 CLI만 설치하면 도구를 사용할 수 없다.
 
@@ -17,7 +20,7 @@ upstream의 `turn/start` 자체도 active 턴을 steer할 수 있어 UI 사전 �
 도구 출력과 원래 helper/steering 요청에는 이 경로를 강제하지 않는다.
 
 `mindplayer-native-routing-v4`는 기존 큐·취소 계약에 세션별 유지 토글을 더한다.
-MindPlayer가 설정한 `MINDPLAYER_PER_PROMPT_CHOICE=1`에서만 입력줄의 F6 Jev/
+독립 라우터가 설정한 `MINDPLAYER_PER_PROMPT_CHOICE=1`에서만 입력줄의 F6 Jev/
 미사용 토글을 활성화한다. 새 세션과 같은 pane의 새 thread는 `MINDPLAYER_JEV_DEFAULT`가
 정확히 `jev`이면 ON, 그 밖에는 OFF로 시작한다. 이 값은 로컬 중계가 Jev 키를 읽었을 때만
 설정한다. F6로 고른 ON/OFF는 다음 F6까지 유지된다.
@@ -38,7 +41,7 @@ F7 미리보기와 previewId 계약은 제거했다. 환경변수의 기존 이�
 확인한 뒤 표시한다. 같은 모델에서 effort만 바뀌거나 같은 설정이 재적용된 턴도
 확인할 수 있게 하고, 같은 턴의 알림은 중복 표시하지 않는다. 이 안내는 실행 설정 확인이지 제공자의 서빙 모델
 신원 증명이 아니다. 자동 라우팅은 사용자 전역 `config.toml`을 수정하지 않는다.
-이전 v1 실행 파일은 이 계약을 충족하지 않으므로 새 앱에서 거절한다.
+이전 v1 실행 파일은 이 계약을 충족하지 않으므로 독립 라우터의 검증기가 거절한다.
 
 ## 재현
 

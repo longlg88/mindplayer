@@ -644,7 +644,7 @@ fn such_a_pane_never_turns_into_a_session() {
     real.started_at = Some(chrono::Utc::now());
     app.all_sessions.push(real);
 
-    app.merge_extras();
+    app.merge_extras(&mut None);
     assert!(
         app.extra_sessions
             .iter()
@@ -935,14 +935,8 @@ mod account_lifecycle_regressions {
             };
             app.ptys.insert(
                 id.clone(),
-                PtySession::spawn_with_routing(
-                    &command,
-                    &id,
-                    6,
-                    30,
-                    crate::startup_routing::RoutingMode::Native,
-                )
-                .expect("spawn a synthetic child without authentication"),
+                PtySession::spawn(&command, &id, 6, 30)
+                    .expect("spawn a synthetic child without authentication"),
             );
             app.focus_or_add_pane(&id);
             assert_eq!(app.pane_count_on(&account), 1, "visible PTYs count once");
@@ -1054,14 +1048,8 @@ mod account_lifecycle_regressions {
             };
             app.ptys.insert(
                 id.clone(),
-                PtySession::spawn_with_routing(
-                    &command,
-                    &id,
-                    6,
-                    30,
-                    crate::startup_routing::RoutingMode::Native,
-                )
-                .expect("spawn a synthetic child without authentication"),
+                PtySession::spawn(&command, &id, 6, 30)
+                    .expect("spawn a synthetic child without authentication"),
             );
             app.focus_or_add_pane(&id);
             app.remove_pane(&id);

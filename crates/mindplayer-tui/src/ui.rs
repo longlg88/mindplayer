@@ -3857,6 +3857,67 @@ mod tests {
     }
 
     #[test]
+    fn a_closed_omp_row_shows_the_account_its_transcript_last_answered_with() {
+        let mut app = list_fixture(&["omp-answered", "omp-never-observed"]);
+        for source in &mut app.all_sessions {
+            source.agent = Agent::Omp;
+        }
+        let answered = app.all_sessions[0].clone();
+        assert!(app.state.record_omp_account(
+            &answered.id,
+            &answered.file,
+            "person@example.test · Workspace · provider"
+        ));
+        app.rebuild_visible();
+        let buffer = list_frame(&mut app, 12);
+        let row = list_title_row(&buffer, "omp-answered");
+        assert!(row.contains("person@"), "{row}");
+        assert!(!row.contains("unverified"), "{row}");
+        let never = list_title_row(&buffer, "omp-never-observed");
+        assert!(never.contains("unverified"), "{never}");
+
+        let same_id_other_provider = Session {
+            agent: Agent::Claude,
+            ..answered
+        };
+        assert_eq!(
+            app.omp_account_label_for_source(&same_id_other_provider),
+            None
+        );
+    }
+
+    #[test]
+    fn a_running_omp_pane_answers_for_itself_and_a_stopped_one_falls_back_to_its_transcript() {
+        let mut fixture = QuietPtyFixture::new(8, 40);
+        let id = fixture.app.panes[0].clone();
+        let app = &mut fixture.app;
+        app.focus = Focus::List;
+        let mut source = session(Agent::Omp, 0);
+        source.id = id.clone();
+        source.title = "omp-running".into();
+        source.file = PathBuf::from("/work/omp-running.jsonl");
+        source.last_active = Some(Utc::now());
+        app.all_sessions = vec![source.clone()];
+        let stored = "previous@example.test · provider";
+        assert!(app
+            .state
+            .record_omp_account(&source.id, &source.file, stored));
+        app.rebuild_visible();
+
+        assert_eq!(app.omp_account_label_for_source(&source), None);
+        let row = list_title_row(&list_frame(app, 10), "omp-running");
+        assert!(row.contains("unverified"), "{row}");
+
+        app.ended.insert(id.clone());
+        assert_eq!(app.omp_account_label_for_source(&source), Some(stored));
+        app.ended.remove(&id);
+        app.ptys.remove(&id);
+        assert_eq!(app.omp_account_label_for_source(&source), Some(stored));
+        let row = list_title_row(&list_frame(app, 10), "omp-running");
+        assert!(row.contains("previous@"), "{row}");
+    }
+
+    #[test]
     fn narrow_mixed_account_rows_keep_titles_after_usage_measurement() {
         use mindplayer_core::accounts::Account;
         use ratatui::{backend::TestBackend, Terminal};

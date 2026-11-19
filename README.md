@@ -266,13 +266,21 @@ live main-agent response, matched to OMP's token-free OAuth account metadata.
 The list and pane show the observed email/account and workspace when available;
 API keys show a credential ID, not an inferred person. Account/model/session
 changes revoke the old label until another response proves the identity.
-Before the first response, for unopened history, or when the installed OMP lacks
-the required extension APIs, the list says `unverified` and the pane says
-`계정 미확인`. A provider name, selected model, or first login in a pool is not
-account evidence. The observer is per pane, uses private temporary files, and
-does not copy tokens, modify login state, or pin the OMP executable. Native
-integration is verified with OMP 18.22.1; installing a different version still
-uses that installed executable.
+
+MindPlayer keeps the account of each OMP session's latest observed response in
+`~/.mindplayer/state.json`, as the same token-free label, under the native
+session ID and transcript file that OMP reported. A row whose session is
+stopped or not open shows that stored account, also after MindPlayer restarts.
+A running pane shows only what its own responses prove, so the list says
+`unverified` and the pane says `계정 미확인` between an account, model, or
+session change and the next response. A session that has not answered in a
+MindPlayer pane since 2.2.0, or whose installed OMP lacks the required
+extension APIs, has no stored account and stays `unverified`. A provider name,
+selected model, or first login in a pool is not account evidence. The observer
+is per pane, uses private temporary files, and does not copy tokens, modify
+login state, or pin the OMP executable. Native integration is verified with
+OMP 18.22.2; installing a different version still uses that installed
+executable.
 
 In an OMP pane, MindPlayer reserves `Ctrl-X` (list), `Ctrl-Z` (zoom),
 `Tab` or `Alt-W` (next pane), `Shift-Tab` (previous pane), and `Ctrl-Q` or

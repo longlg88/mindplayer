@@ -45,7 +45,7 @@ async function fixture(t) {
   };
   const ctx = {
     agent: { kind: "main", depth: 0 },
-    sessionManager: { getSessionId: () => state.sessionId },
+    sessionManager: { getSessionId: () => state.sessionId, getSessionFile: () => state.sessionFile },
     get model() { return state.model; },
     modelRegistry: {
       authStorage: {
@@ -306,6 +306,33 @@ test("sticky disappearance only invalidates when that actual credential was pinn
   f.tick();
   assert.equal((await f.read()).state, "unresolved");
   assert.equal(f.state.queries.length, 1);
+});
+
+test("every report names the native transcript and a moved transcript revokes attribution", async (t) => {
+  const f = await fixture(t);
+  f.state.sessionFile = "/fixture/sessions/native-a.jsonl";
+  f.emit("session_start");
+  assert.equal((await f.read()).sourceFile, "/fixture/sessions/native-a.jsonl");
+  f.emit("message_end", f.assistant());
+  assert.equal((await f.read()).state, "observed");
+  assert.equal((await f.read()).sourceFile, "/fixture/sessions/native-a.jsonl");
+
+  // A branch keeps the native ID and writes another transcript.
+  f.state.sessionFile = "/fixture/sessions/native-b.jsonl";
+  f.tick();
+  assert.equal((await f.read()).state, "unresolved");
+  assert.equal((await f.read()).sourceFile, "/fixture/sessions/native-b.jsonl");
+  f.emit("message_end", f.assistant());
+  assert.equal((await f.read()).state, "observed");
+  assert.equal((await f.read()).sourceFile, "/fixture/sessions/native-b.jsonl");
+
+  for (const unusable of [undefined, "relative/native.jsonl", "/fixture/\u001b[31m.jsonl", `/${"x".repeat(2048)}`]) {
+    f.state.sessionFile = unusable;
+    f.emit("message_end", f.assistant());
+    const payload = await f.read();
+    assert.equal(payload.state, "observed", String(unusable).slice(0, 24));
+    assert.equal("sourceFile" in payload, false, String(unusable).slice(0, 24));
+  }
 });
 
 test("late old-account output cannot restore attribution after an explicit pin switch", async (t) => {

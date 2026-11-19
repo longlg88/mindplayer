@@ -1048,12 +1048,19 @@ impl App {
         label
     }
 
-    /// Only the uniquely owned source may display its live OMP credential.
+    /// A running pane shows its live response account; a stopped or closed row shows its transcript's stored one.
     pub(crate) fn omp_account_label_for_source(&self, session: &Session) -> Option<&str> {
-        if session.agent != Agent::Omp || !self.is_unique_runtime_source(session) {
+        if session.agent != Agent::Omp {
             return None;
         }
-        self.ptys.get(&session.id)?.omp_account_label()
+        let stored = (!self.is_running(&session.id))
+            .then(|| self.state.omp_account_for_session(session))
+            .flatten();
+        stored.or_else(|| {
+            self.is_unique_runtime_source(session)
+                .then(|| self.ptys.get(&session.id)?.omp_account_label())
+                .flatten()
+        })
     }
 
     /// Every usable login of each provider, the one a new pane would start on leading.
